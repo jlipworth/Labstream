@@ -4,6 +4,8 @@ _Date: June 2026. Sources cited inline. Where a fact could not be confirmed from
 developer statements, App Store listings, changelogs, or press/forum chatter, it is
 marked **unconfirmed** rather than guessed._
 
+> **Volatility note (2026-06-08):** App Store listings and version histories move quickly. Treat this file as a snapshot for the original build/no-build decision, not durable truth. Before deciding to build, refresh the listings and hands-on test Chroma, Theater, and especially Plexi against the real library.
+
 ## Scope
 
 Apps analyzed:

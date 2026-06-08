@@ -23,13 +23,13 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 | [03](research/03-app-architecture-sideload.md) | Architecture + sideload | Standard SwiftUI app, 6 modules (AppState, PlexAuth, PlexAPI, Player, DownloadManager, LibraryUI). **Biggest downside: free-Apple-ID profiles expire every 7 days** → Mac-tethered rebuild. AltStore/SideStore don't support visionOS. |
 | [04](research/04-competitive-teardown.md) | Competitive teardown | No single app pairs robust transcode + confirmed Plex downloads + 3D SBS. **Chroma** is closest (downloads + transcode + theater, but transcode reliability is questioned and no SBS). **Theater** has the best theater + reliable transcode but **Plex downloads unconfirmed**. |
 | [05](research/05-mobile-client-ux-reference.md) | Mobile client UX reference | Mature clients converge on **Home · Libraries · Search + Detail + Player + Settings**. Swiftfin's 3-tab model is the cleanest template. MVP = single-server login, Home hubs, poster grid, detail screen, big-screen player with bitrate/transcode fallback. |
-| [06](research/06-prerequisites-licensing.md) | Prerequisites + licensing | See [What to gather](#what-to-gather-prerequisites). **Transcode is free; downloads/sync via the official Mobile Sync path need Plex Pass — but the simple `download=1` fetch does not.** All OSS deps are permissive (MIT/BSD). |
+| [06](research/06-prerequisites-licensing.md) | Prerequisites + licensing | See [What to gather](#what-to-gather-prerequisites). **Transcode is free; official Downloads/Sync need Plex Pass, but direct `download=1` and server-side Media Optimizer do not.** All OSS deps are permissive (MIT/BSD). |
 
 ### Round 2 — API deep-dive
 
 | # | Topic | One-line verdict |
 |---|-------|------------------|
-| [07](research/07-plex-official-api-surface.md) | Plex official API surface | **An official OpenAPI spec now exists** (developer.plex.tv/pms/, since Sep 2025, needs PMS ≥ 1.43.2) and **covers the Transcoder** — better than `plexswift`. Still no official Swift SDK → hand-roll networking. `X-Plex-Token` still works; **JWT migration is medium-risk, not imminent** (PMS still rejects JWTs) — abstract the token layer. |
+| [07](research/07-plex-official-api-surface.md) | Plex official API surface | **An official OpenAPI spec now exists** (developer.plex.tv/pms/, since Sep 2025, needs PMS ≥ 1.43.2) and **covers the Transcoder + Timeline** — better than `plexswift`. Still no official Swift SDK → hand-roll networking. `X-Plex-Token` still works; **JWT migration is medium-risk, not imminent** (PMS still rejects JWTs) — abstract the token layer. |
 | [08](research/08-plex-client-library-catalog.md) | Client library catalog | Best transcode references: **`plex-for-kodi`** (Plex's own client code — highest fidelity, but **GPL-2.0 → re-implement, don't copy**) and **`python-plexapi` `getStreamURL()`** (**BSD-3, safe to port**). Every LukeHagar SDK shares the same weak generated transcode ops. |
 | [09](research/09-transcode-api-deep-dive.md) | Transcode API deep-dive | Full parameter matrix + the **DeviceProfile capability system** (`X-Plex-Client-Profile-Extra` directives that force the right transcode decision) + **decision-response codes** (1000≈direct play / 1001≈transcode). Call `/decision?hasMDE=1` first, then `start.m3u8`. Has a worked "1080p ~8 Mbps burn-subs" URL. |
 | [10](research/10-apple-media-api-inventory.md) | Apple media-API inventory | **Offline-download crux:** `AVAssetDownloadTask` is **VOD-only and won't reliably download Plex's live-style transcode HLS.** Use Plex **Media Optimizer** for a finished capped file via plain `URLSession` (see round 3 — no Plex Pass needed), OR roll your own segment downloader. Full feature→API map included. |
@@ -45,8 +45,8 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 ## The build decision (honest read)
 
 - **Off-the-shelf might be enough.** If **Chroma** (downloads + transcode + theater) or **Theater** (best theater + reliable transcode, *if* its Plex downloads work) holds up in a hands-on test, **no build is needed.** That 10-minute test should happen before committing to code.
-- **The real gap that justifies a build:** one app with **reliable transcoding AND confirmed Plex downloads AND a 3D SBS toggle**. No current app demonstrably has all three.
-- **If we build, it's small** for priorities 1–3: `plexswift`-pattern API calls (hand-rolled) → `AVPlayerViewController` on a Cinema Environment. **3D SBS is the only genuinely hard piece**, and it's optional (only matters if you have 3D Blu-ray rips and care about them).
+- **The real gap that justifies a build:** one app with **reliable transcoding AND confirmed Plex downloads AND a 3D SBS toggle**. In the research snapshot, no current app demonstrably has all three; because App Store listings change, re-check and hands-on test before committing to a build.
+- **If we build, it's small** for priorities 1–3: hand-rolled `URLSession` Plex API calls → `AVPlayerViewController` on a Cinema Environment. **3D SBS is the only genuinely hard piece**, and it's optional (only matters if you have 3D Blu-ray rips and care about them).
 - **The ongoing tax:** free-Apple-ID sideloading means a **weekly, Mac-tethered re-sign** unless you buy the **$99/yr Apple Developer Program**. For an app you want to *keep using*, that $99 is effectively required eventually.
 
 ## What to gather (prerequisites)
@@ -67,7 +67,7 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 - *(off-LAN remote streaming now needs Plex Pass / Remote Watch Pass; local-network playback stays free)*
 
 **Dependency licenses** (all permissive — no copyleft concerns)
-- `plexswift` — MIT, **but archived 2026-03-11** → vendor/fork it, expect to patch the JWT auth transition yourself
+- `plexswift` — MIT, **but archived/unmaintained** → use only as a reference/model source unless a build spike proves it compiles and covers the endpoints you need; prefer hand-rolled REST
 - `OpenImmersiveLib` — MIT (only needed if we ever add true 180/360 immersive playback — **not needed** for this library)
 - `python-plexapi` — BSD-3-Clause (reference implementation only, not a dependency)
 
@@ -85,10 +85,10 @@ PlexAVPApp (SwiftUI @main)
 
 ## Next steps
 
-1. **Hands-on disqualify-or-confirm:** test **Theater** (does Plex-library download work?) and **Chroma** (is transcode reliable? any SBS?) against the real library. If one passes, the project may stop here.
+1. **Hands-on disqualify-or-confirm:** refresh App Store listings, then test **Theater** (does Plex-library download work?), **Chroma** (is transcode reliable? any SBS?), and **Plexi** (does its download + SBS path also transcode reliably?) against the real library. If one passes, the project may stop here.
 2. **If a build is warranted:** run the brainstorming → design-spec → implementation-plan flow before any Swift is written.
 3. **Decide on the $99 developer program** before depending on the app daily.
 
 ---
 
-*Research generated 2026-06-08 via parallel research agents. All endpoint details for Plex transcoding are reverse-engineered/undocumented and version-dependent — verify against a live server.*
+*Research generated 2026-06-08 via parallel research agents. Plex now has official PMS API docs, but many behavioral details and older endpoint forms remain client-derived/version-dependent — verify against a live server.*
