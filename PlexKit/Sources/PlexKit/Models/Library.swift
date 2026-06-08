@@ -65,6 +65,22 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     public let thumb: String?
     public let art: String?
     public let media: [Media]?
+    /// Chapter markers, when PMS provides them (`Chapter` elements on the metadata).
+    /// Absent for most items; the player hides chapter UI when this is empty/nil so the
+    /// control degrades gracefully.
+    public let chapters: [Chapter]?
+
+    /// Critic/aggregate rating on a 0–10 scale (PMS `rating`). The DetailView renders it
+    /// as e.g. "7.8" next to a star glyph. `nil` for items PMS doesn't rate.
+    public let rating: Double?
+    /// Content/age rating string (PMS `contentRating`), e.g. "PG-13", "TV-MA". Surfaced
+    /// as a small capsule on the detail header so the viewer sees the certification.
+    public let contentRating: String?
+    /// One-line tagline (PMS `tagline`), shown under the title when present.
+    public let tagline: String?
+    /// Genre tags (`Genre` elements). Joined into a comma list on the detail header.
+    /// Empty/nil when the item carries no genres.
+    public let genres: [Tag]?
 
     public var id: String { ratingKey }
 
@@ -81,6 +97,11 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case thumb
         case art
         case media = "Media"
+        case chapters = "Chapter"
+        case rating
+        case contentRating
+        case tagline
+        case genres = "Genre"
     }
 
     public init(ratingKey: String,
@@ -94,7 +115,12 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 summary: String? = nil,
                 thumb: String? = nil,
                 art: String? = nil,
-                media: [Media]? = nil) {
+                media: [Media]? = nil,
+                chapters: [Chapter]? = nil,
+                rating: Double? = nil,
+                contentRating: String? = nil,
+                tagline: String? = nil,
+                genres: [Tag]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -107,6 +133,63 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.thumb = thumb
         self.art = art
         self.media = media
+        self.chapters = chapters
+        self.rating = rating
+        self.contentRating = contentRating
+        self.tagline = tagline
+        self.genres = genres
+    }
+}
+
+/// A simple Plex tag element (`Genre`, `Director`, `Role`, …). PMS represents each as a
+/// `<Genre tag="Action"/>`-style child; we only need the human `tag` for display.
+public struct Tag: Decodable, Sendable, Identifiable, Hashable {
+    public let tag: String
+    public var id: String { tag }
+
+    enum CodingKeys: String, CodingKey { case tag }
+
+    public init(tag: String) { self.tag = tag }
+}
+
+/// One chapter marker on a `MediaItem`.
+///
+/// PMS emits `Chapter` elements with millisecond `startTimeOffset`/`endTimeOffset`
+/// boundaries and an optional human `tag` (e.g. "Chapter 1").
+///
+/// NOTE: visionOS's AVKit does NOT expose `AVNavigationMarkersGroup` /
+/// `AVPlayerItem.navigationMarkerGroups` (those are tvOS/iOS only), so there are no
+/// native scrubber chapter ticks here. Instead the player surfaces these chapters via a
+/// custom "Chapters" info-panel tab whose rows seek the `AVPlayer` playhead directly to
+/// each chapter's `startTimeOffset`.
+public struct Chapter: Decodable, Sendable, Identifiable {
+    public let id: Int
+    public let tag: String?
+    /// Chapter start, in milliseconds from the start of the item.
+    public let startTimeOffset: Int?
+    /// Chapter end, in milliseconds from the start of the item.
+    public let endTimeOffset: Int?
+    /// A thumbnail key for the chapter card, when present.
+    public let thumb: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case tag
+        case startTimeOffset
+        case endTimeOffset
+        case thumb
+    }
+
+    public init(id: Int,
+                tag: String? = nil,
+                startTimeOffset: Int? = nil,
+                endTimeOffset: Int? = nil,
+                thumb: String? = nil) {
+        self.id = id
+        self.tag = tag
+        self.startTimeOffset = startTimeOffset
+        self.endTimeOffset = endTimeOffset
+        self.thumb = thumb
     }
 }
 

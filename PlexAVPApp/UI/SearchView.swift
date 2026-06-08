@@ -20,7 +20,8 @@ struct SearchView: View {
                 .frame(maxWidth: .infinity, minHeight: 300)
             case .loading:
                 ProgressView("Searching…")
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, minHeight: 360)
             case .failed(let message):
                 ContentUnavailableView("Search failed",
                                        systemImage: "exclamationmark.triangle",
@@ -31,12 +32,12 @@ struct SearchView: View {
                     ContentUnavailableView.search(text: query)
                         .frame(maxWidth: .infinity, minHeight: 300)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: 32) {
+                    LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
                         ForEach(results) { hub in
                             SearchHubSection(hub: hub)
                         }
                     }
-                    .padding(.vertical, 24)
+                    .padding(.vertical, DS.Space.xl)
                 }
             }
         }
@@ -90,13 +91,13 @@ private struct SearchHubSection: View {
     let hub: Hub
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text(hub.title)
                 .font(.title2.bold())
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Space.xxl)
 
             ScrollView(.horizontal) {
-                LazyHStack(spacing: 20) {
+                LazyHStack(spacing: DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
                             PosterCell(item: item)
@@ -104,8 +105,10 @@ private struct SearchHubSection: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Space.xxl)
+                .padding(.vertical, DS.Space.sm)
             }
+            .scrollClipDisabled()
         }
     }
 }

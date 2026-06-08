@@ -10,32 +10,34 @@ import PlexKit
 ///
 /// All inputs come from `AppModel` (base URL + token). If any are missing we
 /// render a neutral placeholder so the grid still lays out.
+///
+/// Visual polish: empty/loading state shows a soft shimmering skeleton (rather than a
+/// bare spinner) and successful images fade in, so a scrolling rail never "pops" —
+/// it settles. The failure/missing state shows a tasteful film glyph on a material.
 struct PosterImage: View {
     /// The Plex image path, e.g. an item's `thumb` or `art` (`/library/metadata/…/thumb/…`).
     let path: String?
     /// Target render size in points; used to size the transcode request.
     var width: CGFloat = 200
     var height: CGFloat = 300
-    var cornerRadius: CGFloat = 12
+    var cornerRadius: CGFloat = DS.Radius.poster
 
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
         Group {
             if let url = transcodeURL {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
                     switch phase {
                     case .success(let image):
                         image
                             .resizable()
                             .aspectRatio(contentMode: .fill)
+                            .transition(.opacity)
                     case .failure:
                         placeholder
                     case .empty:
-                        ZStack {
-                            placeholder
-                            ProgressView()
-                        }
+                        skeleton
                     @unknown default:
                         placeholder
                     }
@@ -46,16 +48,30 @@ struct PosterImage: View {
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .overlay(
+            // Hairline inner edge gives the artwork a crisp, framed finish on glass.
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+        )
     }
 
+    /// Neutral fallback when there's no artwork or it fails to load.
     private var placeholder: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(.tertiary)
+            .fill(.regularMaterial)
             .overlay {
                 Image(systemName: "film")
-                    .font(.largeTitle)
+                    .font(.system(size: min(width, height) * 0.22))
                     .foregroundStyle(.secondary)
             }
+    }
+
+    /// Shimmering load skeleton: a material fill with a slow sweeping highlight so a
+    /// rail filling in feels alive rather than stalled.
+    private var skeleton: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.regularMaterial)
+            .overlay { ShimmerView().clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)) }
     }
 
     /// Build the `/photo/:/transcode` URL for `path` at the requested size.
@@ -79,5 +95,29 @@ struct PosterImage: View {
             .init(name: "X-Plex-Token", value: token),
         ]
         return comps?.url
+    }
+}
+
+/// A reusable animated shimmer overlay used by loading skeletons. A diagonal
+/// highlight sweeps across translucently, the standard "content is on its way" cue.
+struct ShimmerView: View {
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            LinearGradient(
+                colors: [.clear, .white.opacity(0.18), .clear],
+                startPoint: .leading, endPoint: .trailing
+            )
+            .frame(width: w * 1.4)
+            .offset(x: phase * w * 1.6)
+            .onAppear {
+                withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }

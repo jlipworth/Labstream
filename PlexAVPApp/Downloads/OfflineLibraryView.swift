@@ -56,7 +56,18 @@ public struct OfflineLibraryView: View {
         let isActive = manager.activeJobs.contains(record.ratingKey)
         let error = manager.lastError[record.ratingKey]
 
-        HStack(spacing: 12) {
+        HStack(spacing: 16) {
+            // A small offline glyph tile keeps each row visually anchored even though
+            // local records don't carry poster artwork.
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.regularMaterial)
+                .frame(width: 44, height: 44)
+                .overlay {
+                    Image(systemName: isComplete ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.title3)
+                        .foregroundStyle(isComplete ? .green : .secondary)
+                }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.title).font(.headline)
                 if let error {

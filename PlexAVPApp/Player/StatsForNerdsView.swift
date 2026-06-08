@@ -1,0 +1,82 @@
+import SwiftUI
+
+/// Emby-style "Stats for Nerds" glass panel.
+///
+/// Hosted as a tab in the `AVPlayerViewController` info panel (see `PlayerControlSurface`).
+/// It observes a `PlaybackDiagnostics` and re-renders as the numbers tick (~1s).
+/// Deliberately compact and legible; it never displays any token or URL query material.
+///
+/// `onClose` is optional: when the panel is presented as an info-panel tab the tab chrome
+/// provides dismissal, so the inline close button is omitted (pass `nil`). It remains
+/// available for any future free-floating overlay presentation.
+@MainActor
+struct StatsForNerdsView: View {
+    var diagnostics: PlaybackDiagnostics
+    var onClose: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Stats for Nerds", systemImage: "chart.bar.doc.horizontal")
+                    .font(.headline)
+                if let onClose {
+                    Spacer(minLength: 24)
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.callout.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 2)
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                row("Connection", diagnostics.connectionHost)
+                row("Mode", diagnostics.isTranscoding ? "Transcoding" : "Direct")
+                if diagnostics.decisionText != "—" {
+                    row("Decision", diagnostics.decisionText)
+                }
+                row("Source", "\(diagnostics.sourceResolution) · \(diagnostics.container)")
+                row("Video", diagnostics.videoCodec)
+                row("Audio", diagnostics.audioCodec)
+                Divider().gridCellUnsizedAxes(.horizontal)
+                row("Target", diagnostics.targetBitrateLabel)
+                row("Observed", kbps(diagnostics.observedBitrateKbps))
+                row("Indicated", kbps(diagnostics.indicatedBitrateKbps))
+                row("Dropped frames", "\(diagnostics.droppedFrames)")
+                row("Stalls", "\(diagnostics.stalls)")
+                row("Buffer ahead", String(format: "%.1f s", diagnostics.bufferedAheadSeconds))
+                row("Keep up", diagnostics.likelyToKeepUp ? "Yes" : "No")
+            }
+            .font(.system(.caption, design: .monospaced))
+        }
+        .padding(16)
+        .frame(width: 340, alignment: .leading)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(radius: 12, y: 4)
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func kbps(_ value: Double) -> String {
+        guard value > 0 else { return "—" }
+        if value >= 1000 {
+            return String(format: "%.1f Mbps", value / 1000)
+        }
+        return String(format: "%.0f kbps", value)
+    }
+}

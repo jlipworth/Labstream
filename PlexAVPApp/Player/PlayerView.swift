@@ -16,18 +16,34 @@ import PlexKit
 struct PlayerView: View {
     private let controllerFactory: @MainActor () -> PlaybackController
 
+    /// The active bitrate cap (kbps), persisted so the in-player Quality menu and the
+    /// rest of the app share one source of truth. `0` means "Maximum / Original".
+    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
+
     /// Streaming initializer (contract).
+    ///
+    /// `maxVideoBitrateKbps` is optional: when omitted the controller starts at the
+    /// persisted `@AppStorage` cap, which the in-player Quality menu can then change.
+    /// `mediaIndex` selects which `Media` version of the item to stream when the title
+    /// ships multiple files (e.g. a 4K and a 1080p version). Defaults to `0` (primary
+    /// version) so existing call sites stay source-compatible.
     init(item: MediaItem,
          server: URL,
          token: String,
          identity: ClientIdentity,
-         client: PlexClient) {
+         client: PlexClient,
+         maxVideoBitrateKbps: Int? = nil,
+         mediaIndex: Int = 0) {
         self.controllerFactory = {
-            PlaybackController(item: item,
-                               server: server,
-                               token: token,
-                               identity: identity,
-                               client: client)
+            // Fall back to the persisted cap when the caller doesn't specify one.
+            let cap = maxVideoBitrateKbps ?? UserDefaults.standard.object(forKey: "maxVideoBitrateKbps") as? Int ?? 8000
+            return PlaybackController(item: item,
+                                      server: server,
+                                      token: token,
+                                      identity: identity,
+                                      client: client,
+                                      maxVideoBitrateKbps: cap,
+                                      mediaIndex: mediaIndex)
         }
     }
 
@@ -63,23 +79,31 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        PlayerRepresentable(controllerFactory: controllerFactory)
+        PlayerRepresentable(controllerFactory: controllerFactory,
+                            onBitratePicked: { maxVideoBitrateKbps = $0 })
             .ignoresSafeArea()
     }
 }
 
 /// `UIViewControllerRepresentable` bridge to `AVPlayerViewController`.
+///
+/// The coordinator also builds the in-player control surface (Quality / Chapters /
+/// Stats menus) once the view controller exists, so the custom transport-bar items and
+/// the stats overlay are wired to the same `PlaybackController`.
 private struct PlayerRepresentable: UIViewControllerRepresentable {
     let controllerFactory: @MainActor () -> PlaybackController
+    /// Persists the user's Quality choice up into `@AppStorage`.
+    let onBitratePicked: (Int) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(controller: controllerFactory())
+        Coordinator(controller: controllerFactory(), onBitratePicked: onBitratePicked)
     }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
         vc.player = context.coordinator.controller.player
         CinemaEnvironment.configure(vc)
+        context.coordinator.attachControlSurface(to: vc)
         context.coordinator.controller.start()
         return vc
     }
@@ -96,8 +120,18 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
     @MainActor
     final class Coordinator {
         let controller: PlaybackController
-        init(controller: PlaybackController) {
+        private let onBitratePicked: (Int) -> Void
+        private var controlSurface: PlayerControlSurface?
+
+        init(controller: PlaybackController, onBitratePicked: @escaping (Int) -> Void) {
             self.controller = controller
+            self.onBitratePicked = onBitratePicked
+        }
+
+        func attachControlSurface(to vc: AVPlayerViewController) {
+            controlSurface = PlayerControlSurface(playerVC: vc,
+                                                  controller: controller,
+                                                  onBitratePicked: onBitratePicked)
         }
     }
 }
