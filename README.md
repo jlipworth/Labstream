@@ -32,7 +32,15 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 | [07](research/07-plex-official-api-surface.md) | Plex official API surface | **An official OpenAPI spec now exists** (developer.plex.tv/pms/, since Sep 2025, needs PMS ≥ 1.43.2) and **covers the Transcoder** — better than `plexswift`. Still no official Swift SDK → hand-roll networking. `X-Plex-Token` still works; **JWT migration is medium-risk, not imminent** (PMS still rejects JWTs) — abstract the token layer. |
 | [08](research/08-plex-client-library-catalog.md) | Client library catalog | Best transcode references: **`plex-for-kodi`** (Plex's own client code — highest fidelity, but **GPL-2.0 → re-implement, don't copy**) and **`python-plexapi` `getStreamURL()`** (**BSD-3, safe to port**). Every LukeHagar SDK shares the same weak generated transcode ops. |
 | [09](research/09-transcode-api-deep-dive.md) | Transcode API deep-dive | Full parameter matrix + the **DeviceProfile capability system** (`X-Plex-Client-Profile-Extra` directives that force the right transcode decision) + **decision-response codes** (1000≈direct play / 1001≈transcode). Call `/decision?hasMDE=1` first, then `start.m3u8`. Has a worked "1080p ~8 Mbps burn-subs" URL. |
-| [10](research/10-apple-media-api-inventory.md) | Apple media-API inventory | **Offline-download crux:** `AVAssetDownloadTask` is **VOD-only and won't reliably download Plex's live-style transcode HLS.** Use Plex **Media Optimizer/Sync (needs Plex Pass)** for a finished capped file via plain `URLSession`, OR roll your own segment downloader. Full feature→API map included. |
+| [10](research/10-apple-media-api-inventory.md) | Apple media-API inventory | **Offline-download crux:** `AVAssetDownloadTask` is **VOD-only and won't reliably download Plex's live-style transcode HLS.** Use Plex **Media Optimizer** for a finished capped file via plain `URLSession` (see round 3 — no Plex Pass needed), OR roll your own segment downloader. Full feature→API map included. |
+
+### Round 3 — feasibility spike + build references
+
+| # | Topic | One-line verdict |
+|---|-------|------------------|
+| [11](research/11-offline-download-spike.md) | Offline-download spike | **CRUX SOLVED.** Plex **Media Optimizer creates a capped-bitrate MP4 *version* on your own server in the FREE edition** (no Plex Pass), with a built-in **"Optimized for TV – 8 Mbps 1080p"** preset = your exact target. Download it with the same free `?download=1` → native offline playback, no HLS juggling. python-plexapi: `Video.optimize(...)`. A single-request capped transcode download does **not** exist; custom segment-downloader is the L–XL fallback you can now skip. |
+| [12](research/12-visionos-app-templates.md) | visionOS app templates | **Best starting template: Apple's `Destination Video` sample** — a 2D browse window + `AVPlayerViewController` docking into a custom Reality Composer Pro cinema environment = our exact design. Permissive Apple Sample Code License. Confirmed: **no OSS Plex visionOS client exists**; Swiftfin is iOS/tvOS-only (no native visionOS). |
+| [13](research/13-playback-state-apis.md) | Playback-state APIs | The "real client" plumbing is **4 free endpoints**: `POST /playQueues` (for next-episode/shuffle) → read `viewOffset` to resume → `GET /:/timeline` heartbeat every ~10s (the only write path for resume/On Deck) → `GET /:/scrobble` to mark watched. Home screen = one `GET /hubs`. Gotcha: `key` is a path in timeline but a ratingKey number in scrobble. |
 
 ## The build decision (honest read)
 
@@ -52,7 +60,7 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 
 **Needed before it's usable long-term**
 - **Apple Developer Program — $99/yr** (kills the 7-day re-sign tax; adds TestFlight)
-- **Plex Pass** — newly important nuance from round 2: a **bitrate-capped offline copy** (your actual goal — ~8 Mbps, not the 80 GB original) needs **Plex Pass** (server-side Media Optimizer / Mobile Sync produces a finished file you fetch with plain `URLSession`). The free `download=1` fetch gets only the **full-quality original**. Capping bitrate offline *without* Plex Pass means building a custom HLS-segment downloader. **This makes Plex Pass effectively required for the download feature as you envision it.**
+- **Plex Pass — NOT required for downloads** (corrected in round 3, supersedes the round-2 claim): the server-side **Media Optimizer** produces a capped-bitrate MP4 *version* in the **free** Plex edition, using its built-in "Optimized for TV – 8 Mbps 1080p" preset, which you then fetch with the free `?download=1` call. Plex Pass is only needed to *trigger* an optimize **remotely** (off-LAN) — and since you own the server and can optimize on-LAN/server-side, that's free. (Plex Pass / Remote Watch Pass is still separately needed for **off-LAN remote streaming**, not for downloads.)
 - *(off-LAN remote streaming now needs Plex Pass / Remote Watch Pass; local-network playback stays free)*
 
 **Dependency licenses** (all permissive — no copyleft concerns)
