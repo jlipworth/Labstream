@@ -47,6 +47,33 @@ import Foundation
     #expect(item.media?[0].part[0].size == 123456)
 }
 
+@Test func decodesMetadataWithChapters() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"101","title":"Blade Runner","type":"movie","duration":9540000,
+       "Chapter":[
+         {"id":1,"tag":"Opening","startTimeOffset":0,"endTimeOffset":600000},
+         {"id":2,"tag":"Chapter 2","startTimeOffset":600000,"endTimeOffset":1200000,"thumb":"/library/metadata/101/chapter/2"}],
+       "Media":[{"id":1,"Part":[{"id":9,"key":"/library/parts/9/file.mkv"}]}]}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    let item = c.mediaContainer.metadata[0]
+    #expect(item.chapters?.count == 2)
+    #expect(item.chapters?[0].tag == "Opening")
+    #expect(item.chapters?[0].startTimeOffset == 0)
+    #expect(item.chapters?[1].endTimeOffset == 1200000)
+    #expect(item.chapters?[1].thumb == "/library/metadata/101/chapter/2")
+}
+
+@Test func decodesMetadataWithoutChapters() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"77","title":"No Chapters","type":"movie"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    #expect(c.mediaContainer.metadata[0].chapters == nil)
+}
+
 @Test func decodesMetadataWithoutMedia() throws {
     let json = """
     {"MediaContainer":{"size":1,"Metadata":[
