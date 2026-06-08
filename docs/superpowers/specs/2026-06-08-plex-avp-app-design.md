@@ -58,13 +58,12 @@ Floating browse window with a slim tab strip: **Home · Libraries · Search**, p
 2. Read `viewOffset` → resume position.
 3. `GET /video/:/transcode/universal/decision?hasMDE=1...` with the DeviceProfile (`X-Plex-Client-Profile-Extra`) → inspect `generalDecisionCode` (1000≈direct play / 1001≈transcode).
 4. `GET .../start.m3u8` with the same params (`protocol=hls`, `maxVideoBitrate=8000`, `directPlay=0`) → hand URL to `AVPlayer`. Token as **query param**, not header.
-5. `GET /:/timeline` heartbeat every ~10s + on state change (resume/On Deck write path). `stop` ends the session; `scrobble` marks watched.
+5. `/:/timeline` heartbeat every ~10s + on state change (resume/On Deck write path); `stop` ends the session; `/:/scrobble` marks watched. **Encapsulate the HTTP method**: official Redoc lists timeline as POST and scrobble/unscrobble as PUT, while legacy clients use GET — live-test against the server and keep the choice behind the PlexAPI layer (`research/13`).
 
-**Download (capped offline):**
-1. `Video.optimize(...)` → server creates an 8 Mbps MP4 *version* (free with our own server; Plex Pass present anyway).
-2. Poll conversion status.
-3. Background `URLSession` fetch of the optimized part via `?download=1` → Application Support.
-4. Offline playback feeds the local file to the same Player path.
+**Download (capped offline):** three mechanisms exist (`research/06`, `11`); v1 uses #2 as the primary path:
+1. **Direct `?download=1`** — fetches the *original* part (free, no transcode/cap). Fallback for already-small files only.
+2. **Media Optimizer** (primary): `Video.optimize(...)` → server creates an 8 Mbps MP4 *version* ("Optimized for TV – 8 Mbps 1080p"), free on our own server (Plex Pass present anyway). Poll conversion status → background `URLSession` fetch of the optimized part via `?download=1` → Application Support → offline playback feeds the local file to the same Player path.
+3. **Official Mobile Sync** (Plex-Pass-gated) — not used in v1; the Optimizer path already gives us a capped file without depending on the Sync API.
 
 ## 5. Error handling
 
