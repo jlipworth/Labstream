@@ -25,6 +25,15 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 | [05](research/05-mobile-client-ux-reference.md) | Mobile client UX reference | Mature clients converge on **Home · Libraries · Search + Detail + Player + Settings**. Swiftfin's 3-tab model is the cleanest template. MVP = single-server login, Home hubs, poster grid, detail screen, big-screen player with bitrate/transcode fallback. |
 | [06](research/06-prerequisites-licensing.md) | Prerequisites + licensing | See [What to gather](#what-to-gather-prerequisites). **Transcode is free; downloads/sync via the official Mobile Sync path need Plex Pass — but the simple `download=1` fetch does not.** All OSS deps are permissive (MIT/BSD). |
 
+### Round 2 — API deep-dive
+
+| # | Topic | One-line verdict |
+|---|-------|------------------|
+| [07](research/07-plex-official-api-surface.md) | Plex official API surface | **An official OpenAPI spec now exists** (developer.plex.tv/pms/, since Sep 2025, needs PMS ≥ 1.43.2) and **covers the Transcoder** — better than `plexswift`. Still no official Swift SDK → hand-roll networking. `X-Plex-Token` still works; **JWT migration is medium-risk, not imminent** (PMS still rejects JWTs) — abstract the token layer. |
+| [08](research/08-plex-client-library-catalog.md) | Client library catalog | Best transcode references: **`plex-for-kodi`** (Plex's own client code — highest fidelity, but **GPL-2.0 → re-implement, don't copy**) and **`python-plexapi` `getStreamURL()`** (**BSD-3, safe to port**). Every LukeHagar SDK shares the same weak generated transcode ops. |
+| [09](research/09-transcode-api-deep-dive.md) | Transcode API deep-dive | Full parameter matrix + the **DeviceProfile capability system** (`X-Plex-Client-Profile-Extra` directives that force the right transcode decision) + **decision-response codes** (1000≈direct play / 1001≈transcode). Call `/decision?hasMDE=1` first, then `start.m3u8`. Has a worked "1080p ~8 Mbps burn-subs" URL. |
+| [10](research/10-apple-media-api-inventory.md) | Apple media-API inventory | **Offline-download crux:** `AVAssetDownloadTask` is **VOD-only and won't reliably download Plex's live-style transcode HLS.** Use Plex **Media Optimizer/Sync (needs Plex Pass)** for a finished capped file via plain `URLSession`, OR roll your own segment downloader. Full feature→API map included. |
+
 ## The build decision (honest read)
 
 - **Off-the-shelf might be enough.** If **Chroma** (downloads + transcode + theater) or **Theater** (best theater + reliable transcode, *if* its Plex downloads work) holds up in a hands-on test, **no build is needed.** That 10-minute test should happen before committing to code.
@@ -43,7 +52,7 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 
 **Needed before it's usable long-term**
 - **Apple Developer Program — $99/yr** (kills the 7-day re-sign tax; adds TestFlight)
-- **Plex Pass** *only if* you use the official Mobile Sync download path; the simple `download=1` fetch this app would use does **not** require it
+- **Plex Pass** — newly important nuance from round 2: a **bitrate-capped offline copy** (your actual goal — ~8 Mbps, not the 80 GB original) needs **Plex Pass** (server-side Media Optimizer / Mobile Sync produces a finished file you fetch with plain `URLSession`). The free `download=1` fetch gets only the **full-quality original**. Capping bitrate offline *without* Plex Pass means building a custom HLS-segment downloader. **This makes Plex Pass effectively required for the download feature as you envision it.**
 - *(off-LAN remote streaming now needs Plex Pass / Remote Watch Pass; local-network playback stays free)*
 
 **Dependency licenses** (all permissive — no copyleft concerns)
