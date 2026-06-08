@@ -1,0 +1,17 @@
+public enum PlexHeaders {
+    /// Standard header set. Note: for streaming URLs the token is passed as a
+    /// query param instead (see TranscodeRequest); these headers are for API calls.
+    public static func standard(identity: ClientIdentity, token: String?) -> [String: String] {
+        var h: [String: String] = [
+            "X-Plex-Client-Identifier": identity.clientIdentifier,
+            "X-Plex-Product": identity.product,
+            "X-Plex-Version": identity.version,
+            "X-Plex-Platform": "visionOS",
+            "X-Plex-Device": "Apple Vision Pro",
+            "X-Plex-Device-Name": identity.deviceName,
+            "Accept": "application/json",
+        ]
+        if let token { h["X-Plex-Token"] = token }
+        return h
+    }
+}
