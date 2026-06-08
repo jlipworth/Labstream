@@ -108,13 +108,56 @@ final class AuthManager {
             ($0.provides ?? "").contains("server")
         }
         let chosen = servers.first { !$0.connections.isEmpty } ?? servers.first
-        guard let server = chosen,
-              let best = ResourceDiscovery.bestConnection(server.connections),
-              let url = URL(string: best.uri)
-        else { return }
+        guard let server = chosen, let token = appModel.token else { return }
+
+        // A server advertises every interface as a "local" connection, including
+        // unreachable container/VPN ones (e.g. a Docker 10.42.x.x bridge). Probe
+        // candidates in priority order and use the first that actually answers;
+        // only fall back to the static best pick if none respond.
+        let ranked = ResourceDiscovery.rankedConnections(server.connections)
+        let url = await firstReachable(ranked, token: token)
+            ?? ResourceDiscovery.bestConnection(server.connections).flatMap { URL(string: $0.uri) }
+        guard let url else { return }
 
         appModel.selectedServer = server
         appModel.serverBaseURL = url
+    }
+
+    /// Short-timeout session used only for connection reachability probes.
+    private static let probeSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 3
+        cfg.timeoutIntervalForResource = 3
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
+
+    /// Probe every candidate connection in parallel by hitting `<uri>/identity`
+    /// and return the highest-priority one (lowest index in `ranked`) that
+    /// responds with a 2xx within the timeout. Returns nil if none answer.
+    private func firstReachable(_ ranked: [PlexConnection], token: String) async -> URL? {
+        await withTaskGroup(of: (Int, URL)?.self) { group in
+            for (index, conn) in ranked.enumerated() {
+                guard let base = URL(string: conn.uri) else { continue }
+                group.addTask {
+                    var req = URLRequest(url: base.appendingPathComponent("identity"))
+                    req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
+                    req.setValue("application/json", forHTTPHeaderField: "Accept")
+                    do {
+                        let (_, resp) = try await Self.probeSession.data(for: req)
+                        if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                            return (index, base)
+                        }
+                    } catch { /* unreachable / timed out */ }
+                    return nil
+                }
+            }
+            var best: (Int, URL)?
+            for await result in group {
+                if let r = result, best == nil || r.0 < best!.0 { best = r }
+            }
+            return best?.1
+        }
     }
 
     /// Clear all auth state and return to login. Call on sign-out or any 401.
