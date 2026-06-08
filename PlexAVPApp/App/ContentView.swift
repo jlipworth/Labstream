@@ -1,11 +1,12 @@
 import SwiftUI
+import PlexKit
 
 struct ContentView: View {
     var body: some View {
         VStack(spacing: 12) {
             Text("plex-avp-app")
                 .font(.extraLargeTitle)
-            Text("skeleton — Phase 0")
+            Text("PlexKit \(PlexKit.version) linked")
                 .font(.title3)
                 .foregroundStyle(.secondary)
         }
