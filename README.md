@@ -60,7 +60,10 @@ The official Plex "visionOS app" is just the iPad build in compatibility mode �
 
 **Needed before it's usable long-term**
 - **Apple Developer Program — $99/yr** (kills the 7-day re-sign tax; adds TestFlight)
-- **Plex Pass — NOT required for downloads** (corrected in round 3, supersedes the round-2 claim): the server-side **Media Optimizer** produces a capped-bitrate MP4 *version* in the **free** Plex edition, using its built-in "Optimized for TV – 8 Mbps 1080p" preset, which you then fetch with the free `?download=1` call. Plex Pass is only needed to *trigger* an optimize **remotely** (off-LAN) — and since you own the server and can optimize on-LAN/server-side, that's free. (Plex Pass / Remote Watch Pass is still separately needed for **off-LAN remote streaming**, not for downloads.)
+- **Plex Pass — the user HAS it.** This resolves every Plex-Pass-gated caveat in the research favorably:
+  - **Downloads:** not even gated on Plex Pass (free Media Optimizer → "Optimized for TV – 8 Mbps 1080p" preset → `?download=1`); Plex Pass additionally enables **remote optimize + official Mobile Sync** (optimize/download while off-LAN).
+  - **Off-LAN remote streaming:** enabled (required since April 2025) — so the app works away from home, not only on the LAN. Relevant to the core "stream a transcode over a slow connection" use case.
+  - **Hardware-accelerated server transcoding:** available (and already in use — transcoding is validated).
 - *(off-LAN remote streaming now needs Plex Pass / Remote Watch Pass; local-network playback stays free)*
 
 **Dependency licenses** (all permissive — no copyleft concerns)
