@@ -14,6 +14,8 @@ struct LibrariesView: View {
             switch loadState {
             case .idle, .loading:
                 ProgressView("Loading…")
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .failed(let message):
                 ContentUnavailableView("Couldn’t load libraries",
                                        systemImage: "exclamationmark.triangle",
@@ -26,8 +28,13 @@ struct LibrariesView: View {
                 } else {
                     List(sections) { section in
                         NavigationLink(value: section) {
-                            Label(section.title, systemImage: icon(for: section.type))
-                                .font(.title3)
+                            Label {
+                                Text(section.title).font(.title3)
+                            } icon: {
+                                Image(systemName: icon(for: section.type))
+                                    .foregroundStyle(.tint)
+                            }
+                            .padding(.vertical, DS.Space.xs)
                         }
                     }
                 }
@@ -85,29 +92,36 @@ struct LibraryGridView: View {
     @State private var items: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
 
-    private let columns = [GridItem(.adaptive(minimum: 180, maximum: 220), spacing: 24)]
+    private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
+                                    spacing: DS.Space.xl)]
 
     var body: some View {
         ScrollView {
             switch loadState {
             case .idle, .loading:
-                ProgressView("Loading…")
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                SkeletonGrid()
             case .failed(let message):
                 ContentUnavailableView("Couldn’t load \(section.title)",
                                        systemImage: "exclamationmark.triangle",
                                        description: Text(message))
-                .frame(maxWidth: .infinity, minHeight: 300)
+                .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
-                LazyVGrid(columns: columns, spacing: 32) {
-                    ForEach(items) { item in
-                        NavigationLink(value: item) {
-                            PosterCell(item: item)
+                if items.isEmpty {
+                    ContentUnavailableView("Empty library",
+                                           systemImage: "rectangle.stack",
+                                           description: Text("No items in \(section.title)."))
+                    .frame(maxWidth: .infinity, minHeight: 360)
+                } else {
+                    LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+                        ForEach(items) { item in
+                            NavigationLink(value: item) {
+                                PosterCell(item: item, width: DS.Poster.gridMin)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .padding(DS.Space.xl)
                 }
-                .padding(24)
             }
         }
         .navigationTitle(section.title)
@@ -129,5 +143,25 @@ struct LibraryGridView: View {
         } catch {
             loadState = .failed(friendlyMessage(error))
         }
+    }
+}
+
+/// Shimmering poster grid shown while a library section loads, so the screen keeps
+/// its layout (and the same gutters as the real grid) rather than flashing a spinner.
+private struct SkeletonGrid: View {
+    private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
+                                    spacing: DS.Space.xl)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+            ForEach(0..<12, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+                    .fill(.regularMaterial)
+                    .frame(width: DS.Poster.gridMin, height: DS.Poster.height(for: DS.Poster.gridMin))
+                    .overlay { ShimmerView() }
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
+            }
+        }
+        .padding(DS.Space.xl)
     }
 }

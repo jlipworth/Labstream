@@ -17,26 +17,27 @@ struct HomeView: View {
         ScrollView {
             switch loadState {
             case .idle, .loading:
-                ProgressView("Loading…")
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                // Skeleton rails instead of a lone spinner: the page keeps its shape
+                // while content loads, so the transition to real posters is seamless.
+                SkeletonRails()
             case .failed(let message):
                 ContentUnavailableView("Couldn’t load Home",
                                        systemImage: "exclamationmark.triangle",
                                        description: Text(message))
-                .frame(maxWidth: .infinity, minHeight: 300)
+                .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
                 if hubs.isEmpty {
                     ContentUnavailableView("Nothing here yet",
                                            systemImage: "house",
                                            description: Text("No hubs returned by the server."))
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                    .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: 32) {
+                    LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
                         ForEach(hubs.filter { !$0.metadata.isEmpty }) { hub in
                             HubRail(hub: hub)
                         }
                     }
-                    .padding(.vertical, 24)
+                    .padding(.vertical, DS.Space.xl)
                 }
             }
         }
@@ -44,13 +45,18 @@ struct HomeView: View {
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
-        .task { await load() }
+        // Re-run whenever the server URL resolves. On a fresh login the reachability
+        // probe sets `serverBaseURL` a beat AFTER auth flips, so the first appearance
+        // sees nil; keying the task on it re-fires load() the moment it's ready.
+        .task(id: appModel.serverBaseURL) { await load() }
         .refreshable { await load() }
     }
 
     private func load() async {
         guard let server = appModel.serverBaseURL, let token = appModel.token else {
-            loadState = .failed("No server selected.")
+            // Server not resolved yet — stay on the spinner; the task re-fires
+            // (keyed on serverBaseURL) as soon as the probe picks a connection.
+            loadState = .loading
             return
         }
         loadState = .loading
@@ -70,13 +76,13 @@ private struct HubRail: View {
     let hub: Hub
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text(hub.title)
                 .font(.title2.bold())
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Space.xxl)
 
             ScrollView(.horizontal) {
-                LazyHStack(spacing: 20) {
+                LazyHStack(spacing: DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
                             PosterCell(item: item)
@@ -84,31 +90,98 @@ private struct HubRail: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Space.xxl)
+                .padding(.vertical, DS.Space.sm)
             }
+            .scrollClipDisabled() // let hover-lifted posters breathe past the rail edge
         }
     }
 }
 
 /// A poster + title cell used in rails and grids.
+///
+/// Visual polish: a fixed 2:3 poster, a continue-watching progress sliver when the
+/// item has a resume point, and a visionOS hover lift. The title block reserves a
+/// stable height so rows of cells with 1- vs 2-line titles still align cleanly.
 struct PosterCell: View {
     let item: MediaItem
-    var width: CGFloat = 180
-    var height: CGFloat = 270
+    var width: CGFloat = DS.Poster.railWidth
+
+    private var height: CGFloat { DS.Poster.height(for: width) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: width, height: height)
-            Text(item.title)
-                .font(.headline)
-                .lineLimit(1)
-            if let year = item.year {
-                Text(String(year))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                .overlay(alignment: .bottom) { progressSliver }
+                .posterHover()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                if let year = item.year {
+                    Text(String(year))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
-        .frame(width: width)
+        .frame(width: width, alignment: .leading)
+    }
+
+    /// A thin "continue watching" progress bar pinned to the poster's bottom edge,
+    /// shown only when the item carries a resume offset. Mirrors Plex/Netflix posters.
+    @ViewBuilder
+    private var progressSliver: some View {
+        if let offset = item.viewOffset, offset > 0,
+           let duration = item.duration, duration > 0 {
+            let fraction = min(1, max(0, Double(offset) / Double(duration)))
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.black.opacity(0.45))
+                    Capsule().fill(.tint)
+                        .frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 4)
+            .padding(.horizontal, DS.Space.sm)
+            .padding(.bottom, DS.Space.sm)
+        }
+    }
+}
+
+/// Placeholder rails shown while Home loads — a couple of titled rows of shimmering
+/// poster blanks so the screen has structure (and no jarring spinner-to-grid jump).
+struct SkeletonRails: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xxxl) {
+            ForEach(0..<2, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: DS.Space.lg) {
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .fill(.regularMaterial)
+                        .frame(width: 200, height: 26)
+                        .overlay { ShimmerView() }
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+                        .padding(.horizontal, DS.Space.xxl)
+
+                    ScrollView(.horizontal) {
+                        HStack(spacing: DS.Space.xl) {
+                            ForEach(0..<5, id: \.self) { _ in
+                                RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+                                    .fill(.regularMaterial)
+                                    .frame(width: DS.Poster.railWidth,
+                                           height: DS.Poster.height(for: DS.Poster.railWidth))
+                                    .overlay { ShimmerView() }
+                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
+                            }
+                        }
+                        .padding(.horizontal, DS.Space.xxl)
+                    }
+                    .scrollDisabled(true)
+                }
+            }
+        }
+        .padding(.vertical, DS.Space.xl)
     }
 }
 

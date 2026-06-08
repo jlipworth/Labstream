@@ -29,6 +29,58 @@ public final class DownloadManager {
         case transferFailed(String)
     }
 
+    /// A user-selectable download quality.
+    ///
+    /// Each case maps to a video-bitrate cap (kbps) handed to the SAME universal
+    /// transcoder the player uses, via `TranscodeRequest.downloadURL()`. We download
+    /// a single progressive MP4 at the chosen cap rather than going through the
+    /// fragile server-side optimize queue (see `optimizeAndDownload(_:quality:)` for
+    /// the rationale). `.original` requests "no cap" — we pass a very high ceiling so
+    /// PMS still emits a compatible MP4 rather than rejecting an absent cap (mirrors
+    /// the player's `0`-means-maximum convention in `PlaybackController`).
+    public enum DownloadQuality: String, Sendable, Equatable, CaseIterable, Identifiable {
+        case p480
+        case p720
+        case p1080
+        case original
+
+        public var id: String { rawValue }
+
+        /// Human label for the picker.
+        public var label: String {
+            switch self {
+            case .p480:     return "480p · 2 Mbps"
+            case .p720:     return "720p · 4 Mbps"
+            case .p1080:    return "1080p · 8 Mbps"
+            case .original: return "Original / Maximum"
+            }
+        }
+
+        /// Short caption for secondary text / accessibility.
+        public var caption: String {
+            switch self {
+            case .p480:     return "Smallest file, lowest quality"
+            case .p720:     return "Balanced size and quality"
+            case .p1080:    return "Best quality for the headset"
+            case .original: return "Largest file, source quality"
+            }
+        }
+
+        /// Video-bitrate cap in kbps handed to the transcoder. `nil` == no cap
+        /// (original); the manager translates that to the transcoder's high ceiling.
+        public var maxVideoBitrateKbps: Int? {
+            switch self {
+            case .p480:     return 2000
+            case .p720:     return 4000
+            case .p1080:    return 8000
+            case .original: return nil
+            }
+        }
+
+        /// The default offered to the user: the app-wide 1080p/8 Mbps cap.
+        public static var `default`: DownloadQuality { .p1080 }
+    }
+
     /// Live records (in-progress + completed), backed by `DownloadStore`.
     public private(set) var records: [DownloadRecord] = []
 
@@ -106,6 +158,72 @@ public final class DownloadManager {
             lastError[ratingKey] = .transferFailed(String(describing: error))
             refreshRecords()
         }
+    }
+
+    /// Download `item` at a user-chosen `quality` via the universal-transcode path.
+    ///
+    /// **Why this, not the optimize queue:** the legacy `optimizeAndDownload(_:)`
+    /// above triggers a server-side OPTIMIZE (a `targetTagID` preset) and then polls
+    /// for the resulting part. That path is the highest-uncertainty area in the app —
+    /// the live `backgroundProcessing.key` + server-specific `targetTagID` are
+    /// UNVERIFIED (see the big `TODO(live)` on `triggerOptimize`). This method instead
+    /// reuses the SAME universal transcoder the player streams from
+    /// (`TranscodeRequest.downloadURL()` with the `Safari` profile + `maxVideoBitrate`
+    /// cap), asking for a single progressive MP4 we can fetch with one background
+    /// `downloadTask`. That contract is verified end-to-end for streaming, so it's the
+    /// reliable way to honor a chosen quality offline. No optimize queue, no polling.
+    ///
+    /// Records state (including any error) rather than throwing. Keeps the existing
+    /// background `URLSession` transfer machinery, so it survives suspension/relaunch.
+    public func optimizeAndDownload(_ item: MediaItem, quality: DownloadQuality) async {
+        let ratingKey = item.ratingKey
+        guard let token = appModel.token, let server = appModel.serverBaseURL else {
+            lastError[ratingKey] = .notAuthenticated
+            return
+        }
+        guard !activeJobs.contains(ratingKey) else { return }
+        activeJobs.insert(ratingKey)
+        lastError[ratingKey] = nil
+        defer { activeJobs.remove(ratingKey) }
+
+        // The transcoded download always lands as an MP4 (we ask `protocol=http`).
+        let destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        // Seed a 0% record so the UI shows the job immediately.
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: destination, bytes: 0, progress: 0))
+        refreshRecords()
+
+        // `nil` cap (Original) maps to a very high ceiling so PMS still emits a
+        // playable MP4 rather than rejecting an absent cap (mirrors PlaybackController).
+        let cap = quality.maxVideoBitrateKbps ?? 200_000
+        let metadataKey = item.key ?? "/library/metadata/\(ratingKey)"
+        let transcode = TranscodeRequest(server: server,
+                                         token: token,
+                                         identity: appModel.identity,
+                                         metadataKey: metadataKey,
+                                         maxVideoBitrateKbps: cap,
+                                         sessionID: "plex-avp-dl-" + UUID().uuidString,
+                                         mediaIndex: 0,
+                                         partIndex: 0)
+        do {
+            try session.start(ratingKey: ratingKey,
+                              from: transcode.downloadURL(),
+                              to: destination)
+            refreshRecords()
+        } catch let error as DownloadError {
+            lastError[ratingKey] = error
+            store.remove(ratingKey: ratingKey)
+            refreshRecords()
+        } catch {
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            refreshRecords()
+        }
+    }
+
+    /// Whether a download already exists (completed or in-flight) for `ratingKey`.
+    /// Lets the options sheet show "Downloaded" / disable re-download.
+    public func hasDownload(for ratingKey: String) -> Bool {
+        records.contains { $0.ratingKey == ratingKey }
     }
 
     /// Delete a download and its backing file.
@@ -216,6 +334,10 @@ public final class DownloadManager {
 /// updates via `onChange`. The store itself is internally locked.
 final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
 
+    /// The fixed background-session identifier. Shared with the app delegate so it can
+    /// route `handleEventsForBackgroundURLSession` to THIS session's completion handler.
+    static let identifier = "com.plexavp.downloads.background"
+
     private let store: DownloadStore
     private let fileManager = FileManager.default
     /// taskIdentifier -> (ratingKey, destination)
@@ -226,9 +348,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     var onChange: (() -> Void)?
 
     private lazy var urlSession: URLSession = {
-        let id = "com.plexavp.downloads.background"
-        let config = URLSessionConfiguration.background(withIdentifier: id)
+        let config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
         config.isDiscretionary = false
+        // The OS may relaunch us in the background to finish transfers; required so
+        // `handleEventsForBackgroundURLSession` is delivered to the app delegate.
         config.sessionSendsLaunchEvents = true
         config.allowsCellularAccess = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
@@ -237,11 +360,56 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     init(store: DownloadStore) {
         self.store = store
         super.init()
+        // Register so the app delegate can hand us the system completion handler when
+        // the app is relaunched to process finished background events.
+        let session = self
+        Task { @MainActor in BackgroundDownloadCompletionRegistry.shared.register(session) }
     }
 
     /// Rebind delegate to any tasks the background session resumed after relaunch.
+    ///
+    /// Touching `urlSession` lazily recreates the background session object bound to
+    /// the persisted identifier; the OS then redelivers progress/completion callbacks
+    /// for any tasks that survived suspension/relaunch, and our delegate methods
+    /// restore each record's progress from `didWriteData`/`didFinishDownloadingTo`.
+    /// We also re-seed `inflight` so a relaunched task maps back to its record's
+    /// destination (the index.json still holds the ratingKey + relative path).
     func reattach() {
-        urlSession.getAllTasks { _ in /* tasks redeliver via delegate callbacks */ }
+        urlSession.getAllTasks { [weak self] tasks in
+            guard let self else { return }
+            // Rebuild the taskIdentifier -> (ratingKey, destination) map for any
+            // tasks the OS resumed. We match a task to a record by its source URL's
+            // `path` query param (the metadataKey), which is stable per item; if we
+            // can't match we still leave the task running and rely on the store row.
+            self.lock.lock()
+            for task in tasks {
+                guard self.inflight[task.taskIdentifier] == nil,
+                      let ratingKey = Self.ratingKey(for: task, store: self.store) else { continue }
+                let destination = self.store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+                self.inflight[task.taskIdentifier] = (ratingKey, destination)
+            }
+            self.lock.unlock()
+            self.onChange?()
+        }
+    }
+
+    /// Best-effort match of a resumed background task back to a known download record.
+    ///
+    /// The task's original request URL carries the item's metadata key as the `path`
+    /// query param (`/library/metadata/<ratingKey>`). We extract the trailing id and
+    /// confirm a matching in-progress record exists in the store.
+    private static func ratingKey(for task: URLSessionTask, store: DownloadStore) -> String? {
+        guard let url = task.originalRequest?.url,
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let path = comps.queryItems?.first(where: { $0.name == "path" })?.value else { return nil }
+        let key = (path as NSString).lastPathComponent
+        return store.records.contains(where: { $0.ratingKey == key }) ? key : nil
+    }
+
+    /// Force the lazy background session to be created (and thus its delegate bound),
+    /// so the OS can deliver `urlSessionDidFinishEvents` after a relaunch.
+    func ensureSessionReady() {
+        _ = urlSession
     }
 
     /// Begin (or resume) a background download.
@@ -324,5 +492,58 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             store.remove(ratingKey: entry.ratingKey)
         }
         onChange?()
+    }
+
+    /// Called when the background session has delivered all events queued while the
+    /// app was suspended/terminated (after a relaunch). We invoke the system-supplied
+    /// completion handler the app delegate stashed, so the OS knows our UI is current
+    /// and snapshots a fresh app preview. Must run on the main queue.
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        onChange?()
+        let identifier = session.configuration.identifier ?? Self.identifier
+        Task { @MainActor in
+            BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+        }
+    }
+}
+
+/// Bridges the app delegate's `handleEventsForBackgroundURLSession` callback to the
+/// `BackgroundDownloadSession` that owns the matching background `URLSession`.
+///
+/// When visionOS relaunches the app in the background to finish a transfer it calls
+/// `application(_:handleEventsForBackgroundURLSessionWithIdentifier:completionHandler:)`.
+/// The app must (1) recreate the background session (done lazily by reattaching the
+/// `DownloadManager`) and (2) keep the completion handler until the session reports
+/// `urlSessionDidFinishEvents`, then call it. The session object and the app delegate
+/// are created independently, so this small main-actor registry connects them by
+/// session identifier.
+@MainActor
+final class BackgroundDownloadCompletionRegistry {
+    static let shared = BackgroundDownloadCompletionRegistry()
+
+    /// identifier -> system completion handler awaiting `didFinishEvents`.
+    private var handlers: [String: () -> Void] = [:]
+    /// Live sessions keyed by their background-session identifier.
+    private var sessions: [String: BackgroundDownloadSession] = [:]
+
+    private init() {}
+
+    /// Record a live session so the delegate's identifier resolves to it.
+    func register(_ session: BackgroundDownloadSession) {
+        sessions[BackgroundDownloadSession.identifier] = session
+    }
+
+    /// Store the system completion handler and make sure the matching session exists
+    /// so its delegate will eventually fire `urlSessionDidFinishEvents`.
+    func store(identifier: String, completion: @escaping () -> Void) {
+        handlers[identifier] = completion
+        sessions[identifier]?.ensureSessionReady()
+        sessions[identifier]?.reattach()
+    }
+
+    /// Invoke and clear the stored completion handler for `identifier`.
+    func fireCompletion(for identifier: String) {
+        guard let handler = handlers.removeValue(forKey: identifier) else { return }
+        handler()
     }
 }

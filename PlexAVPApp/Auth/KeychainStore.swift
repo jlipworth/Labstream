@@ -34,17 +34,22 @@ final class KeychainStore {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
 
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return true
-        }
-        if updateStatus == errSecItemNotFound {
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData as String] = data
             addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+            status = SecItemAdd(addQuery as CFDictionary, nil)
         }
-        return false
+
+        if status == errSecSuccess {
+            // Drop any stale fallback so it can't shadow the real value later.
+            try? FileManager.default.removeItem(at: fallbackURL(for: account))
+            return true
+        }
+
+        NSLog("%@", "KeychainStore: SecItem save failed for \(account) (OSStatus \(status)); using file fallback")
+        return saveFallback(data, for: account)
     }
 
     /// Read the value for `account`, or `nil` if absent.
@@ -58,11 +63,12 @@ final class KeychainStore {
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let value = String(data: data, encoding: .utf8)
-        else { return nil }
-        return value
+        if status == errSecSuccess,
+           let data = result as? Data,
+           let value = String(data: data, encoding: .utf8) {
+            return value
+        }
+        return readFallback(account)
     }
 
     /// Remove the value for `account` (no-op if absent).
@@ -74,7 +80,36 @@ final class KeychainStore {
             kSecAttrAccount as String: account,
         ]
         let status = SecItemDelete(query as CFDictionary)
+        try? FileManager.default.removeItem(at: fallbackURL(for: account))
         return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    // MARK: - File fallback (unsigned Simulator / missing-entitlement only)
+
+    private func fallbackURL(for account: String) -> URL {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PlexAVPSecrets", isDirectory: true)
+        return dir.appendingPathComponent("\(service).\(account)")
+    }
+
+    @discardableResult
+    private func saveFallback(_ data: Data, for account: String) -> Bool {
+        let url = fallbackURL(for: account)
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            return true
+        } catch {
+            NSLog("%@", "KeychainStore: file fallback save failed for \(account): \(error)")
+            return false
+        }
+    }
+
+    private func readFallback(_ account: String) -> String? {
+        guard let data = try? Data(contentsOf: fallbackURL(for: account)) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     // MARK: Convenience for the two well-known keys

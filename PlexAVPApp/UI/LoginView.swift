@@ -2,64 +2,102 @@ import SwiftUI
 import PlexKit
 
 /// Sign-in screen. Drives the Plex PIN-OAuth flow via `AuthManager`:
-///   1. "Sign in with Plex" creates a PIN and opens `app.plex.tv/auth` in the
-///      system browser (`openURL`).
+///   1. "Sign in with Plex" creates a PIN and opens `app.plex.tv/auth` in a
+///      managed `ASWebAuthenticationSession` web sheet (`WebAuthSession`).
 ///   2. `AuthManager` polls in the background; we observe `authManager.state`
-///      and dismiss automatically once it reaches `.authenticated` (ContentView
-///      switches to `RootView` when `appModel.isAuthenticated` flips).
+///      and, once it reaches `.authenticated`, close the web sheet ourselves
+///      (`webAuth.cancel()`). ContentView then switches to `RootView` when
+///      `appModel.isAuthenticated` flips.
 struct LoginView: View {
     let authManager: AuthManager
 
-    @Environment(\.openURL) private var openURL
+    @State private var webAuth = WebAuthSession()
 
     @State private var working = false
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(spacing: 28) {
-            Image(systemName: "play.tv.fill")
-                .font(.system(size: 80))
-                .foregroundStyle(.tint)
+        VStack(spacing: DS.Space.xl) {
+            // Tinted, layered app glyph in a soft glow — a warmer welcome than a flat icon.
+            ZStack {
+                Circle()
+                    .fill(.tint.opacity(0.18))
+                    .frame(width: 156, height: 156)
+                    .blur(radius: 24)
+                Image(systemName: "play.tv.fill")
+                    .font(.system(size: 76))
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.hierarchical)
+            }
 
-            Text("plex-avp-app")
-                .font(.extraLargeTitle.bold())
+            VStack(spacing: DS.Space.md) {
+                Text("Plex for Vision Pro")
+                    .font(.extraLargeTitle.bold())
 
-            Text("Sign in to your Plex account to browse and play your libraries in the headset.")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 520)
+                Text("Sign in to your Plex account to browse and play your libraries in the headset.")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 520)
+            }
 
             content
+                .padding(.top, DS.Space.sm)
 
             if let errorMessage {
-                Text(errorMessage)
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.red)
+                    .padding(.horizontal, DS.Space.lg)
+                    .padding(.vertical, DS.Space.md)
+                    .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
             }
         }
-        .padding(60)
+        .padding(DS.Space.xxxl + DS.Space.md)
+        .frame(maxWidth: 620)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: authManager.state) { _, newValue in
-            if case .failed(let message) = newValue {
+            switch newValue {
+            case .failed(let message):
                 errorMessage = message
                 working = false
+                webAuth.cancel()
+            case .authenticated:
+                // Token arrived via polling — close the web sheet so it doesn't
+                // linger over the now-authenticated app.
+                webAuth.cancel()
+            default:
+                break
             }
         }
+        .onDisappear { webAuth.cancel() }
     }
 
     @ViewBuilder
     private var content: some View {
         switch authManager.state {
         case .awaitingAuthorization(let code, let url):
-            VStack(spacing: 12) {
+            VStack(spacing: DS.Space.lg) {
                 ProgressView()
+                    .controlSize(.large)
                 Text("Waiting for authorization…")
                     .font(.headline)
-                Text("Linking code: \(code)")
-                    .font(.title2.monospaced())
-                Button("Open Plex sign-in again") { openURL(url) }
-                    .buttonStyle(.bordered)
+                VStack(spacing: DS.Space.xs) {
+                    Text("Linking code")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(code)
+                        .font(.largeTitle.monospaced().weight(.semibold))
+                        .tracking(4)
+                        .padding(.horizontal, DS.Space.xl)
+                        .padding(.vertical, DS.Space.md)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+                }
+                Button("Open Plex sign-in again") {
+                    webAuth.start(url) { working = false }
+                }
+                .buttonStyle(.bordered)
             }
         default:
             Button {
@@ -80,7 +118,7 @@ struct LoginView: View {
         errorMessage = nil
         do {
             let url = try await authManager.createPin()
-            openURL(url)
+            webAuth.start(url) { working = false }
         } catch {
             errorMessage = friendlyMessage(error)
             working = false

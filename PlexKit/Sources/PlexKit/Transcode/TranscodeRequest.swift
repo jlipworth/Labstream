@@ -28,6 +28,13 @@ public struct TranscodeRequest: Sendable, Equatable {
     /// When non-nil, requests subtitle burn-in for the given stream id (`subtitleStreamID`)
     /// with `subtitleSize`. When nil, subtitles are left as `auto`.
     public let burnSubtitleStreamID: Int?
+    /// Resume position in **seconds**. When non-nil/>0, PMS primes the transcoder AT
+    /// this point and emits `#EXT-X-START:TIME-OFFSET` in the media playlist, so the
+    /// player begins there with the first segment produced quickly — instead of PMS
+    /// transcoding from 0 and the client precise-seeking into an unprimed position
+    /// (which times out the deep segment and stalls the load). This is how official
+    /// Plex clients resume. Streaming-only; the download URL strips it.
+    public let startOffsetSeconds: Int?
 
     public init(server: URL,
                 token: String,
@@ -37,7 +44,8 @@ public struct TranscodeRequest: Sendable, Equatable {
                 sessionID: String,
                 mediaIndex: Int,
                 partIndex: Int,
-                burnSubtitleStreamID: Int? = nil) {
+                burnSubtitleStreamID: Int? = nil,
+                startOffsetSeconds: Int? = nil) {
         self.server = server
         self.token = token
         self.identity = identity
@@ -47,6 +55,7 @@ public struct TranscodeRequest: Sendable, Equatable {
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
         self.burnSubtitleStreamID = burnSubtitleStreamID
+        self.startOffsetSeconds = startOffsetSeconds
     }
 
     /// The device profile advertised to PMS for this request.
@@ -68,9 +77,19 @@ public struct TranscodeRequest: Sendable, Equatable {
             // partIndex is its own index — do NOT tie it to mediaIndex.
             .init(name: "partIndex", value: String(partIndex)),
             .init(name: "session", value: sessionID),
-            .init(name: "X-Plex-Client-Profile-Name", value: "visionOS"),
+            // PMS resolves this name to a built-in profile file (`Profiles/<Name>.xml`).
+            // There is NO "visionOS" profile on the server, and an unknown name makes
+            // the universal transcoder return a bare HTTP 400 (verified against live
+            // PMS). "Safari" is the closest built-in match: AVFoundation HLS with
+            // HEVC/fMP4 support, which is exactly what our AVPlayer can play.
+            .init(name: "X-Plex-Client-Profile-Name", value: "Safari"),
             .init(name: "X-Plex-Client-Profile-Extra", value: deviceProfile.clientProfileExtra),
         ]
+
+        // Resume offset: tell PMS where to start the transcode session (seconds).
+        if let off = startOffsetSeconds, off > 0 {
+            items.append(.init(name: "offset", value: String(off)))
+        }
 
         // Subtitles: either burn-in a specific stream, or let PMS auto-select.
         if let sid = burnSubtitleStreamID {
@@ -105,6 +124,40 @@ public struct TranscodeRequest: Sendable, Equatable {
     /// `/video/:/transcode/universal/start.m3u8` + the shared params.
     public func startM3U8URL() -> URL {
         buildURL(path: "/video/:/transcode/universal/start.m3u8", queryItems: sharedQueryItems())
+    }
+
+    /// A **single-file** capped-bitrate transcode URL for OFFLINE DOWNLOAD.
+    ///
+    /// Streaming playback uses `start.m3u8` (segmented HLS), which a background
+    /// `URLSession.downloadTask` cannot fetch as one file — it would only retrieve
+    /// the playlist text, not the media segments. For a download we instead ask the
+    /// SAME universal transcoder for a single progressive **MP4** by overriding
+    /// `protocol=http` (instead of `hls`) and adding `download=1`. PMS streams the
+    /// transcoded body inline, so one `downloadTask` captures the whole file.
+    ///
+    /// This reuses the verified streaming contract (`X-Plex-Client-Profile-Name=Safari`,
+    /// the `maxVideoBitrate` cap, identity params, token-as-query) — the only
+    /// differences are the `protocol` value and the `download` flag. The chosen
+    /// `maxVideoBitrateKbps` is honored exactly as it is for streaming, so the
+    /// download quality matches what the player would produce at that cap.
+    ///
+    /// Server-dependence: the universal transcoder must allow `protocol=http`
+    /// (progressive) output for the source codec; PMS falls back to a remux/transcode
+    /// to a compatible MP4 in practice. If a given server/codec refuses progressive
+    /// output this returns a 4xx, which the caller surfaces as a transfer failure.
+    public func downloadURL() -> URL {
+        var items = sharedQueryItems()
+        // Override the streaming `protocol=hls` with progressive `http` so PMS emits
+        // a single seekable MP4 body rather than an HLS playlist + segments.
+        items.removeAll { $0.name == "protocol" }
+        items.append(.init(name: "protocol", value: "http"))
+        items.append(.init(name: "download", value: "1"))
+        // A download always captures the whole file from the start, never a resume point.
+        items.removeAll { $0.name == "offset" }
+        // `offline=1` hints PMS this is a sync/download session (best-effort; ignored
+        // by servers that don't recognize it).
+        items.append(.init(name: "offline", value: "1"))
+        return buildURL(path: "/video/:/transcode/universal/start", queryItems: items)
     }
 
     private func buildURL(path: String, queryItems: [URLQueryItem]) -> URL {
