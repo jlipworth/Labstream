@@ -21,9 +21,15 @@ public enum ResourceDiscovery {
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
-    /// Rank candidate connections: local first, then non-relay, then relay.
-    /// Sort is stable on (local desc, non-relay desc).
-    public static func bestConnection(_ connections: [PlexConnection]) -> PlexConnection? {
+    /// Rank candidate connections by *preference priority*: local first, then
+    /// non-relay, then relay. Sort is stable on (local desc, non-relay desc).
+    ///
+    /// NOTE: priority is not reachability. A server advertises every interface it
+    /// has as a "local" connection — including container/VPN/virtual interfaces
+    /// (e.g. a Docker `10.42.x.x` bridge) that no real client can reach. Callers
+    /// MUST probe these in order and use the first that actually responds, rather
+    /// than blindly taking `bestConnection`. See `AuthManager.firstReachable`.
+    public static func rankedConnections(_ connections: [PlexConnection]) -> [PlexConnection] {
         connections
             .enumerated()
             .sorted { lhs, rhs in
@@ -32,8 +38,13 @@ public enum ResourceDiscovery {
                 if a.relay != b.relay { return !a.relay && b.relay }
                 return lhs.offset < rhs.offset
             }
-            .first?
-            .element
+            .map(\.element)
+    }
+
+    /// Highest-priority connection by static rank. Convenience for tests and for
+    /// the fallback when no connection responds to a reachability probe.
+    public static func bestConnection(_ connections: [PlexConnection]) -> PlexConnection? {
+        rankedConnections(connections).first
     }
 }
 
