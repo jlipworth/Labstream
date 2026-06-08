@@ -1,10 +1,7 @@
 # Plex Universal Transcode / Streaming API — Deep Dive
 
-> **Status:** Reverse-engineered. Plex publishes **no official spec** for these endpoints.
-> Everything below is derived from open-source clients (`plex-for-kodi`, `python-plexapi`),
-> Tautulli's schema, the canonical kmark reverse-engineering gist, and Plex forum threads.
-> **It is version-dependent** — param names and decision codes have shifted across PMS
-> releases. Treat every parameter as "send it, but tolerate the server ignoring it."
+> **Status:** Officially documented in part, client-derived in detail. Plex's PMS API portal now documents the Transcoder family, including decision/start and profile augmentations, but many practical parameters, codes, and compatibility recipes below still come from open-source clients (`plex-for-kodi`, `python-plexapi`), Tautulli's schema, the canonical kmark gist, and Plex forum threads.
+> **It is version-dependent** — param names and decision codes have shifted across PMS releases. Treat every parameter as "send it, but tolerate the server ignoring it."
 > Confidence is tagged per row: **[code]** = seen in OSS client source, **[gist]** =
 > kmark 2013–2016 RE write-up, **[tautulli]** = Tautulli field schema, **[forum]** = forum
 > report (lowest confidence).
@@ -361,6 +358,7 @@ GET /video/:/transcode/universal/stop?session=sess-uuid-1&X-Plex-Token=YOURTOKEN
 
 ## 8. Source map / confidence
 
+- **Plex official PMS API portal (`developer.plex.tv/pms/`)** — official Transcoder operations, profile augmentation grammar, and API versioning boundary. **[high for existence/surface; medium for behavioral completeness]**
 - **`plex-for-kodi` `plexnet/plexplayer.py`** — most authoritative live client: `DECISION_ENDPOINT`,
   `hasMDE`, `mediaBufferSize=20971`, `X-Plex-Client-Profile-Name`, the `add-direct-play-profile` /
   `add-transcode-target` / `append-transcode-target-audio-codec` / `add-limitation` syntax, and the
@@ -378,6 +376,4 @@ GET /video/:/transcode/universal/stop?session=sess-uuid-1&X-Plex-Token=YOURTOKEN
 - **Plex forum threads** — decision codes `1000/1001/3000`, ping-without-GUID warning, HEVC-needs-fMP4
   ATV bug, forced subtitle burn when audio transcodes, `X-Plex-Session-Identifier` usage. **[lower — anecdotal/version-specific]**
 
-> **Final caveat:** Plex changes these between PMS releases without notice. Probe `/decision`
-> defensively, tolerate ignored params, and prefer baseline-profile + deltas over hand-authored
-> profile XML.
+> **Final caveat:** Even with the official portal, Plex can change behavior between PMS releases and the docs do not capture every practical client recipe. Probe `/decision` defensively, tolerate ignored params, and prefer baseline-profile + deltas over hand-authored profile XML.

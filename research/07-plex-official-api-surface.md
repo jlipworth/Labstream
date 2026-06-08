@@ -49,12 +49,12 @@
 | **Browse / library / metadata** | PMS `/library/...`, `/library/sections`, `/search` | **Officially documented** (General + Media Provider sections). |
 | **Transcode decision / start** | PMS `/video/:/transcode/universal/...`, decision endpoint | **Officially documented** (Transcoder section), though exact query-param coverage is thinner than community lore. |
 | **Direct play / streaming** | PMS `/library/parts/...` with `X-Plex-Token` | Officially supported via token auth; specific URL construction still leans on community knowledge. |
-| **Sessions / playback state / timeline** | PMS `/status/sessions`, `/:/timeline` | `/status/sessions` documented (Status). **`/:/timeline` (progress reporting) is historically reverse-engineered** — verify against the Redoc before relying on it. |
+| **Sessions / playback state / timeline** | PMS `/status/sessions`, `/:/timeline` | `/status/sessions` documented (Status). **Timeline is now officially documented** as "Report media timeline"; reference clients still show legacy GET forms/cadence details, so live-test method compatibility. |
 | **Server discovery / per-server token** | `plex.tv` & `clients.plex.tv` `/api/v2/resources` | **Reverse-engineered / community-documented** (Plexopedia, python-plexapi). Widely used, not in the PMS spec (it's a cloud endpoint, not a PMS endpoint). |
 | **Discover / Watchlist** | `discover.provider.plex.tv`, `community.plex.tv/api` (GraphQL) | **Reverse-engineered**, and **volatile** — Plex deprecated `metadata.provider.plex.tv` in favor of `discover.provider.plex.tv`, breaking community tools. ([support: Universal Watchlist](https://support.plex.tv/articles/universal-watchlist/)) |
 | **Sync / Download Queue** | PMS Download Queue section | Partially documented (Download Queue); mobile "Sync" historically reverse-engineered. |
 
-**Bottom line:** For a visionOS client, **auth + browse + transcode now rest substantially on official docs** (a genuine change from the pre-2025 reverse-engineering era). **Server discovery (`/api/v2/resources`) and Discover/Watchlist remain reverse-engineered cloud endpoints** — usable but unstable, and Watchlist/Discover have *already* broken once via host migration.
+**Bottom line:** For a visionOS client, **auth + browse + transcode + playback-state plumbing now rest substantially on official docs** (a genuine change from the pre-2025 reverse-engineering era). **Server discovery (`/api/v2/resources`) and Discover/Watchlist remain reverse-engineered cloud endpoints** — usable but unstable, and Watchlist/Discover have *already* broken once via host migration.
 
 ---
 

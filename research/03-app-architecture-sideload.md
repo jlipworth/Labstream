@@ -54,8 +54,8 @@ Key facts:
 
 Three valid approaches, in increasing complexity:
 
-1. **SwiftUI `VideoPlayer` (AVKit)** — `VideoPlayer(player: avPlayer)`. Simplest; gives you the system playback chrome and the visionOS "expand to environment" affordance for free. **Recommended starting point.**
-2. **`AVPlayerViewController` wrapped in `UIViewControllerRepresentable`** — needed if you want fine control (custom overlays, PiP config, interstitials, manual transport). Host an `AVPlayerViewController` holding an `AVPlayer(playerItem:)`.
+1. **`AVPlayerViewController` wrapped in `UIViewControllerRepresentable`** — the preferred MVP path for this project because it participates in the visionOS system player/theater experience and gives you stock transport, subtitle/audio UI, and docking behavior. Host an `AVPlayerViewController` holding an `AVPlayer(playerItem:)`.
+2. **SwiftUI `VideoPlayer` (AVKit)** — `VideoPlayer(player: avPlayer)`. Useful for a tiny prototype, but do not make it the main theater implementation because the deeper visionOS system-player controls live on `AVPlayerViewController`.
 3. **RealityKit `VideoPlayerComponent`** (visionOS 26) — attaches video to a 3D entity/mesh; required only for true immersive 180/360/Apple Immersive Video inside an `ImmersiveSpace`. Overkill for normal files. visionOS 26 also added progressive immersive mode and comfort-mitigation (auto-reducing immersion on high motion) in AVKit/QuickLook.
 
 In all cases the player is fed an `AVPlayerItem` built from **either an HLS/HTTP URL (Plex transcode/stream) or a local file URL (offline download)** — same code path, which keeps the Player module simple.
@@ -69,7 +69,7 @@ PlexVision/
 ├── Assets.xcassets/             # app icon (layered for visionOS), colors
 ├── Info.plist                   # (often synthesized; UISceneConfigurations etc.)
 ├── Preview Content/             # SwiftUI preview assets
-└── Packages/ (SPM deps)         # plexswift, etc.
+└── Packages/ (SPM deps)         # optional OpenImmersiveLib; no Plex SDK required
 ```
 
 That is genuinely the whole baseline. Xcode's "App" template for visionOS scaffolds `…App.swift` + a `ContentView.swift` (+ optionally a `ToggleImmersiveSpaceButton` and `ImmersiveView.swift` if you pick the "Volume"/"Full Space" initial scene). For this app, choose the **Window** initial scene.
@@ -84,8 +84,8 @@ Implement as Swift Package targets (or at minimum folder-grouped Swift files) so
 |---|---|---|
 | **AppState** | Observable root app state: current server, selected library, navigation path, immersion style, playback queue. | (none — leaf) |
 | **PlexAuth** | Plex.tv login flow (PIN/OAuth), stores & refreshes the auth token in Keychain, resolves the user's servers/connection URIs. | (Foundation, Keychain) |
-| **PlexAPI** | Library browse (sections, items, metadata, artwork URLs) + the transcode/stream **decision** (direct play vs `startUniversalTranscode`, building the playback URL). Wraps `plexswift`. | PlexAuth, plexswift |
-| **Player** | `AVPlayer`/`VideoPlayer` (or `AVPlayerViewController`) wrapper + a SwiftUI environment to launch playback from any view; handles play/pause/seek, progress reporting back to Plex (`/:/timeline`). | PlexAPI (for stream URLs), AppState |
+| **PlexAPI** | Library browse (sections, items, metadata, artwork URLs) + the transcode/stream **decision** (direct play vs `start.m3u8`, building the playback URL). Thin hand-written `URLSession` REST layer; use `plexswift` only as an optional reference/model source. | PlexAuth, Foundation |
+| **Player** | `AVPlayerViewController` wrapper (backed by `AVPlayer`) + a SwiftUI environment to launch playback from any view; handles play/pause/seek, progress reporting back to Plex (`/:/timeline`). | PlexAPI (for stream URLs), AppState |
 | **DownloadManager** | Download selected items to the app sandbox for offline, track download state, vend local file URLs to Player. | PlexAPI (download URLs) |
 | **LibraryUI** | SwiftUI browse views: server/library picker, grid/poster wall, detail view, "play" + "download" buttons. The `WindowGroup` content. | AppState, PlexAPI, Player, DownloadManager |
 
@@ -93,7 +93,7 @@ Design notes / boundaries:
 - **AppState is a leaf** that everyone reads; injected via `.environment()`. Use Swift's `@Observable` (Observation framework).
 - **Player accepts an `AVPlayerItem` source abstraction** (`.remote(URL)` or `.local(URL)`) so DownloadManager and PlexAPI both feed it without Player knowing about Plex.
 - **PlexAPI owns the transcode decision** (resolution/bitrate caps, codec support) — that logic does NOT leak into the UI.
-- Deliberately **omitted for v1 (YAGNI):** no sync engine, no multi-user, no analytics, no settings sync, no SharePlay, no immersive 180/360 module. Add an `ImmersivePlayer` module later only if you actually want surround video.
+- Deliberately **omitted for v1 (YAGNI):** no official Mobile Sync engine, no multi-user, no analytics, no settings sync, no SharePlay, no immersive 180/360 module. Add an `ImmersivePlayer` module later only if you actually want surround video. Use Media Optimizer/direct-download for offline instead of implementing Plex Sync first.
 
 ---
 
@@ -130,8 +130,8 @@ visionOS is iOS-derived, so AVFoundation/URLSession storage behavior carries ove
 - Create a `Downloads/` subdirectory, store one file per item, and keep a small metadata index (JSON/SQLite) mapping Plex ratingKey → local URL + state.
 
 ### How to download
-- For a **single progressive file** (Plex can serve a direct-play file or a transcoded MP4): use **`URLSession` with a background configuration** (`URLSessionConfiguration.background(withIdentifier:)`) and a download task → move the temp file into Application Support on completion. Background sessions let the download continue/resume if the app is backgrounded.
-- For **HLS** content you'd otherwise use `AVAssetDownloadTask`/`AVAggregateAssetDownloadTask` to persist an HLS asset for offline AVPlayer playback. **Simpler for a personal app: ask Plex to produce a single downloadable MP4** (direct download endpoint) and store that — avoids the FairPlay/HLS-offline complexity entirely. Plex media is not DRM-protected, so plain file download is fine.
+- For a **single progressive file** (Plex can serve the original `Part.key` file, or a finished Media Optimizer MP4 version): use **`URLSession` with a background configuration** (`URLSessionConfiguration.background(withIdentifier:)`) and a download task → move the temp file into Application Support on completion. Background sessions let the download continue/resume if the app is backgrounded.
+- For **HLS** content you'd otherwise use `AVAssetDownloadTask`/`AVAggregateAssetDownloadTask` to persist an HLS asset for offline AVPlayer playback. **Do not point this at Plex's live-style universal transcode playlist.** Simpler for a personal app: ask Plex Media Optimizer to produce a finished downloadable MP4 version and store that — avoids the FairPlay/HLS-offline complexity entirely. Plex media is not DRM-protected, so plain file download is fine.
 
 ### Playing a local file
 Identical to remote playback — build an `AVPlayerItem` from the local file URL:
@@ -151,18 +151,14 @@ The Player module's `.local(URL)` source case feeds straight into the same `AVPl
 ## 5. Toolchain: Xcode / SDK / Deployment Target / SPM
 
 ### Versions (current, June 2026)
-- **Xcode 26.1** ships Swift 6.2.1 and the **visionOS 26.1 SDK**; requires **macOS Sequoia 15.6+** on the build Mac.
+- **Xcode 26.5** ships Swift 6.3 and the **visionOS 26.5 SDK**; requires **macOS Tahoe 26.2+** on the build Mac.
 - **Recommended minimum deployment target: visionOS 2.0** for broad device coverage, **or visionOS 26.0** if you want to use the newest player/immersive APIs (RealityKit `VideoPlayerComponent`, progressive immersive mode, comfort mitigation). For a personal app where you control the OS on your one headset, **targeting the latest (visionOS 26) is fine and simplest.**
-- **Known Xcode 26 quirk:** Xcode 26.1 may **ignore the visionOS minimum deployment target and force it to 26.1**; re-set it manually in build settings and it sticks. Be aware of this when configuring the target.
 - Build with the current SDK (Apple now mandates building against recent SDKs); you can still set a lower deployment target than the SDK.
 
-### Swift Package Manager dependency: `plexswift`
-- **`https://github.com/LukeHagar/plexswift`**, latest **0.10.5**. Add via **File > Add Package Dependencies…** with rule `.upToNextMajor(from: "0.10.5")`, or in `Package.swift`:
-  ```swift
-  .package(url: "https://github.com/LukeHagar/plexswift.git", .upToNextMajor(from: "0.10.5"))
-  ```
-- Init/auth: `let client = Client(security: .accessToken("<token>"))`, then `await client.server.getServerCapabilities()`. Provides `getLibraryDetails`, `getLibraryItems`, `getSearchLibrary` (browse) and `startUniversalTranscode` + playback controls (streaming) — covers the **PlexAPI** module's needs.
-- ⚠️ **Caveat:** the plexswift repo was **archived (read-only) as of March 11, 2026** — it still works but is **unmaintained**. It also documents **iOS 13+ only** (no explicit visionOS platform). In practice iOS-targeted SPM packages compile for visionOS, but **budget time to (a) confirm it builds against the visionOS SDK, and (b) be ready to fork it or hand-roll the few Plex REST calls you need** (Plex's HTTP API is simple — login PIN, `/library/sections`, `/library/sections/{id}/all`, and the transcode decision URL). For a focused personal client, **a thin hand-written PlexAPI over `URLSession` is a perfectly reasonable fallback** and removes the dependency risk.
+### Plex networking dependency choice
+- **Recommended:** no Plex SDK dependency for v1. Implement a thin hand-written `PlexAPI` over `URLSession` for PIN auth, `/api/v2/resources`, library browsing, the official/legacy transcode decision/start calls, timeline reporting, Media Optimizer, and direct `Part.key?download=1`.
+- **`plexswift` status:** `https://github.com/LukeHagar/plexswift` is MIT but archived/unmaintained, generated, iOS-only in its manifest/docs, and weak around HLS transcoding/bitrate parameters. Keep it as a reference/model source only unless a build spike proves it compiles cleanly for visionOS and covers the exact endpoint you want.
+- **Reference libraries:** prefer `python-plexapi` (BSD-3) for portable behavior and `plex-for-kodi` only as a GPL-2.0 behavioral reference to re-implement, not copy.
 
 ---
 
@@ -180,6 +176,5 @@ The Player module's `.local(URL)` source case feeds straight into the same `AVPl
 - [SwiftAnytime — Exploring visionOS app development with SwiftUI](https://www.swiftanytime.com/blog/exploring-visionos-app-development-with-swiftui)
 - [Apple — Support immersive video playback in visionOS (WWDC25)](https://developer.apple.com/videos/play/wwdc2025/296/)
 - [Apple — Destination Video sample](https://developer.apple.com/documentation/visionos/destination-video)
-- [Michael Tsai — Xcode 26.1](https://mjtsai.com/blog/2025/11/05/xcode-26-1/)
 - [Apple — visionOS 26 Release Notes](https://developer.apple.com/documentation/visionos-release-notes/visionos-26-release-notes)
 - [GitHub — LukeHagar/plexswift](https://github.com/LukeHagar/plexswift)

@@ -71,16 +71,8 @@ download task** + HTTP range requests. Dead simple, official, no Plex Pass. **Bu
 defeats the requirement** — it's the 80 GB original, not an 8 Mbps copy. Good *fallback*
 when the source is already small / direct-playable.
 
-**(c) Plex Mobile Sync / Media Optimizer (server-side conversion to a finished file).**
-Plex's own offline feature does **not** use the live universal transcoder. The client
-advertises `X-Plex-Provides: sync-target` + `X-Plex-Sync-Version: 2`, creates a
-`SyncItem` with a `MediaSettings` target bitrate; the **server pre-converts** the title
-(Media Optimizer / Conversion queue) into a **complete, finite file**, which the client
-then pulls as a normal download and marks `markDownloaded`. This produces exactly the
-"8 Mbps offline copy" the user wants — as a finished MP4-ish artifact, fetched with a
-plain `URLSession` background download (no `AVAssetDownloadTask` needed, because it's a
-single file, not HLS). **Caveat: Mobile Sync is Plex-Pass-gated** and more protocol
-surface to implement (see `01` §5.2).
+**(c) Media Optimizer or official Mobile Sync (server-side conversion to a finished file).**
+Do not conflate these. **Media Optimizer** pre-converts the title into a complete MP4 version on the server, including the built-in **"Optimized for TV – 8 Mbps 1080p"** preset, and the app then pulls the resulting `Part` as a normal file download. Plex's support docs list a server-version requirement for Optimizer, not a Plex Pass requirement. **Official Downloads/Mobile Sync** is the polished Plex product: the client advertises `X-Plex-Provides: sync-target` + `X-Plex-Sync-Version: 2`, creates a `SyncItem` with `MediaSettings`, pulls the converted media, and marks it downloaded; that protocol is Plex-Pass-gated and more surface to implement. Both produce the Apple-side result we want: a finished file fetched with plain `URLSession`, not `AVAssetDownloadTask`.
 
 **(d) Roll your own segment downloader.**
 Mimic the kmark "Universal Transcoder Downloader": request `start.m3u8`, pull each `.ts`
@@ -93,15 +85,12 @@ download machinery.
 
 ### 1.5 RECOMMENDATION
 
-**Primary: strategy (c) Plex Mobile Sync / Media Optimizer if a Plex Pass is available** —
-it is the only path that yields a real bitrate-capped offline copy through a *finished
-file*, so the Apple side collapses to a boring, robust **`URLSession` background download
+**Primary: strategy (c) Media Optimizer** — it is the best path that yields a real bitrate-capped offline copy through a *finished file* without relying on Plex's official Downloads/Sync entitlement, so the Apple side collapses to a boring, robust **`URLSession` background download
 task** (`URLSessionConfiguration.background(withIdentifier:)`,
 `sessionSendsLaunchEvents = true`, `urlSessionDidFinishEvents(forBackgroundURLSession:)`),
 not the fragile `AVAssetDownloadTask`-against-live-playlist path.
 
-**If no Plex Pass: strategy (d) self-rolled segment download** of a capped-bitrate
-universal-transcode session, remuxed locally. Accept the maintenance cost.
+**If Media Optimizer is not acceptable** because the user does not want persistent optimized copies on the server, use strategy (d) self-rolled segment download of a capped-bitrate universal-transcode session, remuxed locally. Accept the maintenance cost. If the user explicitly wants official Plex Downloads/Sync and has Plex Pass, implement that later as a separate sync engine.
 
 **Do NOT** point `AVAssetDownloadTask` / `AVAssetDownloadConfiguration` at Plex's
 `start.m3u8` and expect it to work — its VOD-only requirement collides with Plex's
@@ -131,7 +120,7 @@ required**. (It would be, for commercial DRM HLS.)
 | Subtitle / audio track selection | **`AVMediaSelectionGroup`** + **`AVMediaSelectionOption`**; read via `asset.loadMediaSelectionGroup(for: .audible / .legible)`, apply with `playerItem.select(_:in:)`; characteristics via `AVMediaCharacteristic`. | For offline, bundle desired options at download time (`AVAssetDownloadConfiguration.auxiliaryContentConfigurations` or `AVAggregateAssetDownloadTask`). |
 | Background downloads | **`URLSession`** with `URLSessionConfiguration.background(withIdentifier:)`, `sessionSendsLaunchEvents = true`, `isDiscretionary` as desired; relaunch via `urlSessionDidFinishEvents(forBackgroundURLSession:)` + the app-delegate `handleEventsForBackgroundURLSession` completion handler. For HLS specifically: **`AVAssetDownloadURLSession`** (which *is* a background session under the hood). | Plex sync-file fetch uses the plain background `URLSession`. |
 | Offline file storage | **`FileManager`** → `url(for: .applicationSupportDirectory, …)` (or `.cachesDirectory` if evictable is OK); set **`URLFileProtection`** / `.completeUntilFirstUserAuthentication` via `FileProtectionType`; persist locations as **security-scoped bookmarks** (`url.bookmarkData()` / `URL(resolvingBookmarkData:)`). Mark large files **`isExcludedFromBackup`** (`URLResourceValues`). | `.movpkg` bundles from `AVAssetDownloadTask` must be referenced by bookmark, never reconstructed path. |
-| Resume / progress reporting | Local position via **`AVPlayer.addPeriodicTimeObserver(forInterval:queue:using:)`** (and `addBoundaryTimeObserver`); report back to Plex via `/:/timeline` and `/:/progress` (POST with `time`/`state`, see `01`). Observe `AVPlayerItem.status` / `timeControlStatus` with KVO or `AVPlayerItem` notifications (`.AVPlayerItemDidPlayToEndTime`). | Throttle timeline posts (~every 10 s + on pause/seek/stop). |
+| Resume / progress reporting | Local position via **`AVPlayer.addPeriodicTimeObserver(forInterval:queue:using:)`** (and `addBoundaryTimeObserver`); report back to Plex via `/:/timeline` / `/:/progress`. Current official Redoc labels timeline as POST, while reference clients use legacy-compatible GET query calls; live-test and encapsulate the method choice. Observe `AVPlayerItem.status` / `timeControlStatus` with KVO or `AVPlayerItem` notifications (`.AVPlayerItemDidPlayToEndTime`). | Throttle timeline reports (~every 10 s + on pause/seek/stop). |
 
 ---
 

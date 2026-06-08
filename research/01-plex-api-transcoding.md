@@ -4,7 +4,7 @@ Research for a personal-use Apple Vision Pro (visionOS) Plex client. Date: 2026-
 
 Scope: how a *custom native client* authenticates, browses libraries, and — the key part — requests a **server-side transcoded HLS stream** (not direct play). Plus a verdict on the `plexswift` Swift SDK and on offline downloads.
 
-> **Reliability note.** Plex has never published a complete, stable, official HTTP API reference. The transcode/streaming endpoints below are reverse-engineered and are confirmed by multiple independent reference implementations (python-plexapi, the community OpenAPI spec behind LukeHagar's SDKs, and long-standing community tools). They are stable in practice but **undocumented and version-dependent** — treat them as such. Anything I'm unsure about is flagged inline.
+> **Reliability note.** Plex now publishes an official PMS API reference at `developer.plex.tv/pms/` (API v1.2.2, PMS ≥ 1.43.2), including Transcoder and Timeline operations. The exact query-param recipes and some legacy endpoint forms below are still corroborated by reference clients (python-plexapi, plex-for-kodi, community SDK specs, and long-standing tools) and remain **version-dependent** — treat them as documented where the portal covers them, but still verify behavior against your live PMS.
 
 ---
 
@@ -112,7 +112,7 @@ The response is an HLS **master/`index` playlist**; segments are `.ts` served un
 
 ### 3.3 Query parameters for `start.m3u8` / `decision`
 
-Confirmed across python-plexapi, the community OpenAPI spec, and the kmark reverse-engineering gist:
+Confirmed across the official PMS Transcoder docs, python-plexapi, the community OpenAPI spec, and the kmark reverse-engineering gist:
 
 | Param | Example | Notes |
 |---|---|---|
@@ -162,7 +162,7 @@ add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.bitrat
 add-direct-play-profile(type=videoProfile&container=mp4&videoCodec=h264&audioCodec=aac)
 ```
 
-This is how you precisely tell Plex "I can HLS/mpegts H.264+AAC, cap bitrate at 8000 kbps." **Flag: exact directive grammar is reverse-engineered and version-dependent**; the full system profiles live on the server under `Resources/Profiles`. For a personal app, the explicit query params in 3.3 are simpler and usually sufficient; reach for `X-Plex-Client-Profile-Extra` only if the server keeps choosing a codec AVPlayer can't decode.
+This is how you precisely tell Plex "I can HLS/mpegts H.264+AAC, cap bitrate at 8000 kbps." The **directive grammar is now documented** in the official PMS API portal, while the best practical directive sets remain client-derived/version-dependent; the full system profiles live on the server under `Resources/Profiles`. For a personal app, the explicit query params in 3.3 are simpler and usually sufficient; reach for `X-Plex-Client-Profile-Extra` only if the server keeps choosing a codec AVPlayer can't decode.
 
 ### 3.5 Session lifecycle
 
@@ -209,7 +209,7 @@ GET <serverBaseURL><Part.key>?download=1&X-Plex-Token=<accessToken>
 - Supports HTTP **range requests**, so you can resume/segment the download.
 - **No Plex Pass required** — this is just authenticated file access to media you can already see. (Subject only to normal library share permissions; a server owner can disable "Allow downloads" for shared users via `Settings → Sharing`.)
 
-**Caveat:** this downloads the *original* file (could be a 40 GB remux). If you want an **8 Mbps offline copy**, do a transcode-to-file instead: run a transcoded HLS/MP4 session and **save the segments locally** (the kmark "Universal Transcoder Downloader" approach — request `start.m3u8`, pull the `.ts` segments, concatenate). There is no single official "download me a transcoded MP4" endpoint; you assemble it from the transcode session. **Flag: this is a community pattern, not an official API.**
+**Caveat:** this downloads whichever `Part` you point at. For the original media part, that could be a 40 GB remux. **Round-3 update:** for an **8 Mbps offline copy**, the preferred path is Plex **Media Optimizer**: have the server create an "Optimized for TV – 8 Mbps 1080p" MP4 version, then download that optimized `Part.key` with the same `?download=1` flow. If Media Optimizer is not acceptable, fall back to a transcode-to-file segment walker: run a transcoded HLS session and **save the segments locally** (the kmark "Universal Transcoder Downloader" approach — request `start.m3u8`, pull the `.ts` segments, concatenate/remux). There is no single official "download me a transcoded MP4 right now" endpoint; you either pre-create an optimized file or assemble it from the transcode session. **Flag: the segment-walker is a community pattern, not an official API.**
 
 ### 5.2 Mobile Sync (official offline system, REQUIRES Plex Pass)
 
@@ -219,7 +219,7 @@ The formal "Downloads / Sync" feature (`plexapi.sync`): the client advertises `X
 
 ### Download-feasibility verdict
 
-**Feasible and easy without Plex Pass** via §5.1: fetch `Part.key?download=1` with the token, using range requests. That gives you the original file offline. If you need a bitrate-capped offline copy, transcode-and-save the HLS segments (community pattern). The Plex-Pass-gated Mobile Sync system (§5.2) is more "correct" but unnecessary for a personal client and adds significant complexity.
+**Feasible and easy without Plex Pass** via §5.1: fetch `Part.key?download=1` with the token, using range requests. For originals, that gives you the source file offline. For a bitrate-capped offline copy, use **Media Optimizer first** and download the optimized `Part`; use custom HLS segment capture only as the fallback. The Plex-Pass-gated Mobile Sync system (§5.2) is more "correct" as an official product feature but unnecessary for a personal client and adds significant complexity.
 
 ---
 
@@ -230,7 +230,7 @@ The formal "Downloads / Sync" feature (`plexapi.sync`): the client advertises `X
 3. `clients.plex.tv/api/v2/resources` → pick a connection (LAN first) + grab the per-server `accessToken` (§1.3).
 4. Browse via `/library/sections`, `/library/metadata/<id>` (§2).
 5. Play: build the `start.m3u8` URL from §3.3 with `protocol=hls`, `maxVideoBitrate=8000`, `directPlay=0` (+ `directStream=0` to force re-encode), a fresh `session` UUID, and token as a query param → hand to `AVPlayer`. **Hand-roll this; don't rely on plexswift.** Ping to keep alive; `stop` on teardown.
-6. Download (offline): `GET <Part.key>?download=1&X-Plex-Token=...` with range requests (no Plex Pass).
+6. Download (offline): for originals, `GET <Part.key>?download=1&X-Plex-Token=...` with range requests (no Plex Pass). For capped offline copies, trigger Media Optimizer, re-fetch metadata, pick the optimized `Part`, then use the same `download=1` fetch.
 
 ---
 

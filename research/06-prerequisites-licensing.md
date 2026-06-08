@@ -53,10 +53,11 @@ Legend for priority:
 ### (a) Server-side transcoding
 - ✅ **Basic transcoding is NOT gated by Plex Pass.** Standard transcoding works on a free Plex setup. (Plex Pass adds extras like **hardware-accelerated** transcoding, but software transcoding for normal playback is free.) Your client requests a transcode via the server API like any official app.
 
-### (b) Offline downloads / mobile sync — **GATED** ⚠️
-- ❌ **Downloads / offline sync REQUIRE Plex Pass.** Per Plex Support: *"The account signed into the mobile app must have a Plex Pass subscription or be a member of a Plex Home where the Home admin has an active Plex Pass,"* and *"in many cases the Plex Media Server admin must also have a Plex Pass."*
-- This is a **server-/account-level entitlement enforced by Plex's backend**, not a client UI lock. A **third-party client using Plex's API is subject to the same gating** — the download/sync API endpoints will not grant offline media unless the relevant account/admin has Plex Pass. **You cannot code around this.**
-- [ ] 🟧 **If offline downloads are a required feature → someone in the chain (you and/or the server admin) needs Plex Pass.** ($7/mo, $70/yr, ~$250 lifetime.)
+### (b) Offline copies — distinguish three mechanisms
+- ✅ **Direct original-file fetch is not Plex-Pass-gated.** If the account can access a media `Part`, the app can fetch `<Part.key>?download=1&X-Plex-Token=...` as an authenticated file download, subject to normal library permissions such as the server owner's "Allow Downloads" setting for shared users. This is not Plex's premium Downloads/Sync product.
+- ✅ **Media Optimizer is the preferred capped-bitrate path for this personal server.** Plex's support docs list only a Plex Media Server version requirement and include the built-in **"Optimized for TV – 8 Mbps 1080p"** preset. The optimized result appears as another media version/part, which the app then downloads with the same direct file fetch. Verify the exact metadata shape on the live server.
+- ❌ **Official Plex Downloads / Mobile Sync is Plex-Pass-gated.** Per Plex Support, the account performing the Downloads action needs Plex Pass or membership in a Plex Home whose admin has Plex Pass; in many cases the PMS admin also needs Plex Pass. Implementing that sync protocol is optional, not the v1 path.
+- [ ] 🟧 **If you want official Plex Downloads/Sync semantics → Plex Pass is required.** For this project's v1 offline feature, direct download + Media Optimizer avoids that dependency.
 
 ### Remote streaming (newer 2025–2026 gate — relevant if the server is not on your LAN)
 - ⚠️ Since **April 29, 2025**, **remote playback of personal media requires Plex Pass or the cheaper Remote Watch Pass** (~$1.99/mo / $19.99/yr) on the streaming user's account **or** the server admin's account. Rollout has been extending across platforms through 2026 (TVs/consoles enforced as of Apr 29, 2026).
@@ -70,18 +71,17 @@ Legend for priority:
 - Plex provides an **official API** (developer.plex.tv, OpenAPI spec) and authenticates via **`X-Plex-Token`** (now moving to **JWT** tokens). Plex publicly promoted third-party API access ("Plex Pro Week '25: API Unlocked"), so building a personal client is consistent with how the ecosystem works.
 - ⚠️ There is **no separate "you may not build a client" prohibition** surfaced in support docs, but Plex's general **Terms of Service still apply**, and **feature entitlements (downloads, remote streaming) are enforced server-side regardless of client.** Treat the API as: *allowed to use, but cannot unlock paid entitlements.* **[UNCERTAIN — full ToS text not fetched; re-read Plex ToS before any redistribution. For private personal use this is low-risk.]**
 
-**Plex verdict:** Free Plex covers local streaming + basic transcoding. **Offline downloads are hard-gated behind Plex Pass and a third-party client cannot bypass it.** Remote (off-LAN) streaming now also needs Plex Pass / Remote Watch Pass.
+**Plex verdict:** Free Plex covers local streaming + basic transcoding, direct original-file fetches, and Media Optimizer on the user's own server. **Only Plex's official Downloads/Mobile Sync product is hard-gated behind Plex Pass.** Remote (off-LAN) streaming now also needs Plex Pass / Remote Watch Pass.
 
 ---
 
 ## 4. Open-Source Dependency Licenses
 
-- [ ] 🟥 **`plexswift`** (github.com/LukeHagar/plexswift) — **MIT license.** Swift SDK over the Plex OpenAPI spec.
-  - ⚠️ **Repository was ARCHIVED by the owner on 2026-03-11 — now read-only / unmaintained.** Implication: no upstream fixes for new Plex API/JWT changes. For a personal project that's acceptable, but plan to **fork/vendor it** and be ready to patch (especially around the JWT auth transition). MIT permits forking freely.
+- [ ] 🟦 **`plexswift`** (github.com/LukeHagar/plexswift) — **MIT license**, but archived/read-only/unmaintained and generated. Treat it as an optional reference/model source, not a must-have dependency; prefer a thin hand-written `URLSession` client for the small endpoint set.
 - [ ] 🟥 **`OpenImmersiveLib`** (github.com/acuteimmersive/openimmersivelib) — **MIT license.** Free/open-source spatial & immersive video player Swift Package for visionOS (by Anthony Maës / Acute Immersive, derived from "Spatial Player"). Actively the right building block for immersive playback.
 - [ ] 🟦 **`python-plexapi`** (pushingkarma/pkkid) — **BSD-3-Clause.** Only relevant if you use it for scripting/prototyping; not part of a Swift app. Permissive.
 
-**License implication for a personal project:** MIT and BSD-3-Clause are both permissive — free to use, modify, and vendor. The only practical attribution requirement is retaining the copyright/license notice. **No copyleft concerns.** The real risk is **maintenance**, not licensing: `plexswift` is archived, so budget time to maintain a fork.
+**License implication for a personal project:** MIT and BSD-3-Clause are both permissive — free to use, modify, and vendor. The only practical attribution requirement is retaining the copyright/license notice. **No copyleft concerns for the planned dependencies.** The real risk is maintenance/fit: `plexswift` is archived, so avoid depending on it unless a build spike proves value.
 
 ---
 
@@ -105,12 +105,12 @@ Legend for priority:
 2. **Xcode 26.5** (includes visionOS 26.5 SDK) + Command Line Tools.
 3. **Free Apple ID** signed into Xcode (enough to run on the Vision Pro).
 4. A **Plex account + reachable Plex Media Server**.
-5. Dependencies decided: **`plexswift` (MIT, archived — vendor it)** + **`OpenImmersiveLib` (MIT)**.
+5. Dependencies decided: **hand-written Plex REST client** + optional **`OpenImmersiveLib` (MIT)**; keep `plexswift` as a reference only.
 6. **ATS plan**: connect via `plex.direct` HTTPS; add `NSAllowsLocalNetworking` only if using http LAN.
 
 **🟧 Needed before it's usable long-term**
 1. **$99/yr Apple Developer Program** — to escape the 7-day free-signing expiry for a keep-it-installed app.
-2. **Plex Pass** (or **Remote Watch Pass** for remote-only) **if** you need **offline downloads** (Pass-gated, unavoidable) or **off-LAN streaming**.
+2. **Plex Pass** (or **Remote Watch Pass** for remote-only) if you need **official Plex Downloads/Sync** or **off-LAN streaming**. Direct `download=1` + Media Optimizer do not require Plex Pass on the user's own local server, but should be verified live.
 3. **Background Modes + Local Network** entitlements/usage strings (downloads + LAN discovery).
 
 **🟦 Nice to have**

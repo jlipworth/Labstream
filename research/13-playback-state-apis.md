@@ -33,7 +33,7 @@ That's the whole contract. `/:/timeline` alone keeps resume position, On Deck, a
 **This is the single most important endpoint.** The client periodically POSTs/GETs its current playback position and state; the server uses it to write `viewOffset` (resume point), drive On Deck / Continue Watching, count plays, and auto-mark watched when you reach the end.
 
 - **Path:** `/:/timeline`
-- **Method:** `GET` in practice (python-plexapi and plex-for-kodi both issue it as a GET with query params; the official portal labels it "Report media timeline" — a query-string call with no body). (Confidence: high — both reference clients use GET; plex-for-kodi sends `body=''`.)
+- **Method:** current official Redoc lists **POST** for "Report media timeline"; legacy/reference clients (`python-plexapi`, `plex-for-kodi`) issue **GET** with query params and PMS accepts that in practice. Encapsulate this in the client and live-test against the target PMS; prefer the official method if it behaves identically. (Confidence: high on official POST surface + high on legacy GET compatibility.)
 - **Official:** documented in the portal "Timeline" section. (Confidence: high.)
 
 ### Parameters
@@ -86,7 +86,7 @@ This sets the view offset directly (`time` in ms; **note: time=0 is ignored** �
 
 - **Mark watched:** `GET /:/scrobble?key=<ratingKey>&identifier=com.plexapp.plugins.library`
 - **Mark unwatched:** `GET /:/unscrobble?key=<ratingKey>&identifier=com.plexapp.plugins.library`
-- **Method:** GET. **Official** (portal "Mark an item as played / unplayed"). (Confidence: high.)
+- **Method:** legacy/reference clients use GET. Current official Redoc exposes mark played/unplayed as PUT operations. Encapsulate method choice and live-test; the parameter-name quirk below applies either way. (Confidence: high on legacy behavior + high on official surface.)
 
 **Note the param name quirk:** here `key` holds the **ratingKey** (a number), not the `/library/metadata/...` path. (In `/:/timeline`, `key` is the path and `ratingKey` is the number — they're swapped. Easy to get wrong.) (Confidence: high.)
 
@@ -212,8 +212,8 @@ You'd want it only to keep the **Home screen / library views live** (another dev
 
 | Area | Best source | Status |
 |---|---|---|
-| `/:/timeline` params + cadence | python-plexapi `base.py`, plex-for-kodi `nowplayingmanager.py` | Reference-client verbatim (high). Now also official portal. |
-| `/:/scrobble`/`/:/unscrobble` | plex-for-kodi `video.py`, python-plexapi | Verbatim (high). Official. |
+| `/:/timeline` params + cadence | Official PMS portal + python-plexapi `base.py`, plex-for-kodi `nowplayingmanager.py` | Official operation exists; reference clients provide legacy GET form and cadence details. |
+| Mark played/unplayed (`/:/scrobble`/`/:/unscrobble` legacy) | Official PMS portal + plex-for-kodi `video.py`, python-plexapi | Official PUT surface exists; reference clients provide legacy GET form. |
 | `POST /playQueues` + URI rules | plex-for-kodi `playqueue.py`, python-plexapi `playqueue.py` | Verbatim (high). Official endpoint list. |
 | Hubs / onDeck / continueWatching / recentlyAdded | python-plexapi `server.py`/`library.py` | Verbatim (high). Official. |
 | `hasMDE`/`context`/`playBackTime`/`row` timeline params | LukeHagar community spec / SDK docs | Reverse-engineered (medium) — optional, safe to omit. |
