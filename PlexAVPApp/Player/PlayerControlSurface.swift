@@ -78,12 +78,15 @@ final class PlayerControlSurface {
         }
 
         if !controller.chapters.isEmpty {
-            let chapters = ChaptersTabView(chapters: controller.chapters) { [weak self] startMs in
-                let target = CMTime(value: CMTimeValue(startMs), timescale: 1000)
-                self?.controller.player.seek(to: target,
-                                             toleranceBefore: .zero,
-                                             toleranceAfter: .zero)
-            }
+            let chapters = ChaptersTabView(
+                chapters: controller.chapters,
+                currentMs: { [weak self] in self?.controller.currentResumeMs ?? 0 },
+                onJump: { [weak self] startMs in
+                    let target = CMTime(value: CMTimeValue(startMs), timescale: 1000)
+                    self?.controller.player.seek(to: target,
+                                                 toleranceBefore: .zero,
+                                                 toleranceAfter: .zero)
+                })
             tabs.append(makeTab(chapters, title: "Chapters", systemImage: "list.bullet"))
         }
 
@@ -328,40 +331,103 @@ private struct SpeedTabView: View {
     }
 }
 
-/// Chapters info-panel tab: tap a chapter to jump the playhead to its start.
-private struct ChaptersTabView: View {
-    let chapters: [Chapter]
-    var onJump: (Int) -> Void
+/// One chapter in the horizontal scroller: a 16:9 thumbnail with the chapter
+/// title and start timecode stacked below. The current chapter is ringed in the
+/// accent color; non-current cards are slightly dimmed. Tapping seeks the
+/// playhead to the chapter start. Disabled when the chapter has no start offset.
+private struct ChapterCard: View {
+    let chapter: Chapter
+    let index: Int
+    let isCurrent: Bool
+    var onTap: (Int) -> Void
+
+    private static let thumbWidth: CGFloat = 200
+    private static let thumbHeight: CGFloat = 112  // 16:9
 
     var body: some View {
-        List {
-            Section("Chapters") {
-                ForEach(Array(chapters.enumerated()), id: \.offset) { index, chapter in
-                    Button {
-                        if let startMs = chapter.startTimeOffset { onJump(startMs) }
-                    } label: {
-                        HStack {
-                            Text(chapter.tag ?? "Chapter \(index + 1)")
-                            Spacer()
-                            if let startMs = chapter.startTimeOffset {
-                                Text(timecode(startMs))
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(chapter.startTimeOffset == nil)
+        Button {
+            if let startMs = chapter.startTimeOffset { onTap(startMs) }
+        } label: {
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                PosterImage(path: chapter.thumb,
+                            width: Self.thumbWidth,
+                            height: Self.thumbHeight,
+                            cornerRadius: DS.Radius.poster)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+                            .strokeBorder(Color.accentColor, lineWidth: isCurrent ? 3 : 0)
+                    )
+
+                Text(chapter.tag ?? "Chapter \(index + 1)")
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if let startMs = chapter.startTimeOffset {
+                    Text(Self.timecode(startMs))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
             }
+            .frame(width: Self.thumbWidth, alignment: .leading)
+            .opacity(isCurrent ? 1.0 : 0.7)
         }
+        .buttonStyle(.plain)
+        .disabled(chapter.startTimeOffset == nil)
     }
 
-    private func timecode(_ ms: Int) -> String {
+    /// Milliseconds → `m:ss` (or `h:mm:ss`). Mirrors the helper in `ChaptersTabView`.
+    static func timecode(_ ms: Int) -> String {
         let total = ms / 1000
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s)
                      : String(format: "%d:%02d", m, s)
+    }
+}
+
+/// Chapters info-panel tab: a Plex-style horizontal thumbnail rail. Tapping a
+/// card seeks the playhead to that chapter's start. On appear we read the live
+/// playhead once (`currentMs`), highlight the chapter it sits in, and auto-scroll
+/// that card to center. The panel is transient, so a one-shot read is enough — we
+/// deliberately do not observe the playhead continuously.
+private struct ChaptersTabView: View {
+    let chapters: [Chapter]
+    /// Reads the live playhead in milliseconds at appear time.
+    var currentMs: () -> Int
+    var onJump: (Int) -> Void
+
+    @State private var currentIndex: Int?
+
+    var body: some View {
+        Group {
+            if chapters.isEmpty {
+                Text("No chapters")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: DS.Space.md) {
+                            ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+                                ChapterCard(chapter: chapter,
+                                            index: index,
+                                            isCurrent: index == currentIndex,
+                                            onTap: onJump)
+                                    .id(index)
+                            }
+                        }
+                        .padding(DS.Space.md)
+                    }
+                    .onAppear {
+                        currentIndex = chapters.indexOfChapter(at: currentMs())
+                        if let target = currentIndex {
+                            proxy.scrollTo(target, anchor: .center)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
