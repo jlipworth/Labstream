@@ -25,6 +25,13 @@ xcrun simctl install booted "$APP" && xcrun simctl launch booted com.personal.Pl
       windowed player AND the expanded cinema view (the old floated ✕ vanished in expanded — this must not).
       _If Close feels too buried in the ⓘ panel, that's the signal to try the contextual-action or floated
       variant instead (we deferred that choice)._
+      **⚠️ KNOWN OPEN ISSUE (cosmetic, deferred):** closing from **fullscreen/cinema** shows a brief faded
+      "ghost" of the video frame during the expanded→embedded shrink animation (windowed close is clean). The
+      collapse-first ordering is required to avoid the #28 empty-window bug, so we can't just dismiss directly.
+      _Tried & ruled out:_ suppressing the `.fullScreenCover` dismiss fade in the collapse path (reverted — the
+      ghost persisted), which means the artifact originates in the **system's collapse/docking animation
+      itself**, not our cover fade. Next angle to try: blank/hide the player view (or swap to a black frame)
+      *before* the collapse so there's no frame left to ghost. Left as-is for now per decision to defer.
 - [ ] **Quality-reload keeps playhead (#9)** — Mid-playback, open the **Quality** info tab, pick a different
       Mbps cap. Brief rebuffer expected, then it resumes **at the same playhead** (not from 0).
       _Also verify: a NORMAL resume (open a half-watched title → Resume) lands at the right offset and does
