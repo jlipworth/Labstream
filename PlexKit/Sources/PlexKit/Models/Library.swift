@@ -69,6 +69,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// Absent for most items; the player hides chapter UI when this is empty/nil so the
     /// control degrades gracefully.
     public let chapters: [Chapter]?
+    /// Intro/credits/commercial markers (`Marker` elements), when PMS provides them
+    /// (`includeMarkers=1`). Drives Skip Intro / Skip Credits. Absent for most items.
+    public let markers: [Marker]?
 
     /// Critic/aggregate rating on a 0–10 scale (PMS `rating`). The DetailView renders it
     /// as e.g. "7.8" next to a star glyph. `nil` for items PMS doesn't rate.
@@ -98,6 +101,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case art
         case media = "Media"
         case chapters = "Chapter"
+        case markers = "Marker"
         case rating
         case contentRating
         case tagline
@@ -117,6 +121,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 art: String? = nil,
                 media: [Media]? = nil,
                 chapters: [Chapter]? = nil,
+                markers: [Marker]? = nil,
                 rating: Double? = nil,
                 contentRating: String? = nil,
                 tagline: String? = nil,
@@ -134,6 +139,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.art = art
         self.media = media
         self.chapters = chapters
+        self.markers = markers
         self.rating = rating
         self.contentRating = contentRating
         self.tagline = tagline
@@ -193,6 +199,73 @@ public struct Chapter: Decodable, Sendable, Identifiable {
     }
 }
 
+/// The kind of a PMS `Marker` element, derived from its string `type`.
+public enum MarkerType: Sendable, Equatable {
+    case intro
+    case credits
+    case commercial
+    /// Any marker type PMS may add that we don't model explicitly.
+    case other(String)
+
+    init(rawValue: String) {
+        switch rawValue {
+        case "intro": self = .intro
+        case "credits": self = .credits
+        case "commercial": self = .commercial
+        default: self = .other(rawValue)
+        }
+    }
+}
+
+/// One PMS `Marker` element on a `MediaItem` — an intro/credits/commercial range
+/// used to power Skip Intro / Skip Credits affordances.
+///
+/// Present only when the metadata request asks for `includeMarkers=1`. Offsets are
+/// in milliseconds from the start of the item. The `final` flag (on credits markers)
+/// indicates the credits run to the end of the item.
+public struct Marker: Decodable, Sendable, Identifiable {
+    /// PMS marker id, when present.
+    public let markerID: Int?
+    /// Raw PMS marker type string, e.g. "intro" | "credits" | "commercial". Prefer `kind`.
+    public let type: String
+    /// Marker start, in milliseconds from the start of the item.
+    public let startTimeOffset: Int?
+    /// Marker end, in milliseconds from the start of the item.
+    public let endTimeOffset: Int?
+    /// PMS `final` flag (on credits markers) — the marker runs to the item's end.
+    /// Decoded from the JSON `final` key (a Swift keyword) via `CodingKeys`.
+    public let isFinal: Bool?
+
+    /// Stable identity: PMS `id` when present, else a synthesized type+offset key.
+    public var id: String {
+        if let markerID { return String(markerID) }
+        return "\(type)-\(startTimeOffset ?? -1)"
+    }
+
+    /// Strongly-typed marker kind.
+    public var kind: MarkerType { MarkerType(rawValue: type) }
+
+    enum CodingKeys: String, CodingKey {
+        case markerID = "id"
+        case type
+        case startTimeOffset
+        case endTimeOffset
+        case isFinal = "final"
+    }
+
+    public init(id: Int? = nil,
+                type: String,
+                startTimeOffset: Int? = nil,
+                endTimeOffset: Int? = nil,
+                isFinal: Bool? = nil) {
+        self.markerID = id
+        self.type = type
+        self.startTimeOffset = startTimeOffset
+        self.endTimeOffset = endTimeOffset
+        self.isFinal = isFinal
+    }
+}
+
 public struct Media: Decodable, Sendable, Identifiable {
     public let id: Int
     public let duration: Int?
@@ -244,6 +317,12 @@ public struct Part: Decodable, Sendable, Identifiable {
     public let file: String?
     public let size: Int?
     public let container: String?
+    /// Per-part media tracks (`Stream` elements): video, audio and subtitle tracks.
+    /// PMS only emits these on full metadata requests (and often only the selected
+    /// streams unless `includeStreams`/extended params are sent), so this is optional
+    /// and lenient. Use the `audioStreams`/`subtitleStreams`/`videoStreams` accessors
+    /// to filter by kind for the player's track-selection UI.
+    public let streams: [Stream]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -252,6 +331,7 @@ public struct Part: Decodable, Sendable, Identifiable {
         case file
         case size
         case container
+        case streams = "Stream"
     }
 
     public init(id: Int,
@@ -259,13 +339,131 @@ public struct Part: Decodable, Sendable, Identifiable {
                 duration: Int? = nil,
                 file: String? = nil,
                 size: Int? = nil,
-                container: String? = nil) {
+                container: String? = nil,
+                streams: [Stream]? = nil) {
         self.id = id
         self.key = key
         self.duration = duration
         self.file = file
         self.size = size
         self.container = container
+        self.streams = streams
+    }
+
+    /// Video tracks on this part (`streamType == 1`), in PMS order.
+    public var videoStreams: [Stream] { (streams ?? []).filter { $0.kind == .video } }
+    /// Audio tracks on this part (`streamType == 2`), in PMS order.
+    public var audioStreams: [Stream] { (streams ?? []).filter { $0.kind == .audio } }
+    /// Subtitle tracks on this part (`streamType == 3`), in PMS order.
+    public var subtitleStreams: [Stream] { (streams ?? []).filter { $0.kind == .subtitle } }
+}
+
+/// The kind of a media `Stream`, derived from PMS's numeric `streamType`.
+public enum StreamType: Int, Sendable, Equatable {
+    case video = 1
+    case audio = 2
+    case subtitle = 3
+}
+
+/// One media track inside a `Part` (`Stream` element): a video, audio or subtitle
+/// track. PMS attaches many optional attributes depending on the request and the
+/// track kind, so every field beyond `id`/`streamType` is optional and lenient.
+public struct Stream: Decodable, Sendable, Identifiable {
+    public let id: Int
+    /// Raw PMS stream type: 1=video, 2=audio, 3=subtitle. Prefer `kind`.
+    public let streamType: Int
+    /// Track index within its kind, when PMS supplies it.
+    public let index: Int?
+    public let codec: String?
+    /// Human language name, e.g. "English".
+    public let language: String?
+    /// BCP-47-ish language tag, e.g. "en".
+    public let languageTag: String?
+    /// ISO language code, e.g. "eng".
+    public let languageCode: String?
+    /// Short display label, e.g. "English (AAC Stereo)".
+    public let displayTitle: String?
+    /// Longer display label including codec/channel detail.
+    public let extendedDisplayTitle: String?
+    /// Whether this track is currently selected on the source. PMS sends this only
+    /// for the active audio/subtitle track.
+    public let selected: Bool?
+    /// Whether this is the container's default track. Decoded from the JSON `default`
+    /// key (a Swift keyword) via `CodingKeys`.
+    public let isDefault: Bool?
+    /// Whether this is a forced subtitle track.
+    public let forced: Bool?
+    /// Audio channel count (audio tracks only).
+    public let channels: Int?
+    /// Free-form track title, when present.
+    public let title: String?
+
+    /// Strongly-typed kind, or `nil` for an unrecognised `streamType`.
+    public var kind: StreamType? { StreamType(rawValue: streamType) }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case streamType
+        case index
+        case codec
+        case language
+        case languageTag
+        case languageCode
+        case displayTitle
+        case extendedDisplayTitle
+        case selected
+        case isDefault = "default"
+        case forced
+        case channels
+        case title
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(Int.self, forKey: .id)
+        self.streamType = try c.decode(Int.self, forKey: .streamType)
+        self.index = try c.decodeIfPresent(Int.self, forKey: .index)
+        self.codec = try c.decodeIfPresent(String.self, forKey: .codec)
+        self.language = try c.decodeIfPresent(String.self, forKey: .language)
+        self.languageTag = try c.decodeIfPresent(String.self, forKey: .languageTag)
+        self.languageCode = try c.decodeIfPresent(String.self, forKey: .languageCode)
+        self.displayTitle = try c.decodeIfPresent(String.self, forKey: .displayTitle)
+        self.extendedDisplayTitle = try c.decodeIfPresent(String.self, forKey: .extendedDisplayTitle)
+        self.selected = try c.decodeIfPresent(Bool.self, forKey: .selected)
+        self.isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault)
+        self.forced = try c.decodeIfPresent(Bool.self, forKey: .forced)
+        self.channels = try c.decodeIfPresent(Int.self, forKey: .channels)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
+    }
+
+    public init(id: Int,
+                streamType: Int,
+                index: Int? = nil,
+                codec: String? = nil,
+                language: String? = nil,
+                languageTag: String? = nil,
+                languageCode: String? = nil,
+                displayTitle: String? = nil,
+                extendedDisplayTitle: String? = nil,
+                selected: Bool? = nil,
+                isDefault: Bool? = nil,
+                forced: Bool? = nil,
+                channels: Int? = nil,
+                title: String? = nil) {
+        self.id = id
+        self.streamType = streamType
+        self.index = index
+        self.codec = codec
+        self.language = language
+        self.languageTag = languageTag
+        self.languageCode = languageCode
+        self.displayTitle = displayTitle
+        self.extendedDisplayTitle = extendedDisplayTitle
+        self.selected = selected
+        self.isDefault = isDefault
+        self.forced = forced
+        self.channels = channels
+        self.title = title
     }
 }
 

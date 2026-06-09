@@ -82,3 +82,40 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app"
                                     machineIdentifier: "M", ratingKey: "7", continuous: false)
     #expect(r.queryItems.first { $0.name == "continuous" }?.value == "0")
 }
+
+@Test func decodesPlayQueueResponse() throws {
+    let json = """
+    {"MediaContainer":{"playQueueID":4242,"playQueueSelectedItemID":7,
+      "playQueueSelectedItemOffset":0,"playQueueSelectedMetadataItemID":"101",
+      "playQueueShuffled":false,"size":2,
+      "Metadata":[
+        {"ratingKey":"101","title":"Ep 1","type":"episode"},
+        {"ratingKey":"102","title":"Ep 2","type":"episode"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(PlayQueueResponse.self, from: json)
+    #expect(c.mediaContainer.playQueueID == 4242)
+    #expect(c.mediaContainer.playQueueSelectedItemID == 7)
+    #expect(c.mediaContainer.playQueueSelectedItemOffset == 0)
+    #expect(c.mediaContainer.playQueueSelectedMetadataItemID == "101")
+    #expect(c.mediaContainer.metadata.count == 2)
+    #expect(c.mediaContainer.metadata[1].ratingKey == "102")
+}
+
+@Test func decodesPlayQueueResponseWithNumericSelectedID() throws {
+    // PMS sometimes serializes playQueueSelectedMetadataItemID as a bare number.
+    let json = """
+    {"MediaContainer":{"playQueueID":1,"playQueueSelectedMetadataItemID":555,
+      "Metadata":[{"ratingKey":"555","title":"X","type":"movie"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(PlayQueueResponse.self, from: json)
+    #expect(c.mediaContainer.playQueueSelectedMetadataItemID == "555")
+}
+
+@Test func decodesEmptyPlayQueueResponse() throws {
+    let json = """
+    {"MediaContainer":{"playQueueID":9}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(PlayQueueResponse.self, from: json)
+    #expect(c.mediaContainer.metadata.isEmpty)
+    #expect(c.mediaContainer.playQueueID == 9)
+}
