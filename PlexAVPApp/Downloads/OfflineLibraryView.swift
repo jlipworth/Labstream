@@ -92,22 +92,38 @@ public struct OfflineLibraryView: View {
                 }
             }
             Spacer()
-            if isComplete {
+            HStack(spacing: 16) {
+                if isComplete {
+                    Button {
+                        playing = record
+                    } label: {
+                        Image(systemName: "play.circle.fill").font(.title2)
+                    }
+                    .buttonStyle(.plain)
+                } else if isFailed {
+                    Button {
+                        manager.retry(ratingKey: record.ratingKey)
+                    } label: {
+                        Image(systemName: "arrow.clockwise.circle.fill").font(.title2)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    ProgressView()
+                }
+
+                // Explicit delete on every row (complete / failed / in-progress). The List's
+                // swipe-to-delete still works, but a visible trash control is far more
+                // discoverable on visionOS — and lets the user clear a FAILED or no-longer-
+                // wanted download directly. `manager.delete` cancels any live task and removes
+                // the file + cached poster + record.
                 Button {
-                    playing = record
+                    manager.delete(ratingKey: record.ratingKey)
                 } label: {
-                    Image(systemName: "play.circle.fill").font(.title2)
+                    Image(systemName: "trash.circle.fill").font(.title2)
                 }
                 .buttonStyle(.plain)
-            } else if isFailed {
-                Button {
-                    manager.retry(ratingKey: record.ratingKey)
-                } label: {
-                    Image(systemName: "arrow.clockwise.circle.fill").font(.title2)
-                }
-                .buttonStyle(.plain)
-            } else {
-                ProgressView()
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Delete download")
             }
         }
         .padding(.vertical, 4)

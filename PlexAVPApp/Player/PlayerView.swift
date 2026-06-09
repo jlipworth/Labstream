@@ -14,7 +14,11 @@ import PlexKit
 /// Present this as the exclusive content of its window scene so the system shows the
 /// expanded/docked cinema screen (see `CinemaEnvironment`).
 struct PlayerView: View {
-    private let controllerFactory: @MainActor () -> PlaybackController
+    /// Builds the controller. The `Int?` is an optional resume override (ms) used when the
+    /// player is REBUILT to recover from a wedged AVKit state after a failure — the fresh
+    /// controller resumes at the captured live playhead instead of the item's saved offset.
+    /// `nil` on the normal first build.
+    private let controllerFactory: @MainActor (Int?) -> PlaybackController
 
     /// Dismiss hook for the presenting container (the `.fullScreenCover` in `DetailView`).
     /// AVPlayerViewController does NOT supply a system Close button on visionOS, so without
@@ -42,6 +46,16 @@ struct PlayerView: View {
     /// overlay (#8 / P3+P4). Nil until the player view controller is first made.
     @State private var controller: PlaybackController?
 
+    /// Bumped to force a FULL teardown + rebuild of the `AVPlayerViewController` (via `.id`)
+    /// when recovering from a playback failure. An in-place `retry()` (item swap) inherits
+    /// AVKit's wedged control/cinema-experience state after a failure — only a fresh view
+    /// controller clears it, restoring the transport chrome and un-dimming the environment.
+    @State private var playerGeneration = 0
+
+    /// Resume target (ms) handed to the rebuilt controller so recovery resumes at the live
+    /// playhead we captured at failure time, not the stale on-disk offset. `nil` on first build.
+    @State private var rebuildResumeMs: Int?
+
     /// Streaming initializer (contract).
     ///
     /// `maxVideoBitrateKbps` is optional: when omitted the controller starts at the
@@ -61,7 +75,7 @@ struct PlayerView: View {
          onRequestPlay: ((MediaItem) -> Void)? = nil) {
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
-        self.controllerFactory = {
+        self.controllerFactory = { resumeMsOverride in
             // Fall back to the persisted cap when the caller doesn't specify one.
             let cap = maxVideoBitrateKbps ?? UserDefaults.standard.object(forKey: "maxVideoBitrateKbps") as? Int ?? 8000
             return PlaybackController(item: item,
@@ -71,7 +85,8 @@ struct PlayerView: View {
                                       client: client,
                                       maxVideoBitrateKbps: cap,
                                       mediaIndex: mediaIndex,
-                                      machineIdentifier: machineIdentifier)
+                                      machineIdentifier: machineIdentifier,
+                                      initialResumeMsOverride: resumeMsOverride)
         }
     }
 
@@ -90,7 +105,7 @@ struct PlayerView: View {
                                       version: "0.1.0",
                                       deviceName: "Apple Vision Pro")
         let client = PlexClient(identity: identity)
-        self.controllerFactory = {
+        self.controllerFactory = { _ in
             PlaybackController(localFile: localFile,
                                item: item,
                                identity: identity,
@@ -103,7 +118,7 @@ struct PlayerView: View {
          onClose: (() -> Void)? = nil) {
         self.onClose = onClose
         self.onRequestPlay = nil
-        self.controllerFactory = {
+        self.controllerFactory = { _ in
             PlaybackController(localFile: localFile,
                                item: item,
                                identity: identity,
@@ -112,14 +127,21 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        // ZStack(.topLeading): AVPlayerViewController on visionOS gives us NO system Close,
-        // so we float our own dismiss control. Top-leading keeps it clear of AVKit's
-        // transport bar (bottom) and the custom "…" Quality/Chapters/Stats menu
-        // (top-trailing) — the prior overlay was removed for stacking "buttons behind
-        // buttons", so we deliberately stay in the empty top-left corner.
+        // ZStack(.topLeading): the player fills the layer; the overlays below
+        // (error / skip / up-next / buffering) float on top of it.
+        //
+        // The Close affordance is NOT floated here. A sibling SwiftUI button only
+        // composites over the player in the INLINE/windowed state — in the expanded
+        // cinema experience AVKit owns the whole window scene and our siblings vanish,
+        // leaving no exit (the bug we hit). Instead Close is installed as an
+        // AVKit-hosted `infoViewActions` item inside the player's Info (ⓘ) panel (see
+        // `PlayerRepresentable.makeUIViewController`), which AVKit renders in BOTH the
+        // inline and expanded states and auto-hides with the rest of the chrome.
         ZStack(alignment: .topLeading) {
             PlayerRepresentable(controllerFactory: controllerFactory,
+                                resumeMsOverride: rebuildResumeMs,
                                 onBitratePicked: { maxVideoBitrateKbps = $0 },
+                                onClose: onClose,
                                 onControllerReady: {
                                     // Wire the autoplay-advance hook before publishing the
                                     // controller (#15): the controller calls this when the
@@ -127,19 +149,10 @@ struct PlayerView: View {
                                     $0.onAdvanceToNext = onRequestPlay
                                     controller = $0
                                 })
+                // A new id tears down the wedged AVPlayerViewController and builds a fresh one
+                // on rebuild (failure recovery), giving un-wedged controls + a reset experience.
+                .id(playerGeneration)
                 .ignoresSafeArea()
-
-            if let onClose {
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title)
-                        .padding(DS.Space.sm)
-                }
-                .buttonStyle(.borderless)
-                .background(.ultraThinMaterial, in: Circle())
-                .padding(DS.Space.lg)
-                .accessibilityLabel("Close player")
-            }
 
             // Failure overlay (#8 / P3+P4): when the controller surfaces a playback error
             // (after its one silent auto-retry is spent), cover the black AVKit canvas with
@@ -147,7 +160,7 @@ struct PlayerView: View {
             // playhead, plus a way out. Observes the @Observable `playbackError` directly.
             if let controller {
                 PlaybackErrorOverlay(error: controller.playbackError,
-                                     onRetry: { controller.retry() },
+                                     onRetry: { rebuildPlayer(from: controller) },
                                      onClose: onClose)
             }
 
@@ -182,6 +195,21 @@ struct PlayerView: View {
                 BufferingOverlay(state: controller.buffering)
             }
         }
+    }
+
+    /// Recover from a surfaced playback failure by rebuilding the player from scratch. AVKit
+    /// wedges its control + cinema-experience state after a failure, and an in-place item swap
+    /// inherits that wedge (controls won't reveal, the environment stays dimmed). Capturing the
+    /// live playhead, dropping the controller, and bumping `playerGeneration` makes SwiftUI tear
+    /// down the wedged `AVPlayerViewController` and build a fresh one that resumes where we left
+    /// off — no app relaunch needed.
+    @MainActor
+    private func rebuildPlayer(from current: PlaybackController) {
+        rebuildResumeMs = current.currentResumeMs
+        // Drop the stale reference so the error overlay (and other `if let controller` overlays)
+        // clear immediately; the rebuilt controller republishes via `onControllerReady`.
+        controller = nil
+        playerGeneration += 1
     }
 }
 
@@ -349,22 +377,46 @@ private struct PlaybackErrorOverlay: View {
 /// Stats menus) once the view controller exists, so the custom transport-bar items and
 /// the stats overlay are wired to the same `PlaybackController`.
 private struct PlayerRepresentable: UIViewControllerRepresentable {
-    let controllerFactory: @MainActor () -> PlaybackController
+    let controllerFactory: @MainActor (Int?) -> PlaybackController
+    /// Resume override (ms) forwarded to the factory on a failure-recovery rebuild; `nil` on
+    /// the normal first build (the controller then uses the item's saved offset).
+    let resumeMsOverride: Int?
     /// Persists the user's Quality choice up into `@AppStorage`.
     let onBitratePicked: (Int) -> Void
+    /// Dismiss hook for the presenting `.fullScreenCover`. Installed as an AVKit-hosted
+    /// `infoViewActions` Close item (renders in both inline and expanded), NOT as a floated
+    /// SwiftUI sibling (which disappears in the expanded cinema experience).
+    let onClose: (() -> Void)?
     /// Publishes the main-actor-created controller back up to `PlayerView` so it can observe
     /// `playbackError` for the failure overlay. Called once, asynchronously, after creation
     /// to avoid mutating `@State` during the view-update pass.
     let onControllerReady: (PlaybackController) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(controller: controllerFactory(), onBitratePicked: onBitratePicked)
+        Coordinator(controller: controllerFactory(resumeMsOverride), onBitratePicked: onBitratePicked)
     }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let vc = AVPlayerViewController()
         vc.player = context.coordinator.controller.player
         CinemaEnvironment.configure(vc)
+
+        // Close is installed via `contextualActions` — the visionOS-native hook for action
+        // controls "displayed during playback" (the same mechanism Apple cites for Skip
+        // Intro). Per the AVKit SDK these render prominently OVER the video in BOTH the
+        // inline and expanded cinema states, and AVKit shows/hides them with the chrome —
+        // unlike `infoViewActions` (buried in the ⓘ content view) or a floated SwiftUI
+        // sibling (which vanishes in the expanded experience). With exactly one action it
+        // also gets the single-action treatment. The handler hops to the main actor (UIAction
+        // handlers are nominally nonisolated under Swift 6) before invoking dismiss.
+        if let onClose {
+            let closeAction = UIAction(title: "Close",
+                                       image: UIImage(systemName: "xmark")) { _ in
+                Task { @MainActor in onClose() }
+            }
+            vc.contextualActions = [closeAction]
+        }
+
         context.coordinator.attachControlSurface(to: vc)
         context.coordinator.controller.start()
         // Hand the controller up to the SwiftUI layer after this update pass completes.

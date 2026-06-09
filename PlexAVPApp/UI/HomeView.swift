@@ -116,17 +116,39 @@ struct PosterCell: View {
                 .posterHover()
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.headline)
-                    .lineLimit(1)
-                if let year = item.year {
-                    Text(String(year))
+                // Episodes read like Plex/Emby: show name on top, then
+                // "S{parentIndex}E{index} · {title}". Everything else keeps the
+                // title + year treatment.
+                if item.kind == .episode {
+                    Text(item.grandparentTitle ?? item.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(episodeSubtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(item.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let year = item.year {
+                        Text(String(year))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .frame(width: width, alignment: .leading)
+    }
+
+    /// "S{x}E{y} · {title}" for an episode poster's second line, gracefully dropping the
+    /// code when the season/episode numbers are missing.
+    private var episodeSubtitle: String {
+        if let code = item.seasonEpisodeCode {
+            return "\(code) · \(item.title)"
+        }
+        return item.title
     }
 
     /// A thin "continue watching" progress bar pinned to the poster's bottom edge,
