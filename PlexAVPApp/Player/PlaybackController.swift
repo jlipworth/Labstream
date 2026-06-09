@@ -813,7 +813,7 @@ final class PlaybackController {
         // immediately. Without this PMS transcodes from 0 and a deep client seek stalls
         // waiting on a segment the transcoder hasn't reached yet.
         let resumeMs = resumeOffsetMsOverride ?? item.viewOffset
-        let offsetSeconds = (resumeMs ?? 0) > 0 ? (resumeMs! / 1000) : nil
+        let offsetSeconds: Int? = if let resumeMs, resumeMs > 0 { resumeMs / 1000 } else { nil }
 
         let transcode = TranscodeRequest(server: server,
                                          token: token,
@@ -1455,7 +1455,12 @@ final class PlaybackController {
                                            state: state,
                                            timeMs: currentMs,
                                            durationMs: durationMs)
-        Task { try? await client.send(req) }
+        Task {
+            do { try await client.send(req) }
+            catch {
+                NSLog("PlaybackController: timeline send failed (%@)", String(describing: error))
+            }
+        }
     }
 
     private func sendScrobble() {
@@ -1465,7 +1470,12 @@ final class PlaybackController {
                                            token: token,
                                            identity: identity,
                                            ratingKey: item.ratingKey)
-        Task { try? await client.send(req) }
+        Task {
+            do { try await client.send(req) }
+            catch {
+                NSLog("PlaybackController: scrobble send failed (%@)", String(describing: error))
+            }
+        }
     }
 
     /// Fire the scrobble once the playhead crosses ~90% of the duration (P9 #11). Only
