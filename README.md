@@ -78,6 +78,9 @@ Run the `PlexKit` test suite:
 cd PlexKit && swift test
 ```
 
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
+gotchas worth knowing before changing the player or transcode code.
+
 On first launch, sign in with your Plex account and point the app at your server (e.g.
 `https://your-server:32400`). Reinstalling wipes the app container, so a re-login is required after a
 fresh install.
