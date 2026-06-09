@@ -1,94 +1,97 @@
 # plex-avp-app
 
-A personal-use, native **visionOS (Apple Vision Pro)** Plex client whose goal is to combine, in a single app, the three things no current visionOS Plex app cleanly does together:
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Platform: visionOS 26.5](https://img.shields.io/badge/Platform-visionOS%2026.5-black.svg)](https://developer.apple.com/visionos/)
+[![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
+[![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
-1. **Reliable server-side transcoding** (request a bitrate-capped HLS stream, not direct-play-only)
-2. **Theater-mode playback** — a giant virtual screen in a cinema environment
-3. **Offline downloads** of Plex library items (so a slow connection / large file isn't a wall, and you don't need a second app)
+A personal-use, native **visionOS (Apple Vision Pro)** Plex client that combines the three things no
+current visionOS Plex app cleanly does together: **reliable bitrate-capped HLS transcoding** (request
+a capped HLS stream, not direct-play-only), **theater/cinema playback** on a giant virtual screen, and
+**offline downloads** of capped copies of your library.
 
-> Status: **research complete, no app code yet.** This repo currently holds the research that informs the design. App scaffolding is intentionally deferred until a design is agreed. See [Next steps](#next-steps).
+> **Status: working app.** End-to-end playback runs in the visionOS 26.5 simulator and on device.
+> Build is green and the `PlexKit` package ships **74 passing tests**. This is a single-user,
+> sideload-only project — there is no App Store build.
 
----
+## What this app does
 
-## Why this project exists
+- **Sign-in** via Plex PIN OAuth (in-app web sheet that auto-closes), token stored in Keychain
+- **Browse + search** Home hubs, libraries, and a search surface
+- **Transcoded HLS playback** — forces a server-side bitrate-capped HLS stream (4K HEVC → ~7.5 Mbps
+  1080p H.264 by default) rather than relying on direct play
+- **Scrubbing + resume** — seeks cleanly and resumes half-watched titles at the right offset
+- **Cinema docking** — the player expands into a system Cinema Environment with a controllable transport
+  that stays tappable in both inline and expanded states
+- **TV show hierarchy** — drill down Show → Seasons → Episodes
+- **Skip Intro / Skip Credits** during server-detected marker windows
+- **Up Next + autoplay** — advances to the next episode with a countdown, crossing season boundaries
+- **Offline downloads** — quality-picker downloads with persistent transfers, offline metadata + poster
+  + resume, and download-integrity rejection of truncated/error bodies
+- **Failure recovery** — a stall watchdog surfaces a "Playback failed" overlay and rebuilds the player
+  to recover from wedged HLS network loss without relaunching the app
+- **Playback extras** — quality switch that keeps the playhead, subtitles by language name, chapters,
+  stats, and 0.5×–2× speed; progress scrobble / mark-watched; buffering spinner; audio-session
+  interruption handling
 
-The official Plex "visionOS app" is just the iPad build in compatibility mode — so it has **no theater mode**. The native third-party apps (Theater, Aurora, Chroma, Plexi) each nail *some* of the three priorities but none cleanly nails all three. The user has already validated that **their Plex server transcodes fine**, so the server is not the bottleneck — the gap is purely on the client side.
+## Tech
 
-## Research (`research/`)
+- **SwiftUI** app shell with **AVKit / AVFoundation** for transcoded HLS playback and Cinema Environment docking
+- **Swift 6** with strict concurrency
+- **`PlexKit`** — a local Swift package providing the hand-rolled Plex API layer (auth, library browse,
+  transcode decision, playback-state endpoints, TV hierarchy), covered by 74 tests
+- **Xcode 26**, targeting **visionOS 26.5**
 
-| # | Topic | One-line verdict |
-|---|-------|------------------|
-| [01](research/01-plex-api-transcoding.md) | Plex API + transcoding | PIN-OAuth → `X-Plex-Token`; force HLS via `/video/:/transcode/universal/start.m3u8?protocol=hls&maxVideoBitrate=8000&directPlay=0`. **`plexswift` is too weak (archived, DASH-only, no bitrate param) — hand-roll the streaming calls.** Downloads are easy and **need no Plex Pass** (`Part.key?download=1`). |
-| [02](research/02-visionos-playback-theater.md) | visionOS playback + theater | **Theater mode is nearly free** — `AVPlayerViewController` + system Cinema Environments, no render code. **3D SBS/TAB is the only hard part** (no system support; needs custom ShaderGraph render or pre-convert to MV-HEVC). Pass the token as a **query param**, not a header. |
-| [03](research/03-app-architecture-sideload.md) | Architecture + sideload | Standard SwiftUI app, 6 modules (AppState, PlexAuth, PlexAPI, Player, DownloadManager, LibraryUI). **Biggest downside: free-Apple-ID profiles expire every 7 days** → Mac-tethered rebuild. AltStore/SideStore don't support visionOS. |
-| [04](research/04-competitive-teardown.md) | Competitive teardown | No single app pairs robust transcode + confirmed Plex downloads + 3D SBS. **Chroma** is closest (downloads + transcode + theater, but transcode reliability is questioned and no SBS). **Theater** has the best theater + reliable transcode but **Plex downloads unconfirmed**. |
-| [05](research/05-mobile-client-ux-reference.md) | Mobile client UX reference | Mature clients converge on **Home · Libraries · Search + Detail + Player + Settings**. Swiftfin's 3-tab model is the cleanest template. MVP = single-server login, Home hubs, poster grid, detail screen, big-screen player with bitrate/transcode fallback. |
-| [06](research/06-prerequisites-licensing.md) | Prerequisites + licensing | See [What to gather](#what-to-gather-prerequisites). **Transcode is free; official Downloads/Sync need Plex Pass, but direct `download=1` and server-side Media Optimizer do not.** All OSS deps are permissive (MIT/BSD). |
-
-### Round 2 — API deep-dive
-
-| # | Topic | One-line verdict |
-|---|-------|------------------|
-| [07](research/07-plex-official-api-surface.md) | Plex official API surface | **An official OpenAPI spec now exists** (developer.plex.tv/pms/, since Sep 2025, needs PMS ≥ 1.43.2) and **covers the Transcoder + Timeline** — better than `plexswift`. Still no official Swift SDK → hand-roll networking. `X-Plex-Token` still works; **JWT migration is medium-risk, not imminent** (PMS still rejects JWTs) — abstract the token layer. |
-| [08](research/08-plex-client-library-catalog.md) | Client library catalog | Best transcode references: **`plex-for-kodi`** (Plex's own client code — highest fidelity, but **GPL-2.0 → re-implement, don't copy**) and **`python-plexapi` `getStreamURL()`** (**BSD-3, safe to port**). Every LukeHagar SDK shares the same weak generated transcode ops. |
-| [09](research/09-transcode-api-deep-dive.md) | Transcode API deep-dive | Full parameter matrix + the **DeviceProfile capability system** (`X-Plex-Client-Profile-Extra` directives that force the right transcode decision) + **decision-response codes** (1000≈direct play / 1001≈transcode). Call `/decision?hasMDE=1` first, then `start.m3u8`. Has a worked "1080p ~8 Mbps burn-subs" URL. |
-| [10](research/10-apple-media-api-inventory.md) | Apple media-API inventory | **Offline-download crux:** `AVAssetDownloadTask` is **VOD-only and won't reliably download Plex's live-style transcode HLS.** Use Plex **Media Optimizer** for a finished capped file via plain `URLSession` (see round 3 — no Plex Pass needed), OR roll your own segment downloader. Full feature→API map included. |
-
-### Round 3 — feasibility spike + build references
-
-| # | Topic | One-line verdict |
-|---|-------|------------------|
-| [11](research/11-offline-download-spike.md) | Offline-download spike | **CRUX SOLVED.** Plex **Media Optimizer creates a capped-bitrate MP4 *version* on your own server in the FREE edition** (no Plex Pass), with a built-in **"Optimized for TV – 8 Mbps 1080p"** preset = your exact target. Download it with the same free `?download=1` → native offline playback, no HLS juggling. python-plexapi: `Video.optimize(...)`. A single-request capped transcode download does **not** exist; custom segment-downloader is the L–XL fallback you can now skip. |
-| [12](research/12-visionos-app-templates.md) | visionOS app templates | **Best starting template: Apple's `Destination Video` sample** — a 2D browse window + `AVPlayerViewController` docking into a custom Reality Composer Pro cinema environment = our exact design. Permissive Apple Sample Code License. Confirmed: **no OSS Plex visionOS client exists**; Swiftfin is iOS/tvOS-only (no native visionOS). |
-| [13](research/13-playback-state-apis.md) | Playback-state APIs | The "real client" plumbing is **4 free endpoints**: `POST /playQueues` (for next-episode/shuffle) → read `viewOffset` to resume → `GET /:/timeline` heartbeat every ~10s (the only write path for resume/On Deck) → `GET /:/scrobble` to mark watched. Home screen = one `GET /hubs`. Gotcha: `key` is a path in timeline but a ratingKey number in scrobble. |
-
-## The build decision (honest read)
-
-- **Off-the-shelf might be enough.** If **Chroma** (downloads + transcode + theater) or **Theater** (best theater + reliable transcode, *if* its Plex downloads work) holds up in a hands-on test, **no build is needed.** That 10-minute test should happen before committing to code.
-- **The real gap that justifies a build:** one app with **reliable transcoding AND confirmed Plex downloads AND a 3D SBS toggle**. In the research snapshot, no current app demonstrably has all three; because App Store listings change, re-check and hands-on test before committing to a build.
-- **If we build, it's small** for priorities 1–3: hand-rolled `URLSession` Plex API calls → `AVPlayerViewController` on a Cinema Environment. **3D SBS is the only genuinely hard piece**, and it's optional (only matters if you have 3D Blu-ray rips and care about them).
-- **The ongoing tax:** free-Apple-ID sideloading means a **weekly, Mac-tethered re-sign** unless you buy the **$99/yr Apple Developer Program**. For an app you want to *keep using*, that $99 is effectively required eventually.
-
-## What to gather (prerequisites)
-
-**Must-have before you can build at all**
-- macOS **26.2+** (the M5 MacBook Pro is fully supported — Apple silicon is required for visionOS dev)
-- **Xcode 26.5** (bundles the visionOS SDK) + Command Line Tools
-- A **free Apple ID** signed into Xcode (enough to run on the headset)
-- A **Plex account** + reachable server (already have this)
-- *(optional)* visionOS simulator runtime (~7 GB separate download)
-
-**Needed before it's usable long-term**
-- **Apple Developer Program — $99/yr** (kills the 7-day re-sign tax; adds TestFlight)
-- **Plex Pass — the user HAS it.** This resolves every Plex-Pass-gated caveat in the research favorably:
-  - **Downloads:** not even gated on Plex Pass (free Media Optimizer → "Optimized for TV – 8 Mbps 1080p" preset → `?download=1`); Plex Pass additionally enables **remote optimize + official Mobile Sync** (optimize/download while off-LAN).
-  - **Off-LAN remote streaming:** enabled (required since April 2025) — so the app works away from home, not only on the LAN. Relevant to the core "stream a transcode over a slow connection" use case.
-  - **Hardware-accelerated server transcoding:** available (and already in use — transcoding is validated).
-- *(off-LAN remote streaming now needs Plex Pass / Remote Watch Pass; local-network playback stays free)*
-
-**Dependency licenses** (all permissive — no copyleft concerns)
-- `plexswift` — MIT, **but archived/unmaintained** → use only as a reference/model source unless a build spike proves it compiles and covers the endpoints you need; prefer hand-rolled REST
-- `OpenImmersiveLib` — MIT (only needed if we ever add true 180/360 immersive playback — **not needed** for this library)
-- `python-plexapi` — BSD-3-Clause (reference implementation only, not a dependency)
-
-## Proposed architecture (from research/03)
+## Project structure
 
 ```
-PlexAVPApp (SwiftUI @main)
-├── AppState            # observable app/session state (leaf)
-├── PlexAuth            # PIN-OAuth, token in Keychain
-├── PlexAPI             # library browse + transcode-decision (hand-rolled REST)
-├── Player              # AVPlayerViewController wrapper + Cinema Environment
-├── DownloadManager     # offline files in Application Support, background URLSession
-└── LibraryUI           # Home · Libraries · Search · Detail (floating 2D window)
+plex-avp-app/
+├── PlexAVPApp/            # visionOS app (SwiftUI)
+│   ├── App/              # app entry + session state
+│   ├── Auth/             # Plex PIN OAuth + Keychain
+│   ├── Networking/       # Plex client wiring
+│   ├── Player/           # AVKit player + Cinema Environment + recovery
+│   ├── Downloads/        # offline transfers + offline library
+│   └── UI/               # Home · Libraries · Search · Detail
+├── PlexKit/              # local Swift package: Plex API layer (+ tests)
+├── research/             # design research that informed the build
+└── docs/                 # supporting notes
 ```
 
-## Next steps
+## Build & run
 
-1. **Hands-on disqualify-or-confirm:** refresh App Store listings, then test **Theater** (does Plex-library download work?), **Chroma** (is transcode reliable? any SBS?), and **Plexi** (does its download + SBS path also transcode reliably?) against the real library. If one passes, the project may stop here.
-2. **If a build is warranted:** run the brainstorming → design-spec → implementation-plan flow before any Swift is written.
-3. **Decide on the $99 developer program** before depending on the app daily.
+This is a **sideload-only** project — there is no paid Apple Developer account, so it runs from Xcode
+on the visionOS 26.5 simulator or a registered device (bundle id `com.personal.PlexAVPApp`). Free
+Apple-ID profiles expire every 7 days, so a device install needs a periodic Mac-tethered rebuild.
 
----
+Build the app (visionOS 26.5 simulator, no signing):
 
-*Research generated 2026-06-08 via parallel research agents. Plex now has official PMS API docs, but many behavioral details and older endpoint forms remain client-derived/version-dependent — verify against a live server.*
+```bash
+xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+  -configuration Debug build CODE_SIGNING_ALLOWED=NO
+```
+
+Run the `PlexKit` test suite:
+
+```bash
+cd PlexKit && swift test
+```
+
+On first launch, sign in with your Plex account and point the app at your server (e.g.
+`https://your-server:32400`). Reinstalling wipes the app container, so a re-login is required after a
+fresh install.
+
+## Research
+
+The `research/` directory holds the design research that informed this client — the Plex transcoding
+API surface, visionOS playback/theater capabilities, the offline-download approach, a competitive
+teardown, and playback-state plumbing. It documents *why* the app is built the way it is and remains a
+useful reference for the transcode-decision and download paths.
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the
+full text.
+
+Copyright (C) 2026 Jonathan Lipworth
