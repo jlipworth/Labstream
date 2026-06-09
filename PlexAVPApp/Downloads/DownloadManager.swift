@@ -2,6 +2,13 @@ import Foundation
 import Observation
 import PlexKit
 import AVFoundation   // D1: AVURLAsset playability probe on a finished download
+import os
+
+/// Diagnostic log for the offline-download pipeline. Inspect with:
+///   log show --predicate 'subsystem == "com.personal.PlexAVPApp"' --last 10m
+/// Only scrubbed values are logged — never the token or full URL (the transcode
+/// URL carries `X-Plex-Token` as a query param), so we log `url.path` only.
+let downloadLog = Logger(subsystem: "com.personal.PlexAVPApp", category: "Downloads")
 
 /// Coordinates the offline-download pipeline:
 ///   1. trigger a server-side capped-bitrate optimize (8 Mbps 1080p preset),
@@ -71,6 +78,16 @@ public final class DownloadManager {
             }
         }
 
+        /// Compact resolution marker for tight UI (the download progress caption).
+        public var shortLabel: String {
+            switch self {
+            case .p480:     return "480p"
+            case .p720:     return "720p"
+            case .p1080:    return "1080p"
+            case .original: return "Original"
+            }
+        }
+
         /// Video-bitrate cap in kbps handed to the transcoder. `nil` == no cap
         /// (original); the manager translates that to the transcoder's high ceiling.
         public var maxVideoBitrateKbps: Int? {
@@ -94,6 +111,14 @@ public final class DownloadManager {
 
     /// Last error per ratingKey, for UI surfacing.
     public private(set) var lastError: [String: DownloadError] = [:]
+
+    /// Smoothed transfer rate (bytes/sec) per actively-downloading ratingKey, derived
+    /// in `refreshRecords` by diffing cumulative bytes between progress callbacks.
+    /// Ephemeral (never persisted); drives the "x MB/s" + ETA readout in the UI.
+    public private(set) var downloadSpeed: [String: Double] = [:]
+
+    /// Last (bytes, time) sample per ratingKey, used to compute `downloadSpeed`.
+    private var speedSamples: [String: (bytes: Int, time: Date)] = [:]
 
     private let appModel: AppModel
     private let store: DownloadStore
@@ -301,7 +326,46 @@ public final class DownloadManager {
     }
 
     private func refreshRecords() {
-        records = store.records
+        let now = Date()
+        let fresh = store.records
+        let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
+        // Recompute a smoothed bytes/sec for each actively-downloading row by diffing
+        // its cumulative byte count against the previous sample. Only resample on a
+        // ≥0.5s interval so the readout doesn't jitter on the rapid progress callbacks.
+        for record in fresh where record.status == .downloading {
+            guard let prev = speedSamples[record.ratingKey] else {
+                speedSamples[record.ratingKey] = (record.bytes, now)
+                continue
+            }
+            let dt = now.timeIntervalSince(prev.time)
+            let db = record.bytes - prev.bytes
+            if dt >= 0.5 && db > 0 {
+                let instantaneous = Double(db) / dt
+                let smoothed = downloadSpeed[record.ratingKey].map { 0.5 * $0 + 0.5 * instantaneous }
+                    ?? instantaneous
+                downloadSpeed[record.ratingKey] = smoothed
+                speedSamples[record.ratingKey] = (record.bytes, now)
+            }
+        }
+        // Drop samples for rows no longer downloading (complete / failed / removed).
+        speedSamples = speedSamples.filter { activeKeys.contains($0.key) }
+        downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
+        records = fresh
+    }
+
+    /// Estimated final byte size of a transcoded download, from the chosen quality cap
+    /// × runtime. Plex streams the transcode without a `Content-Length` (so the download
+    /// delegate's `totalBytesExpectedToWrite` is -1 and can't drive a %), so the UI uses
+    /// this estimate for the progress bar + ETA. Returns nil when we can't estimate —
+    /// Original has no fixed cap, or the runtime is unknown — and the UI then falls back
+    /// to an indeterminate bar + byte count. A `+192 kbps` allowance covers the audio
+    /// track PMS transcodes alongside the video.
+    public static func estimatedTranscodeBytes(quality: DownloadQuality?, durationMs: Int?) -> Int? {
+        guard let durationMs, durationMs > 0,
+              let quality, let videoKbps = quality.maxVideoBitrateKbps else { return nil }
+        let totalBitsPerSec = Double(videoKbps + 192) * 1000.0
+        let seconds = Double(durationMs) / 1000.0
+        return Int(totalBitsPerSec / 8.0 * seconds)
     }
 
     // MARK: - D5: offline metadata + poster caching
@@ -477,6 +541,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private let fileManager = FileManager.default
     /// taskIdentifier -> (ratingKey, destination)
     private var inflight: [Int: (ratingKey: String, destination: URL)] = [:]
+    /// taskIdentifiers whose expected-size has already been logged once (diagnostics).
+    private var loggedExpectation: Set<Int> = []
     private let lock = NSLock()
 
     /// Called on any progress/completion so the manager can refresh records.
@@ -488,11 +554,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     var onError: ((_ ratingKey: String, _ error: DownloadManager.DownloadError) -> Void)?
 
     private lazy var urlSession: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
+        let config: URLSessionConfiguration
+        #if targetEnvironment(simulator)
+        // The background transfer daemon (`nsurlsessiond`) is unreliable in the visionOS
+        // simulator: it intermittently refuses the XPC connection (NSCocoaError 4097), so
+        // `downloadTask` creation fails and the task dies immediately with
+        // NSURLErrorUnknown (-1) / 0 bytes received. A foreground (in-process) session
+        // needs no daemon, so downloads work while developing in the sim. Real devices
+        // always have the daemon, so they keep the background session below (which
+        // survives app suspension/relaunch — the resume-after-kill path from D5/D8).
+        config = URLSessionConfiguration.default
+        downloadLog.info("using FOREGROUND URLSession (simulator) for downloads")
+        #else
+        config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
         config.isDiscretionary = false
         // The OS may relaunch us in the background to finish transfers; required so
         // `handleEventsForBackgroundURLSession` is delivered to the app delegate.
         config.sessionSendsLaunchEvents = true
+        #endif
         config.allowsCellularAccess = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
@@ -573,6 +652,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
+        downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(url.path, privacy: .public)")
         task.resume()
     }
 
@@ -596,8 +676,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
-        lock.lock(); let entry = inflight[downloadTask.taskIdentifier]; lock.unlock()
+        lock.lock()
+        let entry = inflight[downloadTask.taskIdentifier]
+        let firstCallback = entry != nil && loggedExpectation.insert(downloadTask.taskIdentifier).inserted
+        lock.unlock()
         guard let entry else { return }
+        // Log the server-declared expected size ONCE per task: -1 confirms the transcode
+        // streamed without a Content-Length (so we estimate progress in the UI instead).
+        if firstCallback {
+            downloadLog.info("first-progress ratingKey=\(entry.ratingKey, privacy: .public) expectedBytes=\(totalBytesExpectedToWrite, privacy: .public)")
+        }
         let progress = totalBytesExpectedToWrite > 0
             ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
             : 0
@@ -617,11 +705,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // left in place as "complete" (D1). Record a `.failed` row + surface why, and
         // delete the bad file so a retry starts clean.
         func fail(_ reason: String) {
+            downloadLog.error("invalid-download ratingKey=\(entry.ratingKey, privacy: .public) reason=\(reason, privacy: .public)")
             try? fileManager.removeItem(at: entry.destination)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .invalidDownload(reason))
             onChange?()
         }
+
+        let httpStatus = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
+        let mime = (downloadTask.response as? HTTPURLResponse)?.mimeType ?? "nil"
+        downloadLog.info("finished-transfer ratingKey=\(entry.ratingKey, privacy: .public) http=\(httpStatus, privacy: .public) mime=\(mime, privacy: .public)")
 
         // 1. HTTP status — Plex returns 200 for a real file body.
         if let http = downloadTask.response as? HTTPURLResponse {
@@ -676,8 +769,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             guard let self else { return }
             if playable {
                 // Validated: mark explicitly complete (D2) so a relaunch trusts it.
+                downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
+                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=not-playable bytes=\(bytes, privacy: .public)")
                 try? self.fileManager.removeItem(at: destination)
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.onError?(ratingKey, .invalidDownload("Downloaded file isn't a playable video container."))
@@ -689,13 +784,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
-        lock.lock(); let entry = inflight.removeValue(forKey: task.taskIdentifier); lock.unlock()
+        lock.lock()
+        let entry = inflight.removeValue(forKey: task.taskIdentifier)
+        loggedExpectation.remove(task.taskIdentifier)
+        lock.unlock()
         guard let entry, let error else { return }
+        let nsError = error as NSError
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
-        if (error as NSError).code != NSURLErrorCancelled {
+        if nsError.code != NSURLErrorCancelled {
+            downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
+        } else {
+            downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
         }
         onChange?()
     }

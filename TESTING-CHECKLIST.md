@@ -42,13 +42,26 @@ xcrun simctl install booted "$APP" && xcrun simctl launch booted com.personal.Pl
       (no spinner/controls over the dialog; Retry recovers; expanded-mode Retry/Close still show) are tracked
       there. Original repro: force a bad stream (kill network briefly), expect one silent auto-retry then a
       **"Playback failed"** overlay with **Retry** (re-runs from last playhead) + **Close**.
-- [ ] **Progress scrobble / mark-watched (#11)** — Watch a title past ~90% (or to end). It should be marked
-      **watched** and leave/refresh Continue Watching. Stop mid-way → reopening offers Resume at that offset.
-      _Verify capped-HLS items report a finite duration so the 90% threshold actually fires._
-- [ ] **Download integrity (#10)** — Download a normal title → completes + plays offline. If a download
-      returns an error/HTML page or a tiny/truncated body, it is rejected as **failed** (NOT a fake "complete"),
-      and the failed row offers **Retry**. _Very short low-bitrate clips could trip the 1 MB floor — check if
-      you download any._
+- [~] **Progress scrobble / mark-watched (#11)** — ⏸️ **live-test deferred** (implemented + build-verified,
+      not yet human-verified). Watch a title past ~90% (or to end) → should be marked **watched** and
+      leave/refresh Continue Watching. Stop mid-way → reopening offers Resume at that offset.
+      _Open check: capped-HLS items must report a finite duration so the 90% threshold actually fires._
+- [~] **Download integrity (#10)** — ⏸️ **deployed; awaiting final human verification.** Body validation +
+      failed-state machine + retry were already in place. This session fixed **two live bugs** found while
+      testing:
+      1. **"Unknown error" / 0-byte failures (simulator only):** the background-transfer daemon `nsurlsessiond`
+         is unavailable in the visionOS **simulator** — it refuses the XPC connection (`NSCocoaError 4097`), so
+         the download task died instantly. Fixed: use a **foreground `URLSession` in the simulator**
+         (`#if targetEnvironment(simulator)`); real devices keep the `.background` session (preserves
+         resume-after-kill, D5/D8).
+      2. **Progress stuck at 0% / empty bar / no speed-ETA-quality:** Plex streams transcoded downloads with
+         **no `Content-Length`**, so the OS reports total size as unknown and progress pinned at 0. Fixed: drive
+         the bar off an **estimate** (quality bitrate cap × runtime) and add a caption with **live %, download
+         speed, ETA, and quality marker**; falls back to an indeterminate bar for Original quality / unknown
+         runtime. Also added `os_log` diagnostics (subsystem `com.personal.PlexAVPApp`, category `Downloads`).
+      **Remaining human check:** fresh download progresses (no unknown error), %/bar climb, speed+ETA+quality
+      show, completes + plays offline. _Very short low-bitrate clips could trip the 1 MB floor._
+      _Inspect logs: `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.personal.PlexAVPApp"'`._
 
 ## B. New features
 
