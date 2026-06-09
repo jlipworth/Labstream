@@ -31,6 +31,12 @@ extension MediaItem {
     /// Strongly-typed item kind derived from the PMS `type` string.
     public var kind: Kind { Kind(rawValue: type) }
 
+    /// True for music items (artist/album/track). Hidden from browse until a proper
+    /// music experience exists (issue #15).
+    public var isMusic: Bool {
+        switch type { case "artist", "album", "track": return true; default: return false }
+    }
+
     /// A LEAF is directly playable/downloadable: it owns (or can own) a `Media`/`Part`.
     /// Movies and episodes are leaves; shows and seasons are containers and must be
     /// drilled into before anything can be transcoded.

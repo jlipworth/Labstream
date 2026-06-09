@@ -51,9 +51,10 @@ struct SearchView: View {
         }
     }
 
-    /// Only hubs that carry playable/openable metadata.
+    /// Only hubs that carry playable/openable metadata, with music hidden (#15): music
+    /// items are stripped and any hub left empty is dropped (see `Array.hidingMusic`).
     private var results: [Hub] {
-        hubs.filter { !$0.metadata.isEmpty }
+        hubs.hidingMusic
     }
 
     private func runSearch() async {

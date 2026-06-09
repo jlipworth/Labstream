@@ -70,7 +70,8 @@ struct LibrariesView: View {
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
-            sections = resp.mediaContainer.directory
+            // Hide music libraries until a dedicated Plexamp-style experience exists (#15).
+            sections = resp.mediaContainer.directory.filter { !$0.isMusic }
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
