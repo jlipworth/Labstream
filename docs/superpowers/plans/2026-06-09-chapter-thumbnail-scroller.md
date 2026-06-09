@@ -4,6 +4,8 @@
 
 **Goal:** Replace the plain `ChaptersTabView` list with a Plex-style horizontal thumbnail rail inside the existing native ⓘ Chapters info tab, highlighting and auto-scrolling to the current chapter.
 
+> **Implementation note (superseded):** The thumbnail-loading approach below changed during implementation. The Chapters info tab is hosted in a bare `UIHostingController` outside the SwiftUI environment, so `PosterImage`'s `@Environment(AppModel.self)` lookup couldn't resolve and silently fell back to a placeholder. The shipped code instead vends the `/photo/:/transcode` URL from `PlaybackController.chapterThumbnailURL(for:)` and `ChapterCard` renders it via `AsyncImage`. The rest of the plan (the rail layout, `indexOfChapter` helper, current-chapter highlight + auto-scroll) shipped as written.
+
 **Architecture:** Fully additive — native AVKit chrome (`showsPlaybackControls = true`) is untouched; only the contents of the already-registered Chapters info tab change. The one piece of pure logic (current-chapter selection) lives in PlexKit so it is unit-testable; the rail and card are SwiftUI views in the app. Thumbnails reuse the existing `PosterImage` loader (Plex `/photo/:/transcode`), so there is no new networking.
 
 **Tech Stack:** Swift 6, SwiftUI, AVKit (visionOS 26), PlexKit (local SPM package), swift-testing (`import Testing`).
