@@ -140,14 +140,18 @@ public enum OptimizeRequest {
     public static func downloadURL(server: URL,
                                    token: String,
                                    partKey: String) -> URL {
-        var components = URLComponents(
-            url: server.appendingPathComponent(partKey.hasPrefix("/") ? String(partKey.dropFirst()) : partKey),
-            resolvingAgainstBaseURL: false
-        )!
+        let partURL = server.appendingPathComponent(
+            partKey.hasPrefix("/") ? String(partKey.dropFirst()) : partKey)
+        guard var components = URLComponents(url: partURL, resolvingAgainstBaseURL: false) else {
+            preconditionFailure("OptimizeRequest: part URL is not decomposable: \(partURL)")
+        }
         components.queryItems = [
             .init(name: "download", value: "1"),
             .init(name: "X-Plex-Token", value: token),
         ]
-        return components.url!
+        guard let url = components.url else {
+            preconditionFailure("OptimizeRequest: could not rebuild download URL for part \(partKey)")
+        }
+        return url
     }
 }
