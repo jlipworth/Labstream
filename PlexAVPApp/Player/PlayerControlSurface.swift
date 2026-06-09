@@ -172,6 +172,18 @@ final class PlayerControlSurface {
     private func applyContextualActions() {
         guard let playerVC else { return }
 
+        // While the INLINE failure dialog is up, hide AVKit's own transport controls. We pause on
+        // failure (PlaybackController.surfaceFailure) so a recovering network can't auto-resume
+        // playback behind the dialog — but pausing auto-reveals the transport, and on visionOS the
+        // system chrome renders ABOVE our SwiftUI error overlay, so the skip/play buttons pop in
+        // front of the dialog. Hiding controls clears them; the SwiftUI overlay still offers
+        // Retry/Close. We ONLY hide in the embedded/inline state: in the EXPANDED cinema
+        // experience there is no SwiftUI dialog and the Retry/Close contextualActions ARE the
+        // transport, so hiding controls there would strand the user with no exit.
+        let failedInline = controller.playbackError.isFailed
+            && playerVC.experienceController.experience == .embedded
+        playerVC.showsPlaybackControls = !failedInline
+
         var actions: [UIAction] = []
 
         if controller.playbackError.isFailed {

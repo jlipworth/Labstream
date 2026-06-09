@@ -32,14 +32,16 @@ xcrun simctl install booted "$APP" && xcrun simctl launch booted com.personal.Pl
       ghost persisted), which means the artifact originates in the **system's collapse/docking animation
       itself**, not our cover fade. Next angle to try: blank/hide the player view (or swap to a black frame)
       *before* the collapse so there's no frame left to ghost. Left as-is for now per decision to defer.
-- [ ] **Quality-reload keeps playhead (#9)** — Mid-playback, open the **Quality** info tab, pick a different
+- [x] **Quality-reload keeps playhead (#9)** ✅ verified in sim — Mid-playback, open the **Quality** info tab, pick a different
       Mbps cap. Brief rebuffer expected, then it resumes **at the same playhead** (not from 0).
       _Also verify: a NORMAL resume (open a half-watched title → Resume) lands at the right offset and does
       NOT do a redundant double-seek._
-- [ ] **Failed-playback error UI + retry (#8)** — Force a bad stream (e.g. kill network briefly at start, or
-      a known-bad title). After one silent auto-retry, a **"Playback failed"** overlay appears with **Retry**
-      (re-runs from last playhead) + **Close**. Confirm Retry recovers when the server is back.
-      _Note: a genuinely fatal error shows ~1 retry's delay before the overlay (by design)._
+- [~] **Failed-playback error UI + retry (#8)** — ⏸️ **live-test deferred to [issue #8](https://github.com/jlipworth/plex-avp-app/issues/8).**
+      Implemented + build-verified + deployed; the visual-layering fixes (pause-on-failure, BufferingOverlay
+      gate, hide AVKit controls on inline failure) are documented in the issue. The remaining human checks
+      (no spinner/controls over the dialog; Retry recovers; expanded-mode Retry/Close still show) are tracked
+      there. Original repro: force a bad stream (kill network briefly), expect one silent auto-retry then a
+      **"Playback failed"** overlay with **Retry** (re-runs from last playhead) + **Close**.
 - [ ] **Progress scrobble / mark-watched (#11)** — Watch a title past ~90% (or to end). It should be marked
       **watched** and leave/refresh Continue Watching. Stop mid-way → reopening offers Resume at that offset.
       _Verify capped-HLS items report a finite duration so the 90% threshold actually fires._

@@ -1670,6 +1670,18 @@ final class PlaybackController {
 
         NSLog("PlaybackController: playback failed, surfacing to UI (%@)",
               String(describing: error))
+        surfaceFailure(error)
+    }
+
+    /// Pause the player, then surface the failure to the UI. Pausing FIRST is what makes the
+    /// error/Retry overlay stand alone: while stalled the player sits in
+    /// `.waitingToPlayAtSpecifiedRate`, so AVKit paints its own buffering glyph AND our #21
+    /// stall spinner (`isBuffering`) stays up — both would render on top of the dialog. Pausing
+    /// flips `timeControlStatus` to `.paused`, so AVKit swaps in the static play button and our
+    /// `BufferingState` clears (it reports `false` on `.paused`). Recovery still rebuilds the
+    /// player from `currentResumeMs` on Retry, so pausing here never strands the playhead.
+    private func surfaceFailure(_ error: Error?) {
+        player.pause()
         playbackError.set(error)
     }
 
@@ -1712,10 +1724,10 @@ final class PlaybackController {
         if let underlying = current.error {
             NSLog("PlaybackController: stream stalled, surfacing failure (%@)",
                   String(describing: underlying))
-            playbackError.set(underlying)
+            surfaceFailure(underlying)
         } else {
             NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
-            playbackError.set(NSError(
+            surfaceFailure(NSError(
                 domain: "PlexAVPApp.Playback", code: -1001,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."]))
