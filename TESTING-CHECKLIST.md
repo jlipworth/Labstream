@@ -1,7 +1,7 @@
 # Testing Checklist — batched verification pass
 
-_All items below were implemented + build-verified (app builds green; 61 PlexKit tests pass) but NOT yet
-live-tested in the headset/sim. Work through these in one pass. Nothing here is committed yet._
+_All items below were implemented + build-verified (app builds green; **97 PlexKit tests pass**) but NOT yet
+live-tested in the headset/sim. Work through these in one pass. Everything here is committed to `main`._
 
 ## Build / install / launch
 ```sh
@@ -71,17 +71,49 @@ xcrun simctl install booted "$APP" && xcrun simctl launch booted com.personal.Pl
       manual pause. The ~30s forward buffer should feel smoother on a flaky network. _Real rebuffer behavior
       only visible on a throttled connection._
 
+### Built this pass — additive AVKit info-tabs (the "additive, like chapter scroller" approach; supersedes #2)
+
+- [ ] **Audio soundtrack / language picker (#3)** — New in-player **Audio** info tab (waveform icon). On a
+      title with multiple audio tracks, it lists each soundtrack by real name ("English", "Spanish",
+      "English (AD)" for audio-description). Pick one → audio switches live (soft switch, no restart). Next
+      item/session it auto-reapplies your preferred **language**. _On a single-track title the tab shows a
+      graceful empty state ("No alternate audio tracks") rather than a useless one-row list — gated on
+      `group.options.count > 1`. Label quality depends on PMS muxing multiple audible renditions with usable
+      locale tags._
+- [ ] **Quality menu polish (#6)** — The **Quality** info tab now offers a granular ladder
+      (2/3/4/8/10/12/20/40 Mbps with **resolution hints** — "8 Mbps · 1080p" — plus **"Maximum (original)"**).
+      The list **scrolls reliably** to the bottom row inside the info panel (was clipping before). Your current
+      cap shows a checkmark; picking a new one mid-playback rebuffers briefly and **keeps the playhead** (see
+      #9). _All previously-used caps still resolve a checkmark even if not on the visible ladder._
+- [ ] **Stats overlay (#7)** — The **Stats** info tab is now a **launcher**: tap the eye toggle and a
+      stats-for-nerds panel floats at the **top-leading** corner over the video (resolution, bitrate, buffer,
+      dropped frames, transcode vs direct mode…). Tap its **✕** to dismiss. Confirm the floating frame does NOT
+      block player touch/transport underneath, and the ✕ is reliably tappable. _Overlay is suppressed while a
+      playback error is showing (won't stack on the failure UI)._
+
 ---
 
-## C. NOT built yet — need your decision/testing before I implement
+## C. Status of the remaining tasks
 
-- **#2 KEYSTONE — custom SwiftUI control overlay** (replaces AVKit info-tabs with our own transport/controls).
-  Big UX refactor that needs visual iteration with you. **Unblocks #6, #7, #3.**
-- **#6 Quality menu polish** (granular Mbps+resolution labels, fix sticky scroll, clarify "Maximum") — folds
-  into #2.
-- **#7 Stats as an on-video overlay** (Emby-style, not a modal tab) — folds into #2.
-- **#3 Audio soundtrack / language picker** (remember language) — needs #2 + an accurate device profile (#13).
-- **#13 Accurate AVP DeviceProfile + Direct Play within cap** — touches the CORE transcode decision (and the
-  `Safari` profile constraint); high value but risky to change without you testing each step. Held deliberately.
+- **#2 SUPERSEDED — custom SwiftUI control overlay.** We chose the **additive** route instead (extend the
+  native AVKit info-tabs rather than rebuild the transport from scratch). #3/#6/#7 shipped this way (Section B),
+  so the big keystone refactor is no longer needed. Closed as superseded, not deferred.
+- **#13 Accurate AVP DeviceProfile + Direct Play within cap — PARTIALLY done; app-side half deferred.**
+  - _Done + tested on `main` (PlexKit, Track B):_ `directPlayProbeDecisionURL()` + the `visionOSDirectPlayProbe`
+    groundwork are committed with unit coverage.
+  - _Deferred (needs your decision + device testing):_ actually loading a direct-play file instead of
+    `start.m3u8`. This is the risky half — it changes resume-priming (`#EXT-X-START`), can break `subtitles=auto`
+    soft-rendition muxing, and interacts with the **CRITICAL `Safari` client-profile constraint** (an unknown
+    profile makes PMS return a bare 400). Merely swapping the decision URL without the rest would make the Stats
+    "Mode" row lie. **→ See open question at the bottom.**
 - **#4 Scrubbing trick-play thumbnails** — server-dependent (needs PMS I-frame playlist); held.
 - **#19 RealityKit theater**, **#20 multi-track offline (.movpkg)** — optional / later.
+
+---
+
+## Open question for you
+
+**#13 Direct Play:** Do you want me to take on the app-side direct-play integration as a separate, device-tested
+work item? It's higher-risk (touches the core transcode decision + the `Safari` profile constraint) so I'd want
+to do it on its own branch with you testing each step in the headset — not bundled with the safe UI features
+that are already on `main`. Or leave it shelved for now?
