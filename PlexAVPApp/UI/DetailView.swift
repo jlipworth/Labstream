@@ -28,6 +28,12 @@ struct DetailView: View {
     @State private var playLocalURL: URL?
     @State private var showDownloadOptions = false
 
+    /// The item currently being PLAYED in the cover. Starts as the detail item, but the
+    /// Up Next autoplay (#15) swaps it to the next episode while keeping the cover up — the
+    /// `.id` keyed on its `ratingKey` makes `PlayerView` + its controller rebuild for the
+    /// new episode. `nil` until the player is first presented.
+    @State private var playingItem: MediaItem?
+
     /// Which `Media` version is selected for play/download. Index into `detailed.media`.
     /// Defaults to `0` (the primary version). Reset whenever a metadata refresh swaps the
     /// underlying item out from under us so we never index past the array.
@@ -182,6 +188,7 @@ struct DetailView: View {
             HStack(spacing: DS.Space.lg) {
                 Button {
                     playLocalURL = nil
+                    playingItem = detailed
                     presentingPlayer = true
                 } label: {
                     Label(resumeLabel, systemImage: "play.fill")
@@ -207,6 +214,7 @@ struct DetailView: View {
         if let local = localURL {
             Button {
                 playLocalURL = local
+                playingItem = detailed
                 presentingPlayer = true
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
@@ -269,22 +277,43 @@ struct DetailView: View {
 
     @ViewBuilder
     private var playerCover: some View {
+        // The item currently in the cover: starts as `detailed`, then swaps to the next
+        // episode on Up Next autoplay (#15). Fall back to `detailed` defensively.
+        let playing = playingItem ?? detailed
         if let token = appModel.token, let server = appModel.serverBaseURL {
-            // Rely on the native AVPlayerViewController controls for dismissal. The old
-            // custom xmark overlay floated on top of the transport bar / "…" menu and
-            // collided with the native controls ("buttons behind buttons"); the system
-            // player already provides a close affordance in the visionOS cinema chrome,
-            // so the redundant overlay is removed.
+            // AVPlayerViewController supplies NO system Close button inside a
+            // `.fullScreenCover` on visionOS, so the cover was previously inescapable.
+            // We thread a `dismiss` closure into PlayerView, which renders its own
+            // top-leading close affordance (clear of the AVKit transport bar / "…" menu).
+            // This works in both the inline and expanded player states.
             Group {
                 if let local = playLocalURL {
-                    PlayerView(localFile: local, item: detailed)
+                    PlayerView(localFile: local, item: playing,
+                               onClose: { presentingPlayer = false })
                 } else {
-                    PlayerView(item: detailed,
+                    PlayerView(item: playing,
                                server: server,
                                token: token,
                                identity: appModel.identity,
                                client: appModel.client,
-                               mediaIndex: selectedMediaIndex)
+                               // The Plex resource clientIdentifier IS the server's machine
+                               // identifier; the play-queue API needs it to resolve the next
+                               // episode for the Up Next card.
+                               mediaIndex: playing.ratingKey == detailed.ratingKey ? selectedMediaIndex : 0,
+                               machineIdentifier: appModel.selectedServer?.clientIdentifier,
+                               onClose: { presentingPlayer = false },
+                               onRequestPlay: { next in
+                                   // Up Next advance: swap the presented item to the next
+                                   // episode. The `.id` keyed on ratingKey tears down the old
+                                   // controller and rebuilds PlayerView for the new episode,
+                                   // keeping the cover up for a continuous experience.
+                                   playLocalURL = nil
+                                   playingItem = next
+                               })
+                    // Rebuild PlayerView + its PlaybackController cleanly whenever the playing
+                    // item changes (Up Next advance), so the outgoing controller is dismantled
+                    // (its `stop()` flushes a final timeline) and a fresh one starts the next.
+                    .id(playing.ratingKey)
                 }
             }
             .ignoresSafeArea()

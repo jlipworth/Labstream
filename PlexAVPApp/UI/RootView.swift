@@ -84,10 +84,20 @@ enum BrowseAPI {
     }
 
     /// `GET /library/metadata/<ratingKey>` — full metadata for one item.
+    ///
+    /// Requests chapters, intro/credits markers and extras inline so the detail/player
+    /// UI can render chapter rows and Skip Intro / Skip Credits without extra round-trips.
+    /// These are additive query params; PMS simply omits the corresponding elements when
+    /// the item has none.
     static func metadata(server: URL, token: String, identity: ClientIdentity,
                          ratingKey: String) -> PlexRequest {
         PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)"),
                     method: "GET",
+                    queryItems: [
+                        .init(name: "includeChapters", value: "1"),
+                        .init(name: "includeMarkers", value: "1"),
+                        .init(name: "includeExtras", value: "1"),
+                    ],
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
 }
