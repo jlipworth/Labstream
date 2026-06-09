@@ -52,26 +52,30 @@ public struct OfflineLibraryView: View {
 
     @ViewBuilder
     private func row(for record: DownloadRecord) -> some View {
-        let isComplete = record.progress >= 1.0
+        // Drive the row off the explicit, persisted status (D2) instead of inferring
+        // completion from `progress >= 1.0` — a stalled job that froze at <100% and a
+        // failed-but-100% body are now distinct, observable states.
+        let isComplete = record.isComplete
+        let isFailed = record.status == .failed
         let isActive = manager.activeJobs.contains(record.ratingKey)
         let error = manager.lastError[record.ratingKey]
 
         HStack(spacing: 16) {
-            // A small offline glyph tile keeps each row visually anchored even though
-            // local records don't carry poster artwork.
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.regularMaterial)
-                .frame(width: 44, height: 44)
-                .overlay {
-                    Image(systemName: isComplete ? "arrow.down.circle.fill" : "arrow.down.circle")
-                        .font(.title3)
-                        .foregroundStyle(isComplete ? .green : .secondary)
-                }
+            // D5: show the locally-cached poster when present (works fully offline);
+            // otherwise fall back to a small offline glyph tile.
+            offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(record.title).font(.headline)
-                if let error {
-                    Text(message(for: error))
+                if let subtitle = subtitle(for: record) {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if isFailed {
+                    // Prefer the surfaced reason; fall back to a generic failed line so
+                    // a `.failed` row reconciled at launch (no live error) still explains.
+                    Text(error.map(message(for:)) ?? "Download failed. Tap to retry.")
                         .font(.caption)
                         .foregroundStyle(.red)
                 } else if isComplete {
@@ -95,20 +99,74 @@ public struct OfflineLibraryView: View {
                     Image(systemName: "play.circle.fill").font(.title2)
                 }
                 .buttonStyle(.plain)
-            } else if isActive || error == nil {
+            } else if isFailed {
+                Button {
+                    manager.retry(ratingKey: record.ratingKey)
+                } label: {
+                    Image(systemName: "arrow.clockwise.circle.fill").font(.title2)
+                }
+                .buttonStyle(.plain)
+            } else {
                 ProgressView()
             }
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .onTapGesture { if isComplete { playing = record } }
+        .onTapGesture {
+            if isComplete { playing = record }
+            else if isFailed { manager.retry(ratingKey: record.ratingKey) }
+        }
     }
 
-    /// Build a minimal `MediaItem` so the offline file can flow through the same
-    /// `PlayerView` path. The player only needs `title` (and `ratingKey`/`type`)
-    /// for a local file; stream metadata isn't required offline.
+    private func tileGlyph(isComplete: Bool, isFailed: Bool) -> String {
+        if isComplete { return "arrow.down.circle.fill" }
+        if isFailed { return "exclamationmark.circle" }
+        return "arrow.down.circle"
+    }
+
+    /// The locally-cached poster (D5) when present, else the neutral glyph tile.
+    @ViewBuilder
+    private func offlinePoster(for record: DownloadRecord, isComplete: Bool, isFailed: Bool) -> some View {
+        if let posterURL = record.posterURL,
+           let data = try? Data(contentsOf: posterURL),
+           let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 44, height: 66)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.regularMaterial)
+                .frame(width: 44, height: 66)
+                .overlay {
+                    Image(systemName: tileGlyph(isComplete: isComplete, isFailed: isFailed))
+                        .font(.title3)
+                        .foregroundStyle(isComplete ? .green : (isFailed ? .red : .secondary))
+                }
+        }
+    }
+
+    /// A secondary line built from the persisted snapshot (D5): year + runtime +
+    /// content rating, when available. Returns nil for rows with no metadata.
+    private func subtitle(for record: DownloadRecord) -> String? {
+        guard let meta = record.metadata else { return nil }
+        var parts: [String] = []
+        if let year = meta.year { parts.append(String(year)) }
+        if let duration = meta.duration, duration > 0 {
+            let minutes = max(1, duration / 60_000)
+            parts.append("\(minutes) min")
+        }
+        if let rating = meta.contentRating, !rating.isEmpty { parts.append(rating) }
+        return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the
+    /// offline file flows through the same `PlayerView` path with real title/metadata.
+    /// Rows persisted before D5 fall back to a minimal movie.
     private func offlineItem(from record: DownloadRecord) -> MediaItem {
-        MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
+        record.metadata?.makeMediaItem()
+            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
     }
 
     private func message(for error: DownloadManager.DownloadError) -> String {
@@ -119,6 +177,7 @@ public struct OfflineLibraryView: View {
         case .noOptimizedPart:         return "No optimized version was produced."
         case .storageFull:             return "Not enough free space."
         case .transferFailed(let m):   return "Download failed: \(m)"
+        case .invalidDownload(let m):  return "Download invalid: \(m)"
         }
     }
 

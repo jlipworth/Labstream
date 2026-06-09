@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import PlexKit
+import AVFoundation   // D1: AVURLAsset playability probe on a finished download
 
 /// Coordinates the offline-download pipeline:
 ///   1. trigger a server-side capped-bitrate optimize (8 Mbps 1080p preset),
@@ -27,6 +28,10 @@ public final class DownloadManager {
         case noOptimizedPart
         case storageFull
         case transferFailed(String)
+        /// The transfer finished with a 2xx but the body wasn't a usable video
+        /// container (HTML/JSON error page, truncated transcode, unplayable). D1:
+        /// previously such bodies were saved as "complete" and failed at playback.
+        case invalidDownload(String)
     }
 
     /// A user-selectable download quality.
@@ -108,7 +113,23 @@ public final class DownloadManager {
         self.session.onChange = { [weak self] in
             Task { @MainActor in self?.refreshRecords() }
         }
-        self.session.reattach()
+        // D3: surface background-delegate failures instead of silently dropping the
+        // row. The delegate records a `.failed` status in the store and hands us the
+        // reason here so `lastError` can drive the OfflineLibraryView message + retry.
+        self.session.onError = { [weak self] ratingKey, error in
+            Task { @MainActor in
+                self?.lastError[ratingKey] = error
+                self?.refreshRecords()
+            }
+        }
+        // D2: rows with no live task can't be told apart from a stall, so reconcile
+        // them to `.failed` (retryable) once we know which tasks survived. The
+        // `getAllTasks` completion lands off the main actor; the store is thread-safe,
+        // so we reconcile there and hop to `@MainActor` only to publish records.
+        self.session.reattach { [weak self, store] liveKeys in
+            store.reconcile(liveRatingKeys: liveKeys)
+            Task { @MainActor in self?.refreshRecords() }
+        }
     }
 
     /// Absolute local URL for a completed download, if present on disk.
@@ -129,12 +150,16 @@ public final class DownloadManager {
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
 
+        // D5: snapshot metadata (no explicit quality on this legacy optimize path).
+        let metadata = Self.offlineMetadata(from: item, quality: nil)
         // Seed a 0% record so the UI shows the job immediately.
         let seed = DownloadRecord(ratingKey: ratingKey, title: item.title,
                                   localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                  bytes: 0, progress: 0)
+                                  bytes: 0, progress: 0, metadata: metadata)
         store.upsert(seed)
         refreshRecords()
+        cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
+                    server: server, token: token)
 
         do {
             try await triggerOptimize(item: item, server: server, token: token,
@@ -144,18 +169,22 @@ public final class DownloadManager {
             let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
             let destination = store.destinationURL(ratingKey: ratingKey, ext: ext.isEmpty ? "mp4" : ext)
             store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                        localURL: destination, bytes: 0, progress: 0))
+                                        localURL: destination, bytes: 0, progress: 0,
+                                        metadata: metadata))
             refreshRecords()
 
             let downloadURL = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
             try session.start(ratingKey: ratingKey, from: downloadURL, to: destination)
             refreshRecords()
         } catch let error as DownloadError {
+            // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
+            // so the UI can explain the failure and offer a retry.
             lastError[ratingKey] = error
-            store.remove(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         } catch {
             lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         }
     }
@@ -188,10 +217,18 @@ public final class DownloadManager {
 
         // The transcoded download always lands as an MP4 (we ask `protocol=http`).
         let destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        // D5: snapshot the source item + chosen quality so the offline library renders
+        // richly without the server and `retry()` can rebuild a faithful MediaItem.
+        let metadata = Self.offlineMetadata(from: item, quality: quality)
         // Seed a 0% record so the UI shows the job immediately.
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0))
+                                    localURL: destination, bytes: 0, progress: 0,
+                                    metadata: metadata))
         refreshRecords()
+        // D5: cache the poster locally (best-effort) so artwork shows offline. A fetch
+        // failure is not a download failure — it just leaves the row without a poster.
+        cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
+                    server: server, token: token)
 
         // `nil` cap (Original) maps to a very high ceiling so PMS still emits a
         // playable MP4 rather than rejecting an absent cap (mirrors PlaybackController).
@@ -211,11 +248,14 @@ public final class DownloadManager {
                               to: destination)
             refreshRecords()
         } catch let error as DownloadError {
+            // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
+            // so the UI can explain the failure and offer a retry.
             lastError[ratingKey] = error
-            store.remove(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         } catch {
             lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         }
     }
@@ -224,6 +264,24 @@ public final class DownloadManager {
     /// Lets the options sheet show "Downloaded" / disable re-download.
     public func hasDownload(for ratingKey: String) -> Bool {
         records.contains { $0.ratingKey == ratingKey }
+    }
+
+    /// Retry a previously `.failed` download (D3/D5). We rebuild the source `MediaItem`
+    /// from the persisted `OfflineMetadata` snapshot (real type + the originally chosen
+    /// quality) and re-run the verified universal-transcode path. Rows persisted before
+    /// D5 lack a snapshot, so we fall back to a minimal movie at the default quality.
+    public func retry(ratingKey: String) {
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        lastError[ratingKey] = nil
+        let metadata = record.metadata
+        // Drop the stale `.failed` row so `optimizeAndDownload` re-seeds it cleanly;
+        // this also removes any leftover invalid file from the failed attempt.
+        store.remove(ratingKey: ratingKey)
+        refreshRecords()
+        let item = metadata?.makeMediaItem()
+            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
+        let quality = metadata?.quality.flatMap(DownloadQuality.init(rawValue:)) ?? .default
+        Task { await optimizeAndDownload(item, quality: quality) }
     }
 
     /// Delete a download and its backing file.
@@ -236,6 +294,69 @@ public final class DownloadManager {
 
     private func refreshRecords() {
         records = store.records
+    }
+
+    // MARK: - D5: offline metadata + poster caching
+
+    /// Build the persisted snapshot of a source `MediaItem` + the chosen quality.
+    /// Captures only the fields the offline UI/player/retry actually read.
+    private static func offlineMetadata(from item: MediaItem,
+                                        quality: DownloadQuality?) -> OfflineMetadata {
+        OfflineMetadata(ratingKey: item.ratingKey,
+                        key: item.key,
+                        title: item.title,
+                        type: item.type,
+                        year: item.year,
+                        duration: item.duration,
+                        summary: item.summary,
+                        contentRating: item.contentRating,
+                        tagline: item.tagline,
+                        thumb: item.thumb,
+                        art: item.art,
+                        quality: quality?.rawValue,
+                        posterRelativePath: nil)
+    }
+
+    /// Download + cache the item's poster locally so the offline library shows artwork
+    /// without the server (D5). Best-effort: any failure leaves the row poster-less and
+    /// never fails the download. Fetches via the same `/photo/:/transcode` path the
+    /// online `PosterImage` uses, with the same server + token as the media download.
+    private func cachePoster(ratingKey: String, thumb: String?, server: URL, token: String) {
+        guard let thumb, !thumb.isEmpty,
+              let url = Self.posterTranscodeURL(thumb: thumb, server: server, token: token)
+        else { return }
+        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
+        let store = self.store
+        Task { @MainActor in
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let http = response as? HTTPURLResponse,
+                   !(200...299).contains(http.statusCode) { return }
+                guard !data.isEmpty else { return }
+                try data.write(to: posterURL, options: .atomic)
+                store.setPosterRelativePath(ratingKey: ratingKey,
+                                            posterURL.lastPathComponent)
+                self.refreshRecords()
+            } catch {
+                // No poster is fine — never surfaced as a download error.
+            }
+        }
+    }
+
+    /// Build the `/photo/:/transcode` URL for an image path, mirroring `PosterImage`.
+    /// Requests a poster-sized image so the cached file stays small.
+    private static func posterTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
+        var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
+                                  resolvingAgainstBaseURL: false)
+        comps?.queryItems = [
+            .init(name: "url", value: thumb),
+            .init(name: "width", value: "400"),
+            .init(name: "height", value: "600"),
+            .init(name: "minSize", value: "1"),
+            .init(name: "upscale", value: "1"),
+            .init(name: "X-Plex-Token", value: token),
+        ]
+        return comps?.url
     }
 
     // MARK: - Optimize trigger (HIGH UNCERTAINTY — isolated)
@@ -347,6 +468,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Called on any progress/completion so the manager can refresh records.
     var onChange: (() -> Void)?
 
+    /// D3: invoked from each delegate failure/validation path so the manager can
+    /// surface a reason (`lastError`) instead of the row vanishing without cause.
+    /// Lands off the main actor; the manager hops to `@MainActor` to apply it.
+    var onError: ((_ ratingKey: String, _ error: DownloadManager.DownloadError) -> Void)?
+
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
         config.isDiscretionary = false
@@ -374,21 +500,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// restore each record's progress from `didWriteData`/`didFinishDownloadingTo`.
     /// We also re-seed `inflight` so a relaunched task maps back to its record's
     /// destination (the index.json still holds the ratingKey + relative path).
-    func reattach() {
+    /// - Parameter onReattached: called (off the main actor) with the set of
+    ///   ratingKeys that mapped back to a still-running task. The manager uses it to
+    ///   reconcile the rest of the store to `.failed` (D2) — anything NOT in this set
+    ///   has no live task and so can't be distinguished from a stall.
+    func reattach(onReattached: ((Set<String>) -> Void)? = nil) {
         urlSession.getAllTasks { [weak self] tasks in
-            guard let self else { return }
+            guard let self else { onReattached?([]); return }
             // Rebuild the taskIdentifier -> (ratingKey, destination) map for any
             // tasks the OS resumed. We match a task to a record by its source URL's
             // `path` query param (the metadataKey), which is stable per item; if we
             // can't match we still leave the task running and rely on the store row.
+            var liveKeys: Set<String> = []
             self.lock.lock()
             for task in tasks {
                 guard self.inflight[task.taskIdentifier] == nil,
                       let ratingKey = Self.ratingKey(for: task, store: self.store) else { continue }
                 let destination = self.store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 self.inflight[task.taskIdentifier] = (ratingKey, destination)
+                liveKeys.insert(ratingKey)
             }
+            // Also count tasks already tracked (e.g. started this launch) as live.
+            for entry in self.inflight.values { liveKeys.insert(entry.ratingKey) }
             self.lock.unlock()
+            onReattached?(liveKeys)
             self.onChange?()
         }
     }
@@ -463,23 +598,78 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     didFinishDownloadingTo location: URL) {
         lock.lock(); let entry = inflight[downloadTask.taskIdentifier]; lock.unlock()
         guard let entry else { return }
-        // Validate the HTTP status — Plex returns 200 for a real file body.
-        if let http = downloadTask.response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            store.remove(ratingKey: entry.ratingKey)
+
+        // Helper: a finished transfer that isn't actually a usable video must NOT be
+        // left in place as "complete" (D1). Record a `.failed` row + surface why, and
+        // delete the bad file so a retry starts clean.
+        func fail(_ reason: String) {
+            try? fileManager.removeItem(at: entry.destination)
+            store.setStatus(ratingKey: entry.ratingKey, .failed)
+            onError?(entry.ratingKey, .invalidDownload(reason))
             onChange?()
-            return
         }
-        // Move the temp file into place atomically.
+
+        // 1. HTTP status — Plex returns 200 for a real file body.
+        if let http = downloadTask.response as? HTTPURLResponse {
+            guard (200...299).contains(http.statusCode) else {
+                fail("Server returned HTTP \(http.statusCode).")
+                return
+            }
+            // 2. MIME type — an HTML/JSON body is a Plex error page, not a container.
+            // (Truncated transcodes still pass here but are caught by 3/4 below.)
+            if let mime = http.mimeType?.lowercased(),
+               mime.hasPrefix("text/") || mime.contains("application/json")
+                || mime.contains("application/xml") {
+                fail("Server returned a \(mime) page, not a video.")
+                return
+            }
+        }
+
+        // Move the temp file into place atomically before validating its contents
+        // (the system deletes `location` once this delegate returns).
         do {
             try? fileManager.removeItem(at: entry.destination)
             try fileManager.moveItem(at: location, to: entry.destination)
-            let size = (try? fileManager.attributesOfItem(atPath: entry.destination.path)[.size] as? Int) ?? nil
-            let bytes = size ?? 0
-            store.updateProgress(ratingKey: entry.ratingKey, bytes: bytes, progress: 1.0)
         } catch {
-            store.remove(ratingKey: entry.ratingKey)
+            store.setStatus(ratingKey: entry.ratingKey, .failed)
+            onError?(entry.ratingKey, .transferFailed(String(describing: error)))
+            onChange?()
+            return
         }
+
+        // 3. Minimum size — an error page or stub is far below any real video; a
+        // sub-1 MB "movie" is almost certainly a truncated/failed transcode.
+        let bytes = (try? fileManager.attributesOfItem(atPath: entry.destination.path)[.size] as? Int)
+            .flatMap { $0 } ?? 0
+        if bytes < 1_000_000 {       // < ~1 MB
+            fail("Downloaded file is too small to be a video (\(bytes) bytes).")
+            return
+        }
+
+        // 4. Playability probe — confirm AVFoundation can actually open the file,
+        // catching bodies that are the right size/type but not a decodable container.
+        // Uses the async `load(.isPlayable)` (the sync `isPlayable` is deprecated and
+        // unreliable before properties load); the delegate can't await, so we finalize
+        // status in a detached Task. Bytes/progress are recorded now so the in-flight
+        // count is correct even while the probe runs.
+        store.updateProgress(ratingKey: entry.ratingKey, bytes: bytes, progress: 1.0)
         onChange?()
+        let destination = entry.destination
+        let ratingKey = entry.ratingKey
+        Task { [weak self] in
+            let asset = AVURLAsset(url: destination)
+            let playable = (try? await asset.load(.isPlayable)) ?? false
+            guard let self else { return }
+            if playable {
+                // Validated: mark explicitly complete (D2) so a relaunch trusts it.
+                self.store.setStatus(ratingKey: ratingKey, .complete)
+            } else {
+                try? self.fileManager.removeItem(at: destination)
+                self.store.setStatus(ratingKey: ratingKey, .failed)
+                self.onError?(ratingKey, .invalidDownload("Downloaded file isn't a playable video container."))
+            }
+            self.onChange?()
+        }
     }
 
     func urlSession(_ session: URLSession,
@@ -487,9 +677,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     didCompleteWithError error: Error?) {
         lock.lock(); let entry = inflight.removeValue(forKey: task.taskIdentifier); lock.unlock()
         guard let entry, let error else { return }
-        // A cancel is not a failure; everything else removes the partial record.
+        // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
+        // surfaced reason, rather than silently erasing it so the UI can offer retry.
         if (error as NSError).code != NSURLErrorCancelled {
-            store.remove(ratingKey: entry.ratingKey)
+            store.setStatus(ratingKey: entry.ratingKey, .failed)
+            onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
         }
         onChange?()
     }

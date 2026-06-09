@@ -110,6 +110,98 @@ import Foundation
     #expect(c.mediaContainer.hub[1].metadata.isEmpty)
 }
 
+@Test func decodesPartStreams() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"101","title":"Blade Runner","type":"movie",
+       "Media":[{"id":1,"Part":[{"id":9,"key":"/library/parts/9/file.mkv",
+         "Stream":[
+           {"id":100,"streamType":1,"codec":"hevc","index":0,"displayTitle":"4K HEVC"},
+           {"id":200,"streamType":2,"index":1,"codec":"dts","channels":6,"language":"English","languageTag":"en","languageCode":"eng","displayTitle":"English (DTS 5.1)","selected":true,"default":true},
+           {"id":201,"streamType":2,"index":2,"codec":"aac","channels":2,"language":"French"},
+           {"id":300,"streamType":3,"index":3,"language":"English","languageCode":"eng","forced":false,"displayTitle":"English (SRT)"},
+           {"id":301,"streamType":3,"index":4,"language":"Spanish","forced":true,"selected":true}
+         ]}]}]}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    let part = c.mediaContainer.metadata[0].media![0].part[0]
+    #expect(part.streams?.count == 5)
+    #expect(part.videoStreams.count == 1)
+    #expect(part.audioStreams.count == 2)
+    #expect(part.subtitleStreams.count == 2)
+    #expect(part.videoStreams[0].kind == .video)
+    let eng = part.audioStreams[0]
+    #expect(eng.codec == "dts")
+    #expect(eng.channels == 6)
+    #expect(eng.language == "English")
+    #expect(eng.languageTag == "en")
+    #expect(eng.languageCode == "eng")
+    #expect(eng.selected == true)
+    #expect(eng.isDefault == true)
+    #expect(part.subtitleStreams[1].forced == true)
+    #expect(part.subtitleStreams[1].kind == .subtitle)
+}
+
+@Test func decodesPartWithoutStreams() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"101","title":"Blade Runner","type":"movie",
+       "Media":[{"id":1,"Part":[{"id":9,"key":"/library/parts/9/file.mkv"}]}]}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    let part = c.mediaContainer.metadata[0].media![0].part[0]
+    #expect(part.streams == nil)
+    #expect(part.audioStreams.isEmpty)
+    #expect(part.subtitleStreams.isEmpty)
+    #expect(part.videoStreams.isEmpty)
+}
+
+@Test func decodesMetadataWithMarkers() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"101","title":"Episode","type":"episode",
+       "Marker":[
+         {"id":1,"type":"intro","startTimeOffset":12000,"endTimeOffset":75000},
+         {"id":2,"type":"credits","startTimeOffset":2500000,"endTimeOffset":2700000,"final":true},
+         {"type":"commercial","startTimeOffset":900000,"endTimeOffset":920000}]}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    let item = c.mediaContainer.metadata[0]
+    #expect(item.markers?.count == 3)
+    let intro = item.markers![0]
+    #expect(intro.kind == .intro)
+    #expect(intro.startTimeOffset == 12000)
+    #expect(intro.endTimeOffset == 75000)
+    #expect(intro.id == "1")
+    let credits = item.markers![1]
+    #expect(credits.kind == .credits)
+    #expect(credits.isFinal == true)
+    let commercial = item.markers![2]
+    #expect(commercial.kind == .commercial)
+    #expect(commercial.markerID == nil)
+    // synthesized id when PMS omits the marker id
+    #expect(commercial.id == "commercial-900000")
+}
+
+@Test func decodesUnknownMarkerType() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"1","title":"X","type":"episode",
+       "Marker":[{"id":9,"type":"recap","startTimeOffset":0,"endTimeOffset":1000}]}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    #expect(c.mediaContainer.metadata[0].markers![0].kind == .other("recap"))
+}
+
+@Test func decodesMetadataWithoutMarkers() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"77","title":"No Markers","type":"movie"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    #expect(c.mediaContainer.metadata[0].markers == nil)
+}
+
 @Test func decodesHubWithoutMetadata() throws {
     let json = """
     {"MediaContainer":{"Hub":[

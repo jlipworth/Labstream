@@ -83,6 +83,13 @@ final class PlayerControlSurface {
         )
         tabs.append(makeTab(subtitles, title: "Subtitles", systemImage: "captions.bubble"))
 
+        // Speed: pick a playback rate (0.5×–2×). Always offered (works for streaming and
+        // local files); selecting one sets the AVPlayer rate and persists the choice.
+        let speed = SpeedTabView(state: controller.speedState) { [weak self] rate in
+            self?.controller.setPlaybackSpeed(rate)
+        }
+        tabs.append(makeTab(speed, title: "Speed", systemImage: "speedometer"))
+
         let stats = StatsForNerdsView(diagnostics: controller.diagnostics, onClose: nil)
         tabs.append(makeTab(stats, title: "Stats", systemImage: "chart.bar.doc.horizontal"))
 
@@ -153,6 +160,46 @@ private struct QualityTabView: View {
 
     private func label(_ kbps: Int) -> String {
         kbps <= 0 ? "Maximum" : "\(kbps / 1000) Mbps"
+    }
+}
+
+/// Speed info-panel tab (R5): a list of playback rates with a checkmark on the active one.
+/// Mirrors `QualityTabView`. Selecting a rate sets the AVPlayer rate (and persists it); the
+/// checkmark binds to the controller's `PlaybackSpeedState` so it stays correct after a
+/// programmatic reapply (e.g. when a Quality reload re-pushes the saved speed).
+private struct SpeedTabView: View {
+    @Bindable var state: PlaybackSpeedState
+    var onPick: (Float) -> Void
+
+    private let options: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+
+    var body: some View {
+        List {
+            Section("Playback speed") {
+                ForEach(options, id: \.self) { rate in
+                    Button {
+                        onPick(rate)
+                    } label: {
+                        HStack {
+                            Text(label(rate))
+                            Spacer()
+                            if rate == state.speed {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func label(_ rate: Float) -> String {
+        rate == 1.0 ? "Normal (1×)"
+                    : (rate.truncatingRemainder(dividingBy: 1) == 0
+                       ? String(format: "%.0f×", rate)
+                       : String(format: "%g×", rate))
     }
 }
 

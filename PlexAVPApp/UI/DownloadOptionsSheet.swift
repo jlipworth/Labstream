@@ -110,7 +110,10 @@ struct DownloadOptionsSheet: View {
 
     @ViewBuilder
     private func existingSection(_ record: DownloadRecord) -> some View {
-        let isComplete = record.progress >= 1.0
+        // Drive off the explicit persisted status (D2) so a stalled/failed row is no
+        // longer mistaken for an in-progress one.
+        let isComplete = record.isComplete
+        let isFailed = record.status == .failed
         SwiftUI.Section {
             if isComplete {
                 Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
@@ -118,6 +121,15 @@ struct DownloadOptionsSheet: View {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if isFailed {
+                Label("Download failed", systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.red)
+                Button {
+                    downloadManager.retry(ratingKey: item.ratingKey)
+                    dismiss()
+                } label: {
+                    Label("Retry Download", systemImage: "arrow.clockwise")
+                }
             } else {
                 Label("Downloading…", systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)
