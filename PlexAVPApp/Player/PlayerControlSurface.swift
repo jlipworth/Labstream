@@ -552,17 +552,27 @@ private struct SubtitlesTabView: View {
     @State private var didLoad = false
 
     var body: some View {
-        List {
-            Section("Subtitles") {
+        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
+        // scroll inside the visionOS AVKit info panel, so content with many subtitle languages
+        // would clip the bottom rows (and the "Off" row stays first). Matches the
+        // Quality/Speed/Audio tabs.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Subtitles")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, DS.Space.sm)
                 if !didLoad {
                     HStack {
                         ProgressView()
                         Text("Loading…")
                             .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, DS.Space.sm)
                 } else if tracks.isEmpty {
                     Text("No subtitle tracks")
                         .foregroundStyle(.secondary)
+                        .padding(.vertical, DS.Space.sm)
                 } else {
                     ForEach(tracks) { track in
                         Button {
@@ -582,11 +592,14 @@ private struct SubtitlesTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, DS.Space.sm)
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
+            .padding(DS.Space.md)
         }
         .task {
             // Load once on appear. `.task` is cancelled/re-run if the view identity
@@ -631,17 +644,27 @@ private struct AudioTabView: View {
     @State private var didLoad = false
 
     var body: some View {
-        List {
-            Section("Audio") {
+        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
+        // scroll inside the visionOS AVKit info panel, so a release with many dub languages
+        // (8+ audible renditions) would clip the bottom rows out of reach. Matches the
+        // Quality/Speed tabs.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Audio")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, DS.Space.sm)
                 if !didLoad {
                     HStack {
                         ProgressView()
                         Text("Loading…")
                             .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, DS.Space.sm)
                 } else if tracks.isEmpty {
                     Text("No alternate audio tracks")
                         .foregroundStyle(.secondary)
+                        .padding(.vertical, DS.Space.sm)
                 } else {
                     ForEach(tracks) { track in
                         Button {
@@ -661,11 +684,14 @@ private struct AudioTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, DS.Space.sm)
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
+            .padding(DS.Space.md)
         }
         .task {
             // Load once on appear. `.task` is cancelled/re-run if the view identity changes,
