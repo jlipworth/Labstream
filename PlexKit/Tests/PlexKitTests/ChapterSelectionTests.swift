@@ -3,9 +3,9 @@ import Testing
 
 // Three chapters starting at 0ms, 12_000ms, 28_000ms.
 private let chapters: [Chapter] = [
-    Chapter(id: 1, tag: "Cold Open", startTimeOffset: 0,      endTimeOffset: 12_000),
-    Chapter(id: 2, tag: "The Heist",  startTimeOffset: 12_000, endTimeOffset: 28_000),
-    Chapter(id: 3, tag: "Aftermath",  startTimeOffset: 28_000, endTimeOffset: 41_000),
+    Chapter(id: 1, tag: "Cold Open", startTimeOffset: 0),
+    Chapter(id: 2, tag: "The Heist",  startTimeOffset: 12_000),
+    Chapter(id: 3, tag: "Aftermath",  startTimeOffset: 28_000),
 ]
 
 @Test func midChapterReturnsThatChapter() {
@@ -25,7 +25,7 @@ private let chapters: [Chapter] = [
 }
 
 @Test func beforeFirstChapterReturnsNil() {
-    let later = [Chapter(id: 1, tag: "Late", startTimeOffset: 5_000, endTimeOffset: 9_000)]
+    let later = [Chapter(id: 1, tag: "Late", startTimeOffset: 5_000)]
     #expect(later.indexOfChapter(at: 1_000) == nil)
 }
 
@@ -39,4 +39,9 @@ private let chapters: [Chapter] = [
         Chapter(id: 2, tag: "B", startTimeOffset: 10_000),
     ]
     #expect(mixed.indexOfChapter(at: 12_000) == 1)
+}
+
+@Test func allNilStartsReturnNil() {
+    let noStarts = [Chapter(id: 1, tag: "X", startTimeOffset: nil)]
+    #expect(noStarts.indexOfChapter(at: 0) == nil)
 }
