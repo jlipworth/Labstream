@@ -141,7 +141,7 @@ public final class DownloadManager {
     /// Records the resulting state (including any error) rather than throwing.
     public func optimizeAndDownload(_ item: MediaItem) async {
         let ratingKey = item.ratingKey
-        guard let token = appModel.token, let server = appModel.serverBaseURL else {
+        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             lastError[ratingKey] = .notAuthenticated
             return
         }
@@ -151,7 +151,8 @@ public final class DownloadManager {
         defer { activeJobs.remove(ratingKey) }
 
         // D5: snapshot metadata (no explicit quality on this legacy optimize path).
-        let metadata = Self.offlineMetadata(from: item, quality: nil)
+        let metadata = Self.offlineMetadata(from: item, quality: nil,
+                                            mediaIndex: 0, partIndex: 0)
         // Seed a 0% record so the UI shows the job immediately.
         let seed = DownloadRecord(ratingKey: ratingKey, title: item.title,
                                   localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
@@ -204,9 +205,12 @@ public final class DownloadManager {
     ///
     /// Records state (including any error) rather than throwing. Keeps the existing
     /// background `URLSession` transfer machinery, so it survives suspension/relaunch.
-    public func optimizeAndDownload(_ item: MediaItem, quality: DownloadQuality) async {
+    public func optimizeAndDownload(_ item: MediaItem,
+                                    quality: DownloadQuality,
+                                    mediaIndex: Int = 0,
+                                    partIndex: Int = 0) async {
         let ratingKey = item.ratingKey
-        guard let token = appModel.token, let server = appModel.serverBaseURL else {
+        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             lastError[ratingKey] = .notAuthenticated
             return
         }
@@ -219,7 +223,8 @@ public final class DownloadManager {
         let destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
         // D5: snapshot the source item + chosen quality so the offline library renders
         // richly without the server and `retry()` can rebuild a faithful MediaItem.
-        let metadata = Self.offlineMetadata(from: item, quality: quality)
+        let metadata = Self.offlineMetadata(from: item, quality: quality,
+                                            mediaIndex: mediaIndex, partIndex: partIndex)
         // Seed a 0% record so the UI shows the job immediately.
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
@@ -240,8 +245,8 @@ public final class DownloadManager {
                                          metadataKey: metadataKey,
                                          maxVideoBitrateKbps: cap,
                                          sessionID: "plex-avp-dl-" + UUID().uuidString,
-                                         mediaIndex: 0,
-                                         partIndex: 0)
+                                         mediaIndex: mediaIndex,
+                                         partIndex: partIndex)
         do {
             try session.start(ratingKey: ratingKey,
                               from: transcode.downloadURL(),
@@ -281,7 +286,10 @@ public final class DownloadManager {
         let item = metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
         let quality = metadata?.quality.flatMap(DownloadQuality.init(rawValue:)) ?? .default
-        Task { await optimizeAndDownload(item, quality: quality) }
+        let mediaIndex = metadata?.mediaIndex ?? 0
+        let partIndex = metadata?.partIndex ?? 0
+        Task { await optimizeAndDownload(item, quality: quality,
+                                         mediaIndex: mediaIndex, partIndex: partIndex) }
     }
 
     /// Delete a download and its backing file.
@@ -301,19 +309,25 @@ public final class DownloadManager {
     /// Build the persisted snapshot of a source `MediaItem` + the chosen quality.
     /// Captures only the fields the offline UI/player/retry actually read.
     private static func offlineMetadata(from item: MediaItem,
-                                        quality: DownloadQuality?) -> OfflineMetadata {
+                                        quality: DownloadQuality?,
+                                        mediaIndex: Int,
+                                        partIndex: Int) -> OfflineMetadata {
         OfflineMetadata(ratingKey: item.ratingKey,
                         key: item.key,
                         title: item.title,
                         type: item.type,
                         year: item.year,
                         duration: item.duration,
+                        viewOffset: item.viewOffset,
+                        viewCount: item.viewCount,
                         summary: item.summary,
                         contentRating: item.contentRating,
                         tagline: item.tagline,
                         thumb: item.thumb,
                         art: item.art,
                         quality: quality?.rawValue,
+                        mediaIndex: mediaIndex,
+                        partIndex: partIndex,
                         posterRelativePath: nil)
     }
 
@@ -504,7 +518,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ///   ratingKeys that mapped back to a still-running task. The manager uses it to
     ///   reconcile the rest of the store to `.failed` (D2) — anything NOT in this set
     ///   has no live task and so can't be distinguished from a stall.
-    func reattach(onReattached: ((Set<String>) -> Void)? = nil) {
+    func reattach(onReattached: (@Sendable (Set<String>) -> Void)? = nil) {
         urlSession.getAllTasks { [weak self] tasks in
             guard let self else { onReattached?([]); return }
             // Rebuild the taskIdentifier -> (ratingKey, destination) map for any
@@ -723,6 +737,10 @@ final class BackgroundDownloadCompletionRegistry {
     /// Record a live session so the delegate's identifier resolves to it.
     func register(_ session: BackgroundDownloadSession) {
         sessions[BackgroundDownloadSession.identifier] = session
+        if handlers[BackgroundDownloadSession.identifier] != nil {
+            session.ensureSessionReady()
+            session.reattach()
+        }
     }
 
     /// Store the system completion handler and make sure the matching session exists

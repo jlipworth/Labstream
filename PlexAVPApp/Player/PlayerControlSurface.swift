@@ -236,7 +236,7 @@ private struct ChaptersTabView: View {
     var body: some View {
         List {
             Section("Chapters") {
-                ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+                ForEach(Array(chapters.enumerated()), id: \.offset) { index, chapter in
                     Button {
                         if let startMs = chapter.startTimeOffset { onJump(startMs) }
                     } label: {

@@ -31,6 +31,8 @@ final class AuthManager {
     /// Poll cadence and ceiling for the PIN flow.
     private let pollInterval: Duration = .seconds(1)
     private let pollTimeout: Duration = .seconds(300)
+    private var pollTask: Task<Void, Never>?
+    private var activePinID: Int?
 
     init(appModel: AppModel, keychain: KeychainStore = KeychainStore()) {
         self.appModel = appModel
@@ -43,21 +45,31 @@ final class AuthManager {
     func restoreSession() async -> Bool {
         guard let saved = keychain.token else { return false }
         appModel.token = saved
-        state = .authenticated
-        try? await refreshServers()
-        return true
+        do {
+            try await refreshServers()
+            state = .authenticated
+            return true
+        } catch PlexError.unauthorized {
+            signOut()
+            return false
+        } catch {
+            state = .failed("Signed in, but server discovery failed.")
+            return true
+        }
     }
 
     /// Start a fresh login: create a PIN and surface the auth URL for the UI to open.
     /// Returns the URL the UI should present.
     func createPin() async throws -> URL {
+        cancelPendingLogin()
         let createReq = PinAuth.createPinRequest(identity: appModel.identity)
         let pin = try await appModel.client.send(createReq, as: PinResponse.self)
         let authURL = PinAuth.authAppURL(code: pin.code, identity: appModel.identity)
+        activePinID = pin.id
         state = .awaitingAuthorization(code: pin.code, url: authURL)
 
         // Kick off polling in the background; UI observes `state`.
-        Task { await pollForToken(pinID: pin.id) }
+        pollTask = Task { await pollForToken(pinID: pin.id) }
         return authURL
     }
 
@@ -67,6 +79,7 @@ final class AuthManager {
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: pollInterval)
             if Task.isCancelled { return }
+            guard activePinID == pinID else { return }
 
             let pollReq = PinAuth.pollPinRequest(pinID: pinID, identity: appModel.identity)
             do {
@@ -81,26 +94,36 @@ final class AuthManager {
                 continue
             }
         }
+        guard activePinID == pinID else { return }
+        activePinID = nil
+        pollTask = nil
         state = .failed("Authorization timed out.")
     }
 
     /// Persist the token, update the model, and discover servers.
     private func finishLogin(token: String) async {
-        keychain.token = token
+        guard keychain.saveToken(token) else {
+            state = .failed("Couldn’t securely save the Plex token.")
+            return
+        }
         appModel.token = token
-        state = .authenticated
         do {
             try await refreshServers()
+            activePinID = nil
+            pollTask = nil
+            state = .authenticated
         } catch {
-            // Authenticated but discovery failed; leave server selection empty.
             state = .failed("Signed in, but server discovery failed.")
         }
     }
 
     /// Run resource discovery and select the best server/connection.
     func refreshServers() async throws {
-        guard let token = appModel.token else { throw PlexError.unauthorized }
-        let req = ResourceDiscovery.resourcesRequest(token: token, identity: appModel.identity)
+        guard let accountToken = appModel.token else { throw PlexError.unauthorized }
+        appModel.selectedServer = nil
+        appModel.serverToken = nil
+        appModel.serverBaseURL = nil
+        let req = ResourceDiscovery.resourcesRequest(token: accountToken, identity: appModel.identity)
         let resources = try await appModel.client.send(req, as: ResourcesResponse.self)
 
         // Only devices that act as a media server.
@@ -108,18 +131,20 @@ final class AuthManager {
             ($0.provides ?? "").contains("server")
         }
         let chosen = servers.first { !$0.connections.isEmpty } ?? servers.first
-        guard let server = chosen, let token = appModel.token else { return }
+        guard let server = chosen else { throw PlexError.serverUnreachable }
+        let serverToken = server.accessToken ?? accountToken
 
         // A server advertises every interface as a "local" connection, including
         // unreachable container/VPN ones (e.g. a Docker 10.42.x.x bridge). Probe
         // candidates in priority order and use the first that actually answers;
         // only fall back to the static best pick if none respond.
         let ranked = ResourceDiscovery.rankedConnections(server.connections)
-        let url = await firstReachable(ranked, token: token)
+        let url = await firstReachable(ranked, token: serverToken)
             ?? ResourceDiscovery.bestConnection(server.connections).flatMap { URL(string: $0.uri) }
-        guard let url else { return }
+        guard let url else { throw PlexError.serverUnreachable }
 
         appModel.selectedServer = server
+        appModel.serverToken = serverToken
         appModel.serverBaseURL = url
     }
 
@@ -162,10 +187,18 @@ final class AuthManager {
 
     /// Clear all auth state and return to login. Call on sign-out or any 401.
     func signOut() {
+        cancelPendingLogin()
         keychain.token = nil
         appModel.token = nil
+        appModel.serverToken = nil
         appModel.selectedServer = nil
         appModel.serverBaseURL = nil
         state = .idle
+    }
+
+    func cancelPendingLogin() {
+        pollTask?.cancel()
+        pollTask = nil
+        activePinID = nil
     }
 }

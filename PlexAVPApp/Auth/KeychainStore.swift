@@ -117,9 +117,14 @@ final class KeychainStore {
     var token: String? {
         get { read(Self.tokenKey) }
         set {
-            if let newValue { save(newValue, for: Self.tokenKey) }
+            if let newValue { saveToken(newValue) }
             else { delete(Self.tokenKey) }
         }
+    }
+
+    @discardableResult
+    func saveToken(_ token: String) -> Bool {
+        save(token, for: Self.tokenKey)
     }
 
     /// Returns the persisted client identifier, generating + storing one on first

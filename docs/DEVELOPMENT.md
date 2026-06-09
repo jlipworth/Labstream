@@ -35,6 +35,15 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
 - **AVKit `contextualActions`** (`visionos(1.0)`) is the only affordance that renders over video in
   **both** inline and expanded cinema states and stays tappable — a floated SwiftUI sibling vanishes
   in the expanded experience, and the ⓘ panel is buried. (See the Close-button placement issue.)
+- **Close-button placement is settled — keep the `contextualActions` "✕ Close".** Three alternatives
+  were built as worktrees (`close-A/B/C`, on `origin`) and all lost to it: **A** (floated top-left ✕)
+  vanishes in expanded cinema; **B** (`showsPlaybackControls = false` + a hand-drawn transport) works
+  but *amputates the native info tabs* — Quality/Subtitles/Speed/Stats all disappear with native
+  chrome; **C** (window `.ornament` ✕) is worse — **a `.ornament` on the player suppresses AVKit's
+  own tap-to-reveal**, so the native transport + "…" menu never appear and you can't even reach
+  Expand. The ornament ✕ itself persists across expand (floats just outside the window), but at the
+  cost of all other controls. Net: `contextualActions` is the only option keeping both-state Close
+  *and* the full native feature set; its sole downside is being always-on.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)

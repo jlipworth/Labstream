@@ -67,7 +67,7 @@ struct SearchView: View {
         try? await Task.sleep(for: .milliseconds(300))
         if Task.isCancelled { return }
 
-        guard let server = appModel.serverBaseURL, let token = appModel.token else {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }

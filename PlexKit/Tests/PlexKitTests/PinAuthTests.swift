@@ -20,6 +20,19 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app"
     #expect(s.contains("code=WXYZ"))
 }
 
+@Test func authAppURLEncodesFragmentValues() {
+    let unsafe = ClientIdentity(clientIdentifier: "CID&bad=1",
+                                product: "plex avp/app",
+                                version: "0.1.0",
+                                deviceName: "AVP")
+    let url = PinAuth.authAppURL(code: "W X&Y=Z", identity: unsafe)
+    let s = url.absoluteString
+    #expect(s.hasPrefix("https://app.plex.tv/auth#?"))
+    #expect(s.contains("clientID=CID%26bad%3D1"))
+    #expect(s.contains("code=W%20X%26Y%3DZ"))
+    #expect(s.contains("context%5Bdevice%5D%5Bproduct%5D=plex%20avp%2Fapp"))
+}
+
 @Test func pollPinRequestTargetsPinID() {
     let r = PinAuth.pollPinRequest(pinID: 42, identity: id)
     #expect(r.url.absoluteString == "https://plex.tv/api/v2/pins/42")

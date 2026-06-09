@@ -60,10 +60,12 @@ final class PlaybackDiagnostics {
 
     /// Seed the static facts from the Plex item + transcode decision. Token is never read.
     func applyStatic(item: MediaItem,
+                     mediaIndex: Int = 0,
                      decision: DecisionResponse?,
                      server: URL?,
                      targetBitrateKbps: Int) {
-        if let media = item.media?.first {
+        if let mediaItems = item.media,
+           let media = mediaItems.indices.contains(mediaIndex) ? mediaItems[mediaIndex] : mediaItems.first {
             if let w = media.width, let h = media.height {
                 sourceResolution = "\(w)×\(h)"
             }
