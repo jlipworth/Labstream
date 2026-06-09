@@ -83,6 +83,14 @@ enum BrowseAPI {
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
+    /// `GET /library/metadata/<ratingKey>/children` — one level of the TV hierarchy:
+    /// a show's seasons, or a season's episodes. Delegates to the pure PlexKit builder.
+    static func children(server: URL, token: String, identity: ClientIdentity,
+                         ratingKey: String) -> PlexRequest {
+        ChildrenRequest.children(server: server, token: token,
+                                 identity: identity, ratingKey: ratingKey)
+    }
+
     /// `GET /library/metadata/<ratingKey>` — full metadata for one item.
     ///
     /// Requests chapters, intro/credits markers and extras inline so the detail/player

@@ -127,6 +127,14 @@ final class PlaybackController {
     private var didEndObserver: NSObjectProtocol?
     private var diagnosticsTimer: Timer?
     private var failedToEndObserver: NSObjectProtocol?
+    /// Watchdog for a stalled stream (#8 hardening). HLS network loss frequently manifests as a
+    /// PERMANENT stall — the player sits in `.waitingToPlayAtSpecifiedRate` with an empty buffer
+    /// and never flips `AVPlayerItem.status` to `.failed` (AVKit paints its own placeholder glyph
+    /// from the error log, but neither the status observer nor `failedToPlayToEnd` fires). This
+    /// timer is the catch-all: armed while the player is starved, it surfaces the error+Retry
+    /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
+    /// state. Cancelled the moment playback genuinely resumes (`.playing`).
+    private var stallWatchdog: Timer?
     private var lastTimelineState: TimelineRequest.State?
     private var lastReportedSecond: Int = -1
     private var didScrobble = false
@@ -182,6 +190,21 @@ final class PlaybackController {
     /// Resume target (ms) for the current item, retained so the status observer can do a
     /// client-side seek fallback if PMS's `#EXT-X-START` priming didn't land (P2 #9).
     private var pendingResumeMs: Int?
+
+    /// One-time resume target (ms) applied on the FIRST `start()` instead of the item's saved
+    /// `viewOffset`. Set when the player view controller is REBUILT to recover from a wedged
+    /// AVKit state after a failure (see `PlayerView`'s rebuild path): the fresh controller must
+    /// resume at the live playhead we captured, not the stale on-disk offset.
+    private let initialResumeMsOverride: Int?
+
+    /// Best-effort current playhead (ms), used to rebuild the player after a failure without
+    /// losing the user's position. Prefers the live time when it's valid, then the pending
+    /// resume target, then the item's saved offset, then 0.
+    var currentResumeMs: Int {
+        let secs = player.currentTime().seconds
+        if secs.isFinite, secs > 0 { return Int(secs * 1000) }
+        return pendingResumeMs ?? item.viewOffset ?? 0
+    }
 
     /// Whether we've already spent our single automatic retry on a transient start.m3u8
     /// failure (P3 #8). A manual `retry()` from the UI resets this.
@@ -255,7 +278,8 @@ final class PlaybackController {
          client: PlexClient,
          maxVideoBitrateKbps: Int = 8000,
          mediaIndex: Int = 0,
-         machineIdentifier: String? = nil) {
+         machineIdentifier: String? = nil,
+         initialResumeMsOverride: Int? = nil) {
         self.item = item
         self.server = server
         self.token = token
@@ -265,6 +289,7 @@ final class PlaybackController {
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
+        self.initialResumeMsOverride = initialResumeMsOverride
         self.speedState.speed = self.playbackSpeed
     }
 
@@ -285,6 +310,8 @@ final class PlaybackController {
         self.mediaIndex = 0
         // Offline playback has no server session to build a play queue against.
         self.machineIdentifier = nil
+        // Local files resume from the item's saved offset; no rebuild override.
+        self.initialResumeMsOverride = nil
         self.speedState.speed = self.playbackSpeed
     }
 
@@ -297,7 +324,9 @@ final class PlaybackController {
         if let localFile {
             loadLocalFile(localFile)
         } else {
-            Task { await self.startStreaming() }
+            // Use the rebuild resume override on first start when present (recovering from a
+            // wedged player); otherwise startStreaming falls back to the item's saved offset.
+            Task { await self.startStreaming(resumeOffsetMsOverride: self.initialResumeMsOverride) }
         }
         // Resolve the next episode in the background (#15). Network-bound and entirely
         // best-effort: if it fails or there is no next item, the Up Next card simply never
@@ -920,7 +949,18 @@ final class PlaybackController {
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
-                self.buffering.set(status == .waitingToPlayAtSpecifiedRate)
+                let isStalled = (status == .waitingToPlayAtSpecifiedRate)
+                self.buffering.set(isStalled)
+                // Stall watchdog (#8 hardening): a network-loss stall often never flips
+                // item.status to .failed, so arm a timeout while the player is starved and
+                // cancel it the instant playback genuinely resumes. We deliberately do NOT
+                // cancel on `.paused` — handleStallTimeout's buffer-empty check distinguishes a
+                // dead stall from a user pause on already-buffered content.
+                if isStalled {
+                    self.armStallWatchdog()
+                } else if status == .playing {
+                    self.cancelStallWatchdog()
+                }
             }
         }
 
@@ -955,6 +995,9 @@ final class PlaybackController {
         statusObservation = nil
         rateObservation = nil
         bufferingObservation = nil
+        // Cancel the stall watchdog so a stale timer can't fire across a reload / auto-retry /
+        // teardown and surface an error against a freshly-loaded item.
+        cancelStallWatchdog()
         // Clear any lingering spinner state across a reload/teardown so it can't get stuck on.
         buffering.set(false)
         diagnosticsTimer?.invalidate()
@@ -1406,6 +1449,55 @@ final class PlaybackController {
         NSLog("PlaybackController: playback failed, surfacing to UI (%@)",
               String(describing: error))
         playbackError.set(error)
+    }
+
+    // MARK: - Stall watchdog (#8 hardening)
+
+    /// How long (seconds) a continuous stall may last before we treat it as a failure. Generous
+    /// enough not to trip a slow-but-working initial prime, short enough to replace AVKit's dead
+    /// placeholder glyph with a recoverable Retry promptly.
+    private let stallTimeoutSeconds: TimeInterval = 15
+
+    /// Arm the stall watchdog if it isn't already running and no error is being shown. Idempotent
+    /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
+    private func armStallWatchdog() {
+        guard stallWatchdog == nil, !playbackError.isFailed else { return }
+        let timer = Timer(timeInterval: stallTimeoutSeconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleStallTimeout()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        stallWatchdog = timer
+    }
+
+    /// Cancel the stall watchdog (genuine resume, teardown, or retry).
+    private func cancelStallWatchdog() {
+        stallWatchdog?.invalidate()
+        stallWatchdog = nil
+    }
+
+    /// Fired when a stall outlasts `stallTimeoutSeconds`. Confirm the player is genuinely starved
+    /// (empty buffer AND not likely to keep up) rather than, e.g., paused on already-buffered
+    /// content — so we never flash an error over a normal user pause — then surface the failure.
+    /// We surface DIRECTLY (no silent auto-retry): the watchdog already gave the stream 15s to
+    /// recover, and over a dead network a retry would just stall again. The overlay's Retry
+    /// rebuilds the session once the user's connection is back.
+    private func handleStallTimeout() {
+        cancelStallWatchdog()
+        guard !playbackError.isFailed, let current = player.currentItem else { return }
+        guard current.isPlaybackBufferEmpty, !current.isPlaybackLikelyToKeepUp else { return }
+        if let underlying = current.error {
+            NSLog("PlaybackController: stream stalled, surfacing failure (%@)",
+                  String(describing: underlying))
+            playbackError.set(underlying)
+        } else {
+            NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
+            playbackError.set(NSError(
+                domain: "PlexAVPApp.Playback", code: -1001,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."]))
+        }
     }
 }
 
