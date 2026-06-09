@@ -50,8 +50,13 @@ public actor PlexClient {
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             // Connection refused, TLS failure, DNS, timeout, etc.
+            if Task.isCancelled { throw CancellationError() }
             throw PlexError.serverUnreachable
         }
 

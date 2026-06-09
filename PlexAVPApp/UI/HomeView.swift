@@ -45,18 +45,14 @@ struct HomeView: View {
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
-        // Re-run whenever the server URL resolves. On a fresh login the reachability
-        // probe sets `serverBaseURL` a beat AFTER auth flips, so the first appearance
-        // sees nil; keying the task on it re-fires load() the moment it's ready.
+        // Re-run whenever the server URL resolves after discovery/rediscovery.
         .task(id: appModel.serverBaseURL) { await load() }
         .refreshable { await load() }
     }
 
     private func load() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.token else {
-            // Server not resolved yet — stay on the spinner; the task re-fires
-            // (keyed on serverBaseURL) as soon as the probe picks a connection.
-            loadState = .loading
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            loadState = .failed("No reachable Plex server selected.")
             return
         }
         loadState = .loading

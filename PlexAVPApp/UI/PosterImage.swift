@@ -77,7 +77,7 @@ struct PosterImage: View {
     /// Build the `/photo/:/transcode` URL for `path` at the requested size.
     private var transcodeURL: URL? {
         guard let base = appModel.serverBaseURL,
-              let token = appModel.token,
+              let token = appModel.serverToken,
               let path, !path.isEmpty
         else { return nil }
 
