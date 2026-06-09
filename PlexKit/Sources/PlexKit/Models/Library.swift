@@ -273,16 +273,15 @@ public struct Chapter: Decodable, Sendable, Identifiable {
 
 public extension Array where Element == Chapter {
     /// Index of the chapter the playhead `ms` (milliseconds) currently sits in:
-    /// the last chapter whose `startTimeOffset <= ms`. Chapters are strictly
-    /// ordered by start, so we stop at the first start that exceeds `ms`.
-    /// Returns `nil` when there are no chapters or `ms` precedes the first
-    /// chapter's start. Chapters with a `nil` start are skipped.
+    /// the last chapter (by position) whose `startTimeOffset <= ms`, independent
+    /// of ordering. Returns `nil` when there are no chapters or `ms` precedes the
+    /// first chapter's start. Chapters with a `nil` start are skipped.
     /// `endTimeOffset` is intentionally not used — PMS data for it is unreliable.
     func indexOfChapter(at ms: Int) -> Int? {
         var match: Int?
         for (index, chapter) in enumerated() {
             guard let start = chapter.startTimeOffset else { continue }
-            if start <= ms { match = index } else { break }
+            if start <= ms { match = index }
         }
         return match
     }
