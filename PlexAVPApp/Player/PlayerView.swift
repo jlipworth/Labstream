@@ -195,6 +195,19 @@ struct PlayerView: View {
             if let controller {
                 BufferingOverlay(state: controller.buffering)
             }
+
+            // Stats for Nerds overlay (#7): when the user toggles it on from the Stats info-panel
+            // tab, float the live diagnostics panel top-leading over the video — clear of the
+            // bottom-center transport, the bottom Skip/Up-Next affordances, and AVKit's
+            // top-trailing "…" menu. Its own X button toggles the same state back off. Observes
+            // the @Observable `statsOverlay` directly. (Inline/windowed mode only — like the other
+            // floated overlays, it doesn't composite in the expanded cinema experience.)
+            //
+            // Suppressed while a failure is surfaced so it doesn't float over the full-screen
+            // error/Retry overlay (which also occupies the top region).
+            if let controller, !controller.playbackError.isFailed {
+                StatsOverlay(state: controller.statsOverlay, diagnostics: controller.diagnostics)
+            }
         }
     }
 
@@ -235,6 +248,27 @@ private struct BufferingOverlay: View {
             // stay tappable while the spinner is up.
             .allowsHitTesting(false)
             .transition(.opacity)
+        }
+    }
+}
+
+/// Top-leading floating "Stats for Nerds" panel shown over the player (#7). Reads the controller's
+/// `@Observable` `StatsOverlayState`, so it appears/disappears as the user toggles the Stats
+/// info-panel tab's launcher, and the embedded `StatsForNerdsView` re-renders as the diagnostics
+/// tick (~1s). The panel's close (X) button hides it via the same state. Unlike the other floated
+/// overlays this one IS hit-testable (its X must be tappable); it sits top-leading, where in
+/// normal playback nothing else lives (the error overlay only appears on failure, and Close is an
+/// AVKit-hosted contextual action, not a floated sibling).
+private struct StatsOverlay: View {
+    let state: StatsOverlayState
+    let diagnostics: PlaybackDiagnostics
+
+    var body: some View {
+        if state.isShown {
+            StatsForNerdsView(diagnostics: diagnostics, onClose: { state.hide() })
+                .padding(DS.Space.lg)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .transition(.opacity)
         }
     }
 }

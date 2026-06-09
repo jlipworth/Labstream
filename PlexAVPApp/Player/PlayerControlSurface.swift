@@ -12,9 +12,9 @@ import PlexKit
 /// instead — this keeps the stock transport bar and cinema-environment docking intact.
 ///
 /// Tabs provided here:
-///   • **Quality** — pick a bitrate cap (2/4/8/12/20 Mbps + Maximum); selecting one reloads
-///     the stream at the new cap and seeks back to the live playhead. Persisted to
-///     `@AppStorage("maxVideoBitrateKbps")`. Streaming sessions only.
+///   • **Quality** — pick a bitrate cap (granular Mbps ladder + "Maximum (original)") with a
+///     resolution hint; selecting one reloads the stream at the new cap and seeks back to the
+///     live playhead. Persisted to `@AppStorage("maxVideoBitrateKbps")`. Streaming sessions only.
 ///   • **Chapters** — jump between Plex chapter markers. visionOS's AVKit does NOT expose
 ///     `AVNavigationMarkersGroup` / `AVPlayerItem.navigationMarkerGroups` (tvOS/iOS only),
 ///     so there are no native scrubber chapter ticks; instead each row seeks the playhead
@@ -24,10 +24,14 @@ import PlexKit
 ///     selected/forced subtitle tracks into the stream as selectable renditions, which we
 ///     switch between with `playerItem.select(_:in:)` — no reload required. See
 ///     `SubtitlesTabView`.
-///   • **Stats** — the live "Stats for Nerds" diagnostics panel.
-///
-/// **Audio** is intentionally NOT reimplemented: `AVPlayerViewController` surfaces the
-/// audible `AVMediaSelectionGroup` carried by the HLS automatically in the same info panel.
+///   • **Audio** — pick a soundtrack/language rendition from the HLS audible
+///     `AVMediaSelectionGroup`, the audio mirror of Subtitles (no "Off" row — a video always
+///     plays some soundtrack). Switched with `playerItem.select(_:in:)`; no reload. We surface
+///     this ourselves (rather than relying on AVKit's built-in audio submenu) so the picker
+///     shows resolved language names and persists the choice across items. See `AudioTabView`.
+///   • **Speed** — pick a playback rate (0.5×–2×). See `SpeedTabView`.
+///   • **Stats** — a launcher that toggles the floating "Stats for Nerds" diagnostics overlay
+///     (rendered over the video by `PlayerView`, not inline in this panel). See `StatsTabView`.
 @MainActor
 final class PlayerControlSurface {
 
@@ -101,6 +105,15 @@ final class PlayerControlSurface {
         )
         tabs.append(makeTab(subtitles, title: "Subtitles", systemImage: "captions.bubble"))
 
+        // Audio is always offered (the audio mirror of Subtitles): the audible renditions load
+        // asynchronously and can change after a Quality reload swaps the AVPlayerItem, so the tab
+        // refreshes on appear and shows a graceful empty state when there's nothing to choose.
+        let audio = AudioTabView(
+            load: { [weak self] in await self?.controller.loadAudioTracks() },
+            onSelect: { [weak self] track in await self?.controller.selectAudio(track) }
+        )
+        tabs.append(makeTab(audio, title: "Audio", systemImage: "waveform"))
+
         // Speed: pick a playback rate (0.5×–2×). Always offered (works for streaming and
         // local files); selecting one sets the AVPlayer rate and persists the choice.
         let speed = SpeedTabView(state: controller.speedState) { [weak self] rate in
@@ -108,7 +121,10 @@ final class PlayerControlSurface {
         }
         tabs.append(makeTab(speed, title: "Speed", systemImage: "speedometer"))
 
-        let stats = StatsForNerdsView(diagnostics: controller.diagnostics, onClose: nil)
+        // Stats: a launcher that toggles the floating diagnostics overlay (#7). The numbers are
+        // rendered over the VIDEO by PlayerView, not inline here, so they stay visible while
+        // watching instead of vanishing when the ⓘ panel closes.
+        let stats = StatsTabView(state: controller.statsOverlay)
         tabs.append(makeTab(stats, title: "Stats", systemImage: "chart.bar.doc.horizontal"))
 
         #if os(visionOS)
@@ -237,13 +253,33 @@ final class PlayerMenuState {
     }
 }
 
-/// Quality info-panel tab: a list of bitrate caps with a checkmark on the active one.
+/// Quality info-panel tab: a granular ladder of bitrate caps with a checkmark on the active one.
 private struct QualityTabView: View {
     @Bindable var state: PlayerMenuState
     var onPick: (Int) -> Void
 
-    /// `0` is the "Maximum / Original" sentinel (no cap).
-    private let options: [Int] = [2000, 4000, 8000, 12000, 20000, 0]
+    /// One row in the quality ladder. `kbps == 0` is the "Maximum (original)" sentinel (no cap);
+    /// `resolution` is the rough target PMS encodes to at that ceiling (empty for Maximum).
+    private struct Option: Identifiable {
+        let kbps: Int
+        let resolution: String
+        var id: Int { kbps }
+    }
+
+    /// Bitrate-cap ladder, aligned to Plex's web quality presets so each cap maps to a sensible
+    /// resolution. All prior selectable caps (2/4/8/12/20 Mbps + Maximum) are retained — so a
+    /// previously-persisted choice still resolves a checkmark — plus 3/10/40 Mbps for finer steps.
+    private let options: [Option] = [
+        Option(kbps: 2000,  resolution: "720p"),
+        Option(kbps: 3000,  resolution: "720p"),
+        Option(kbps: 4000,  resolution: "720p"),
+        Option(kbps: 8000,  resolution: "1080p"),
+        Option(kbps: 10000, resolution: "1080p"),
+        Option(kbps: 12000, resolution: "1080p"),
+        Option(kbps: 20000, resolution: "1080p"),
+        Option(kbps: 40000, resolution: "4K"),
+        Option(kbps: 0,     resolution: ""),
+    ]
 
     var body: some View {
         // ScrollView + VStack, NOT List: a `List` does not engage scroll inside the visionOS
@@ -256,14 +292,14 @@ private struct QualityTabView: View {
                     .font(.headline)
                     .foregroundStyle(.secondary)
                     .padding(.bottom, DS.Space.sm)
-                ForEach(options, id: \.self) { kbps in
+                ForEach(options) { option in
                     Button {
-                        onPick(kbps)
+                        onPick(option.kbps)
                     } label: {
                         HStack {
-                            Text(label(kbps))
+                            Text(label(option))
                             Spacer()
-                            if kbps == state.selectedBitrateKbps {
+                            if option.kbps == state.selectedBitrateKbps {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.tint)
                             }
@@ -278,8 +314,16 @@ private struct QualityTabView: View {
         }
     }
 
-    private func label(_ kbps: Int) -> String {
-        kbps <= 0 ? "Maximum" : "\(kbps / 1000) Mbps"
+    /// "Maximum (original)" for the no-cap sentinel; otherwise "<N> Mbps · <resolution>", e.g.
+    /// "8 Mbps · 1080p". Fractional Mbps (none in the current ladder) render without trailing
+    /// zeros via `%g`.
+    private func label(_ option: Option) -> String {
+        guard option.kbps > 0 else { return "Maximum (original)" }
+        let mbps = Double(option.kbps) / 1000
+        let mbpsText = mbps == mbps.rounded()
+            ? String(format: "%.0f", mbps)
+            : String(format: "%g", mbps)
+        return "\(mbpsText) Mbps · \(option.resolution)"
     }
 }
 
@@ -508,17 +552,27 @@ private struct SubtitlesTabView: View {
     @State private var didLoad = false
 
     var body: some View {
-        List {
-            Section("Subtitles") {
+        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
+        // scroll inside the visionOS AVKit info panel, so content with many subtitle languages
+        // would clip the bottom rows (and the "Off" row stays first). Matches the
+        // Quality/Speed/Audio tabs.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Subtitles")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, DS.Space.sm)
                 if !didLoad {
                     HStack {
                         ProgressView()
                         Text("Loading…")
                             .foregroundStyle(.secondary)
                     }
+                    .padding(.vertical, DS.Space.sm)
                 } else if tracks.isEmpty {
                     Text("No subtitle tracks")
                         .foregroundStyle(.secondary)
+                        .padding(.vertical, DS.Space.sm)
                 } else {
                     ForEach(tracks) { track in
                         Button {
@@ -538,11 +592,14 @@ private struct SubtitlesTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, DS.Space.sm)
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
+            .padding(DS.Space.md)
         }
         .task {
             // Load once on appear. `.task` is cancelled/re-run if the view identity
@@ -562,6 +619,129 @@ private struct SubtitlesTabView: View {
         } else {
             self.tracks = []
             self.selectedID = -1
+        }
+    }
+}
+
+/// Audio info-panel tab (#3): pick a soundtrack/language rendition from the HLS audible
+/// `AVMediaSelectionGroup`. The audio mirror of `SubtitlesTabView` — same async-load-on-appear
+/// pattern (audible options only become known once AVFoundation parses the HLS, and the list can
+/// change after a Quality reload swaps the `AVPlayerItem`) — but with NO "Off" row (a video
+/// always plays some soundtrack) so the active id defaults to the first track, not -1. When the
+/// HLS carries fewer than two audible renditions there's nothing to choose, so we show a
+/// graceful "No alternate audio tracks" state.
+private struct AudioTabView: View {
+    /// Returns the available tracks and the id of the active one, or `nil` when the HLS carries
+    /// fewer than two audible renditions.
+    ///
+    /// Both closures are `@MainActor`: an `AudioTrack` carries a non-`Sendable`
+    /// `AVMediaSelectionOption`, so it must never cross actor boundaries — see `SubtitlesTabView`.
+    let load: @MainActor () async -> (tracks: [PlaybackController.AudioTrack], selectedID: Int)??
+    let onSelect: @MainActor (PlaybackController.AudioTrack) async -> Void
+
+    @State private var tracks: [PlaybackController.AudioTrack] = []
+    @State private var selectedID: Int = 0
+    @State private var didLoad = false
+
+    var body: some View {
+        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
+        // scroll inside the visionOS AVKit info panel, so a release with many dub languages
+        // (8+ audible renditions) would clip the bottom rows out of reach. Matches the
+        // Quality/Speed tabs.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Audio")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, DS.Space.sm)
+                if !didLoad {
+                    HStack {
+                        ProgressView()
+                        Text("Loading…")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, DS.Space.sm)
+                } else if tracks.isEmpty {
+                    Text("No alternate audio tracks")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, DS.Space.sm)
+                } else {
+                    ForEach(tracks) { track in
+                        Button {
+                            // Optimistically reflect the pick, then apply it; re-sync from
+                            // the player afterward in case the selection didn't take.
+                            selectedID = track.id
+                            Task {
+                                await onSelect(track)
+                                await refresh()
+                            }
+                        } label: {
+                            HStack {
+                                Text(track.displayName)
+                                Spacer()
+                                if track.id == selectedID {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .padding(.vertical, DS.Space.sm)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(DS.Space.md)
+        }
+        .task {
+            // Load once on appear. `.task` is cancelled/re-run if the view identity changes,
+            // which is exactly when a reloaded item should be re-read.
+            await refresh()
+            didLoad = true
+        }
+    }
+
+    /// Pull the current track list + active selection from the player.
+    private func refresh() async {
+        // `load` is doubly-optional: the outer `?` is the weak-self capture, the inner is "no
+        // audible group / single track". Flatten both to a single optional result.
+        if let result = await load(), let (tracks, selectedID) = result {
+            self.tracks = tracks
+            self.selectedID = selectedID
+        } else {
+            self.tracks = []
+            self.selectedID = 0
+        }
+    }
+}
+
+/// Stats info-panel tab (#7): a launcher for the floating "Stats for Nerds" overlay. Rather than
+/// render the diagnostics inline in the ⓘ panel (where they vanish the moment the panel closes),
+/// this tab toggles a persistent on-video overlay (`StatsOverlay` in `PlayerView`) so the numbers
+/// stay visible while watching — the Emby-style treatment (#7). Binds to the controller's
+/// `@Observable` `StatsOverlayState` so the button label reflects the current shown/hidden state.
+private struct StatsTabView: View {
+    @Bindable var state: StatsOverlayState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: DS.Space.md) {
+                Text("Stats for Nerds")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Text("Show live playback diagnostics as an overlay on the video.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Button {
+                    state.toggle()
+                } label: {
+                    Label(state.isShown ? "Hide Stats Overlay" : "Show Stats Overlay",
+                          systemImage: state.isShown ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
