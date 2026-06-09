@@ -20,6 +20,11 @@ final class AppModel {
     /// Current Plex auth token; `nil` means signed out.
     var token: String?
 
+    /// Token to use against the selected PMS resource. Plex discovery can return
+    /// a resource-specific access token for shared/token-scoped servers; fall
+    /// back to the account token when discovery does not provide one.
+    var serverToken: String?
+
     /// The server the user has selected from discovery.
     var selectedServer: PlexDevice?
 
@@ -30,6 +35,7 @@ final class AppModel {
     let client: PlexClient
 
     var isAuthenticated: Bool { token != nil }
+    var isBrowseReady: Bool { token != nil && serverToken != nil && serverBaseURL != nil }
 
     init(identity: ClientIdentity,
          token: String? = nil,

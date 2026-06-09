@@ -2,7 +2,7 @@ import SwiftUI
 import PlexKit
 
 /// Lets the user pick a QUALITY before an offline download starts, then kicks off the
-/// transfer through `DownloadManager.optimizeAndDownload(_:quality:)`.
+/// transfer through `DownloadManager.optimizeAndDownload(_:quality:mediaIndex:partIndex:)`.
 ///
 /// Self-contained and trivial to present — it reads `DownloadManager` and `AppModel`
 /// from the environment, so a caller only supplies the item:
@@ -21,8 +21,9 @@ import PlexKit
 /// background transfers pause while the headset is off.
 struct DownloadOptionsSheet: View {
     let item: MediaItem
+    var mediaIndex: Int = 0
+    var partIndex: Int = 0
 
-    @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(\.dismiss) private var dismiss
 
@@ -151,7 +152,9 @@ struct DownloadOptionsSheet: View {
 
     private func startDownload() {
         let chosen = quality
-        Task { await downloadManager.optimizeAndDownload(item, quality: chosen) }
+        Task { await downloadManager.optimizeAndDownload(item, quality: chosen,
+                                                         mediaIndex: mediaIndex,
+                                                         partIndex: partIndex) }
         dismiss()
     }
 }

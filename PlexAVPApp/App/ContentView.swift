@@ -2,7 +2,7 @@ import SwiftUI
 import PlexKit
 
 /// App root. Owns the long-lived state objects and switches between the login
-/// flow and the authenticated UI based on `appModel.isAuthenticated`.
+/// flow and the browse UI based on `appModel.isBrowseReady`.
 ///
 /// Ownership (per the module contract): `AppModel` holds identity/token/server +
 /// the shared `PlexClient`; it deliberately does NOT hold the player or download
@@ -33,7 +33,7 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if appModel.isAuthenticated {
+            if appModel.isBrowseReady {
                 RootView(appModel: appModel,
                          authManager: authManager,
                          downloadManager: downloadManager)

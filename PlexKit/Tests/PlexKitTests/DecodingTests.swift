@@ -14,6 +14,14 @@ import Foundation
     #expect(c.mediaContainer.directory[0].type == "movie")
 }
 
+@Test func decodesMediaContainerSectionsWhenDirectoryMissing() throws {
+    let json = """
+    {"MediaContainer":{"size":0}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(SectionsResponse.self, from: json)
+    #expect(c.mediaContainer.directory.isEmpty)
+}
+
 @Test func decodesMetadataWithMediaPart() throws {
     let json = """
     {"MediaContainer":{"Metadata":[
@@ -63,6 +71,32 @@ import Foundation
     #expect(item.chapters?[0].startTimeOffset == 0)
     #expect(item.chapters?[1].endTimeOffset == 1200000)
     #expect(item.chapters?[1].thumb == "/library/metadata/101/chapter/2")
+}
+
+@Test func decodesChaptersWithUnreliableIDs() throws {
+    // Regression for the "every chapter shows Chapter 1 / 0:00" bug (#26): real PMS data
+    // often repeats a single id (here `0`) across all chapters, or omits it entirely.
+    // The non-optional `id: Int` model used the raw id as `Identifiable.id`, so SwiftUI
+    // collapsed the ForEach into N copies of the first row. The hardened model keeps each
+    // chapter distinct and synthesizes a UNIQUE identity from the start offset.
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"101","title":"Dupe IDs","type":"movie","duration":9540000,
+       "Chapter":[
+         {"id":0,"startTimeOffset":0,"endTimeOffset":600000},
+         {"id":0,"startTimeOffset":600000,"endTimeOffset":1200000},
+         {"startTimeOffset":1200000,"endTimeOffset":1800000}]}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    let chapters = try #require(c.mediaContainer.metadata[0].chapters)
+    #expect(chapters.count == 3)
+    // Offsets survive intact (the data was always fine — the bug was identity).
+    #expect(chapters.map(\.startTimeOffset) == [0, 600000, 1200000])
+    // The missing-id chapter still decodes (id is optional now).
+    #expect(chapters[2].chapterID == nil)
+    // Crucially: identities are UNIQUE despite duplicate/absent raw ids.
+    let ids = Set(chapters.map(\.id))
+    #expect(ids.count == 3)
 }
 
 @Test func decodesMetadataWithoutChapters() throws {

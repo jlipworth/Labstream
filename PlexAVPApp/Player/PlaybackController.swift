@@ -139,6 +139,9 @@ final class PlaybackController {
     private var lastReportedSecond: Int = -1
     private var didScrobble = false
     private var started = false
+    private var playbackTask: Task<Void, Never>?
+    private var upNextTask: Task<Void, Never>?
+    private var playbackGeneration = 0
 
     // MARK: - Audio-session / interruption / background state (#17)
 
@@ -153,11 +156,10 @@ final class PlaybackController {
     private var resignActiveObserver: NSObjectProtocol?
     private var didEnterBackgroundObserver: NSObjectProtocol?
 
-    /// True when we paused playback ourselves (audio interruption, route change, or app
-    /// backgrounding) WHILE the user had it playing. Gates auto-resume after an
-    /// interruption: we only resume something WE paused, never something the user paused
-    /// manually. Resume after backgrounding is intentionally NOT automatic — this flag is
-    /// only consulted by the interruption `.ended`/`.shouldResume` path.
+    /// True when an audio interruption paused playback while the user had it playing.
+    /// Gates auto-resume after `.ended/.shouldResume`: background pauses deliberately
+    /// never set this flag, so returning foreground or a coincident interruption-ended
+    /// event cannot restart video behind the user's back.
     private var wasPlayingBeforeInterruption = false
 
     /// One-shot guard for the resume seek. Replaces the old "self-nil the observation
@@ -326,17 +328,22 @@ final class PlaybackController {
         } else {
             // Use the rebuild resume override on first start when present (recovering from a
             // wedged player); otherwise startStreaming falls back to the item's saved offset.
-            Task { await self.startStreaming(resumeOffsetMsOverride: self.initialResumeMsOverride) }
+            beginStreaming(resumeOffsetMsOverride: initialResumeMsOverride)
         }
         // Resolve the next episode in the background (#15). Network-bound and entirely
         // best-effort: if it fails or there is no next item, the Up Next card simply never
         // appears. Only meaningful for episodes; the resolver returns early otherwise.
-        Task { await self.resolveNextItem() }
+        upNextTask = Task { await self.resolveNextItem() }
     }
 
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        playbackTask?.cancel()
+        playbackTask = nil
+        upNextTask?.cancel()
+        upNextTask = nil
+        playbackGeneration += 1
         reportTimeline(state: .stopped, force: true)
         player.pause()
         removeObservers()
@@ -586,7 +593,7 @@ final class PlaybackController {
         // intentionally NOT reset — the same content shouldn't re-scrobble mid-watch.)
         didAutoRetry = false
         removeObservers()
-        Task { await self.startStreaming(resumeOffsetMsOverride: resumeMs) }
+        beginStreaming(resumeOffsetMsOverride: resumeMs)
     }
 
     // MARK: - Failure / retry
@@ -598,19 +605,32 @@ final class PlaybackController {
     /// self-heal. No-op for local-file sessions (nothing to re-fetch).
     func retry() {
         guard isStreaming else { return }
-        let resumeMs = pendingResumeMs ?? item.viewOffset
+        let resumeMs = currentResumeMs
         didAutoRetry = false
         playbackError.clear()
         removeObservers()
-        Task { await self.startStreaming(resumeOffsetMsOverride: resumeMs) }
+        beginStreaming(resumeOffsetMsOverride: resumeMs)
+    }
+
+    private func beginStreaming(resumeOffsetMsOverride: Int? = nil) {
+        playbackTask?.cancel()
+        playbackGeneration += 1
+        let generation = playbackGeneration
+        playbackTask = Task { [weak self] in
+            guard let self else { return }
+            await self.startStreaming(resumeOffsetMsOverride: resumeOffsetMsOverride,
+                                      generation: generation)
+        }
     }
 
     // MARK: - Streaming path
 
     /// Build (or rebuild) the streaming player item. `resumeOffsetMsOverride` lets a
     /// bitrate reload resume at the live playhead instead of the item's saved viewOffset.
-    private func startStreaming(resumeOffsetMsOverride: Int? = nil) async {
+    private func startStreaming(resumeOffsetMsOverride: Int? = nil,
+                                generation: Int) async {
         guard let server, let token else { return }
+        guard !Task.isCancelled, generation == playbackGeneration else { return }
         let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
 
         // 0 (Maximum/Original) maps to a very high ceiling so PMS still emits a
@@ -641,6 +661,7 @@ final class PlaybackController {
         do {
             let decisionReq = PlexRequest(url: transcode.decisionURL(), method: "GET")
             let response = try await client.send(decisionReq, as: DecisionResponse.self)
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
             decision = response
             if case .unsupported = response.decision {
                 // Best-effort: still attempt playback; PMS often plays despite an
@@ -648,11 +669,13 @@ final class PlaybackController {
                 NSLog("PlaybackController: transcode decision unsupported: \(String(describing: response.generalDecisionText))")
             }
         } catch {
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
             NSLog("PlaybackController: decision call failed (\(error)); attempting start.m3u8 anyway")
         }
 
         // Seed the Stats-for-Nerds static facts (no token is ever read here).
         diagnostics.applyStatic(item: item,
+                                mediaIndex: mediaIndex,
                                 decision: decision,
                                 server: server,
                                 targetBitrateKbps: maxVideoBitrateKbps)
@@ -666,6 +689,7 @@ final class PlaybackController {
         // through as a CLIENT-SIDE FALLBACK (P2 #9): if the player still lands at ~0
         // (PMS didn't honor `#EXT-X-START`), the status observer seeks once we're ready.
         // Previously this was `nil`, so a non-honoring PMS dropped the playhead to 0.
+        guard !Task.isCancelled, generation == playbackGeneration else { return }
         load(playerItem, resumeOffsetMs: resumeMs)
     }
 
@@ -910,14 +934,16 @@ final class PlaybackController {
         // Periodic heartbeat ~ every 10s.
         let interval = CMTime(seconds: timelineIntervalSeconds, preferredTimescale: 1)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            let state: TimelineRequest.State = self.player.timeControlStatus == .paused ? .paused : .playing
-            self.reportTimeline(state: state, force: false)
-            // Progress-based scrobble (P9 #11): capped-HLS viewers often stop short of
-            // EOF, so didPlayToEnd never fires and the item stays "unwatched." Mark it
-            // watched once we cross ~90%. `sendScrobble()` is idempotent (didScrobble),
-            // and didPlayToEnd remains the backstop for the final stretch.
-            self.scrobbleIfNearEnd()
+            Task { @MainActor in
+                guard let self else { return }
+                let state: TimelineRequest.State = self.player.timeControlStatus == .paused ? .paused : .playing
+                self.reportTimeline(state: state, force: false)
+                // Progress-based scrobble (P9 #11): capped-HLS viewers often stop short of
+                // EOF, so didPlayToEnd never fires and the item stays "unwatched." Mark it
+                // watched once we cross ~90%. `sendScrobble()` is idempotent (didScrobble),
+                // and didPlayToEnd remains the backstop for the final stretch.
+                self.scrobbleIfNearEnd()
+            }
         }
 
         // Marker detection (#14): a finer ~0.5s observer that toggles the Skip
@@ -925,10 +951,12 @@ final class PlaybackController {
         // Separate from the 10s heartbeat above, which is too coarse for a live button.
         let markerInterval = CMTime(seconds: 0.5, preferredTimescale: 600)
         markerTimeObserver = player.addPeriodicTimeObserver(forInterval: markerInterval, queue: .main) { [weak self] time in
-            guard let self else { return }
-            self.updateSkipMarker(at: time.seconds)
-            // Drive the Up Next card (#15) off the same fine-grained observer.
-            self.updateUpNext(at: time.seconds)
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateSkipMarker(at: time.seconds)
+                // Drive the Up Next card (#15) off the same fine-grained observer.
+                self.updateUpNext(at: time.seconds)
+            }
         }
 
         // Fire on play/pause transitions.
@@ -1180,14 +1208,11 @@ final class PlaybackController {
 
     /// Pause video when the app is backgrounded / loses the foreground (P5). Video can't
     /// decode/render in the background and a live transcode would keep running, so we always
-    /// pause. Tracks "was playing" using the SAME flag as interruptions so the two compose
-    /// cleanly — but note we deliberately do NOT auto-resume on foreground: resume is the
-    /// user's choice on return. The flag is set here mainly so a background event followed by
-    /// an interruption-ended sequence doesn't resume a stream the user never intended to keep
-    /// running; the foreground path simply leaves playback paused.
+    /// pause. We deliberately do NOT auto-resume on foreground: resume is the user's choice
+    /// on return. Do not set the interruption-resume flag here, or a later
+    /// interruption-ended notification with `.shouldResume` can restart playback.
     func pauseForBackground() {
         if player.timeControlStatus != .paused {
-            wasPlayingBeforeInterruption = true
             player.pause()
         }
     }
@@ -1440,9 +1465,9 @@ final class PlaybackController {
             didAutoRetry = true
             NSLog("PlaybackController: playback failed (%@); auto-retrying start.m3u8",
                   String(describing: error))
-            let resumeMs = pendingResumeMs ?? item.viewOffset
+            let resumeMs = currentResumeMs
             removeObservers()
-            Task { await self.startStreaming(resumeOffsetMsOverride: resumeMs) }
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
             return
         }
 

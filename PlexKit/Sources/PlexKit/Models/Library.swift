@@ -13,6 +13,13 @@ public struct SectionsResponse: Decodable, Sendable {
             case size
             case directory = "Directory"
         }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.size = try c.decodeIfPresent(Int.self, forKey: .size)
+            // Empty/no-access library responses can omit Directory entirely.
+            self.directory = try c.decodeIfPresent([Section].self, forKey: .directory) ?? []
+        }
     }
 }
 
@@ -220,7 +227,11 @@ public struct Tag: Decodable, Sendable, Identifiable, Hashable {
 /// custom "Chapters" info-panel tab whose rows seek the `AVPlayer` playhead directly to
 /// each chapter's `startTimeOffset`.
 public struct Chapter: Decodable, Sendable, Identifiable {
-    public let id: Int
+    /// PMS chapter id, when present. Real PMS data is unreliable here — container-derived
+    /// chapters frequently OMIT this or repeat a single value (e.g. `0`) across every
+    /// chapter, so it is NOT safe as a list identity. Use the synthesized `id` for that.
+    /// (Mirrors `Marker.markerID`, which hit the same PMS quirk.)
+    public let chapterID: Int?
     public let tag: String?
     /// Chapter start, in milliseconds from the start of the item.
     public let startTimeOffset: Int?
@@ -229,20 +240,30 @@ public struct Chapter: Decodable, Sendable, Identifiable {
     /// A thumbnail key for the chapter card, when present.
     public let thumb: String?
 
+    /// Stable, UNIQUE identity for SwiftUI lists. We key on `startTimeOffset` — chapters are
+    /// strictly ordered and never share a start — because PMS `id` is often missing or a
+    /// repeated `0`, which collapses a `ForEach(id: \.id)` into N copies of the first row
+    /// (the "every chapter shows Chapter 1 / 0:00" bug). Falls back to the raw id, then end.
+    public var id: String {
+        if let startTimeOffset { return "start-\(startTimeOffset)" }
+        if let chapterID { return "id-\(chapterID)" }
+        return "end-\(endTimeOffset ?? -1)"
+    }
+
     enum CodingKeys: String, CodingKey {
-        case id
+        case chapterID = "id"
         case tag
         case startTimeOffset
         case endTimeOffset
         case thumb
     }
 
-    public init(id: Int,
+    public init(id: Int? = nil,
                 tag: String? = nil,
                 startTimeOffset: Int? = nil,
                 endTimeOffset: Int? = nil,
                 thumb: String? = nil) {
-        self.id = id
+        self.chapterID = id
         self.tag = tag
         self.startTimeOffset = startTimeOffset
         self.endTimeOffset = endTimeOffset

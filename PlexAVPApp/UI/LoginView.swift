@@ -71,7 +71,10 @@ struct LoginView: View {
                 break
             }
         }
-        .onDisappear { webAuth.cancel() }
+        .onDisappear {
+            webAuth.cancel()
+            authManager.cancelPendingLogin()
+        }
     }
 
     @ViewBuilder

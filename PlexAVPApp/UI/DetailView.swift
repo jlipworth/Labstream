@@ -135,7 +135,7 @@ struct DetailView: View {
             playerCover
         }
         .sheet(isPresented: $showDownloadOptions) {
-            DownloadOptionsSheet(item: detailed)
+            DownloadOptionsSheet(item: detailed, mediaIndex: selectedMediaIndex)
         }
     }
 
@@ -315,41 +315,40 @@ struct DetailView: View {
         // The item currently in the cover: starts as `detailed`, then swaps to the next
         // episode on Up Next autoplay (#15). Fall back to `detailed` defensively.
         let playing = playingItem ?? detailed
-        if let token = appModel.token, let server = appModel.serverBaseURL {
+        if let local = playLocalURL {
+            PlayerView(localFile: local, item: playing,
+                       onClose: { presentingPlayer = false })
+                .ignoresSafeArea()
+        } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
             // AVPlayerViewController supplies NO system Close button inside a
             // `.fullScreenCover` on visionOS, so the cover was previously inescapable.
             // We thread a `dismiss` closure into PlayerView, which renders its own
             // top-leading close affordance (clear of the AVKit transport bar / "…" menu).
             // This works in both the inline and expanded player states.
             Group {
-                if let local = playLocalURL {
-                    PlayerView(localFile: local, item: playing,
-                               onClose: { presentingPlayer = false })
-                } else {
-                    PlayerView(item: playing,
-                               server: server,
-                               token: token,
-                               identity: appModel.identity,
-                               client: appModel.client,
-                               // The Plex resource clientIdentifier IS the server's machine
-                               // identifier; the play-queue API needs it to resolve the next
-                               // episode for the Up Next card.
-                               mediaIndex: playing.ratingKey == detailed.ratingKey ? selectedMediaIndex : 0,
-                               machineIdentifier: appModel.selectedServer?.clientIdentifier,
-                               onClose: { presentingPlayer = false },
-                               onRequestPlay: { next in
-                                   // Up Next advance: swap the presented item to the next
-                                   // episode. The `.id` keyed on ratingKey tears down the old
-                                   // controller and rebuilds PlayerView for the new episode,
-                                   // keeping the cover up for a continuous experience.
-                                   playLocalURL = nil
-                                   playingItem = next
-                               })
-                    // Rebuild PlayerView + its PlaybackController cleanly whenever the playing
-                    // item changes (Up Next advance), so the outgoing controller is dismantled
-                    // (its `stop()` flushes a final timeline) and a fresh one starts the next.
-                    .id(playing.ratingKey)
-                }
+                PlayerView(item: playing,
+                           server: server,
+                           token: token,
+                           identity: appModel.identity,
+                           client: appModel.client,
+                           // The Plex resource clientIdentifier IS the server's machine
+                           // identifier; the play-queue API needs it to resolve the next
+                           // episode for the Up Next card.
+                           mediaIndex: playing.ratingKey == detailed.ratingKey ? selectedMediaIndex : 0,
+                           machineIdentifier: appModel.selectedServer?.clientIdentifier,
+                           onClose: { presentingPlayer = false },
+                           onRequestPlay: { next in
+                               // Up Next advance: swap the presented item to the next
+                               // episode. The `.id` keyed on ratingKey tears down the old
+                               // controller and rebuilds PlayerView for the new episode,
+                               // keeping the cover up for a continuous experience.
+                               playLocalURL = nil
+                               playingItem = next
+                           })
+                // Rebuild PlayerView + its PlaybackController cleanly whenever the playing
+                // item changes (Up Next advance), so the outgoing controller is dismantled
+                // (its `stop()` flushes a final timeline) and a fresh one starts the next.
+                .id(playing.ratingKey)
             }
             .ignoresSafeArea()
         } else {
@@ -367,7 +366,7 @@ struct DetailView: View {
     /// request. On failure we roll the override back. NOTE: never logs the token — the
     /// builders carry it internally and we only ever inspect the `Bool` outcome here.
     private func toggleWatched() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.token else { return }
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         let wasWatched = isWatched
         // Optimistic flip.
         watchedOverride = !wasWatched
@@ -395,12 +394,15 @@ struct DetailView: View {
     }
 
     private var isDownloading: Bool {
-        downloadManager.records.contains { $0.ratingKey == detailed.ratingKey && $0.progress < 1.0 }
+        downloadManager.records.contains {
+            $0.ratingKey == detailed.ratingKey && ($0.status == .queued || $0.status == .downloading)
+        }
     }
 
     private var downloadLabel: String {
-        if let rec = downloadManager.records.first(where: { $0.ratingKey == detailed.ratingKey }),
-           rec.progress < 1.0 {
+        if let rec = downloadManager.records.first(where: { $0.ratingKey == detailed.ratingKey }) {
+            if rec.status == .failed { return "Download Failed" }
+            if rec.status == .complete { return "Downloaded" }
             return "Downloading \(Int(rec.progress * 100))%"
         }
         return "Download"
@@ -464,7 +466,7 @@ struct DetailView: View {
     }
 
     private func refreshMetadata() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.token else { return }
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         let req = BrowseAPI.metadata(server: server, token: token,
                                      identity: appModel.identity, ratingKey: item.ratingKey)
         if let resp = try? await appModel.client.send(req, as: MetadataResponse.self),
@@ -564,7 +566,7 @@ struct ContainerBrowserView: View {
     }
 
     private func load() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.token else {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }

@@ -62,7 +62,7 @@ struct LibrariesView: View {
     }
 
     private func load() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.token else {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
@@ -129,7 +129,7 @@ struct LibraryGridView: View {
     }
 
     private func load() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.token else {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }

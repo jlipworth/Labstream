@@ -32,6 +32,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var type: String
     public var year: Int?
     public var duration: Int?
+    public var viewOffset: Int?
+    public var viewCount: Int?
     public var summary: String?
     public var contentRating: String?
     public var tagline: String?
@@ -43,6 +45,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// The quality the user chose at enqueue time, so `retry()` re-runs at the SAME
     /// cap rather than always defaulting to 1080p. Stored as the enum raw value.
     public var quality: String?
+    public var mediaIndex: Int?
+    public var partIndex: Int?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
 
@@ -52,12 +56,16 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 type: String,
                 year: Int? = nil,
                 duration: Int? = nil,
+                viewOffset: Int? = nil,
+                viewCount: Int? = nil,
                 summary: String? = nil,
                 contentRating: String? = nil,
                 tagline: String? = nil,
                 thumb: String? = nil,
                 art: String? = nil,
                 quality: String? = nil,
+                mediaIndex: Int? = nil,
+                partIndex: Int? = nil,
                 posterRelativePath: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
@@ -65,12 +73,16 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.type = type
         self.year = year
         self.duration = duration
+        self.viewOffset = viewOffset
+        self.viewCount = viewCount
         self.summary = summary
         self.contentRating = contentRating
         self.tagline = tagline
         self.thumb = thumb
         self.art = art
         self.quality = quality
+        self.mediaIndex = mediaIndex
+        self.partIndex = partIndex
         self.posterRelativePath = posterRelativePath
     }
 
@@ -82,12 +94,16 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         key = try c.decodeIfPresent(String.self, forKey: .key)
         year = try c.decodeIfPresent(Int.self, forKey: .year)
         duration = try c.decodeIfPresent(Int.self, forKey: .duration)
+        viewOffset = try c.decodeIfPresent(Int.self, forKey: .viewOffset)
+        viewCount = try c.decodeIfPresent(Int.self, forKey: .viewCount)
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
         tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
         thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
         art = try c.decodeIfPresent(String.self, forKey: .art)
         quality = try c.decodeIfPresent(String.self, forKey: .quality)
+        mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
+        partIndex = try c.decodeIfPresent(Int.self, forKey: .partIndex)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
     }
 
@@ -99,6 +115,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                   title: title,
                   type: type,
                   duration: duration,
+                  viewOffset: viewOffset,
+                  viewCount: viewCount,
                   year: year,
                   summary: summary,
                   thumb: thumb,
@@ -239,15 +257,30 @@ final class DownloadStore: @unchecked Sendable {
 
     /// Build the on-disk destination for a given ratingKey + container extension.
     func destinationURL(ratingKey: String, ext: String) -> URL {
-        let safeExt = ext.isEmpty ? "mp4" : ext
-        return baseDirectory.appendingPathComponent("\(ratingKey).\(safeExt)")
+        let safeRatingKey = Self.safeFilenameComponent(ratingKey)
+        let safeExt = Self.safeExtension(ext)
+        return baseDirectory.appendingPathComponent("\(safeRatingKey).\(safeExt)")
+    }
+
+    private static func safeFilenameComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = value.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        let result = String(scalars)
+        return result.isEmpty ? UUID().uuidString : result
+    }
+
+    private static func safeExtension(_ value: String) -> String {
+        let lowered = value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let allowed: Set<String> = ["mp4", "m4v", "mov", "mkv", "avi", "ts", "webm"]
+        let alnum = lowered.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) }
+        return alnum && allowed.contains(lowered) ? lowered : "mp4"
     }
 
     /// Build the on-disk destination for a ratingKey's cached poster (D5). Kept as a
     /// sibling of the media file so `remove` (which deletes the whole base dir entry)
     /// and the relative-path convention both apply uniformly.
     func posterDestinationURL(ratingKey: String) -> URL {
-        baseDirectory.appendingPathComponent("\(ratingKey).poster.jpg")
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).poster.jpg")
     }
 
     /// Re-resolve a stored relative poster path to an absolute URL that exists on disk.
@@ -274,11 +307,10 @@ final class DownloadStore: @unchecked Sendable {
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
-    /// Absolute local URL for a completed (or in-progress) download, if indexed
-    /// AND the file is present on disk.
+    /// Absolute local URL for a completed download, if indexed AND present on disk.
     func localURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey] else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete else { return nil }
         let url = baseDirectory.appendingPathComponent(row.relativePath)
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
