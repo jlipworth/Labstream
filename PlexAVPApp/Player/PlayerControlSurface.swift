@@ -176,8 +176,26 @@ final class PlayerControlSurface {
 
         if let onClose {
             actions.append(UIAction(title: "Close",
-                                    image: UIImage(systemName: "xmark")) { _ in
-                Task { @MainActor in onClose() }
+                                    image: UIImage(systemName: "xmark")) { [weak self] _ in
+                Task { @MainActor in
+                    // In the Expanded / Immersive cinema experience the system hosts the player in
+                    // a SEPARATE full-screen scene (see `AVPlayerViewController` "expanded" docs).
+                    // Yanking our `.fullScreenCover` host without first collapsing that scene leaves
+                    // the cinema environment on screen with an empty app window (just the tab
+                    // ornament) — issue #28. Transition back to `.embedded` first so the system
+                    // docks the player into our window, THEN dismiss the cover.
+                    //
+                    // Pause immediately so the player isn't visibly *playing* during the system's
+                    // ~1s expanded->embedded collapse animation — it freezes on the current frame
+                    // and reads as "closing" rather than a second window still playing in the
+                    // background. The real teardown (`stop()`, which flushes a final timeline) still
+                    // runs when the cover is dismantled.
+                    self?.playerVC?.player?.pause()
+                    if let pvc = self?.playerVC, pvc.experienceController.experience != .embedded {
+                        _ = await pvc.experienceController.transition(to: .embedded)
+                    }
+                    onClose()
+                }
             })
         }
 
