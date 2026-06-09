@@ -44,3 +44,6 @@ Carthage/Build/
 
 # Claude Code session data + agent worktrees (never commit)
 .claude/
+
+# Superpowers visual brainstorming scratch data (never commit)
+.superpowers/
