@@ -202,7 +202,10 @@ struct PlayerView: View {
             // top-trailing "…" menu. Its own X button toggles the same state back off. Observes
             // the @Observable `statsOverlay` directly. (Inline/windowed mode only — like the other
             // floated overlays, it doesn't composite in the expanded cinema experience.)
-            if let controller {
+            //
+            // Suppressed while a failure is surfaced so it doesn't float over the full-screen
+            // error/Retry overlay (which also occupies the top region).
+            if let controller, !controller.playbackError.isFailed {
                 StatsOverlay(state: controller.statsOverlay, diagnostics: controller.diagnostics)
             }
         }
