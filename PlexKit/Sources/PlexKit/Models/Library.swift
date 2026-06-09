@@ -22,6 +22,10 @@ public struct Section: Decodable, Sendable, Identifiable {
     public let type: String
     public var id: String { key }
 
+    /// True for music libraries (Plex uses the "artist" section type). The app hides
+    /// these until a dedicated Plexamp-style music experience exists (issue #15).
+    public var isMusic: Bool { type == "artist" }
+
     public init(key: String, title: String, type: String) {
         self.key = key
         self.title = title
