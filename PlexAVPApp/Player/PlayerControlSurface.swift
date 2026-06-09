@@ -35,18 +35,32 @@ final class PlayerControlSurface {
     private let controller: PlaybackController
     /// Called when the user picks a new bitrate so the caller can persist it.
     private let onBitratePicked: (Int) -> Void
+    /// Dismiss hook (the same one the failure overlay / `.fullScreenCover` use). Surfaced as a
+    /// native `contextualActions` "Close" so it's reachable in the EXPANDED cinema experience,
+    /// where the floated SwiftUI overlays don't render. Always present when non-nil.
+    private let onClose: (() -> Void)?
+    /// Failure-recovery hook: rebuilds the player from the live playhead (a `.id()` bump in
+    /// `PlayerView`). Wired to the expanded-mode "Retry" contextual action — `controller.retry()`
+    /// alone inherits AVKit's wedged control layer, so recovery must rebuild. Receives the
+    /// controller so it doesn't depend on PlayerView's not-yet-published `@State`.
+    private let onRetry: ((PlaybackController) -> Void)?
 
     /// Shared selection state the SwiftUI tabs bind to.
     private let menuState: PlayerMenuState
 
     init(playerVC: AVPlayerViewController,
          controller: PlaybackController,
-         onBitratePicked: @escaping (Int) -> Void) {
+         onBitratePicked: @escaping (Int) -> Void,
+         onClose: (() -> Void)? = nil,
+         onRetry: ((PlaybackController) -> Void)? = nil) {
         self.playerVC = playerVC
         self.controller = controller
         self.onBitratePicked = onBitratePicked
+        self.onClose = onClose
+        self.onRetry = onRetry
         self.menuState = PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps)
         installInfoTabs()
+        rebuildContextualActions()
     }
 
     private func installInfoTabs() {
@@ -100,6 +114,74 @@ final class PlayerControlSurface {
             playerVC.customInfoViewControllers = tabs
         }
         #endif
+    }
+
+    // MARK: - Expanded-mode contextual actions (#23)
+    //
+    // `PlayerView` floats the failure (Retry/Close), Skip Intro/Credits and Up Next affordances as
+    // SwiftUI siblings of the player — they composite over the video ONLY in the inline/windowed
+    // state. In the visionOS Expanded cinema experience the system owns the window scene and those
+    // siblings vanish, so a stall/failure (or an available Skip / Up Next) there would be a dead
+    // end. `AVPlayerViewController.contextualActions` (`visionos(1.0)`) is the AVKit-native slot
+    // for controls "displayed during playback" (the same mechanism Apple cites for "Skip Intro");
+    // the SYSTEM player renders them, so they follow the player into the expanded/docked cinema
+    // experience and stay tappable. We mirror the controller's observable failure/skip/up-next
+    // state into that array, with Close always present as the exit.
+    //
+    // This surface is the SINGLE owner of `contextualActions` (PlayerView no longer sets a Close
+    // action directly), so the dynamic action and Close never clobber each other.
+
+    /// Re-derive `contextualActions` now and re-arm observation so any change to the tracked
+    /// failure / skip-marker / up-next state re-runs this. `withObservationTracking` fires its
+    /// `onChange` once per arming, so we recurse to re-arm — no polling, no extra player observers.
+    private func rebuildContextualActions() {
+        withObservationTracking {
+            applyContextualActions()
+        } onChange: { [weak self] in
+            // `onChange` fires from the tracked mutation's context; hop to the main actor (where
+            // the player + state live) before rebuilding.
+            Task { @MainActor [weak self] in self?.rebuildContextualActions() }
+        }
+    }
+
+    /// Snapshot the observable state and set `contextualActions` to the matching controls. Reading
+    /// `playbackError.isFailed`, `skipMarker.active` and `upNext.isShown`/`nextItem` here is what
+    /// registers them with the enclosing `withObservationTracking`. Priority for the leading,
+    /// state-driven action: a surfaced failure (Retry) ▸ an active Skip marker ▸ Up Next
+    /// ("Play Next"). Close is always appended so there's a stable exit in every state/both modes.
+    private func applyContextualActions() {
+        guard let playerVC else { return }
+
+        var actions: [UIAction] = []
+
+        if controller.playbackError.isFailed {
+            if let onRetry {
+                actions.append(UIAction(title: "Retry",
+                                        image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+                    guard let self else { return }
+                    Task { @MainActor in onRetry(self.controller) }
+                })
+            }
+        } else if let marker = controller.skipMarker.active {
+            actions.append(UIAction(title: marker.kind.label,
+                                    image: UIImage(systemName: marker.kind.systemImage)) { [weak self] _ in
+                Task { @MainActor in self?.controller.skipCurrentMarker() }
+            })
+        } else if controller.upNext.isShown, controller.upNext.nextItem != nil {
+            actions.append(UIAction(title: "Play Next",
+                                    image: UIImage(systemName: "play.fill")) { [weak self] _ in
+                Task { @MainActor in self?.controller.playNextNow() }
+            })
+        }
+
+        if let onClose {
+            actions.append(UIAction(title: "Close",
+                                    image: UIImage(systemName: "xmark")) { _ in
+                Task { @MainActor in onClose() }
+            })
+        }
+
+        playerVC.contextualActions = actions
     }
 
     /// Wrap a SwiftUI view in a hosting controller configured as an info-panel tab. The

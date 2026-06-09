@@ -142,6 +142,7 @@ struct PlayerView: View {
                                 resumeMsOverride: rebuildResumeMs,
                                 onBitratePicked: { maxVideoBitrateKbps = $0 },
                                 onClose: onClose,
+                                onRetry: { rebuildPlayer(from: $0) },
                                 onControllerReady: {
                                     // Wire the autoplay-advance hook before publishing the
                                     // controller (#15): the controller calls this when the
@@ -383,17 +384,24 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
     let resumeMsOverride: Int?
     /// Persists the user's Quality choice up into `@AppStorage`.
     let onBitratePicked: (Int) -> Void
-    /// Dismiss hook for the presenting `.fullScreenCover`. Installed as an AVKit-hosted
-    /// `infoViewActions` Close item (renders in both inline and expanded), NOT as a floated
-    /// SwiftUI sibling (which disappears in the expanded cinema experience).
+    /// Dismiss hook for the presenting `.fullScreenCover`. Surfaced by the control surface as a
+    /// native `contextualActions` "Close" (renders over the video in BOTH inline and expanded
+    /// cinema states, unlike a floated SwiftUI sibling, which vanishes when expanded).
     let onClose: (() -> Void)?
+    /// Failure-recovery hook (#23): rebuilds the player from the live playhead. Threaded to the
+    /// control surface so the expanded-mode "Retry" contextual action triggers the same `.id()`
+    /// rebuild as the inline error overlay (an in-place `controller.retry()` inherits the wedge).
+    let onRetry: (PlaybackController) -> Void
     /// Publishes the main-actor-created controller back up to `PlayerView` so it can observe
     /// `playbackError` for the failure overlay. Called once, asynchronously, after creation
     /// to avoid mutating `@State` during the view-update pass.
     let onControllerReady: (PlaybackController) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(controller: controllerFactory(resumeMsOverride), onBitratePicked: onBitratePicked)
+        Coordinator(controller: controllerFactory(resumeMsOverride),
+                    onBitratePicked: onBitratePicked,
+                    onClose: onClose,
+                    onRetry: onRetry)
     }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
@@ -401,22 +409,11 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
         vc.player = context.coordinator.controller.player
         CinemaEnvironment.configure(vc)
 
-        // Close is installed via `contextualActions` — the visionOS-native hook for action
-        // controls "displayed during playback" (the same mechanism Apple cites for Skip
-        // Intro). Per the AVKit SDK these render prominently OVER the video in BOTH the
-        // inline and expanded cinema states, and AVKit shows/hides them with the chrome —
-        // unlike `infoViewActions` (buried in the ⓘ content view) or a floated SwiftUI
-        // sibling (which vanishes in the expanded experience). With exactly one action it
-        // also gets the single-action treatment. The handler hops to the main actor (UIAction
-        // handlers are nominally nonisolated under Swift 6) before invoking dismiss.
-        if let onClose {
-            let closeAction = UIAction(title: "Close",
-                                       image: UIImage(systemName: "xmark")) { _ in
-                Task { @MainActor in onClose() }
-            }
-            vc.contextualActions = [closeAction]
-        }
-
+        // `contextualActions` (the visionOS-native slot for controls "displayed during playback",
+        // rendered by the system player so they persist into the expanded cinema experience) is
+        // owned entirely by the control surface now (#23): it keeps a "Close" action always
+        // present AND prepends a state-driven Retry / Skip / Play Next when applicable. Setting it
+        // here too would clobber that, so the control surface is the single owner.
         context.coordinator.attachControlSurface(to: vc)
         context.coordinator.controller.start()
         // Hand the controller up to the SwiftUI layer after this update pass completes.
@@ -439,17 +436,26 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
     final class Coordinator {
         let controller: PlaybackController
         private let onBitratePicked: (Int) -> Void
+        private let onClose: (() -> Void)?
+        private let onRetry: (PlaybackController) -> Void
         private var controlSurface: PlayerControlSurface?
 
-        init(controller: PlaybackController, onBitratePicked: @escaping (Int) -> Void) {
+        init(controller: PlaybackController,
+             onBitratePicked: @escaping (Int) -> Void,
+             onClose: (() -> Void)?,
+             onRetry: @escaping (PlaybackController) -> Void) {
             self.controller = controller
             self.onBitratePicked = onBitratePicked
+            self.onClose = onClose
+            self.onRetry = onRetry
         }
 
         func attachControlSurface(to vc: AVPlayerViewController) {
             controlSurface = PlayerControlSurface(playerVC: vc,
                                                   controller: controller,
-                                                  onBitratePicked: onBitratePicked)
+                                                  onBitratePicked: onBitratePicked,
+                                                  onClose: onClose,
+                                                  onRetry: onRetry)
         }
     }
 }
