@@ -1,10 +1,13 @@
 # Plex AVP App — Status / Handoff
 
-_Last updated: 2026-06-09. Reflects current working-tree state. **Everything below is uncommitted** (working at HEAD `b30c81f`)._
+_Last updated: 2026-06-09. Pushed to **private** GitHub repo `jlipworth/plex-avp-app` (`main`)._
 
 A personal-use native **visionOS 26.5 (Apple Vision Pro)** Plex client. Sideload-only (no paid
 Apple Developer account; bundle id `com.personal.PlexAVPApp`). Goal: reliable **bitrate-capped HLS
 transcoding**, **theater/cinema playback**, and **offline downloads** of capped copies.
+
+> **Task / bug tracking now lives in [GitHub Issues](https://github.com/jlipworth/plex-avp-app/issues)**, not this file.
+> This doc is kept only as a handoff for the durable technical facts + build/run commands below.
 
 ---
 
@@ -43,31 +46,22 @@ See `TESTING-CHECKLIST.md` for the per-item walkthrough (one at a time). Highlig
 
 ---
 
-## 🔧 In progress / not yet integrated
+## 📋 Open work
 
-- **#23 — `contextualActions` driver for Retry / Skip / Play-Next** (worktree
-  `agent-a9b170cc342ef7ab5`, NOT merged). Mirrors `controller.playbackError` / `skipMarker` /
-  `upNext` into `playerVC.contextualActions` via `withObservationTracking`. **Adaptation required
-  before merge:** (1) re-route its Retry to the **rebuild** path (`PlayerView.rebuildPlayer`), NOT
-  `controller.retry()` (in-place item swap inherits the wedge); (2) ALWAYS include Close;
-  (3) remove the static `closeAction` from `PlayerView.makeUIViewController` so the driver solely
-  owns `contextualActions`.
+Tracked in **[GitHub Issues](https://github.com/jlipworth/plex-avp-app/issues)**. Highlights:
+the Close-button placement decision (branches `close-A/B/C-*`), the keystone custom control
+overlay, the device-profile/Direct-Stream work, the chapter-parsing bug, and scrubbing the server
+hostname before the repo goes public.
 
 ---
 
-## ⛔ Not built yet — need decision/testing before implementing
+## 🌿 Branches
 
-- **#2 KEYSTONE — custom SwiftUI control overlay** (replaces AVKit info-tabs). Big UX refactor;
-  needs visual iteration. **Unblocks #6, #7, #3, and folds in #4.**
-- **#6** Quality menu polish · **#7** Stats on-video overlay — both fold into #2.
-- **#3** Audio soundtrack / language picker — needs #2 + accurate device profile (#13).
-- **#13** Accurate AVP DeviceProfile + Direct Stream within cap — research done
-  (`research/13-device-profile.md`). Touches the CORE transcode decision and the `Safari` profile
-  constraint; safest first step is a decision-only probe keeping `X-Plex-Client-Profile-Name=Safari`.
-  Held until live-tested step by step.
-- **#4** Trick-play scrubbing thumbnails — server-gated (Plex live universal transcode emits no
-  `EXT-X-I-FRAME-STREAM-INF`); needs a custom scrubber + Plex BIF index. Folds into #2.
-- **#19** RealityKit theater · **#20** multi-track offline (.movpkg) — optional / later.
+- `main` — integrated, green, pushed to `origin` (private).
+- `close-A-inline-float` / `close-B-custom-transport` / `close-C-ornament` — the three Close-button
+  prototypes (pushed; A rejected in testing). Winner gets ported into `main`.
+- `worktree-agent-a9b170cc342ef7ab5` — `contextualActions` Retry/Skip/Play-Next prototype (local;
+  needs adaptation — see the cinema-overlay issue).
 
 ---
 
@@ -106,22 +100,9 @@ See `TESTING-CHECKLIST.md` for the per-item walkthrough (one at a time). Highlig
 
 ---
 
-## 🌳 Worktrees
-
-Agents made uncommitted changes on branches based at HEAD `b30c81f`.
-
-- `agent-a9b170cc342ef7ab5` — **#23 contextualActions driver. KEEP** (pending adaptation above).
-- `agent-a30a4e355f7a94e05` — #24 TV hierarchy. **Integrated → removable.**
-- `agent-ad73d4c4d2cecd184` — #13 research doc. **Integrated → removable.**
-- `agent-aeaa024f23602fc8b`, `agent-a22bf03a0ab74276f`, `agent-a4b155890ae181cbb` — close-button
-  variants, **redundant** vs. the shipped `contextualActions` Close. **Removable.**
-
----
-
 ## ▶️ Resuming
 
 1. Boot the sim / open Simulator.app (user runs `xcrun simctl boot "Apple Vision Pro"` if needed).
 2. Build + install + launch (commands above). DerivedData is cached.
 3. **Log in again** if the app was reinstalled.
-4. Continue `TESTING-CHECKLIST.md` one item at a time; live-test #24 drill-down; decide on #23
-   adaptation + whether to commit a checkpoint.
+4. Pick up open work from [GitHub Issues](https://github.com/jlipworth/plex-avp-app/issues).
