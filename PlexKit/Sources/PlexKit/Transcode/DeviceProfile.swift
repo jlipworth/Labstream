@@ -30,4 +30,28 @@ public struct DeviceProfile: Sendable, Equatable {
         ]
         return DeviceProfile(clientProfileExtra: directives.joined(separator: "+"))
     }
+
+    /// Direct-play-capable profile used ONLY by the decision probe (issue #7). Prepends an
+    /// `add-direct-play-profile` and marks the bitrate limit `isRequired=true` so above-cap
+    /// sources are forced to transcode rather than direct-played over the cap. NOT used by the
+    /// production playback request yet.
+    ///
+    /// Whitelists only the lowest-risk codec/container/audio intersection that AVPlayer
+    /// decodes over HLS and PMS can deliver: H.264/HEVC video in an fMP4 (`mp4`) container
+    /// with AAC or AC-3 audio (research/13 §1.1, §3.1). HEVC over HLS must be fMP4, never
+    /// MPEG-TS. AV1 / Dolby Vision / TrueHD / DTS / EAC3 are deliberately omitted so they
+    /// fall to the transcode path until verified on-device.
+    ///
+    /// The two `add-transcode-target` directives are identical to `visionOS(...)` so
+    /// above-cap (or non-whitelisted) sources still have a valid transcode target.
+    /// - Parameter maxVideoBitrateKbps: hard cap on video bitrate, in kbps; `isRequired=true`.
+    public static func visionOSDirectPlayProbe(maxVideoBitrateKbps: Int) -> DeviceProfile {
+        let directives = [
+            "add-direct-play-profile(type=videoProfile&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
+            "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
+            "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=ts&videoCodec=h264&audioCodec=aac,ac3)",
+            "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value=\(maxVideoBitrateKbps)&isRequired=true)",
+        ]
+        return DeviceProfile(clientProfileExtra: directives.joined(separator: "+"))
+    }
 }

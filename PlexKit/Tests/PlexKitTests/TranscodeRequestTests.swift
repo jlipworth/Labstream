@@ -178,6 +178,86 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("audioBoost") == "100")
 }
 
+// MARK: - Direct-play probe (issue #7) — additive decision-only probe
+
+@Test func directPlayProbeURLAdvertisesDirectPlay() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0)
+    let url = req.directPlayProbeDecisionURL()
+    let q = queryItems(url)
+    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
+    #expect(url.path == "/video/:/transcode/universal/decision")
+    #expect(v("directPlay") == "1")
+    #expect(v("hasMDE") == "1")
+    // Exactly one directPlay param survives the 0->1 override.
+    #expect(q.filter { $0.name == "directPlay" }.count == 1)
+}
+
+@Test func directPlayProbeKeepsSafariProfile() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0)
+    let q = queryItems(req.directPlayProbeDecisionURL())
+    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
+    // An unknown profile name 400s — the probe must still use the server-known "Safari".
+    #expect(v("X-Plex-Client-Profile-Name") == "Safari")
+}
+
+@Test func directPlayProbeProfileHasDirectPlayAndRequiredCap() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0)
+    let q = queryItems(req.directPlayProbeDecisionURL())
+    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
+    let extra = v("X-Plex-Client-Profile-Extra")
+    #expect(extra?.contains("add-direct-play-profile") == true)
+    #expect(extra?.contains("isRequired=true") == true)
+    #expect(extra?.contains("8000") == true)
+    // Exactly one -Extra param survives the swap.
+    #expect(q.filter { $0.name == "X-Plex-Client-Profile-Extra" }.count == 1)
+}
+
+@Test func directPlayProbeShareCoreParamsWithDecision() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 1, partIndex: 2)
+    let probe = queryItems(req.directPlayProbeDecisionURL())
+    let decision = queryItems(req.decisionURL())
+    func v(_ items: [URLQueryItem], _ n: String) -> String? { items.first { $0.name == n }?.value }
+    // Everything except directPlay and -Extra is identical to the production decision URL.
+    for name in ["path", "protocol", "maxVideoBitrate", "session", "X-Plex-Token",
+                 "mediaIndex", "partIndex", "X-Plex-Client-Profile-Name", "hasMDE"] {
+        #expect(v(probe, name) == v(decision, name))
+    }
+    // The two intentional deltas.
+    #expect(v(probe, "directPlay") == "1")
+    #expect(v(decision, "directPlay") == "0")
+}
+
+// MARK: - Regression guards (production path must stay byte-identical)
+
+@Test func productionStartURLStillDirectPlayZeroAndUnchangedProfile() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0)
+    let q = queryItems(req.startM3U8URL())
+    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
+    #expect(v("directPlay") == "0")
+    #expect(v("X-Plex-Client-Profile-Extra")?.contains("add-direct-play-profile") == false)
+}
+
+@Test func visionOSProfileUnchanged() {
+    let extra = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000).clientProfileExtra
+    #expect(extra.contains("add-direct-play-profile") == false)
+    #expect(extra.contains("isRequired=true") == false)
+}
+
 // MARK: - DecisionResponse / Decision
 
 @Test func decodesTranscodeDecision() throws {
