@@ -2,7 +2,12 @@
 
 **Date:** 2026-06-09
 **Issues:** #10 (Chapters UI: Plex-style horizontal thumbnail scroller), task #27
-**Status:** Approved design, ready for implementation plan
+**Status:** Implemented. One change from this design: the thumbnail is loaded by
+vending a `/photo/:/transcode` URL from `PlaybackController.chapterThumbnailURL(for:)`
+into an `AsyncImage`, NOT via `PosterImage`. `PosterImage` reads `AppModel` from the
+SwiftUI environment, which the bare `UIHostingController` hosting the info tab does not
+inject, so it would have silently rendered placeholders. Everything else shipped as
+designed.
 
 ## Goal
 
