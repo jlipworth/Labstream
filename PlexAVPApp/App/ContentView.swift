@@ -13,7 +13,12 @@ struct ContentView: View {
     @State private var authManager: AuthManager
     @State private var downloadManager: DownloadManager
 
-    @State private var didRestore = false
+    /// True until the launch-time `restoreSession()` finishes. While restoring we show a
+    /// neutral splash — NOT `LoginView` — because a saved token takes a moment to resolve a
+    /// reachable server (discovery + connection probing), during which `isBrowseReady` is still
+    /// false. Showing the Sign-In button in that window let the user start a second OAuth flow
+    /// whose web sheet then orphaned itself over the restored UI.
+    @State private var isRestoring = true
 
     init() {
         // Build a stable identity from the persisted client identifier.
@@ -37,16 +42,34 @@ struct ContentView: View {
                 RootView(appModel: appModel,
                          authManager: authManager,
                          downloadManager: downloadManager)
+            } else if isRestoring {
+                RestoringSessionView()
             } else {
                 LoginView(authManager: authManager)
                     .environment(appModel)
             }
         }
         .task {
-            guard !didRestore else { return }
-            didRestore = true
+            guard isRestoring else { return }
             await authManager.restoreSession()
+            isRestoring = false
         }
+    }
+}
+
+/// Neutral launch splash shown while a saved session is being restored (token read +
+/// server discovery/probing), so the Sign-In screen never flashes for an already-signed-in
+/// user.
+private struct RestoringSessionView: View {
+    var body: some View {
+        VStack(spacing: DS.Space.lg) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Connecting…")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
