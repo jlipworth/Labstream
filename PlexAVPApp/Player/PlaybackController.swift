@@ -141,32 +141,27 @@ final class PlaybackController {
     /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
     /// state. Cancelled the moment playback genuinely resumes (`.playing`).
     private var stallWatchdog: Timer?
-    private var lastTimelineState: TimelineRequest.State?
-    private var lastReportedSecond: Int = -1
-    private var didScrobble = false
     private var started = false
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
 
-    // MARK: - Audio-session / interruption / background state (#17)
+    // MARK: - Extracted collaborators
 
-    /// NotificationCenter tokens for the audio-session interruption + route-change
-    /// observers and the app-lifecycle (background) observers. Registered once in
-    /// `installSessionObservers()` and torn down in `removeSessionObservers()`. Kept
-    /// separate from the per-item observers (which are re-registered on a Quality reload)
-    /// so audio-session/lifecycle handling survives an item swap and is never doubly
-    /// registered.
-    private var interruptionObserver: NSObjectProtocol?
-    private var routeChangeObserver: NSObjectProtocol?
-    private var resignActiveObserver: NSObjectProtocol?
-    private var didEnterBackgroundObserver: NSObjectProtocol?
+    /// Audio-session config + interruption / route-change / background handling (#17, P5).
+    /// Activated and observer-registered once per controller lifetime (both idempotent
+    /// across a Quality reload); torn down in `stop()`.
+    private lazy var audioSession = AudioSessionCoordinator(player: player)
 
-    /// True when an audio interruption paused playback while the user had it playing.
-    /// Gates auto-resume after `.ended/.shouldResume`: background pauses deliberately
-    /// never set this flag, so returning foreground or a coincident interruption-ended
-    /// event cannot restart video behind the user's back.
-    private var wasPlayingBeforeInterruption = false
+    /// Timeline heartbeats + scrobble reporting to PMS. Spans Quality reloads (its
+    /// one-shot scrobble guard deliberately survives a stream rebuild); its readiness
+    /// gate is reset per item in `load(_:)`.
+    private lazy var timeline = TimelineReporter(item: item,
+                                                 server: server,
+                                                 token: token,
+                                                 identity: identity,
+                                                 client: client,
+                                                 player: player)
 
     /// One-shot guard for the resume seek. Replaces the old "self-nil the observation
     /// inside its own callback" pattern (P4 #8): nilling the observation there meant a
@@ -174,11 +169,6 @@ final class PlaybackController {
     /// status observation alive for the item's lifetime and gate the resume seek on this
     /// flag instead, so `.failed` is still observed after `.readyToPlay`.
     private var didSeek = false
-
-    /// True once the current item has reached `.readyToPlay` with a real duration. Used
-    /// to suppress timeline/scrobble heartbeats during readyToPlay churn (P8 #11): a
-    /// `duration=0` / `time≈0` heartbeat confuses PMS Continue Watching.
-    private var isReadyForReporting = false
 
     /// One-shot guard so the saved-subtitle-language auto-select runs once per item. Reset
     /// in `load(_:)` alongside the other per-item flags so a Quality reload (which swaps the
@@ -362,14 +352,14 @@ final class PlaybackController {
         upNextTask?.cancel()
         upNextTask = nil
         playbackGeneration += 1
-        reportTimeline(state: .stopped, force: true)
+        timeline.report(state: .stopped, force: true)
         player.pause()
         removeObservers()
         // Tear down the session/lifecycle observers (kept separate from the per-item
         // observers above) and release the audio session, notifying other apps so they can
         // resume (#17).
-        removeSessionObservers()
-        deactivateAudioSession()
+        audioSession.removeObservers()
+        audioSession.deactivate()
     }
 
     // MARK: - Subtitles (soft renditions)
@@ -1015,7 +1005,7 @@ final class PlaybackController {
         // Reset per-item state for the new player item: a fresh load is a fresh resume
         // (didSeek), a fresh readiness gate, and a clean error surface (P2/P3/P8).
         didSeek = false
-        isReadyForReporting = false
+        timeline.isReadyForReporting = false
         didApplySavedSubtitle = false
         didApplyAudioPreference = false
         pendingResumeMs = resumeOffsetMs
@@ -1027,9 +1017,9 @@ final class PlaybackController {
         // Configure + activate the shared audio session before the item starts (#17), and
         // register the interruption / route-change / background observers once. Both are
         // idempotent across a Quality reload (which re-enters here): the session is already
-        // active and `installSessionObservers()` no-ops on its second call.
-        configureAudioSession()
-        installSessionObservers()
+        // active and `installObservers()` no-ops on its second call.
+        audioSession.activate()
+        audioSession.installObservers()
         // Forward-buffer tuning (#21). Ask AVPlayer to keep ~30s of media buffered AHEAD of
         // the playhead. Default (0) lets AVPlayer pick automatically, which on a capped HLS
         // transcode can run lean and rebuffer on a network blip. A modest explicit buffer
@@ -1080,7 +1070,7 @@ final class PlaybackController {
                     // a real duration (P8 #11) so we don't post duration=0/time≈0.
                     let durSecs = pItem.duration.seconds
                     if durSecs.isFinite && durSecs > 0 {
-                        self.isReadyForReporting = true
+                        self.timeline.isReadyForReporting = true
                     }
                     // Reapply the user's saved subtitle-language preference to this item's
                     // legible group (once per item; gated inside). Runs on each fresh item —
@@ -1134,12 +1124,11 @@ final class PlaybackController {
             Task { @MainActor in
                 guard let self else { return }
                 let state: TimelineRequest.State = self.player.timeControlStatus == .paused ? .paused : .playing
-                self.reportTimeline(state: state, force: false)
+                self.timeline.report(state: state, force: false)
                 // Progress-based scrobble (P9 #11): capped-HLS viewers often stop short of
                 // EOF, so didPlayToEnd never fires and the item stays "unwatched." Mark it
-                // watched once we cross ~90%. `sendScrobble()` is idempotent (didScrobble),
-                // and didPlayToEnd remains the backstop for the final stretch.
-                self.scrobbleIfNearEnd()
+                // watched once we cross ~90%; didPlayToEnd remains the backstop.
+                self.timeline.scrobbleIfNearEnd()
             }
         }
 
@@ -1161,7 +1150,7 @@ final class PlaybackController {
             guard let self else { return }
             Task { @MainActor in
                 let state: TimelineRequest.State = avPlayer.timeControlStatus == .paused ? .paused : .playing
-                self.reportTimeline(state: state, force: true)
+                self.timeline.report(state: state, force: true)
             }
         }
 
@@ -1197,8 +1186,8 @@ final class PlaybackController {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.reportTimeline(state: .stopped, force: true)
-                self.sendScrobble()
+                self.timeline.report(state: .stopped, force: true)
+                self.timeline.scrobble()
                 // Play-to-end with a resolved, un-cancelled next item: autoplay it (#15).
                 // `advanceToNextItem` re-flushes timeline/scrobble idempotently.
                 if self.upNext.nextItem != nil, !self.upNext.isCancelled {
@@ -1234,260 +1223,6 @@ final class PlaybackController {
         if let failedToEndObserver {
             NotificationCenter.default.removeObserver(failedToEndObserver)
             self.failedToEndObserver = nil
-        }
-    }
-
-    // MARK: - Audio session / interruptions / background (#17)
-
-    /// Configure and activate the shared `AVAudioSession` for video playback.
-    ///
-    /// Category `.playback` with mode `.moviePlayback` is the correct combination for a
-    /// video player: it routes audio to the cinema/system output, plays through the silent
-    /// switch (a movie's audio should not be muted by it), and is what AVKit expects for the
-    /// docked/expanded screen. We activate once before the first item loads; subsequent
-    /// (re)loads (e.g. a Quality reload) reuse the already-active session.
-    ///
-    /// Conservative by design: audio already worked without explicit config, so `.playback`
-    /// must not regress that — it's the documented category for exactly this use and does not
-    /// mute. Failures are logged (never fatal) so a session-config hiccup can't black-hole
-    /// playback.
-    private func configureAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .moviePlayback)
-            try session.setActive(true)
-        } catch {
-            NSLog("PlaybackController: AVAudioSession configuration failed (%@)",
-                  String(describing: error))
-        }
-    }
-
-    /// Deactivate the shared audio session on teardown, notifying other audio apps so they
-    /// can resume. Best-effort: a failure here is logged, never fatal. Notifying on
-    /// deactivation is the recommended behavior so we don't leave the session pinned for a
-    /// subsequent player or another app.
-    private func deactivateAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance()
-                .setActive(false, options: [.notifyOthersOnDeactivation])
-        } catch {
-            NSLog("PlaybackController: AVAudioSession deactivation failed (%@)",
-                  String(describing: error))
-        }
-    }
-
-    /// Register the audio-session (interruption / route-change) and app-lifecycle
-    /// (background) observers exactly once for this controller's lifetime. Idempotent: a
-    /// second call (or a Quality reload, which only touches the per-item observers) is a
-    /// no-op, so we never double-register. All closures hop to the `@MainActor` before
-    /// touching player/controller state, satisfying Swift 6 strict concurrency.
-    private func installSessionObservers() {
-        guard interruptionObserver == nil else { return }
-        let center = NotificationCenter.default
-
-        interruptionObserver = center.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance(),
-            queue: .main
-        ) { [weak self] note in
-            // Extract the Sendable scalars (raw UInts) from the non-Sendable userInfo BEFORE
-            // hopping actors, so nothing risks a data race crossing into the @MainActor task.
-            let typeRaw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
-            Task { @MainActor in
-                self?.handleInterruption(typeRaw: typeRaw, optionsRaw: optionsRaw)
-            }
-        }
-
-        routeChangeObserver = center.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(),
-            queue: .main
-        ) { [weak self] note in
-            let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
-            Task { @MainActor in
-                self?.handleRouteChange(reasonRaw: reasonRaw)
-            }
-        }
-
-        // Background-aware playback (P5): on visionOS the immersive player loses the active
-        // scene when the user leaves; video can't decode/render in the background and a live
-        // transcode session would keep churning. Pause on resign-active / background. We do
-        // NOT auto-resume on return — that's the user's choice.
-        resignActiveObserver = center.addObserver(
-            forName: UIApplication.willResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.pauseForBackground()
-            }
-        }
-
-        didEnterBackgroundObserver = center.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.pauseForBackground()
-            }
-        }
-    }
-
-    /// Tear down the session/lifecycle observers. Called from `stop()` (and is safe to call
-    /// more than once). Kept separate from `removeObservers()` so a Quality reload — which
-    /// rebuilds only the per-item observers — never tears these down or re-registers them.
-    private func removeSessionObservers() {
-        let center = NotificationCenter.default
-        if let interruptionObserver {
-            center.removeObserver(interruptionObserver)
-            self.interruptionObserver = nil
-        }
-        if let routeChangeObserver {
-            center.removeObserver(routeChangeObserver)
-            self.routeChangeObserver = nil
-        }
-        if let resignActiveObserver {
-            center.removeObserver(resignActiveObserver)
-            self.resignActiveObserver = nil
-        }
-        if let didEnterBackgroundObserver {
-            center.removeObserver(didEnterBackgroundObserver)
-            self.didEnterBackgroundObserver = nil
-        }
-    }
-
-    /// Handle an `AVAudioSession.interruptionNotification`.
-    ///
-    /// `.began`: remember whether we were actively playing (so we don't later resume a
-    /// user-paused stream) and pause. `.ended`: if the system says `.shouldResume` AND we
-    /// were the ones who paused (the user hadn't manually paused before the interruption),
-    /// resume — otherwise leave it paused and respect the user's intent.
-    private func handleInterruption(typeRaw: UInt?, optionsRaw: UInt?) {
-        guard let typeRaw,
-              let type = AVAudioSession.InterruptionType(rawValue: typeRaw) else { return }
-
-        switch type {
-        case .began:
-            // Only flag for resume if playback was actually running; a paused player should
-            // stay paused.
-            wasPlayingBeforeInterruption = player.timeControlStatus != .paused
-            if wasPlayingBeforeInterruption {
-                player.pause()
-            }
-        case .ended:
-            guard wasPlayingBeforeInterruption else { return }
-            wasPlayingBeforeInterruption = false
-            let options: AVAudioSession.InterruptionOptions =
-                optionsRaw.map { AVAudioSession.InterruptionOptions(rawValue: $0) } ?? []
-            if options.contains(.shouldResume) {
-                // Re-activate the session (the interruption may have deactivated it) and
-                // resume only because WE paused while the user had it playing.
-                configureAudioSession()
-                player.play()
-            }
-        @unknown default:
-            break
-        }
-    }
-
-    /// Handle an `AVAudioSession.routeChangeNotification`. On `.oldDeviceUnavailable`
-    /// (headphones / AirPods unplugged or disconnected) pause, so audio doesn't suddenly
-    /// blast out of the speakers — the standard system behavior. Other reasons are ignored.
-    private func handleRouteChange(reasonRaw: UInt?) {
-        guard let reasonRaw,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonRaw) else { return }
-        if reason == .oldDeviceUnavailable {
-            player.pause()
-        }
-    }
-
-    /// Pause video when the app is backgrounded / loses the foreground (P5). Video can't
-    /// decode/render in the background and a live transcode would keep running, so we always
-    /// pause. We deliberately do NOT auto-resume on foreground: resume is the user's choice
-    /// on return. Do not set the interruption-resume flag here, or a later
-    /// interruption-ended notification with `.shouldResume` can restart playback.
-    func pauseForBackground() {
-        if player.timeControlStatus != .paused {
-            player.pause()
-        }
-    }
-
-    // MARK: - Timeline / scrobble
-
-    /// Send a timeline heartbeat. Skips when nothing meaningful changed (same state
-    /// within the same ~10s second bucket) unless `force` is set.
-    private func reportTimeline(state: TimelineRequest.State, force: Bool) {
-        // Local-file playback has no server session to report to.
-        guard let server, let token else { return }
-
-        // Don't post heartbeats until the item is genuinely ready with a real duration
-        // (P8 #11): a duration=0 / time≈0 heartbeat during readyToPlay churn confuses
-        // PMS Continue Watching. The final `.stopped` is exempt so we always flush a true
-        // offset when the user leaves (even if we never reached the readiness gate).
-        if !isReadyForReporting && state != .stopped { return }
-
-        let durationMs = item.duration
-            ?? Int((player.currentItem?.duration.seconds ?? 0).isFinite ? (player.currentItem?.duration.seconds ?? 0) * 1000 : 0)
-        // Guard against duration=0 heartbeats slipping through (e.g. a .stopped before
-        // the gate opened with no known item duration).
-        guard durationMs > 0 || state == .stopped else { return }
-
-        let currentMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
-        let currentSecond = currentMs / 1000
-
-        if !force,
-           state == lastTimelineState,
-           currentSecond == lastReportedSecond {
-            return
-        }
-        lastTimelineState = state
-        lastReportedSecond = currentSecond
-
-        let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
-
-        let req = TimelineRequest.timeline(server: server,
-                                           token: token,
-                                           identity: identity,
-                                           ratingKey: item.ratingKey,
-                                           key: metadataKey,
-                                           state: state,
-                                           timeMs: currentMs,
-                                           durationMs: durationMs)
-        Task {
-            do { try await client.send(req) }
-            catch {
-                NSLog("PlaybackController: timeline send failed (%@)", String(describing: error))
-            }
-        }
-    }
-
-    private func sendScrobble() {
-        guard !didScrobble, let server, let token else { return }
-        didScrobble = true
-        let req = TimelineRequest.scrobble(server: server,
-                                           token: token,
-                                           identity: identity,
-                                           ratingKey: item.ratingKey)
-        Task {
-            do { try await client.send(req) }
-            catch {
-                NSLog("PlaybackController: scrobble send failed (%@)", String(describing: error))
-            }
-        }
-    }
-
-    /// Fire the scrobble once the playhead crosses ~90% of the duration (P9 #11). Only
-    /// meaningful once we have a real duration; `sendScrobble()` guards re-entry.
-    private func scrobbleIfNearEnd() {
-        guard !didScrobble, isReadyForReporting else { return }
-        let durSecs = player.currentItem?.duration.seconds ?? 0
-        guard durSecs.isFinite, durSecs > 0 else { return }
-        let curSecs = player.currentTime().seconds
-        guard curSecs.isFinite else { return }
-        if curSecs / durSecs >= 0.90 {
-            sendScrobble()
         }
     }
 
@@ -1649,8 +1384,8 @@ final class PlaybackController {
         guard let next = upNext.nextItem, !upNext.isAdvancing else { return }
         upNext.beginAdvancing()
         // Make sure the finished episode's progress is reported before we tear down.
-        reportTimeline(state: .stopped, force: true)
-        sendScrobble()
+        timeline.report(state: .stopped, force: true)
+        timeline.scrobble()
         player.pause()
         onAdvanceToNext?(next)
     }
