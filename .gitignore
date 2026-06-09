@@ -33,6 +33,10 @@ secrets.plist
 Secrets.swift
 .env
 
+# Per-developer signing (Apple Developer Team ID) — never commit
+Signing.local.xcconfig
+*.local.xcconfig
+
 # CocoaPods / Carthage (unlikely, but just in case)
 Pods/
 Carthage/Build/
