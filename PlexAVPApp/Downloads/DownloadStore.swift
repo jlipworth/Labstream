@@ -432,7 +432,13 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
         if let row {
             let url = baseDirectory.appendingPathComponent(row.relativePath)
-            try? fileManager.removeItem(at: url)
+            // The row is already gone from the index, so a failed delete would
+            // permanently orphan the file — log it rather than vanish silently.
+            do { try fileManager.removeItem(at: url) }
+            catch where fileManager.fileExists(atPath: url.path) {
+                NSLog("DownloadStore: failed to delete media for %@ (%@); file orphaned at %@",
+                      ratingKey, String(describing: error), url.path)
+            } catch {} // already absent — nothing to clean up
             // D5: also delete the cached poster so a removed download leaves nothing behind.
             if let poster = row.metadata?.posterRelativePath, !poster.isEmpty {
                 try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(poster))

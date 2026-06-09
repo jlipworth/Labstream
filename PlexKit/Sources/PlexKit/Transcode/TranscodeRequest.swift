@@ -185,9 +185,14 @@ public struct TranscodeRequest: Sendable, Equatable {
     }
 
     private func buildURL(path: String, queryItems: [URLQueryItem]) -> URL {
-        var components = URLComponents(url: server, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: server, resolvingAgainstBaseURL: false) else {
+            preconditionFailure("TranscodeRequest: server URL is not decomposable: \(server)")
+        }
         components.path = path
         components.queryItems = queryItems
-        return components.url!
+        guard let url = components.url else {
+            preconditionFailure("TranscodeRequest: could not rebuild URL for path \(path)")
+        }
+        return url
     }
 }
