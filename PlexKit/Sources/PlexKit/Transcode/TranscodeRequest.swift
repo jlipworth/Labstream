@@ -126,6 +126,30 @@ public struct TranscodeRequest: Sendable, Equatable {
         buildURL(path: "/video/:/transcode/universal/start.m3u8", queryItems: sharedQueryItems())
     }
 
+    /// Decision-only probe URL (issue #7): same core params as `decisionURL()` but advertises
+    /// direct-play capability (`directPlay=1`) and the direct-play probe profile. Hitting this
+    /// against /decision tells us whether the title would Direct Play / Direct Stream within the
+    /// cap. It does NOT change what the player loads — only `start.m3u8` (directPlay=0) is played.
+    ///
+    /// Built additively from `sharedQueryItems()`: we swap `directPlay` 0→1 and replace the
+    /// `X-Plex-Client-Profile-Extra` with the direct-play probe variant, then append `hasMDE=1`.
+    /// Everything else (path/protocol/session/token/maxVideoBitrate/mediaIndex/partIndex/profile
+    /// name `Safari`/subtitles/offset/identity) is identical to `decisionURL()`. Query-param
+    /// order is irrelevant to PMS, so this stays consistent with the production decision request.
+    public func directPlayProbeDecisionURL() -> URL {
+        var items = sharedQueryItems()
+        // Allow direct play (production decision/start keep directPlay=0).
+        items.removeAll { $0.name == "directPlay" }
+        items.append(.init(name: "directPlay", value: "1"))
+        // Advertise the direct-play-capable profile only on this probe.
+        items.removeAll { $0.name == "X-Plex-Client-Profile-Extra" }
+        let probeProfile = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps)
+        items.append(.init(name: "X-Plex-Client-Profile-Extra", value: probeProfile.clientProfileExtra))
+        // Decision endpoint: ask the Media Decision Engine for its verdict.
+        items.append(.init(name: "hasMDE", value: "1"))
+        return buildURL(path: "/video/:/transcode/universal/decision", queryItems: items)
+    }
+
     /// A **single-file** capped-bitrate transcode URL for OFFLINE DOWNLOAD.
     ///
     /// Streaming playback uses `start.m3u8` (segmented HLS), which a background
