@@ -816,6 +816,28 @@ final class PlaybackController {
         return comps?.url
     }
 
+    /// Builds a `/photo/:/transcode` URL for a chapter thumbnail key, sized 16:9
+    /// landscape. Returns nil when offline (no server/token) or the key is empty.
+    ///
+    /// The Chapters info-tab rail can't use `PosterImage` (which reads `AppModel`
+    /// from the SwiftUI environment): AVKit hosts each info tab in its own
+    /// `UIHostingController`, outside that environment. The controller already
+    /// holds the server + token, so it vends the URL directly instead.
+    func chapterThumbnailURL(for imagePath: String?) -> URL? {
+        guard let imagePath, !imagePath.isEmpty, let server, let token else { return nil }
+        var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
+                                  resolvingAgainstBaseURL: false)
+        comps?.queryItems = [
+            .init(name: "url", value: imagePath),
+            .init(name: "width", value: "480"),
+            .init(name: "height", value: "270"),
+            .init(name: "minSize", value: "1"),
+            .init(name: "upscale", value: "1"),
+            .init(name: "X-Plex-Token", value: token),
+        ]
+        return comps?.url
+    }
+
     // MARK: - Shared load + observers
 
     private func load(_ playerItem: AVPlayerItem, resumeOffsetMs: Int?) {
