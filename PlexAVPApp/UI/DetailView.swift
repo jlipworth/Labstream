@@ -50,6 +50,20 @@ struct DetailView: View {
     }
 
     var body: some View {
+        // Show/season are CONTAINERS: they carry no Media/Part and must be drilled into
+        // (a series download/play of a container ratingKey makes PMS return HTTP 400).
+        // Render a season/episode browser for those; the leaf detail (with Play/Download)
+        // is reserved for movies and episodes — the items that actually own a Part.
+        if item.isContainer {
+            ContainerBrowserView(container: item)
+        } else {
+            leafDetail
+        }
+    }
+
+    /// The play/download detail for a LEAF item (movie or episode). Actions target this
+    /// item's own ratingKey, which is guaranteed to own a Media/Part.
+    private var leafDetail: some View {
         ScrollView {
             HStack(alignment: .top, spacing: DS.Space.xxxl) {
                 PosterImage(path: detailed.thumb,
@@ -59,8 +73,29 @@ struct DetailView: View {
                     .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
 
                 VStack(alignment: .leading, spacing: DS.Space.xl) {
-                    Text(detailed.title)
-                        .font(.largeTitle.bold())
+                    // For an episode, lead with the show name + "S{parentIndex}E{index}"
+                    // so the header reads like Plex/Emby, then the episode title.
+                    if detailed.kind == .episode {
+                        VStack(alignment: .leading, spacing: DS.Space.xs) {
+                            if let show = detailed.grandparentTitle, !show.isEmpty {
+                                Text(show)
+                                    .font(.title3.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: DS.Space.sm) {
+                                if let code = detailed.seasonEpisodeCode {
+                                    Text(code)
+                                        .font(.title3.weight(.bold))
+                                        .foregroundStyle(.tint)
+                                }
+                                Text(detailed.title)
+                                    .font(.largeTitle.bold())
+                            }
+                        }
+                    } else {
+                        Text(detailed.title)
+                            .font(.largeTitle.bold())
+                    }
 
                     if let tagline = detailed.tagline, !tagline.isEmpty {
                         Text(tagline)
@@ -442,6 +477,163 @@ struct DetailView: View {
                 selectedMediaIndex = 0
             }
             watchedOverride = nil
+        }
+    }
+}
+
+/// Browser for a TV CONTAINER (a `show` or a `season`).
+///
+/// - A `show` lists its seasons; selecting one pushes another `DetailView`, which (since a
+///   season is itself a container) recurses into this browser to show that season's
+///   episodes.
+/// - A `season` lists its episodes directly.
+///
+/// Selecting an episode pushes `DetailView(item: episode)` — a LEAF — whose Play/Download/
+/// Mark actions target the episode's own ratingKey (the item that owns a Media/Part),
+/// which is the fix for the series-download HTTP 400.
+///
+/// Children come from `GET /library/metadata/{ratingKey}/children` via `BrowseAPI.children`.
+struct ContainerBrowserView: View {
+    let container: MediaItem
+
+    @Environment(AppModel.self) private var appModel
+
+    @State private var children: [MediaItem] = []
+    @State private var loadState: HomeView.LoadState = .idle
+
+    private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
+                                    spacing: DS.Space.xl)]
+
+    /// A season lists episodes (drawn as wide episode rows); a show lists seasons (posters).
+    private var childrenAreEpisodes: Bool { container.kind == .season }
+
+    var body: some View {
+        ScrollView {
+            switch loadState {
+            case .idle, .loading:
+                ProgressView("Loading…")
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, minHeight: 360)
+            case .failed(let message):
+                ContentUnavailableView("Couldn’t load \(container.title)",
+                                       systemImage: "exclamationmark.triangle",
+                                       description: Text(message))
+                    .frame(maxWidth: .infinity, minHeight: 360)
+            case .loaded:
+                if children.isEmpty {
+                    ContentUnavailableView(childrenAreEpisodes ? "No episodes" : "No seasons",
+                                           systemImage: "tv",
+                                           description: Text("Nothing to show for \(container.title)."))
+                        .frame(maxWidth: .infinity, minHeight: 360)
+                } else if childrenAreEpisodes {
+                    episodeList
+                } else {
+                    seasonGrid
+                }
+            }
+        }
+        .navigationTitle(container.grandparentTitle ?? container.title)
+        .task { await load() }
+    }
+
+    /// Seasons as a poster grid (same look as a library section).
+    private var seasonGrid: some View {
+        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+            ForEach(children) { season in
+                NavigationLink(value: season) {
+                    PosterCell(item: season, width: DS.Poster.gridMin)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(DS.Space.xl)
+    }
+
+    /// Episodes as a vertical list of wide rows, each reading
+    /// "S{parentIndex}E{index} · {title}" — Plex/Emby style.
+    private var episodeList: some View {
+        LazyVStack(spacing: DS.Space.md) {
+            ForEach(children) { episode in
+                NavigationLink(value: episode) {
+                    EpisodeRow(episode: episode)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(DS.Space.xl)
+    }
+
+    private func load() async {
+        guard let server = appModel.serverBaseURL, let token = appModel.token else {
+            loadState = .failed("No server selected.")
+            return
+        }
+        loadState = .loading
+        let req = BrowseAPI.children(server: server, token: token,
+                                     identity: appModel.identity, ratingKey: container.ratingKey)
+        do {
+            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            children = resp.mediaContainer.metadata
+            loadState = .loaded
+        } catch {
+            loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+/// A wide episode row used inside a season: thumbnail + "S{x}E{y} · Title" + summary,
+/// with a continue-watching sliver when the episode carries a resume offset.
+struct EpisodeRow: View {
+    let episode: MediaItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: DS.Space.lg) {
+            PosterImage(path: episode.thumb ?? episode.parentThumb,
+                        width: 200,
+                        height: 112,
+                        cornerRadius: DS.Radius.poster)
+                .overlay(alignment: .bottom) { progressSliver }
+
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text(episodeTitle)
+                    .font(.headline)
+                    .multilineTextAlignment(.leading)
+                if let summary = episode.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Space.md)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+    }
+
+    /// "S{parentIndex}E{index} · {title}", falling back to the bare title.
+    private var episodeTitle: String {
+        if let code = episode.seasonEpisodeCode {
+            return "\(code) · \(episode.title)"
+        }
+        return episode.title
+    }
+
+    @ViewBuilder
+    private var progressSliver: some View {
+        if let offset = episode.viewOffset, offset > 0,
+           let duration = episode.duration, duration > 0 {
+            let fraction = min(1, max(0, Double(offset) / Double(duration)))
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.black.opacity(0.45))
+                    Capsule().fill(.tint).frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 4)
+            .padding(.horizontal, DS.Space.sm)
+            .padding(.bottom, DS.Space.sm)
         }
     }
 }

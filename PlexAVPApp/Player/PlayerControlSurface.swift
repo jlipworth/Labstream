@@ -112,7 +112,12 @@ final class PlayerControlSurface {
                                        image: UIImage(systemName: systemImage),
                                        tag: 0)
         host.view.backgroundColor = .clear
-        host.preferredContentSize = CGSize(width: 420, height: 420)
+        // Keep the hosted view SHORTER than the visionOS ⓘ-panel viewport. If it's taller
+        // than the panel, the system clips the overflow instead of scrolling and the List —
+        // sized to fit its rows within that too-tall frame — never engages its own scroll, so
+        // the bottom rows (e.g. the Quality "Maximum" option) become unreachable. A shorter
+        // frame fits inside the panel and forces the List to scroll internally for overflow.
+        host.preferredContentSize = CGSize(width: 420, height: 300)
         return host
     }
 }
@@ -137,8 +142,16 @@ private struct QualityTabView: View {
     private let options: [Int] = [2000, 4000, 8000, 12000, 20000, 0]
 
     var body: some View {
-        List {
-            Section("Streaming quality") {
+        // ScrollView + VStack, NOT List: a `List` does not engage scroll inside the visionOS
+        // AVKit info-panel hosting controller, so the bottom options (notably "Maximum")
+        // were unreachable. A plain ScrollView is the lower-level scrollable primitive and
+        // scrolls reliably in this embedded context.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Streaming quality")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, DS.Space.sm)
                 ForEach(options, id: \.self) { kbps in
                     Button {
                         onPick(kbps)
@@ -151,10 +164,13 @@ private struct QualityTabView: View {
                                     .foregroundStyle(.tint)
                             }
                         }
+                        .contentShape(Rectangle())
+                        .padding(.vertical, DS.Space.sm)
                     }
                     .buttonStyle(.plain)
                 }
             }
+            .padding(DS.Space.md)
         }
     }
 
@@ -174,8 +190,14 @@ private struct SpeedTabView: View {
     private let options: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
-        List {
-            Section("Playback speed") {
+        // ScrollView + VStack, NOT List — see QualityTabView for why (List doesn't scroll in
+        // the visionOS AVKit info panel).
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Playback speed")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, DS.Space.sm)
                 ForEach(options, id: \.self) { rate in
                     Button {
                         onPick(rate)
@@ -188,10 +210,13 @@ private struct SpeedTabView: View {
                                     .foregroundStyle(.tint)
                             }
                         }
+                        .contentShape(Rectangle())
+                        .padding(.vertical, DS.Space.sm)
                     }
                     .buttonStyle(.plain)
                 }
             }
+            .padding(DS.Space.md)
         }
     }
 

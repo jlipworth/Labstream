@@ -19,9 +19,12 @@ xcrun simctl install booted "$APP" && xcrun simctl launch booted com.personal.Pl
 
 ## A. Phase 0 correctness fixes
 
-- [ ] **Player close button (#1)** — Start playback, tap the top-leading ✕. The full-screen player dismisses
-      cleanly back to detail; no stuck cover, no audio bleed. _Watch: button placement vs AVKit chrome in the
-      docked/expanded cinema view (padding may need tuning)._
+- [ ] **Player close button (#1)** — Close now lives in the player's **Info (ⓘ) panel** as a **Close** action
+      (`infoViewActions`), NOT a floated ✕. Reveal the chrome, open the ⓘ panel, tap **Close** → the player
+      dismisses cleanly back to detail; no stuck cover, no audio bleed. **Test it in BOTH states:** the inline/
+      windowed player AND the expanded cinema view (the old floated ✕ vanished in expanded — this must not).
+      _If Close feels too buried in the ⓘ panel, that's the signal to try the contextual-action or floated
+      variant instead (we deferred that choice)._
 - [ ] **Quality-reload keeps playhead (#9)** — Mid-playback, open the **Quality** info tab, pick a different
       Mbps cap. Brief rebuffer expected, then it resumes **at the same playhead** (not from 0).
       _Also verify: a NORMAL resume (open a half-watched title → Resume) lands at the right offset and does

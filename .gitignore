@@ -36,3 +36,6 @@ Secrets.swift
 # CocoaPods / Carthage (unlikely, but just in case)
 Pods/
 Carthage/Build/
+
+# Claude Code session data + agent worktrees (never commit)
+.claude/

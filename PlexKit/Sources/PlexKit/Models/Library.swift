@@ -85,6 +85,33 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// Empty/nil when the item carries no genres.
     public let genres: [Tag]?
 
+    // MARK: - TV hierarchy (show → season → episode)
+    //
+    // PMS decorates an *episode* with its season (`parent…`) and show (`grandparent…`)
+    // context, and a *season* with its show context. These let an episode row read like
+    // "{grandparentTitle} · S{parentIndex}E{index} · {title}" and let the UI drill the
+    // hierarchy / resolve the correct leaf ratingKey to play/download. All optional —
+    // a `movie` carries none of them and they decode to `nil`.
+
+    /// Show title for an episode/season (PMS `grandparentTitle`), e.g. "Breaking Bad".
+    public let grandparentTitle: String?
+    /// Show ratingKey for an episode/season (PMS `grandparentRatingKey`).
+    public let grandparentRatingKey: String?
+    /// Show artwork key for an episode/season (PMS `grandparentThumb`).
+    public let grandparentThumb: String?
+    /// Season title for an episode (PMS `parentTitle`), e.g. "Season 1".
+    public let parentTitle: String?
+    /// Season ratingKey for an episode (PMS `parentRatingKey`).
+    public let parentRatingKey: String?
+    /// Season artwork key for an episode (PMS `parentThumb`).
+    public let parentThumb: String?
+    /// Season number — `parentIndex` on an episode, and the season's own number on a
+    /// `season` item.
+    public let parentIndex: Int?
+    /// Episode number within its season (PMS `index`); also the season number on a
+    /// `season` item.
+    public let index: Int?
+
     public var id: String { ratingKey }
 
     enum CodingKeys: String, CodingKey {
@@ -106,6 +133,14 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case contentRating
         case tagline
         case genres = "Genre"
+        case grandparentTitle
+        case grandparentRatingKey
+        case grandparentThumb
+        case parentTitle
+        case parentRatingKey
+        case parentThumb
+        case parentIndex
+        case index
     }
 
     public init(ratingKey: String,
@@ -125,7 +160,15 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 rating: Double? = nil,
                 contentRating: String? = nil,
                 tagline: String? = nil,
-                genres: [Tag]? = nil) {
+                genres: [Tag]? = nil,
+                grandparentTitle: String? = nil,
+                grandparentRatingKey: String? = nil,
+                grandparentThumb: String? = nil,
+                parentTitle: String? = nil,
+                parentRatingKey: String? = nil,
+                parentThumb: String? = nil,
+                parentIndex: Int? = nil,
+                index: Int? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -144,6 +187,14 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.contentRating = contentRating
         self.tagline = tagline
         self.genres = genres
+        self.grandparentTitle = grandparentTitle
+        self.grandparentRatingKey = grandparentRatingKey
+        self.grandparentThumb = grandparentThumb
+        self.parentTitle = parentTitle
+        self.parentRatingKey = parentRatingKey
+        self.parentThumb = parentThumb
+        self.parentIndex = parentIndex
+        self.index = index
     }
 }
 
