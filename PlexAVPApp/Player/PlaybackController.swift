@@ -27,6 +27,12 @@ final class PlaybackController {
     /// is hidden until the user toggles it on.
     let diagnostics = PlaybackDiagnostics()
 
+    /// Observable surface for the floating "Stats for Nerds" overlay (#7). Modeled as its own
+    /// `@Observable` object (mirroring `buffering`) so PlayerView can float the diagnostics panel
+    /// over the video — and the Stats info-panel tab can toggle it — without making the whole
+    /// controller observable. Off until the user taps the Stats tab's "Show" launcher.
+    let statsOverlay = StatsOverlayState()
+
     /// Observable surface for playback failures so the UI (PlayerView/DetailView) can
     /// show an error + Retry. Modeled as its own `@Observable` object (mirroring
     /// `diagnostics`) rather than making the whole controller observable, keeping the
@@ -179,6 +185,11 @@ final class PlaybackController {
     /// `AVPlayerItem`) re-applies the preference to the new legible group.
     private var didApplySavedSubtitle = false
 
+    /// One-shot guard so the saved-audio-language auto-select runs once per item (#3). Reset in
+    /// `load(_:)` alongside `didApplySavedSubtitle` so a Quality reload re-applies the preference
+    /// to the new audible group.
+    private var didApplyAudioPreference = false
+
     /// `@AppStorage` keys for the persisted subtitle preference. Mirrors `PlayerView`'s
     /// `maxVideoBitrateKbps` pattern (UserDefaults-backed) so the controller — which can't be
     /// a SwiftUI view — and any future settings UI share one source of truth.
@@ -187,6 +198,13 @@ final class PlaybackController {
         static let language = "preferredSubtitleLanguage"
         /// `true` once the user has explicitly chosen "Off"; suppresses auto-select.
         static let off = "subtitlesOff"
+    }
+
+    /// `@AppStorage`-style key for the persisted audio-language preference (#3). Mirrors
+    /// `SubtitlePrefKey`, but there is no "Off" — a video always plays some soundtrack.
+    private enum AudioPrefKey {
+        /// BCP-47 / ISO language code of the user's last chosen audio track (e.g. "en").
+        static let language = "preferredAudioLanguage"
     }
 
     /// Resume target (ms) for the current item, retained so the status observer can do a
@@ -545,6 +563,159 @@ final class PlaybackController {
         didApplySavedSubtitle = true
     }
 
+    // MARK: - Audio (soundtrack / language)
+
+    /// A selectable audio track surfaced by the HLS audible media-selection group (#3).
+    ///
+    /// Mirrors `SubtitleTrack`: we model the picker over `AVMediaSelectionOption`s because the
+    /// HLS transcode exposes its audio renditions as an audible `AVMediaSelectionGroup`, and
+    /// switching between them is instantaneous (`playerItem.select(_:in:)`) — no transcode
+    /// reload. Unlike subtitles there is no "Off" row: a video always plays some soundtrack.
+    struct AudioTrack: Identifiable {
+        /// Stable identity for SwiftUI (the option's index within the audible group).
+        let id: Int
+        let displayName: String
+        let option: AVMediaSelectionOption
+    }
+
+    /// Load the current item's audible (soundtrack) selection group and its options, plus which
+    /// one is active. Returns `nil` for the group when the HLS carries fewer than two audible
+    /// renditions — with nothing to choose between, the Audio tab shows a graceful empty state
+    /// rather than a pointless one-row list.
+    ///
+    /// Async because `AVAsset.loadMediaSelectionGroup(for:)` is the modern, non-blocking accessor
+    /// (the synchronous `mediaSelectionGroup(forMediaCharacteristic:)` is deprecated on visionOS).
+    func loadAudioTracks() async -> (tracks: [AudioTrack], selectedID: Int)? {
+        guard let playerItem = player.currentItem else { return nil }
+        let asset = playerItem.asset
+        guard let group = try? await asset.loadMediaSelectionGroup(for: .audible),
+              group.options.count > 1 else {
+            return nil
+        }
+
+        // Build human-readable labels, de-duplicating collisions (e.g. two distinct "English"
+        // renditions) with a trailing index only when needed — mirrors `loadSubtitleTracks`.
+        var tracks: [AudioTrack] = []
+        var seenCounts: [String: Int] = [:]
+        for (index, option) in group.options.enumerated() {
+            var label = Self.audioLabel(for: option)
+            let priorCount = seenCounts[label, default: 0]
+            seenCounts[label] = priorCount + 1
+            if priorCount > 0 { label += " \(priorCount + 1)" }
+            tracks.append(AudioTrack(id: index, displayName: label, option: option))
+        }
+
+        // Resolve the active selection so the tab can render a checkmark. Audio is never "off";
+        // if AVFoundation reports no explicit selection yet, fall back to the first option.
+        let current = playerItem.currentMediaSelection.selectedMediaOption(in: group)
+        let selectedID = current.flatMap { selected in
+            group.options.firstIndex(of: selected)
+        } ?? 0
+
+        return (tracks, selectedID)
+    }
+
+    /// Derive a human-readable label for an audible `AVMediaSelectionOption`.
+    ///
+    /// Name resolution mirrors `subtitleLabel(for:)` (first non-empty wins): the option's locale
+    /// language, then `option.displayName`, then its `.commonMetadataTitle`, then "Unknown".
+    /// Appends " (AD)" for an audio-description track (spoken narration of on-screen action for
+    /// accessibility). The Forced/SDH qualifiers are subtitle-specific and intentionally omitted.
+    ///
+    /// `@MainActor` because it touches a non-`Sendable` `AVMediaSelectionOption`.
+    static func audioLabel(for option: AVMediaSelectionOption) -> String {
+        var name = ""
+
+        if let tag = option.extendedLanguageTag,
+           let localized = Locale.current.localizedString(forIdentifier: tag),
+           !localized.isEmpty {
+            name = localized
+        } else if let code = option.locale?.language.languageCode?.identifier,
+                  let localized = Locale.current.localizedString(forLanguageCode: code),
+                  !localized.isEmpty {
+            name = localized
+        }
+
+        if name.isEmpty, !option.displayName.isEmpty {
+            name = option.displayName
+        }
+        if name.isEmpty {
+            let titles = AVMetadataItem.metadataItems(from: option.commonMetadata,
+                                                      withKey: AVMetadataKey.commonKeyTitle,
+                                                      keySpace: .common)
+            if let title = titles.first?.stringValue, !title.isEmpty {
+                name = title
+            }
+        }
+        if name.isEmpty { name = "Unknown" }
+
+        if option.hasMediaCharacteristic(.describesVideoForAccessibility) {
+            name += " (AD)"
+        }
+
+        return name
+    }
+
+    /// Persist the user's audio-language choice so it can be reapplied to a later item. Stores the
+    /// chosen track's language code — NOT the option itself (non-`Sendable`, item-specific).
+    /// Called from the Audio tab via `selectAudio`. Unlike subtitles there is no "Off" state.
+    private func persistAudioPreference(for option: AVMediaSelectionOption) {
+        let code = option.extendedLanguageTag
+            ?? option.locale?.language.languageCode?.identifier
+        let defaults = UserDefaults.standard
+        if let code, !code.isEmpty {
+            defaults.set(code, forKey: AudioPrefKey.language)
+        } else {
+            defaults.removeObject(forKey: AudioPrefKey.language)
+        }
+    }
+
+    /// Auto-apply the persisted audio-language preference to the current item's audible group,
+    /// once per item (gated by `didApplyAudioPreference`). Selects the first audible option whose
+    /// language matches the saved code; no-op when nothing is saved or no match exists (the HLS
+    /// default soundtrack stands). Invoked on `.readyToPlay`; stays on the @MainActor since it
+    /// reads the non-`Sendable` `AVMediaSelectionOption`s.
+    private func applySavedAudioPreferenceIfNeeded() async {
+        guard !didApplyAudioPreference else { return }
+        let savedLang = UserDefaults.standard.string(forKey: AudioPrefKey.language)
+        // No preference saved: leave the HLS default and don't burn the one-shot gate yet, so a
+        // future pick starts fresh.
+        guard let savedLang, !savedLang.isEmpty else { return }
+
+        // Load the audible group once. If the HLS carries no audible renditions there's nothing
+        // to apply on this item — mark applied so we don't re-probe each readyToPlay.
+        guard let playerItem = player.currentItem,
+              let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible),
+              !group.options.isEmpty else {
+            didApplyAudioPreference = true
+            return
+        }
+
+        // Select the first audible option whose language matches the saved code. No match →
+        // leave the HLS default selection in place.
+        let match = group.options.first { option in
+            option.extendedLanguageTag == savedLang
+                || option.locale?.language.languageCode?.identifier == savedLang
+        }
+        if let match {
+            playerItem.select(match, in: group)
+        }
+        didApplyAudioPreference = true
+    }
+
+    /// Apply an audio selection chosen in the Audio tab. A soft switch on the live `AVPlayerItem`
+    /// — no reload. Persists the choice (language code) so it's reapplied to the next item, and
+    /// marks the auto-select gate spent so a later readyToPlay won't override this manual pick.
+    func selectAudio(_ track: AudioTrack) async {
+        guard let playerItem = player.currentItem else { return }
+        guard let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible) else {
+            return
+        }
+        playerItem.select(track.option, in: group)
+        persistAudioPreference(for: track.option)
+        didApplyAudioPreference = true
+    }
+
     // MARK: - Playback speed (R5)
 
     /// Apply a new playback rate chosen in the Speed info tab. Persists the choice (so it
@@ -846,6 +1017,7 @@ final class PlaybackController {
         didSeek = false
         isReadyForReporting = false
         didApplySavedSubtitle = false
+        didApplyAudioPreference = false
         pendingResumeMs = resumeOffsetMs
         playbackError.clear()
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
@@ -914,6 +1086,9 @@ final class PlaybackController {
                     // legible group (once per item; gated inside). Runs on each fresh item —
                     // including after a Quality reload swaps the AVPlayerItem.
                     await self.applySavedSubtitlePreferenceIfNeeded()
+                    // Likewise reapply the saved audio-language preference to this item's
+                    // audible group (#3; once per item, gated inside).
+                    await self.applySavedAudioPreferenceIfNeeded()
                     // Reapply the persisted playback speed (R5). A fresh item / Quality reload
                     // resets the player's rate to 1.0, so re-push the user's choice now that the
                     // item is ready — without this a reload would silently drop back to 1.0×.
@@ -1600,6 +1775,23 @@ final class BufferingState {
     func set(_ value: Bool) {
         if isBuffering != value { isBuffering = value }
     }
+}
+
+/// Observable state for the floating "Stats for Nerds" overlay (#7). Modeled as its own object
+/// (mirroring `BufferingState`) so PlayerView's overlay shows/hides without making the whole
+/// controller observable. Toggled on by the Stats info-panel tab's launcher and off by either
+/// that launcher or the overlay's own close (X) button.
+@Observable
+@MainActor
+final class StatsOverlayState {
+    /// True while the diagnostics panel is floated over the video.
+    private(set) var isShown = false
+
+    /// Flip the overlay's visibility (the Stats tab's Show/Hide launcher).
+    func toggle() { isShown.toggle() }
+
+    /// Hide the overlay (the panel's close button). Idempotent.
+    func hide() { if isShown { isShown = false } }
 }
 
 /// Observable state for the Skip Intro / Skip Credits affordance (#14). Modeled as its own
