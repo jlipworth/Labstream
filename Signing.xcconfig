@@ -1,0 +1,11 @@
+// Signing.xcconfig — shared signing configuration. SAFE TO COMMIT.
+//
+// Per-developer values (your Apple Developer Team ID) belong in Signing.local.xcconfig,
+// which is gitignored. The optional include below means a fresh clone with no local file
+// still builds: signing falls back to automatic / "Sign to Run Locally", which is enough
+// for the visionOS simulator. To sideload onto a real Apple Vision Pro, create
+// Signing.local.xcconfig next to this file with a single line:
+//
+//     DEVELOPMENT_TEAM = XXXXXXXXXX
+//
+#include? "Signing.local.xcconfig"
