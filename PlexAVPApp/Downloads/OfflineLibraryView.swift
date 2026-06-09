@@ -57,7 +57,6 @@ public struct OfflineLibraryView: View {
         // failed-but-100% body are now distinct, observable states.
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
-        let isActive = manager.activeJobs.contains(record.ratingKey)
         let error = manager.lastError[record.ratingKey]
 
         HStack(spacing: 16) {
