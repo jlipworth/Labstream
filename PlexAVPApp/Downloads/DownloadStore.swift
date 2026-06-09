@@ -223,8 +223,12 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    /// Minimum spacing between index rewrites driven by progress callbacks.
+    private static let progressPersistInterval: TimeInterval = 1
+
     private let lock = NSLock()
     private var rows: [String: Row] = [:]          // ratingKey -> Row
+    private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
     private let indexURL: URL                        // baseDirectory/index.json
     private let fileManager: FileManager
@@ -352,15 +356,28 @@ final class DownloadStore: @unchecked Sendable {
     /// Update transfer progress for an in-flight download. Moving any bytes means
     /// the transfer is live, so we promote a `.queued` row to `.downloading` here
     /// (D2: the UI distinguishes "waiting on server" from "actively transferring").
+    ///
+    /// Disk writes are throttled: the in-memory row updates on every callback (the
+    /// UI reads live progress from `records`), but the JSON index is rewritten at
+    /// most once per second. The session delegate fires `didWriteData` many times a
+    /// second on fast transfers, and re-encoding the index each time thrashes I/O
+    /// for no benefit — stale persisted progress is harmless because `reconcile`
+    /// distrusts any non-live `.downloading` row at relaunch anyway, and the
+    /// terminal `setStatus` always persists.
     func updateProgress(ratingKey: String, bytes: Int, progress: Double) {
         lock.lock()
         guard var row = rows[ratingKey] else { lock.unlock(); return }
         row.bytes = bytes
         row.progress = progress
-        if row.status == .queued { row.status = .downloading }
+        var statusChanged = false
+        if row.status == .queued { row.status = .downloading; statusChanged = true }
         rows[ratingKey] = row
+        let now = Date()
+        let shouldPersist = statusChanged
+            || now.timeIntervalSince(lastProgressPersist) >= Self.progressPersistInterval
+        if shouldPersist { lastProgressPersist = now }
         lock.unlock()
-        persist()
+        if shouldPersist { persist() }
     }
 
     /// Set the explicit lifecycle status for a row (D2). No-op if the row is gone.
@@ -395,6 +412,10 @@ final class DownloadStore: @unchecked Sendable {
             case .queued, .downloading:
                 if liveRatingKeys.contains(key) { continue }   // task survived; leave it
                 // No live task and never validated -> can't trust it; make it retryable.
+                // Also delete any partial file so dead bytes don't sit invisibly on
+                // disk — a retry rebuilds the file from scratch regardless.
+                try? fileManager.removeItem(
+                    at: baseDirectory.appendingPathComponent(row.relativePath))
                 row.status = .failed; rows[key] = row; changed = true
             case .failed:
                 continue
