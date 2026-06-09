@@ -33,7 +33,8 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                        ForEach(hubs.filter { !$0.metadata.isEmpty }) { hub in
+                        // Hide music: drop music items from each hub and any hub left empty (#15).
+                        ForEach(hubs.hidingMusic) { hub in
                             HubRail(hub: hub)
                         }
                     }
@@ -214,6 +215,23 @@ func friendlyMessage(_ error: Error) -> String {
         }
     }
     return error.localizedDescription
+}
+
+// MARK: - Music hiding (#15)
+
+extension Array where Element == Hub {
+    /// Hides music until a dedicated Plexamp-style experience exists (#15): drops music
+    /// items (artist/album/track) from each hub and removes any hub left empty (which also
+    /// elides wholly-music hubs). Detection comes from `MediaItem.isMusic` so there's a
+    /// single source of truth. Easy to remove later to re-enable music.
+    var hidingMusic: [Hub] {
+        compactMap { hub in
+            let kept = hub.metadata.filter { !$0.isMusic }
+            guard !kept.isEmpty else { return nil }
+            return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title, type: hub.type,
+                       hubIdentifier: hub.hubIdentifier, size: hub.size, metadata: kept)
+        }
+    }
 }
 
 // MARK: - MediaItem Hashable for navigationDestination
