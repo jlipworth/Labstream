@@ -222,6 +222,9 @@ struct DetailView: View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             HStack(spacing: DS.Space.lg) {
                 Button {
+                    // Defense-in-depth (#15): music is filtered from browse, but never let
+                    // a music item launch the video player. Unreachable in normal flow.
+                    guard !detailed.isMusic else { return }
                     playLocalURL = nil
                     playingItem = detailed
                     presentingPlayer = true
