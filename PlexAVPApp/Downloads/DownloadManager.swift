@@ -200,7 +200,8 @@ public final class DownloadManager {
             refreshRecords()
 
             let downloadURL = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            try session.start(ratingKey: ratingKey, from: downloadURL, to: destination)
+            try session.start(ratingKey: ratingKey, from: downloadURL, to: destination,
+                              expectedBytes: part.size)
             refreshRecords()
         } catch let error as DownloadError {
             // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
@@ -275,7 +276,9 @@ public final class DownloadManager {
         do {
             try session.start(ratingKey: ratingKey,
                               from: transcode.downloadURL(),
-                              to: destination)
+                              to: destination,
+                              expectedBytes: Self.estimatedTranscodeBytes(
+                                  quality: quality, durationMs: item.duration))
             refreshRecords()
         } catch let error as DownloadError {
             // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
@@ -641,11 +644,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     /// Begin (or resume) a background download.
-    func start(ratingKey: String, from url: URL, to destination: URL) throws {
-        // Pre-flight storage check: refuse if free space is implausibly low.
+    ///
+    /// `expectedBytes` is the known/estimated final file size, when the caller has
+    /// one (the optimized part's reported size, or the quality×runtime estimate).
+    /// `nil` falls back to the bare 500 MB floor.
+    func start(ratingKey: String, from url: URL, to destination: URL,
+               expectedBytes: Int? = nil) throws {
+        // Pre-flight storage check: refuse if free space can't plausibly hold the
+        // file. Sized against the expected bytes (plus headroom for the OS and the
+        // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
+        // here rather than mid-transfer.
+        let headroom: Int64 = 500_000_000
+        let required = max(headroom, Int64(expectedBytes ?? 0) + headroom)
         if let free = try? fileManager
             .attributesOfFileSystem(forPath: store.directory.path)[.systemFreeSize] as? Int64,
-           free < 500_000_000 {       // < ~500 MB free
+           free < required {
             throw DownloadManager.DownloadError.storageFull
         }
         let task = urlSession.downloadTask(with: url)
