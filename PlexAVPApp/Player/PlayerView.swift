@@ -192,7 +192,13 @@ struct PlayerView: View {
             // Centered is standard for a stall indicator (AVKit's transport is bottom-center
             // and only visible on tap). The overlay is non-hit-testing so it never blocks the
             // transport or any other affordance. Observes the @Observable `buffering` directly.
-            if let controller {
+            //
+            // Suppressed while a failure is surfaced: the stall that triggered the watchdog
+            // leaves `isBuffering` true, so without this gate the spinner floats on top of the
+            // error/Retry dialog (which occupies the same center region). Once we've given up
+            // and shown Retry — and paused the player (see `surfaceFailure`) — the spinner has
+            // no role. Mirrors the StatsOverlay gate below.
+            if let controller, !controller.playbackError.isFailed {
                 BufferingOverlay(state: controller.buffering)
             }
 
