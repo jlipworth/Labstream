@@ -81,6 +81,7 @@ final class PlayerControlSurface {
             let chapters = ChaptersTabView(
                 chapters: controller.chapters,
                 currentMs: { [weak self] in self?.controller.currentResumeMs ?? 0 },
+                thumbnailURL: { [weak self] in self?.controller.chapterThumbnailURL(for: $0) },
                 onJump: { [weak self] startMs in
                     let target = CMTime(value: CMTimeValue(startMs), timescale: 1000)
                     self?.controller.player.seek(to: target,
@@ -339,6 +340,9 @@ private struct ChapterCard: View {
     let chapter: Chapter
     let index: Int
     let isCurrent: Bool
+    /// Prebuilt thumbnail URL (the Chapters tab is outside the SwiftUI environment
+    /// `PosterImage` relies on, so the URL is vended by `PlaybackController` instead).
+    let thumbnailURL: URL?
     var onTap: (Int) -> Void
 
     private static let thumbWidth: CGFloat = 200
@@ -349,10 +353,9 @@ private struct ChapterCard: View {
             if let startMs = chapter.startTimeOffset { onTap(startMs) }
         } label: {
             VStack(alignment: .leading, spacing: DS.Space.xs) {
-                PosterImage(path: chapter.thumb,
-                            width: Self.thumbWidth,
-                            height: Self.thumbHeight,
-                            cornerRadius: DS.Radius.poster)
+                thumbnail
+                    .frame(width: Self.thumbWidth, height: Self.thumbHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                             .strokeBorder(Color.accentColor, lineWidth: isCurrent ? 3 : 0)
@@ -372,12 +375,48 @@ private struct ChapterCard: View {
             }
             .frame(width: Self.thumbWidth, alignment: .leading)
             .opacity(isCurrent ? 1.0 : 0.7)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(chapter.startTimeOffset == nil)
     }
 
-    /// Milliseconds → `m:ss` (or `h:mm:ss`). Mirrors the helper in `ChaptersTabView`.
+    /// 16:9 chapter thumbnail: a shimmering skeleton while loading, a fade-in on
+    /// success, and a film-glyph fallback when there's no art (or it fails). Echoes
+    /// `PosterImage`'s loading treatment but takes a prebuilt URL (see `thumbnailURL`)
+    /// rather than reading the server URL + token from the SwiftUI environment.
+    @ViewBuilder private var thumbnail: some View {
+        if let thumbnailURL {
+            AsyncImage(url: thumbnailURL,
+                       transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().aspectRatio(contentMode: .fill).transition(.opacity)
+                case .empty:
+                    Rectangle().fill(.regularMaterial).overlay { ShimmerView() }
+                case .failure:
+                    placeholder
+                @unknown default:
+                    placeholder
+                }
+            }
+        } else {
+            placeholder
+        }
+    }
+
+    /// Neutral fallback when a chapter has no thumbnail (or it fails to load).
+    private var placeholder: some View {
+        Rectangle()
+            .fill(.regularMaterial)
+            .overlay {
+                Image(systemName: "film")
+                    .font(.system(size: Self.thumbHeight * 0.3))
+                    .foregroundStyle(.secondary)
+            }
+    }
+
+    /// Milliseconds → `m:ss` (or `h:mm:ss`).
     static func timecode(_ ms: Int) -> String {
         let total = ms / 1000
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
@@ -395,33 +434,40 @@ private struct ChaptersTabView: View {
     let chapters: [Chapter]
     /// Reads the live playhead in milliseconds at appear time.
     var currentMs: () -> Int
+    /// Builds a transcoded thumbnail URL for a chapter's `thumb` key. Threaded in
+    /// from the controller because these info tabs are hosted outside the SwiftUI
+    /// environment that would otherwise vend the server URL + token.
+    var thumbnailURL: (String?) -> URL?
     var onJump: (Int) -> Void
 
     @State private var currentIndex: Int?
 
     var body: some View {
-        Group {
-            if chapters.isEmpty {
-                Text("No chapters")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(alignment: .top, spacing: DS.Space.md) {
-                            ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
-                                ChapterCard(chapter: chapter,
-                                            index: index,
-                                            isCurrent: index == currentIndex,
-                                            onTap: onJump)
-                                    .id(index)
-                            }
+        if chapters.isEmpty {
+            Text("No chapters")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: DS.Space.md) {
+                        ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
+                            ChapterCard(chapter: chapter,
+                                        index: index,
+                                        isCurrent: index == currentIndex,
+                                        thumbnailURL: thumbnailURL(chapter.thumb),
+                                        onTap: onJump)
+                                .id(index)
                         }
-                        .padding(DS.Space.md)
                     }
-                    .onAppear {
-                        currentIndex = chapters.indexOfChapter(at: currentMs())
-                        if let target = currentIndex {
+                    .padding(DS.Space.md)
+                }
+                .onAppear {
+                    currentIndex = chapters.indexOfChapter(at: currentMs())
+                    if let target = currentIndex {
+                        // Defer: scrollTo can no-op against a LazyHStack whose target
+                        // cell isn't realized yet on the same runloop tick as onAppear.
+                        DispatchQueue.main.async {
                             proxy.scrollTo(target, anchor: .center)
                         }
                     }
