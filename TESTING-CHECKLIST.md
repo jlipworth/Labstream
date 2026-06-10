@@ -132,6 +132,22 @@ required**.
 - [ ] **Video regression check** — after the audio-session change, video playback still pauses on
       backgrounding and resumes after interruptions exactly as before.
 
+### C2. Music redesign Phase 2 (pivot + Home rails — docs/MUSIC-DESIGN.md §3.1)
+
+- [ ] **Pivot shell** — Music tab shows a Home | Artists | Albums segmented control; switching
+      pivots keeps the library Picker working; switching libraries resets to Home.
+- [ ] **Home rails** — server hubs render as rails in server order (Recently Played / Recently
+      Added / etc. as the PMS provides); artist cells are CIRCULAR, albums square. NOTE: v1
+      deliberately drops track-level hub items — a hub vanishing may just mean it only had
+      tracks, not a bug.
+- [ ] **Recently Played advancement (Phase-0 evidence)** — play a track, pull-to-refresh Home:
+      does the rail advance? Claude reads `[VP] music hub:` NSLog lines for the hub identifiers.
+- [ ] **Shuffle Library** — bottom pill queues ~200 random tracks and starts playback shuffled.
+- [ ] **Artists/Albums pivots** — sorted grids; sort menu works; scrolling to the bottom loads
+      the next page (200/page) without duplicates.
+- [ ] **#4 probe (video)** — play any movie/episode ≥10s; Claude reads `[VP] #4 m3u8 probe:`
+      to learn whether PMS advertises an I-frame variant (YES → #4 closes free).
+
 ---
 
 ## D. Deferred / optional (tracked in issues)
