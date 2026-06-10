@@ -52,6 +52,15 @@ import Foundation
     #expect(MediaItem(ratingKey: "14", title: "Trailer", type: "clip").isMusic == false)
 }
 
+@Test func musicContainersAreArtistsAndAlbumsOnly() {
+    // Music navigation drills artist → albums → tracks via dedicated music views;
+    // a track is the playable leaf, and video types never route there.
+    #expect(MediaItem(ratingKey: "1", title: "Radiohead", type: "artist").isMusicContainer == true)
+    #expect(MediaItem(ratingKey: "2", title: "OK Computer", type: "album").isMusicContainer == true)
+    #expect(MediaItem(ratingKey: "3", title: "Karma Police", type: "track").isMusicContainer == false)
+    #expect(MediaItem(ratingKey: "10", title: "Arrival", type: "movie").isMusicContainer == false)
+}
+
 @Test func decodedMixedHubFiltersMusicItems() throws {
     // A mixed hub carrying both a movie and a track; the browse filter keeps only the
     // movie so music never reaches the video player.

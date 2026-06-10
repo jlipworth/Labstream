@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var appModel: AppModel
     @State private var authManager: AuthManager
     @State private var downloadManager: DownloadManager
+    @State private var musicPlayer: MusicPlayerController
 
     /// True until the launch-time `restoreSession()` finishes. While restoring we show a
     /// neutral splash — NOT `LoginView` — because a saved token takes a moment to resolve a
@@ -34,6 +35,9 @@ struct ContentView: View {
         _appModel = State(initialValue: model)
         _authManager = State(initialValue: auth)
         _downloadManager = State(initialValue: DownloadManager(appModel: model))
+        // Single long-lived music player (#17): the queue/audio session outlive any
+        // one screen, so it's owned here next to DownloadManager, not per-view.
+        _musicPlayer = State(initialValue: MusicPlayerController(appModel: model))
     }
 
     var body: some View {
@@ -41,7 +45,8 @@ struct ContentView: View {
             if appModel.isBrowseReady {
                 RootView(appModel: appModel,
                          authManager: authManager,
-                         downloadManager: downloadManager)
+                         downloadManager: downloadManager,
+                         musicPlayer: musicPlayer)
             } else if isRestoring {
                 RestoringSessionView()
             } else {
@@ -53,6 +58,11 @@ struct ContentView: View {
             guard isRestoring else { return }
             await authManager.restoreSession()
             isRestoring = false
+        }
+        // Sign-out: the music player outlives RootView, so without this music would
+        // keep playing over the login screen with stale credentials (#17).
+        .onChange(of: appModel.isBrowseReady) { _, ready in
+            if !ready { musicPlayer.stop() }
         }
     }
 }

@@ -52,6 +52,11 @@ extension MediaItem {
     /// (a show → seasons, a season → episodes).
     public var isContainer: Bool { kind == .show || kind == .season }
 
+    /// True for music containers (an `artist` → albums, an `album` → tracks). Music
+    /// navigation routes these to dedicated music views; `isContainer`'s routing in
+    /// `DetailView` is video-only and stays untouched.
+    public var isMusicContainer: Bool { type == "artist" || type == "album" }
+
     /// An episode-style label, Plex/Emby-style:
     /// `"{grandparentTitle} · S{parentIndex}E{index} · {title}"`, gracefully dropping any
     /// missing component (and falling back to just `title` when none are present).
