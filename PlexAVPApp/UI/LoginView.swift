@@ -2,12 +2,15 @@ import SwiftUI
 import PlexKit
 
 /// Sign-in screen. Drives the Plex PIN-OAuth flow via `AuthManager`:
-///   1. "Sign in with Plex" creates a PIN and opens `app.plex.tv/auth` in a
-///      managed `ASWebAuthenticationSession` web sheet (`WebAuthSession`).
-///   2. `AuthManager` polls in the background; we observe `authManager.state`
-///      and, once it reaches `.authenticated`, close the web sheet ourselves
-///      (`webAuth.cancel()`). ContentView then switches to `RootView` when
-///      `appModel.isAuthenticated` flips.
+///   1. "Sign in with Plex" creates a PIN and shows the linking code as the
+///      primary state (#16): the user enters it at plex.tv/link from any device
+///      while `AuthManager` polls in the background. The in-headset web sheet
+///      (`WebAuthSession` → `app.plex.tv/auth`) is NOT auto-opened — it would
+///      steal focus from the code ~0.5s after it appears — and is instead
+///      offered as an explicit button.
+///   2. We observe `authManager.state` and, once it reaches `.authenticated`,
+///      close the web sheet if one is open (`webAuth.cancel()`). ContentView
+///      then switches to `RootView` when `appModel.isAuthenticated` flips.
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -81,24 +84,31 @@ struct LoginView: View {
     private var content: some View {
         switch authManager.state {
         case .awaitingAuthorization(let code, let url):
+            // Linking-code-first (#16): the code is the primary state so the user
+            // can finish auth from a phone/laptop at plex.tv/link. Polling runs in
+            // the background the whole time; the in-headset browser is opt-in.
             VStack(spacing: DS.Space.lg) {
-                ProgressView()
-                    .controlSize(.large)
-                Text("Waiting for authorization…")
-                    .font(.headline)
                 VStack(spacing: DS.Space.xs) {
-                    Text("Linking code")
+                    Text("Enter this code at plex.tv/link")
+                        .font(.headline)
+                    Text("on your phone, tablet, or computer")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(code)
-                        .font(.largeTitle.monospaced().weight(.semibold))
-                        .tracking(4)
-                        .padding(.horizontal, DS.Space.xl)
-                        .padding(.vertical, DS.Space.md)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
                 }
-                Button("Open Plex sign-in again") {
-                    webAuth.start(url) { working = false }
+                Text(code)
+                    .font(.extraLargeTitle.monospaced().weight(.semibold))
+                    .tracking(6)
+                    .padding(.horizontal, DS.Space.xl)
+                    .padding(.vertical, DS.Space.md)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+                HStack(spacing: DS.Space.sm) {
+                    ProgressView()
+                    Text("Waiting for authorization…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Open Plex sign-in in this headset instead") {
+                    webAuth.start(url) { }
                 }
                 .buttonStyle(.bordered)
             }
@@ -120,8 +130,11 @@ struct LoginView: View {
         working = true
         errorMessage = nil
         do {
-            let url = try await authManager.createPin()
-            webAuth.start(url) { working = false }
+            // Create the PIN and stop: the linking code becomes the primary UI and
+            // polling is already running (#16). The web sheet only opens if the
+            // user explicitly asks for the in-headset path.
+            _ = try await authManager.createPin()
+            working = false
         } catch {
             errorMessage = friendlyMessage(error)
             working = false
