@@ -1,0 +1,12 @@
+# .woodpecker/plexkit.yml
+# Portable Swift package tests. The full visionOS app build remains a local macOS/Xcode check.
+
+when:
+  event: [push, pull_request, manual]
+
+steps:
+  - name: plexkit-tests
+    image: swift:6.2
+    commands:
+      - cd PlexKit
+      - swift test

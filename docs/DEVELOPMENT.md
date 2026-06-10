@@ -13,19 +13,42 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
 # PlexKit unit tests
-cd PlexKit && swift test
+(cd PlexKit && swift test)
+
+# Repo hygiene (redaction/signing guardrails)
+./scripts/ci-hygiene.sh
 
 # Install + launch on a booted sim
 APP="$HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-<hash>/Build/Products/Debug-xrsimulator/PlexAVPApp.app"
-xcrun simctl install booted "$APP" && xcrun simctl launch booted com.personal.PlexAVPApp
+xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlex
 
 # After-the-fact logs
 xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"' --style compact
 ```
 
-- App bundle id: `com.personal.PlexAVPApp` · Sim: "Apple Vision Pro" (visionOS 26.5).
+- App bundle id: `com.jlipworth.VisionPlex` · Sim: "Apple Vision Pro" (visionOS 26.5).
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
   `PlexKit/Sources`, `PlexKit/Tests`) — no `project.pbxproj` edits needed.
+
+## Personal-device signing
+
+Simulator builds stay unsigned. For Apple Vision Pro sideload installs, keep the Apple Developer
+Team ID local and out of git by creating `Signing.local.xcconfig`. The bundle ID and signing style
+are committed project settings; the local file should contain only:
+
+```xcconfig
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+```
+
+Do not commit:
+
+- `Signing.local.xcconfig` or other personal signing overrides
+- provisioning profiles, certificates, or exported archives
+- Plex tokens, client secrets, real server hostnames, or LAN IPs
+
+Developer Mode and the first-launch trust prompt on device are Apple's normal security gate for
+personal development builds. App Store/TestFlight distribution signing, entitlement cleanup, store
+metadata, and review-specific release automation can be handled in a later publication pass.
 
 ## Gotchas we don't want to re-learn
 
