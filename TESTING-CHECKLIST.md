@@ -4,7 +4,7 @@ _Everything below is implemented + build-verified on `main` (app builds green; t
 suite passes — run `cd PlexKit && swift test`) but the unchecked items are NOT yet human-verified
 in the headset/simulator. Work through them in one pass._
 
-**Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/plex-avp-app/issues)).
+**Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlex/issues)).
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: **reinstalling wipes the container → re-login
 required**.

@@ -4,7 +4,7 @@ import Foundation
 
 private let server = URL(string: "https://192.168.1.10:32400")!
 private let id = ClientIdentity(clientIdentifier: "CID",
-                                product: "plex-avp-app",
+                                product: "VisionPlex",
                                 version: "0.1.0",
                                 deviceName: "AVP")
 
