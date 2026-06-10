@@ -455,6 +455,10 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
         // present AND prepends a state-driven Retry / Skip / Play Next when applicable. Setting it
         // here too would clobber that, so the control surface is the single owner.
         context.coordinator.attachControlSurface(to: vc)
+        // Open straight into the Expanded experience — the embedded windowed state
+        // is configuration-dead (no info tabs) so we don't start there. Also runs
+        // on a failure-recovery rebuild, restoring the pre-failure experience.
+        CinemaEnvironment.autoExpand(vc)
         context.coordinator.controller.start()
         // Hand the controller up to the SwiftUI layer after this update pass completes.
         let controller = context.coordinator.controller

@@ -31,4 +31,31 @@ enum CinemaEnvironment {
         }
         #endif
     }
+
+    /// Skip the embedded "windowed" state on open: the inline player is a dead end
+    /// (the Quality/Subtitles/Audio info tabs are only reachable once expanded, and
+    /// its mini-menu duplicates nothing useful), so as soon as the player VC is in
+    /// the window hierarchy, transition straight to the Expanded experience.
+    ///
+    /// Embedded stays ALLOWED — it's the required transient for the close path
+    /// (collapse-first avoids the #28 empty-window bug) and the user can still
+    /// manually shrink back to a window. We only stop *starting* there.
+    @MainActor
+    static func autoExpand(_ controller: AVPlayerViewController) {
+        #if os(visionOS)
+        guard #available(visionOS 2.0, *) else { return }
+        Task { @MainActor in
+            // `transition(to:)` is a no-op before the VC's scene exists, so wait
+            // (≤2s) for it to land in a window, then expand once. If the user has
+            // already changed the experience themselves, leave it alone.
+            for _ in 0..<40 {
+                if controller.viewIfLoaded?.window != nil { break }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            if controller.experienceController.experience == .embedded {
+                _ = await controller.experienceController.transition(to: .expanded)
+            }
+        }
+        #endif
+    }
 }
