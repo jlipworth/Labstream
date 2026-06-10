@@ -136,7 +136,8 @@ struct PlayerView: View {
         // leaving no exit (the bug we hit). Instead Close is an AVKit-hosted
         // `contextualActions` pill (single-owned by `PlayerControlSurface`), which
         // AVKit renders over the video in BOTH the windowed and expanded states and
-        // keeps tappable. See docs/DEVELOPMENT.md for why the alternatives lost.
+        // keeps tappable. It appears while paused or failed — not during normal
+        // playback. See docs/DEVELOPMENT.md for why the alternatives lost.
         ZStack(alignment: .topLeading) {
             PlayerRepresentable(controllerFactory: controllerFactory,
                                 resumeMsOverride: rebuildResumeMs,
@@ -451,8 +452,8 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
 
         // `contextualActions` (the visionOS-native slot for controls "displayed during playback",
         // rendered by the system player so they persist into the expanded cinema experience) is
-        // owned entirely by the control surface now (#23): it keeps a "Close" action always
-        // present AND prepends a state-driven Retry / Skip / Play Next when applicable. Setting it
+        // owned entirely by the control surface now (#23): it shows "Close" while paused or
+        // failed AND prepends a state-driven Retry / Skip / Play Next when applicable. Setting it
         // here too would clobber that, so the control surface is the single owner.
         context.coordinator.attachControlSurface(to: vc)
         // Open straight into the Expanded experience — the embedded windowed state
