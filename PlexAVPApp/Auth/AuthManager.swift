@@ -32,7 +32,11 @@ final class AuthManager {
     private let pollInterval: Duration = .seconds(1)
     private let pollTimeout: Duration = .seconds(300)
     private var pollTask: Task<Void, Never>?
-    private var activePinID: Int?
+    /// PINs being polled for the current login attempt (#16): the non-strong
+    /// "link" PIN (its 4-char code is shown for plex.tv/link) and the strong
+    /// PIN (its long code backs the in-headset web-auth URL). Whichever the
+    /// user completes authorizes first; both clear when the attempt ends.
+    private var activePinIDs: Set<Int> = []
 
     init(appModel: AppModel, keychain: KeychainStore = KeychainStore()) {
         self.appModel = appModel
@@ -58,44 +62,57 @@ final class AuthManager {
         }
     }
 
-    /// Start a fresh login: create a PIN and surface the auth URL for the UI to open.
-    /// Returns the URL the UI should present.
+    /// Start a fresh login. Creates TWO PINs (#16): a non-strong one whose
+    /// 4-character code the UI displays for plex.tv/link, and a strong one whose
+    /// long code backs the `app.plex.tv/auth` web URL (a strong code cannot be
+    /// typed at plex.tv/link, and the auth web page needs the strong one).
+    /// Both are polled; whichever the user completes wins.
+    /// Returns the URL the UI should present for the in-headset browser path.
     func createPin() async throws -> URL {
         cancelPendingLogin()
-        let createReq = PinAuth.createPinRequest(identity: appModel.identity)
-        let pin = try await appModel.client.send(createReq, as: PinResponse.self)
-        let authURL = PinAuth.authAppURL(code: pin.code, identity: appModel.identity)
-        activePinID = pin.id
-        state = .awaitingAuthorization(code: pin.code, url: authURL)
+        async let linkReq = appModel.client.send(
+            PinAuth.createPinRequest(identity: appModel.identity, strong: false),
+            as: PinResponse.self)
+        async let strongReq = appModel.client.send(
+            PinAuth.createPinRequest(identity: appModel.identity, strong: true),
+            as: PinResponse.self)
+        let (linkPin, strongPin) = try await (linkReq, strongReq)
+
+        let authURL = PinAuth.authAppURL(code: strongPin.code, identity: appModel.identity)
+        activePinIDs = [linkPin.id, strongPin.id]
+        state = .awaitingAuthorization(code: linkPin.code, url: authURL)
 
         // Kick off polling in the background; UI observes `state`.
-        pollTask = Task { await pollForToken(pinID: pin.id) }
+        let ids = activePinIDs
+        pollTask = Task { await pollForToken(pinIDs: ids) }
         return authURL
     }
 
-    /// Poll the PIN until it carries an `authToken` or we time out.
-    private func pollForToken(pinID: Int) async {
+    /// Poll the attempt's PINs until one carries an `authToken` or we time out.
+    private func pollForToken(pinIDs: Set<Int>) async {
         let deadline = ContinuousClock.now.advanced(by: pollTimeout)
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: pollInterval)
             if Task.isCancelled { return }
-            guard activePinID == pinID else { return }
+            guard activePinIDs == pinIDs else { return }
 
-            let pollReq = PinAuth.pollPinRequest(pinID: pinID, identity: appModel.identity)
-            do {
-                let poll = try await appModel.client.send(pollReq, as: PinPollResponse.self)
-                if let token = poll.authToken, !token.isEmpty {
-                    await finishLogin(token: token)
-                    return
+            for pinID in pinIDs {
+                let pollReq = PinAuth.pollPinRequest(pinID: pinID, identity: appModel.identity)
+                do {
+                    let poll = try await appModel.client.send(pollReq, as: PinPollResponse.self)
+                    if let token = poll.authToken, !token.isEmpty {
+                        await finishLogin(token: token)
+                        return
+                    }
+                } catch {
+                    // Transient errors are expected while the user is still authorizing;
+                    // keep polling until the deadline.
+                    continue
                 }
-            } catch {
-                // Transient errors are expected while the user is still authorizing;
-                // keep polling until the deadline.
-                continue
             }
         }
-        guard activePinID == pinID else { return }
-        activePinID = nil
+        guard activePinIDs == pinIDs else { return }
+        activePinIDs = []
         pollTask = nil
         state = .failed("Authorization timed out.")
     }
@@ -109,7 +126,7 @@ final class AuthManager {
         appModel.token = token
         do {
             try await refreshServers()
-            activePinID = nil
+            activePinIDs = []
             pollTask = nil
             state = .authenticated
         } catch {
@@ -199,6 +216,6 @@ final class AuthManager {
     func cancelPendingLogin() {
         pollTask?.cancel()
         pollTask = nil
-        activePinID = nil
+        activePinIDs = []
     }
 }

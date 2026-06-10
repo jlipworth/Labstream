@@ -3,9 +3,13 @@ import Foundation
 public enum PinAuth {
     static let base = URL(string: "https://plex.tv/api/v2/pins")!
 
-    public static func createPinRequest(identity: ClientIdentity) -> PlexRequest {
+    /// Create a PIN. `strong: true` yields the long code embedded in the
+    /// `app.plex.tv/auth` web URL; `strong: false` yields the short 4-character
+    /// code a user can type at plex.tv/link. The two flows need different PINs —
+    /// a strong code cannot be entered at plex.tv/link.
+    public static func createPinRequest(identity: ClientIdentity, strong: Bool = true) -> PlexRequest {
         PlexRequest(url: base, method: "POST",
-                    queryItems: [.init(name: "strong", value: "true")],
+                    queryItems: [.init(name: "strong", value: strong ? "true" : "false")],
                     headers: PlexHeaders.standard(identity: identity, token: nil))
     }
 
