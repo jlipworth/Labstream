@@ -21,20 +21,23 @@ struct LoginView: View {
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
-            // Tinted, layered app glyph in a soft glow — a warmer welcome than a flat icon.
+            // The real VisionPlex artwork as an app-icon-style tile in a soft glow (#18) —
+            // replaces the placeholder play.tv.fill SF Symbol.
             ZStack {
                 Circle()
                     .fill(.tint.opacity(0.18))
                     .frame(width: 156, height: 156)
                     .blur(radius: 24)
-                Image(systemName: "play.tv.fill")
-                    .font(.system(size: 76))
-                    .foregroundStyle(.tint)
-                    .symbolRenderingMode(.hierarchical)
+                Image("VisionPlexLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 132, height: 132)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card + 8,
+                                                style: .continuous))
             }
 
             VStack(spacing: DS.Space.md) {
-                Text("Plex for Vision Pro")
+                Text("VisionPlex")
                     .font(.extraLargeTitle.bold())
 
                 Text("Sign in to your Plex account to browse and play your libraries in the headset.")
