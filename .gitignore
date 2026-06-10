@@ -42,8 +42,9 @@ Signing.local.xcconfig
 Pods/
 Carthage/Build/
 
-# Claude Code session data + agent worktrees (never commit)
-.claude/
+# Claude Code session data + agent worktrees (never commit) — but DO version skills
+.claude/*
+!.claude/skills/
 
 # Superpowers visual brainstorming scratch data (never commit)
 .superpowers/
