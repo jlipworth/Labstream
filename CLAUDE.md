@@ -7,7 +7,13 @@ live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the 
 ## Build / install / test loop
 
 ```sh
-# Build (simulator UDID may differ; `xcrun simctl list devices booted` to check)
+# Build (simulator UDID may differ; `xcrun simctl list devices booted` to check).
+# ⚠️ LINK-SKIP TRAP (bit us live): after a source edit xcodebuild may recompile the .o
+# but SKIP the Ld step — exit 0, no new binary, and the "fix" you then install is the OLD
+# app. Guard every fix build: delete the .app product first, and verify afterwards that
+# the binary mtime is fresh (and matches the installed copy via
+# `xcrun simctl get_app_container booted com.personal.PlexAVPApp app`).
+rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
 xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
