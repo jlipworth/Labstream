@@ -12,7 +12,7 @@ live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the 
 # but SKIP the Ld step — exit 0, no new binary, and the "fix" you then install is the OLD
 # app. Guard every fix build: delete the .app product first, and verify afterwards that
 # the binary mtime is fresh (and matches the installed copy via
-# `xcrun simctl get_app_container booted com.personal.PlexAVPApp app`).
+# `xcrun simctl get_app_container booted com.jlipworth.VisionPlex app`).
 rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
 xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
@@ -23,7 +23,7 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
 # /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app | head -1)
 xcrun simctl install booted "$APP"
-xcrun simctl terminate booted com.personal.PlexAVPApp; xcrun simctl launch booted com.personal.PlexAVPApp
+xcrun simctl terminate booted com.jlipworth.VisionPlex; xcrun simctl launch booted com.jlipworth.VisionPlex
 
 # PlexKit unit tests
 cd PlexKit && swift test
@@ -61,8 +61,8 @@ Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 - `X-Plex-Client-Profile-Name=Safari` in TranscodeRequest must NEVER change — an
   unknown profile makes PMS return a bare HTTP 400.
 - Never commit Plex tokens or client identifiers.
-- Never reintroduce the scrubbed strings `plex.example.internal` / `192.0.2.10`;
-  the repo uses `plex.example.internal` / `192.0.2.10` as placeholders.
+- Never reintroduce the scrubbed real PMS hostname or LAN IP; the repo uses
+  `plex.example.internal` / `192.0.2.10` as placeholders.
 
 ## Conventions
 

@@ -48,7 +48,7 @@ required**.
       (no instant "unknown error"), %/bar climb with live speed/ETA/quality caption, completes, plays
       offline. (Simulator uses a foreground URLSession — `nsurlsessiond` is unavailable there; device
       keeps the background session.) Logs:
-      `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.personal.PlexAVPApp"'`
+      `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlex"'`
 
 ## B. Player features
 

@@ -61,11 +61,13 @@ VisionPlex/
 
 ## Build & run
 
-This is a **sideload-only** project — there is no paid Apple Developer account, so it runs from Xcode
-on the visionOS 26.5 simulator or a registered device (bundle id `com.personal.PlexAVPApp`). Free
-Apple-ID profiles expire every 7 days, so a device install needs a periodic Mac-tethered rebuild.
+This is a **personal-device sideload** project today. The app identity is **VisionPlex** and the
+development bundle identifier is `com.jlipworth.VisionPlex`. It runs from Xcode on the visionOS 26.5
+simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
+expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
+the first-launch trust prompt are Apple's expected security gate for sideloaded development builds.
 
-Build the app (visionOS 26.5 simulator, no signing):
+Build the app (visionOS 26.5 simulator, unsigned):
 
 ```bash
 xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
@@ -78,6 +80,31 @@ Run the `PlexKit` test suite:
 ```bash
 cd PlexKit && swift test
 ```
+
+For personal-device signing, create a local-only `Signing.local.xcconfig` containing only your Apple Developer Team ID. The bundle ID and signing style are committed project settings:
+
+```xcconfig
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+```
+
+Do not commit local signing files, provisioning profiles, certificates, Plex tokens, server
+hostnames, or LAN IPs.
+
+Local validation before handing off:
+
+```bash
+xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+  -configuration Debug build CODE_SIGNING_ALLOWED=NO
+(cd PlexKit && swift test)
+./scripts/ci-hygiene.sh
+```
+
+Woodpecker runs the portable CI checks only: `PlexKit` tests and repo hygiene. The unsigned
+visionOS simulator `xcodebuild` remains a local macOS/Xcode validation step unless or until a future
+macOS-runner CI job is added. A future App Store/TestFlight pass can add distribution signing,
+entitlements review, screenshots, privacy metadata, and store-specific release automation later; it
+is intentionally not part of this personal sideload setup.
 
 See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
 gotchas worth knowing before changing the player or transcode code.

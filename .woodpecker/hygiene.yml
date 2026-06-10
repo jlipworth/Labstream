@@ -1,0 +1,12 @@
+# .woodpecker/hygiene.yml
+# Repo hygiene checks that do not require Apple signing credentials or a macOS runner.
+
+when:
+  event: [push, pull_request, manual]
+
+steps:
+  - name: repo-hygiene
+    image: alpine:3.24
+    commands:
+      - apk add --no-cache bash git ripgrep
+      - ./scripts/ci-hygiene.sh
