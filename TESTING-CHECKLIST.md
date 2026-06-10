@@ -52,8 +52,9 @@ required**.
 
 ## B. Player features
 
-- [ ] **Subtitle language names** — Subtitles tab lists real names ("English", "English (SDH)") for
-      all muxed languages; selection persists to the next session; Off stays off.
+- [x] **Subtitle language names** ✅ verified — Subtitles tab lists the muxed renditions by name
+      ("CC (SDH)") plus Off, selection applies live. (Only the PMS-selected tracks are muxed into
+      the stream, so the list is short by design.) Cross-session persistence not yet re-checked.
 - [ ] **Skip Intro / Skip Credits** — on an episode with server-detected markers, the bottom-trailing
       skip button appears during the window and seeks past it.
 - [ ] **Up Next + autoplay** — near an episode's end, the Up Next card shows the next episode +
@@ -65,19 +66,22 @@ required**.
 - [ ] **Audio session / interruptions (device-only)** — call/Siri pauses then resumes (only if it was
       playing); unplugging headphones pauses; backgrounding pauses and does NOT auto-resume; a manual
       pause is never overridden.
-- [ ] **Playback speed + Now Playing metadata** — Speed tab (0.5×–2×) changes rate, persists, and
-      survives a Quality reload; cinema chrome / Control Center shows real title + artwork.
+- [x] **Playback speed + Now Playing metadata** ✅ verified — Speed tab changes rate and survives
+      a Quality reload. (Control Center metadata not separately re-checked.)
 - [ ] **Buffering indicator** — centered spinner on a real stall, NOT on manual pause.
-- [ ] **Audio soundtrack picker (GH #3)** — Audio info tab lists soundtracks by real name on
-      multi-track titles; switching is live (no restart); preferred language reapplies next item.
-      Single-track titles show a graceful empty state.
-- [ ] **Quality menu polish (GH #5)** — granular ladder (2–40 Mbps with resolution hints +
-      "Maximum (original)"), scrolls to the bottom row reliably, current cap checkmarked.
-- [ ] **Stats overlay (GH #6)** — Stats tab launches a floating stats-for-nerds panel top-leading
-      over the video; its ✕ is tappable; it doesn't block the transport; suppressed while a playback
-      error is showing.
-- [ ] **Chapter thumbnail scroller (GH #10)** — Chapters tab shows the horizontal thumbnail
-      scroller; tapping a chapter seeks. Known: PMS may label every entry "Chapter 1 / 0:00" (GH #9).
+- [ ] **Audio soundtrack picker (GH #3)** ❌ FAILED live test — shows "No alternate audio tracks"
+      even on titles with an English track: PMS only muxes the active track into the stream, so
+      the HLS media-selection group is empty. Needs a metadata-driven picker (`streamType=2` +
+      `audioStreamID` reload) — see the issue comment.
+- [x] **Quality menu polish (GH #5)** ✅ verified — "quality seems to work as intended" (ladder,
+      live switch + same-playhead resume).
+- [~] **Stats overlay (GH #6)** — ⚠️ partial: works in the windowed state (panel, live numbers,
+      tappable ✕) but NEVER renders in the expanded experience (floated SwiftUI sibling — same
+      expanded-scene limitation as #8); launcher-tab UX + hover-bubble artifact also flagged.
+      See the issue comment for the `contentOverlayView` fix idea.
+- [x] **Chapter thumbnail scroller (GH #10)** ✅ verified — real thumbnails + timestamps, tap
+      seeks. GH #9 (all entries "Chapter 1 / 0:00") did NOT reproduce. Polish tracked in #10:
+      panel too tall, prefer real chapter titles when PMS provides them.
 
 ## C. Music (GH #17 — Plexamp-style module)
 
