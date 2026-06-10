@@ -12,8 +12,11 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 
-# Install + relaunch on the booted simulator (upgrade in place — login survives)
-xcrun simctl install booted "$HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app"
+# Install + relaunch on the booted simulator (upgrade in place — login survives).
+# Multiple stale PlexAVPApp-* DerivedData dirs exist — always pick the newest, and use
+# /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app | head -1)
+xcrun simctl install booted "$APP"
 xcrun simctl terminate booted com.personal.PlexAVPApp; xcrun simctl launch booted com.personal.PlexAVPApp
 
 # PlexKit unit tests
@@ -25,11 +28,10 @@ edit the pbxproj to add one.
 
 ## Live-testing workflow (semi-automated)
 
-Claude can drive the simulator itself — synthetic clicks, screenshots, coordinate
-mapping, log reading. Full procedure in the **`sim-driving` skill** (use it before any
-interactive testing). Hand off to the user only for gaze-hover rendering checks,
-drag gestures, and the expanded cinema scene. Don't ask the user for screenshots or
-log dumps:
+The USER performs all simulator interaction (synthetic clicking was tried and shelved —
+see the status note in the **`sim-driving` skill** before considering it). Claude
+self-serves the passive half — screenshots and logs. Don't ask the user for screenshots
+or log dumps:
 
 ```sh
 # Claude takes its own screenshots after the user interacts

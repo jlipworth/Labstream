@@ -200,22 +200,17 @@ struct PlayerView: View {
             // leaves `isBuffering` true, so without this gate the spinner floats on top of the
             // error/Retry dialog (which occupies the same center region). Once we've given up
             // and shown Retry — and paused the player (see `surfaceFailure`) — the spinner has
-            // no role. Mirrors the StatsOverlay gate below.
+            // no role.
             if let controller, !controller.playbackError.isFailed {
                 BufferingOverlay(state: controller.buffering)
             }
 
-            // Stats for Nerds (#6): floated like the other overlays, WINDOWED-ONLY by
-            // platform limitation. Hosting it inside the player was tried and failed:
-            // `contentOverlayView` exists on visionOS but is never composited (verified
-            // live — installed host, nothing drawn in either mode), and
-            // `customOverlayViewController` is tvOS-only per the SDK header. The expanded
-            // cinema scene is system-owned and renders no in-process overlay at all.
-            if let controller {
-                StatsOverlayView(state: controller.statsOverlay,
-                                 diagnostics: controller.diagnostics,
-                                 error: controller.playbackError)
-            }
+            // Stats for Nerds (#6) lives INSIDE the ⓘ info panel (a system-chrome "Stats"
+            // tab, see PlayerControlSurface) — the only stats surface that renders in the
+            // expanded cinema experience. Floating it here was the previous approach and
+            // only ever worked windowed: `contentOverlayView` exists on visionOS but is
+            // never composited (verified live), `customOverlayViewController` is tvOS-only,
+            // and the expanded scene renders no in-process overlay at all.
         }
     }
 
