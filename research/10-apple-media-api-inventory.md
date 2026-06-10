@@ -126,13 +126,17 @@ required**. (It would be, for commercial DRM HLS.)
 
 ## 3. visionOS-26-SPECIFIC CONSTRAINTS
 
-- **Headset-off halts transfers.** On Vision Pro, removing the headset suspends the
-  session; background `URLSession`/`AVAssetDownloadURLSession` transfers do **not** make
-  meaningful progress while the device is off the user's head (no "download overnight on
-  the charger with the headset on the desk" the way an iPhone downloads in your pocket).
-  Design the UX around: download *while worn*, surface progress, and resume on next wear.
+- **Headset-off halts transfers — ERRATUM (2026-06): contradicted for the plugged-in
+  case.** Later research found first-party reports (Apple Community) of TV-app downloads
+  and Photos sync completing off-head **while the device was charging**; the blanket
+  claim below holds (if at all) only for off-head **and unplugged**, and third-party
+  background-`URLSession` behavior remains unverified empirically (an out-of-process
+  `nsurlsessiond` transfer is architecturally plausible off-head, though heavily
+  deprioritized). Pending an on-device test, read the original guidance as the
+  conservative case: removing the headset suspends the app; design the UX around
+  download *while worn or charging*, surface progress, and resume on next wear.
   `isDiscretionary = false` and `sessionSendsLaunchEvents = true` help the session resume
-  promptly, but cannot override the off-head suspension.
+  promptly, but cannot override the off-head app suspension.
 - **Storage.** Vision Pro is fixed-capacity (no SD expansion); an 8 Mbps × 2 hr title is
   ~7 GB, so capped-bitrate copies are the right call. Use `.applicationSupportDirectory`,
   exclude from iCloud backup, and consider `AVAssetDownloadStorageManagementPolicy`

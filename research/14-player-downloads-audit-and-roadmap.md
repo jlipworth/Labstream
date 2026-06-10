@@ -1,5 +1,13 @@
 # Player & Downloads Audit and Roadmap (visionOS Plex Client)
 
+> **SUPERSEDED (2026-06).** This roadmap spawned the GitHub issue tracker and every
+> Executive Summary bug below has since been fixed on `main` (in-player Close via
+> `contextualActions`; quality-reload keeps the playhead; failure overlay + stall
+> watchdog + retry; download body validation + failed-state machine). Kept only as a
+> dated historical synthesis — current state lives in
+> [GitHub Issues](https://github.com/jlipworth/plex-avp-app/issues) and
+> `docs/DEVELOPMENT.md`.
+
 Synthesis of 10 research agents: core-code audits (playback / downloads / PlexKit), competitive feature inventories (Plex, Emby/Infuse/Plexi/Aurora/VidHub/MrMC, Swiftfin, jellyfin-web), and Apple visionOS/AVFoundation platform briefs. Drives implementation. File:line locations are from the live tree.
 
 ---

@@ -11,8 +11,8 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 **offline downloads** of capped copies of your library.
 
 > **Status: working app.** End-to-end playback runs in the visionOS 26.5 simulator and on device.
-> Build is green and the `PlexKit` package ships **74 passing tests**. This is a single-user,
-> sideload-only project — there is no App Store build.
+> Build is green and the `PlexKit` package ships a full unit-test suite (`cd PlexKit && swift test`).
+> This is a single-user, sideload-only project — there is no App Store build.
 
 ## What this app does
 
@@ -39,7 +39,7 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 - **SwiftUI** app shell with **AVKit / AVFoundation** for transcoded HLS playback and Cinema Environment docking
 - **Swift 6** with strict concurrency
 - **`PlexKit`** — a local Swift package providing the hand-rolled Plex API layer (auth, library browse,
-  transcode decision, playback-state endpoints, TV hierarchy), covered by 74 tests
+  transcode decision, playback-state endpoints, TV + music hierarchy), fully unit-tested
 - **Xcode 26**, targeting **visionOS 26.5**
 
 ## Project structure
@@ -51,6 +51,7 @@ plex-avp-app/
 │   ├── Auth/             # Plex PIN OAuth + Keychain
 │   ├── Networking/       # Plex client wiring
 │   ├── Player/           # AVKit player + Cinema Environment + recovery
+│   ├── Music/            # Plexamp-style music browse + audio player
 │   ├── Downloads/        # offline transfers + offline library
 │   └── UI/               # Home · Libraries · Search · Detail
 ├── PlexKit/              # local Swift package: Plex API layer (+ tests)

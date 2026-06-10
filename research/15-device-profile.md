@@ -1,5 +1,12 @@
-# 13 — Apple Vision Pro DeviceProfile: Direct Play for in-cap content (RESEARCH / PROPOSAL ONLY)
+# 15 — Apple Vision Pro DeviceProfile: Direct Play for in-cap content (RESEARCH / PROPOSAL ONLY)
 
+> **Update (2026-06): partially shipped.** The decision-only probe slice
+> (`directPlayProbeDecisionURL()` + `visionOSDirectPlayProbe`) landed in PlexKit with
+> unit coverage; the app-side half (loading direct-play instead of `start.m3u8`) is
+> deferred and tracked as [GitHub issue #7](https://github.com/jlipworth/plex-avp-app/issues/7).
+> (File renamed from `13-device-profile.md` — the number collided with
+> `13-playback-state-apis.md`.)
+>
 > **Status: design doc only. No Swift source is changed by this task.** The live
 > transcode/playback path is untouched. This document proposes how we *could*
 > let PMS Direct Play / Direct Stream content that is already inside the user's
@@ -318,8 +325,8 @@ resume/seek regressions before considering default-ON.
 ## 6. Verification of "no behavior change" for this task
 
 - The **only** file created by this task is this document,
-  `research/13-device-profile.md`. No Swift source was modified; `git status`
-  shows only `research/13-device-profile.md`.
+  `research/15-device-profile.md`. No Swift source was modified; `git status`
+  shows only `research/15-device-profile.md`.
 - No build is required (no code changed). The existing
   `TranscodeRequestTests` continue to pin the production contract
   (`directPlay=0`, `X-Plex-Client-Profile-Name=Safari`), which this task does not

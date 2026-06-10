@@ -36,7 +36,7 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
   **both** inline and expanded cinema states and stays tappable — a floated SwiftUI sibling vanishes
   in the expanded experience, and the ⓘ panel is buried. (See the Close-button placement issue.)
 - **Close-button placement is settled — keep the `contextualActions` "✕ Close".** Three alternatives
-  were built as worktrees (`close-A/B/C`, on `origin`) and all lost to it: **A** (floated top-left ✕)
+  were built as local branches (`close-A/B/C`, never pushed) and all lost to it: **A** (floated top-left ✕)
   vanishes in expanded cinema; **B** (`showsPlaybackControls = false` + a hand-drawn transport) works
   but *amputates the native info tabs* — Quality/Subtitles/Speed/Stats all disappear with native
   chrome; **C** (window `.ornament` ✕) is worse — **a `.ornament` on the player suppresses AVKit's
