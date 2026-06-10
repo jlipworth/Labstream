@@ -15,6 +15,10 @@ extension MediaItem {
         case show
         case season
         case episode
+        case artist
+        case album
+        case track
+        case playlist
         case other(String)
 
         init(rawValue: String) {
@@ -23,6 +27,10 @@ extension MediaItem {
             case "show": self = .show
             case "season": self = .season
             case "episode": self = .episode
+            case "artist": self = .artist
+            case "album": self = .album
+            case "track": self = .track
+            case "playlist": self = .playlist
             default: self = .other(rawValue)
             }
         }
@@ -43,8 +51,10 @@ extension MediaItem {
     public var isPlayableLeaf: Bool {
         switch kind {
         case .show, .season: return false
-        case .movie, .episode: return true
-        case .other: return true // be permissive for clip/track/etc; they carry Parts.
+        // Music containers: an artist/album/playlist owns no Part; drill to tracks.
+        case .artist, .album, .playlist: return false
+        case .movie, .episode, .track: return true
+        case .other: return true // be permissive for clip/etc; they carry Parts.
         }
     }
 
