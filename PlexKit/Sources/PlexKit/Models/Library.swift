@@ -123,6 +123,19 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// `season` item.
     public let index: Int?
 
+    // MARK: - Music fields (all optional; absent on video items)
+
+    /// Per-track artist override on compilation albums (PMS `originalTitle`) —
+    /// the actual performer when `grandparentTitle` is "Various Artists".
+    public let originalTitle: String?
+    /// Epoch seconds of the last play (PMS `lastViewedAt`). Drives Recently Played.
+    public let lastViewedAt: Int?
+    /// Album release year on a track (PMS `parentYear`).
+    public let parentYear: Int?
+    /// Aggregate rating count (PMS `ratingCount`) — the popularity signal behind
+    /// an artist's Popular tracks.
+    public let ratingCount: Int?
+
     public var id: String { ratingKey }
 
     enum CodingKeys: String, CodingKey {
@@ -152,6 +165,10 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case parentThumb
         case parentIndex
         case index
+        case originalTitle
+        case lastViewedAt
+        case parentYear
+        case ratingCount
     }
 
     public init(ratingKey: String,
@@ -179,7 +196,11 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 parentRatingKey: String? = nil,
                 parentThumb: String? = nil,
                 parentIndex: Int? = nil,
-                index: Int? = nil) {
+                index: Int? = nil,
+                originalTitle: String? = nil,
+                lastViewedAt: Int? = nil,
+                parentYear: Int? = nil,
+                ratingCount: Int? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -206,6 +227,10 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.parentThumb = parentThumb
         self.parentIndex = parentIndex
         self.index = index
+        self.originalTitle = originalTitle
+        self.lastViewedAt = lastViewedAt
+        self.parentYear = parentYear
+        self.ratingCount = ratingCount
     }
 }
 
