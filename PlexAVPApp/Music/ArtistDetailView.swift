@@ -78,7 +78,7 @@ struct ArtistDetailView: View {
                                   size: MusicArt.gridMin,
                                   subtitle: album.year.map(String.init))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.card)
             }
         }
         .padding(.horizontal, DS.Space.xxl)

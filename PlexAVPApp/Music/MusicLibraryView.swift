@@ -145,7 +145,7 @@ private struct MusicSectionBrowseView: View {
                                           size: MusicArt.railSize,
                                           subtitle: album.parentTitle)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.card)
                     }
                 }
                 .padding(.horizontal, DS.Space.xxl)
@@ -167,7 +167,7 @@ private struct MusicSectionBrowseView: View {
                     NavigationLink(value: artist) {
                         SquareArtCell(item: artist, size: MusicArt.gridMin)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.card)
                 }
             }
             .padding(.horizontal, DS.Space.xxl)
@@ -261,6 +261,7 @@ struct SquareArtCell: View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: size, height: size,
                         cornerRadius: DS.Radius.poster)
+                .gazeHighlight()
                 .posterHover()
 
             VStack(alignment: .leading, spacing: 2) {
@@ -276,5 +277,7 @@ struct SquareArtCell: View {
             }
         }
         .frame(width: size, alignment: .leading)
+        // NOTE (#20): the wrapping NavigationLink uses `.buttonStyle(.card)` (no automatic
+        // hover effect); the gaze highlight is the explicit `.gazeHighlight()` on the art above.
     }
 }

@@ -84,7 +84,7 @@ private struct HubRail: View {
                         NavigationLink(value: item) {
                             PosterCell(item: item)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.card)
                     }
                 }
                 .padding(.horizontal, DS.Space.xxl)
@@ -110,6 +110,7 @@ struct PosterCell: View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: width, height: height)
                 .overlay(alignment: .bottom) { progressSliver }
+                .gazeHighlight()
                 .posterHover()
 
             VStack(alignment: .leading, spacing: 2) {
@@ -137,6 +138,9 @@ struct PosterCell: View {
             }
         }
         .frame(width: width, alignment: .leading)
+        // NOTE (#20): the wrapping NavigationLink uses `.buttonStyle(.card)` (no automatic
+        // hover effect); the gaze highlight is the explicit `.gazeHighlight()` on the
+        // poster image above.
     }
 
     /// "S{x}E{y} · {title}" for an episode poster's second line, gracefully dropping the
