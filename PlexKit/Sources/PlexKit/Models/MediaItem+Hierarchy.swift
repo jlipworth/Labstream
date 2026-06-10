@@ -154,7 +154,9 @@ public enum EpisodeResolver {
             throw ResolveError.noEpisodes
 
         default:
-            // Unreachable: non-leaf, non-container types fall here. Treat defensively.
+            // Music containers (artist/album/playlist) land here BY DESIGN: this
+            // resolver walks the VIDEO hierarchy only. Music drill-down goes through
+            // the music views (ChildrenRequest / allLeaves), never this resolver.
             throw ResolveError.notALeaf
         }
     }

@@ -59,6 +59,20 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(item.ratingCount == nil)
 }
 
+@Test func metadataDecodeSkipsRowsForDeletedItems() throws {
+    // /status/sessions/history/all keeps rows for since-deleted items WITHOUT a
+    // ratingKey; the lossy container decode must skip them, not throw away the
+    // whole response (the all-or-nothing failure mode the review flagged).
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"title":"Ghost Of A Deleted Track","type":"track"},
+      {"ratingKey":"901","title":"Take Five","type":"track","parentRatingKey":"900"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    #expect(c.mediaContainer.metadata.count == 1)
+    #expect(c.mediaContainer.metadata[0].ratingKey == "901")
+}
+
 // MARK: - Kind classification for music types
 
 @Test func musicKindsClassify() {

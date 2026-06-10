@@ -69,20 +69,32 @@ public enum MusicRequest {
     /// when the section hubs don't carry (or don't advance) a played hub:
     /// `GET /status/sessions/history/all?sort=viewedAt:desc&librarySectionID={id}`.
     /// Paged: history grows unboundedly, a rail only needs the head.
+    ///
+    /// `accountID` scopes the rows to one account — with an owner token PMS
+    /// returns EVERY household member's plays otherwise (the owner is
+    /// `accountID=1` on the server's own endpoint). Pass it when the rail
+    /// should mean "what *I* played"; nil keeps server-wide history.
     public static func playHistory(server: URL,
                                    token: String,
                                    identity: ClientIdentity,
                                    librarySectionID: String,
+                                   accountID: String? = nil,
                                    count: Int = 20) -> PlexRequest {
-        PlexRequest(url: server.appendingPathComponent("/status/sessions/history/all"),
-                    method: "GET",
-                    queryItems: [
-                        .init(name: "sort", value: "viewedAt:desc"),
-                        .init(name: "librarySectionID", value: librarySectionID),
-                        .init(name: "X-Plex-Container-Start", value: "0"),
-                        .init(name: "X-Plex-Container-Size", value: String(count)),
-                    ],
-                    headers: PlexHeaders.standard(identity: identity, token: token))
+        var query: [URLQueryItem] = [
+            .init(name: "sort", value: "viewedAt:desc"),
+            .init(name: "librarySectionID", value: librarySectionID),
+        ]
+        if let accountID {
+            query.append(.init(name: "accountID", value: accountID))
+        }
+        query.append(contentsOf: [
+            .init(name: "X-Plex-Container-Start", value: "0"),
+            .init(name: "X-Plex-Container-Size", value: String(count)),
+        ])
+        return PlexRequest(url: server.appendingPathComponent("/status/sessions/history/all"),
+                           method: "GET",
+                           queryItems: query,
+                           headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
     /// One page of randomly-ordered tracks for Shuffle Library:
@@ -116,9 +128,11 @@ public enum MusicRequest {
     }
 
     /// An artist's most-rated tracks (the "Popular" section), python-plexapi's
-    /// query shape: `…/all?type=10&artist.id={rk}&group=title&ratingCount>>=0
-    /// &sort=ratingCount:desc&limit={n}`. The `>>` (greater-than filter) lives
-    /// in the query item NAME and URL-encodes to `ratingCount%3E%3E=0`.
+    /// `Artist.popularTracks()` query shape: `…/all?type=10&artist.id={rk}
+    /// &album.subformat!=Compilation,Live&group=title&ratingCount>>=0
+    /// &sort=ratingCount:desc&limit={n}`. Filter operators (`>>`, `!`) live in
+    /// the query item NAME and URL-encode (`ratingCount%3E%3E=0`). The
+    /// subformat exclusion keeps compilation/live duplicates out of Popular.
     /// ⚠️ Provisional pending the Phase-0 live-PMS verification (MUSIC-DESIGN §8).
     public static func popularTracks(server: URL,
                                      token: String,
@@ -129,6 +143,7 @@ public enum MusicRequest {
         sectionAll(server: server, token: token, identity: identity,
                    sectionKey: sectionKey, type: 10,
                    extraQueryItems: [
+                       .init(name: "album.subformat!", value: "Compilation,Live"),
                        .init(name: "artist.id", value: artistRatingKey),
                        .init(name: "group", value: "title"),
                        .init(name: "ratingCount>>", value: "0"),
