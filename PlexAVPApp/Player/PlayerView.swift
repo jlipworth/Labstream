@@ -133,10 +133,10 @@ struct PlayerView: View {
         // The Close affordance is NOT floated here. A sibling SwiftUI button only
         // composites over the player in the INLINE/windowed state — in the expanded
         // cinema experience AVKit owns the whole window scene and our siblings vanish,
-        // leaving no exit (the bug we hit). Instead Close is installed as an
-        // AVKit-hosted `infoViewActions` item inside the player's Info (ⓘ) panel (see
-        // `PlayerRepresentable.makeUIViewController`), which AVKit renders in BOTH the
-        // inline and expanded states and auto-hides with the rest of the chrome.
+        // leaving no exit (the bug we hit). Instead Close is an AVKit-hosted
+        // `contextualActions` pill (single-owned by `PlayerControlSurface`), which
+        // AVKit renders over the video in BOTH the windowed and expanded states and
+        // keeps tappable. See docs/DEVELOPMENT.md for why the alternatives lost.
         ZStack(alignment: .topLeading) {
             PlayerRepresentable(controllerFactory: controllerFactory,
                                 resumeMsOverride: rebuildResumeMs,
