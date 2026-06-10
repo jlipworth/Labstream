@@ -97,6 +97,27 @@ public enum MusicRequest {
                            headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
+    /// An artist's full discography, newest release first:
+    /// `GET /library/sections/{sectionKey}/all?type=9&artist.id={rk}
+    /// &sort=originallyAvailableAt:desc` — the plexapi `Artist.albums()` shape.
+    ///
+    /// NOT `/library/metadata/{rk}/children`: proven live to under-list — one
+    /// artist returned size=0 despite owning two albums (parentRatingKey
+    /// pointed straight at him), another was missing an appears-on album the
+    /// section search includes. Plex Web uses this search for the same reason.
+    public static func artistAlbums(server: URL,
+                                    token: String,
+                                    identity: ClientIdentity,
+                                    sectionKey: String,
+                                    artistRatingKey: String) -> PlexRequest {
+        sectionAll(server: server, token: token, identity: identity,
+                   sectionKey: sectionKey, type: 9,
+                   extraQueryItems: [
+                       .init(name: "artist.id", value: artistRatingKey),
+                       .init(name: "sort", value: "originallyAvailableAt:desc"),
+                   ])
+    }
+
     /// One page of randomly-ordered tracks for Shuffle Library:
     /// `GET …/all?type=10&sort=random` with a single explicit container page.
     /// NEVER paged further — `sort=random` re-randomizes per request, so page 2

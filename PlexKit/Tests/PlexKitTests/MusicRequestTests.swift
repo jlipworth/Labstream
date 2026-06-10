@@ -121,6 +121,23 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(r.queryItems.first { $0.name == "accountID" }?.value == "1")
 }
 
+// MARK: - Artist discography
+
+@Test func artistAlbumsSearchesSectionByArtistId() {
+    // /library/metadata/{rk}/children under-lists discographies (proven live:
+    // size=0 for an artist with two own albums; a third "appears on" album
+    // missing for another). The section search filtered by artist.id is what
+    // plexapi/Plex Web use and returns the full set.
+    let r = MusicRequest.artistAlbums(server: server, token: "tok", identity: id,
+                                      sectionKey: "3", artistRatingKey: "2982")
+    #expect(r.url.path == "/library/sections/3/all")
+    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
+    #expect(v("type") == "9")
+    #expect(v("artist.id") == "2982")
+    #expect(v("sort") == "originallyAvailableAt:desc")
+    #expect(r.headers["X-Plex-Token"] == "tok")
+}
+
 // MARK: - Shuffle Library / artist leaves / popular
 
 @Test func randomTracksIsSingleRandomSortedTrackPage() {

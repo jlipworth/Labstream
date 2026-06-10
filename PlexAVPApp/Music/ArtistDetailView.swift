@@ -2,11 +2,15 @@ import SwiftUI
 import PlexKit
 
 /// An artist's discography: a compact header (portrait + name + bio) above an
-/// adaptive grid of their albums. Albums come from the artist's children
-/// (`GET /library/metadata/{ratingKey}/children`); tapping one pushes
-/// `AlbumDetailView` via the `MediaItem` destination registered in `MusicLibraryView`.
+/// adaptive grid of their albums. Albums come from the section search
+/// `…/all?type=9&artist.id={rk}` (the plexapi/Plex Web shape) — the children
+/// endpoint under-lists, proven live: size=0 for an artist owning two albums,
+/// and appears-on albums missing for others. Children remains only as the
+/// fallback when no `sectionKey` is in hand (cross-section search results).
 struct ArtistDetailView: View {
     let artist: MediaItem
+    /// Music section the artist was browsed from; nil → children fallback.
+    var sectionKey: String? = nil
 
     @Environment(AppModel.self) private var appModel
 
@@ -104,8 +108,16 @@ struct ArtistDetailView: View {
             return
         }
         loadState = .loading
-        let req = BrowseAPI.children(server: server, token: token,
+        let req: PlexRequest
+        if let sectionKey {
+            req = MusicRequest.artistAlbums(server: server, token: token,
+                                            identity: appModel.identity,
+                                            sectionKey: sectionKey,
+                                            artistRatingKey: artist.ratingKey)
+        } else {
+            req = BrowseAPI.children(server: server, token: token,
                                      identity: appModel.identity, ratingKey: artist.ratingKey)
+        }
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
             albums = resp.mediaContainer.metadata
