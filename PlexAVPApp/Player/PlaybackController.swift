@@ -113,6 +113,13 @@ final class PlaybackController {
     /// controller observable. Driven from KVO on the player's `timeControlStatus`.
     let buffering = BufferingState()
 
+    /// Observable mirror of the player's paused state, driven from the same
+    /// `timeControlStatus` KVO as the timeline reporting. `PlayerControlSurface` uses it to
+    /// offer the "✕ Close" contextual action only while PAUSED (or failed) — visionOS has no
+    /// transport-bar-visibility callback (`API_UNAVAILABLE(visionos)`), so this is the only
+    /// signal that keeps the pill off the video during normal playback.
+    let transport = TransportState()
+
     /// The user's chosen playback rate, persisted across launches and reapplied to each new
     /// item once it reaches `.readyToPlay` (so a Quality reload — which swaps the
     /// `AVPlayerItem` and resets the rate to 1.0 — doesn't clobber the choice). Read from
@@ -1149,8 +1156,9 @@ final class PlaybackController {
         rateObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
             guard let self else { return }
             Task { @MainActor in
-                let state: TimelineRequest.State = avPlayer.timeControlStatus == .paused ? .paused : .playing
-                self.timeline.report(state: state, force: true)
+                let paused = avPlayer.timeControlStatus == .paused
+                self.timeline.report(state: paused ? .paused : .playing, force: true)
+                self.transport.set(paused: paused)
             }
         }
 
@@ -1531,6 +1539,23 @@ final class BufferingState {
     /// churn the observable.
     func set(_ value: Bool) {
         if isBuffering != value { isBuffering = value }
+    }
+}
+
+/// Observable mirror of the player's paused state. Modeled as its own object (mirroring
+/// `BufferingState`) so `PlayerControlSurface` can gate the "✕ Close" contextual action on
+/// pause without making the whole controller observable. `.waitingToPlayAtSpecifiedRate`
+/// (stall/prime) deliberately counts as NOT paused — a starved stream shouldn't surface
+/// Close; the failure path does that explicitly once the watchdog fires.
+@Observable
+@MainActor
+final class TransportState {
+    /// True exactly while `timeControlStatus == .paused`.
+    private(set) var isPaused = false
+
+    /// Set the paused flag. Idempotent so duplicate KVO callbacks don't churn the observable.
+    func set(paused: Bool) {
+        if isPaused != paused { isPaused = paused }
     }
 }
 

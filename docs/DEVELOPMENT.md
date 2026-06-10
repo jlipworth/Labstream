@@ -43,7 +43,10 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
   own tap-to-reveal**, so the native transport + "…" menu never appear and you can't even reach
   Expand. The ornament ✕ itself persists across expand (floats just outside the window), but at the
   cost of all other controls. Net: `contextualActions` is the only option keeping both-state Close
-  *and* the full native feature set; its sole downside is being always-on.
+  *and* the full native feature set. Its always-on rendering (the system shows contextual actions
+  over the video until first interaction) is mitigated by gating Close on `transport.isPaused ||
+  playbackError.isFailed` — visionOS has no transport-bar-visibility callback
+  (`API_UNAVAILABLE(visionos)`), so paused-state is the only available sync signal.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)

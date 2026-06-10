@@ -16,12 +16,17 @@ required**.
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
       plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
       **VisionPlex**. Both paths land in the library.
-- [ ] **Player opens straight into Expanded** — opening any title should skip the windowed/embedded
-      player entirely and land in the fullscreen/cinema experience (where Quality/Subtitles/Audio tabs
-      live). User can still manually shrink to a window afterwards.
-- [x] **Player close (GH #1 + #11, closed)** — the **contextualActions "✕ Close"** (always-visible
-      pill over the video) dismisses cleanly back to detail in BOTH windowed and expanded states; no
-      app exit, no stuck cover, no audio bleed.
+- [x] **Player opens straight into Expanded** ✅ verified — opening any title skips the
+      windowed/embedded player and lands in the fullscreen/cinema experience (where Quality/
+      Subtitles/Audio tabs live). User can still manually shrink to a window afterwards.
+      Known: the system's ~1s embedded→expanded transition animation is briefly visible on open —
+      AVKit has no "present directly into Expanded" API, so this is inherent.
+- [x] **Player close (GH #1 + #11, closed)** — the **contextualActions "✕ Close"** pill dismisses
+      cleanly back to detail in BOTH windowed and expanded states; no app exit, no stuck cover, no
+      audio bleed. The pill now appears only while PAUSED (or on playback failure) so it doesn't
+      sit over the picture during playback — pause first, then Close.
+      - [ ] re-verify after the paused-gating change: pill absent during playback, appears on
+            pause, Close still works from both states.
       **⚠️ KNOWN COSMETIC (deferred):** closing from fullscreen briefly shows a faded "ghost" frame
       during the system's expanded→embedded collapse animation (collapse-first is required to dodge
       the empty-window bug). Suppressing the cover fade was tried and reverted — the artifact is the
