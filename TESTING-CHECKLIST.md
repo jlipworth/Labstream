@@ -23,10 +23,13 @@ required**.
       AVKit has no "present directly into Expanded" API, so this is inherent.
 - [x] **Player close (GH #1 + #11, closed)** — the **contextualActions "✕ Close"** pill dismisses
       cleanly back to detail in BOTH windowed and expanded states; no app exit, no stuck cover, no
-      audio bleed. The pill now appears only while PAUSED (or on playback failure) so it doesn't
-      sit over the picture during playback — pause first, then Close.
-      - [x] ✅ re-verified after the paused-gating change: pill absent during playback (even with
-            chrome up), appears on pause inline with the info-tab row, Close still works.
+      audio bleed. The pill is hidden during hands-off playback; a single tap on the video (the
+      same tap that summons the system chrome) shows it for the chrome's ~5s auto-hide window, and
+      pause/failure keep it up indefinitely — no extra pause step needed.
+      - [ ] re-verify after the tap-heuristic change: no pill at first render; ONE tap → chrome +
+            Close together (~5s, then both fade); pause keeps it up; works in BOTH windowed and
+            expanded states (the tap probe in the expanded scene is the main uncertainty —
+            paused-gating remains the fallback there).
       **⚠️ KNOWN COSMETIC (deferred):** closing from fullscreen briefly shows a faded "ghost" frame
       during the system's expanded→embedded collapse animation (collapse-first is required to dodge
       the empty-window bug). Suppressing the cover fade was tried and reverted — the artifact is the
