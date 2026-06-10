@@ -25,8 +25,8 @@ required**.
       cleanly back to detail in BOTH windowed and expanded states; no app exit, no stuck cover, no
       audio bleed. The pill now appears only while PAUSED (or on playback failure) so it doesn't
       sit over the picture during playback — pause first, then Close.
-      - [ ] re-verify after the paused-gating change: pill absent during playback, appears on
-            pause, Close still works from both states.
+      - [x] ✅ re-verified after the paused-gating change: pill absent during playback (even with
+            chrome up), appears on pause inline with the info-tab row, Close still works.
       **⚠️ KNOWN COSMETIC (deferred):** closing from fullscreen briefly shows a faded "ghost" frame
       during the system's expanded→embedded collapse animation (collapse-first is required to dodge
       the empty-window bug). Suppressing the cover fade was tried and reverted — the artifact is the
