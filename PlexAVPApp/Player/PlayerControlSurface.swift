@@ -41,7 +41,8 @@ final class PlayerControlSurface {
     private let onBitratePicked: (Int) -> Void
     /// Dismiss hook (the same one the failure overlay / `.fullScreenCover` use). Surfaced as a
     /// native `contextualActions` "Close" so it's reachable in the EXPANDED cinema experience,
-    /// where the floated SwiftUI overlays don't render. Shown while paused or failed — not
+    /// where the floated SwiftUI overlays don't render. Shown on a recent tap (the chrome
+    /// heuristic) or while paused/failed — not
     /// during normal playback (see `applyContextualActions`).
     private let onClose: (() -> Void)?
     /// Failure-recovery hook: rebuilds the player from the live playhead (a `.id()` bump in
@@ -52,6 +53,11 @@ final class PlayerControlSurface {
 
     /// Shared selection state the SwiftUI tabs bind to.
     private let menuState: PlayerMenuState
+
+    /// Heuristic "the system chrome is probably visible" signal — bumped by the tap probe
+    /// below, auto-clears after the chrome's own auto-hide window. See `installChromeTapProbe`.
+    private let chrome = ChromeHeuristic()
+    private let tapProbe = TapProbe()
 
     init(playerVC: AVPlayerViewController,
          controller: PlaybackController,
@@ -65,7 +71,23 @@ final class PlayerControlSurface {
         self.onRetry = onRetry
         self.menuState = PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps)
         installInfoTabs()
+        installChromeTapProbe()
         rebuildContextualActions()
+    }
+
+    /// visionOS has no transport-bar/chrome visibility callback (`API_UNAVAILABLE(visionos)`),
+    /// so this approximates one: a NON-consuming tap recognizer on the player view fires on the
+    /// same look-and-pinch that summons the system chrome, and bumps `chrome.likelyVisible` for
+    /// the chrome's ~5s auto-hide window. `applyContextualActions` reads it to show Close
+    /// exactly when the user is interacting — without stealing the tap from AVKit (simultaneous
+    /// recognition, `cancelsTouchesInView = false`).
+    private func installChromeTapProbe() {
+        guard let playerVC else { return }
+        tapProbe.onTap = { [weak self] in self?.chrome.bump() }
+        let tap = UITapGestureRecognizer(target: tapProbe, action: #selector(TapProbe.fired(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = tapProbe
+        playerVC.view.addGestureRecognizer(tap)
     }
 
     private func installInfoTabs() {
@@ -169,8 +191,9 @@ final class PlayerControlSurface {
     /// `playbackError.isFailed`, `skipMarker.active`, `upNext.isShown`/`nextItem` and
     /// `transport.isPaused` here is what registers them with the enclosing
     /// `withObservationTracking`. Priority for the leading, state-driven action: a surfaced
-    /// failure (Retry) ▸ an active Skip marker ▸ Up Next ("Play Next"). Close is appended while
-    /// paused or failed, so the exit is there exactly when the user is interacting (or stuck).
+    /// failure (Retry) ▸ an active Skip marker ▸ Up Next ("Play Next"). Close is appended on a
+    /// recent tap (`chrome.likelyVisible`) or while paused/failed, so the exit is there exactly
+    /// when the user is interacting (or stuck).
     private func applyContextualActions() {
         guard let playerVC else { return }
 
@@ -208,14 +231,18 @@ final class PlayerControlSurface {
             })
         }
 
-        // Close is offered while PAUSED or FAILED — not during normal playback. The system
-        // renders contextualActions persistently over the video (until the first tap ties them
-        // to the chrome), so an always-present Close pill sat over the picture from the moment
-        // the player opened. visionOS has no transport-bar-visibility callback to sync with
-        // (`API_UNAVAILABLE(visionos)`), so paused-state is the gate: pausing is the natural
-        // first step of closing, and the failure path needs the exit regardless. Reading
-        // `transport.isPaused` here also registers it with the observation tracking.
-        let needsClose = controller.transport.isPaused || controller.playbackError.isFailed
+        // Close is offered while the user is INTERACTING — a recent tap (the chrome heuristic),
+        // paused, or failed — not during hands-off playback. The system renders contextualActions
+        // persistently over the video (until the first tap ties them to the chrome), so an
+        // always-present Close pill sat over the picture from the moment the player opened.
+        // visionOS has no transport-bar-visibility callback to sync with
+        // (`API_UNAVAILABLE(visionos)`), so the tap probe approximates it: the same single tap
+        // that summons the system chrome also surfaces Close for the chrome's auto-hide window.
+        // Paused/failed keep it up indefinitely. Reading these `@Observable` properties here
+        // also registers them with the observation tracking.
+        let needsClose = chrome.likelyVisible
+            || controller.transport.isPaused
+            || controller.playbackError.isFailed
         if let onClose, needsClose {
             actions.append(UIAction(title: "Close",
                                     image: UIImage(systemName: "xmark")) { [weak self] _ in
@@ -765,5 +792,43 @@ private struct StatsTabView: View {
             .padding(DS.Space.md)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+// MARK: - Chrome heuristic
+
+/// Approximates "the system chrome is visible" on visionOS, which provides no transport-bar
+/// visibility callback (`API_UNAVAILABLE(visionos)`). A tap on the player view (the same gesture
+/// that summons the chrome) bumps this; it auto-clears after the chrome's ~5s auto-hide window.
+@Observable
+@MainActor
+final class ChromeHeuristic {
+    private(set) var likelyVisible = false
+    private var hideTimer: Timer?
+
+    /// Mark the chrome as likely visible for `seconds`, restarting the window on repeat taps.
+    func bump(for seconds: TimeInterval = 5) {
+        likelyVisible = true
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.likelyVisible = false }
+        }
+    }
+}
+
+/// Objective-C target + delegate for the non-consuming tap recognizer on the player view.
+/// `shouldRecognizeSimultaneouslyWith` returns true so AVKit's own tap handling (chrome
+/// summon, transport interaction) is never starved by our probe.
+@MainActor
+final class TapProbe: NSObject, UIGestureRecognizerDelegate {
+    var onTap: (() -> Void)?
+
+    @objc func fired(_ gesture: UITapGestureRecognizer) {
+        onTap?()
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
     }
 }
