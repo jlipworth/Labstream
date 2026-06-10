@@ -25,7 +25,7 @@ struct ContentView: View {
         let keychain = KeychainStore()
         let identity = ClientIdentity(
             clientIdentifier: keychain.clientIdentifier(),
-            product: "plex-avp-app",
+            product: "VisionPlex",
             version: "0.1.0",
             deviceName: "Apple Vision Pro"
         )
