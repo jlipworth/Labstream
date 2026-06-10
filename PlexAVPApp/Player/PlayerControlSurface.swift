@@ -41,8 +41,8 @@ final class PlayerControlSurface {
     private let onBitratePicked: (Int) -> Void
     /// Dismiss hook (the same one the failure overlay / `.fullScreenCover` use). Surfaced as a
     /// native `contextualActions` "Close" so it's reachable in the EXPANDED cinema experience,
-    /// where the floated SwiftUI overlays don't render. Shown on a recent tap (the chrome
-    /// heuristic) or while paused/failed — not
+    /// where the floated SwiftUI overlays don't render. In expanded the system ties the pill to
+    /// its chrome; in windowed it's shown on a recent tap or while paused/failed — not
     /// during normal playback (see `applyContextualActions`).
     private let onClose: (() -> Void)?
     /// Failure-recovery hook: rebuilds the player from the live playhead (a `.id()` bump in
@@ -214,9 +214,10 @@ final class PlayerControlSurface {
     /// `playbackError.isFailed`, `skipMarker.active`, `upNext.isShown`/`nextItem` and
     /// `transport.isPaused` here is what registers them with the enclosing
     /// `withObservationTracking`. Priority for the leading, state-driven action: a surfaced
-    /// failure (Retry) ▸ an active Skip marker ▸ Up Next ("Play Next"). Close is appended on a
-    /// recent tap (`chrome.likelyVisible`) or while paused/failed, so the exit is there exactly
-    /// when the user is interacting (or stuck).
+    /// failure (Retry) ▸ an active Skip marker ▸ Up Next ("Play Next"). Close is appended in the
+    /// expanded experience (`chrome.expandedSticky`, system-managed visibility), on a recent
+    /// windowed tap (`chrome.likelyVisible`), or while paused/failed, so the exit is there
+    /// exactly when the user is interacting (or stuck).
     private func applyContextualActions() {
         guard let playerVC else { return }
 
@@ -254,16 +255,18 @@ final class PlayerControlSurface {
             })
         }
 
-        // Close is offered while the user is INTERACTING — a recent tap (the chrome heuristic),
-        // paused, or failed — not during hands-off playback. The system renders contextualActions
-        // persistently over the video (until the first tap ties them to the chrome), so an
-        // always-present Close pill sat over the picture from the moment the player opened.
-        // visionOS has no transport-bar-visibility callback to sync with
-        // (`API_UNAVAILABLE(visionos)`), so the tap probe approximates it: the same single tap
-        // that summons the system chrome also surfaces Close for the chrome's auto-hide window.
-        // Paused/failed keep it up indefinitely. Reading these `@Observable` properties here
+        // Close is offered while the user is interacting — not during hands-off playback —
+        // via two mechanisms, because visionOS has no transport-bar-visibility callback
+        // (`API_UNAVAILABLE(visionos)`):
+        //   • EXPANDED: taps never reach our process there (system shell handles them), so
+        //     Close stays permanently in the array (`expandedSticky`, set shortly after the
+        //     expand transition) and the SYSTEM ties the pill to its own chrome visibility.
+        //   • WINDOWED: the tap probe surfaces Close for the chrome's ~5s auto-hide window on
+        //     the same tap that summons the chrome (`likelyVisible`).
+        // Paused/failed keep it up regardless. Reading these `@Observable` properties here
         // also registers them with the observation tracking.
-        let needsClose = chrome.likelyVisible
+        let needsClose = chrome.expandedSticky
+            || chrome.likelyVisible
             || controller.transport.isPaused
             || controller.playbackError.isFailed
         if let onClose, needsClose {
@@ -829,6 +832,14 @@ final class ChromeHeuristic {
     private(set) var likelyVisible = false
     private var hideTimer: Timer?
 
+    /// True while the player is in the EXPANDED cinema experience (after a short grace period).
+    /// Taps there are handled entirely by the system shell and never enter our process (verified
+    /// with window-level recognizers on every reachable window, including the private platter
+    /// window), so no tap heuristic is possible. Instead Close stays permanently in the
+    /// `contextualActions` array and the SYSTEM ties the pill to its own chrome visibility —
+    /// after the first user interaction, contextual actions show/hide with the chrome.
+    var expandedSticky = false
+
     /// Mark the chrome as likely visible for `seconds`, restarting the window on repeat taps.
     func bump(for seconds: TimeInterval = 5) {
         likelyVisible = true
@@ -873,15 +884,36 @@ final class ChromeTapRecognizer: UITapGestureRecognizer, UIGestureRecognizerDele
 /// (and can appear a beat later), hence the delayed re-runs, mirroring
 /// `CinemaEnvironment.autoExpand`'s polling.
 extension PlayerControlSurface: AVExperienceController.Delegate {
+
+    /// How long after an expand transition reports `.finished` before Close joins the
+    /// contextual actions. Empirical — see the comment at the use site.
+    private static let expandedCloseGrace: Duration = .milliseconds(500)
+
     func experienceController(_ controller: AVExperienceController,
                               didChangeTransitionContext context: AVExperienceController.TransitionContext) {
         guard case .finished = context.status else { return }
         reanchorTapProbe()
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(500))
-            self?.reanchorTapProbe()
-            try? await Task.sleep(for: .seconds(1))
-            self?.reanchorTapProbe()
+        if playerVC?.experienceController.experience == .expanded {
+            // Add Close permanently after a short grace so it doesn't sit over the picture
+            // during the open animation; from then on the system manages pill visibility
+            // alongside its own chrome (taps in the expanded scene never reach our process,
+            // so this is the only sync available there). The grace is empirical: the
+            // transition's `.finished` fires before the expanded scene visually settles, and
+            // there's no system signal for "settled" — too long and a tap inside the window
+            // shows chrome with Close popping in late (verified live at 3s; 0.5s feels right).
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.expandedCloseGrace)
+                guard let self, self.playerVC?.experienceController.experience == .expanded else { return }
+                self.chrome.expandedSticky = true
+            }
+        } else {
+            chrome.expandedSticky = false
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.reanchorTapProbe()
+                try? await Task.sleep(for: .seconds(1))
+                self?.reanchorTapProbe()
+            }
         }
     }
 

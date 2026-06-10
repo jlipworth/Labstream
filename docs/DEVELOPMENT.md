@@ -44,11 +44,18 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
   Expand. The ornament ✕ itself persists across expand (floats just outside the window), but at the
   cost of all other controls. Net: `contextualActions` is the only option keeping both-state Close
   *and* the full native feature set. Its always-on rendering (the system shows contextual actions
-  over the video until first interaction) is mitigated by gating Close on a **chrome heuristic**:
-  visionOS has no transport-bar-visibility callback (`API_UNAVAILABLE(visionos)`), so a
-  non-consuming tap recognizer on the player view (the same tap that summons the chrome) shows
-  Close for the chrome's ~5s auto-hide window; paused/failed keep it up indefinitely. A
-  paused-only gate was tried first and rejected — forcing a pause before Close is an extra step.
+  over the video until first interaction) is mitigated per experience — visionOS has no
+  transport-bar-visibility callback (`API_UNAVAILABLE(visionos)`):
+  - **Expanded:** taps NEVER enter the app process (verified with recognizers on every reachable
+    window, including the private `_MRUIPlatterOrnamentBackingWindow` the player view moves
+    into) — the system shell handles them. So Close joins the actions permanently ~0.5s after
+    the expand transition finishes (`AVExperienceController.Delegate`), and the **system** ties
+    the pill to its own chrome visibility. The 0.5s grace is empirical (3s made Close pop in
+    late after an early tap).
+  - **Windowed:** a non-consuming tap recognizer (the same tap that summons the chrome) shows
+    Close for the chrome's ~5s auto-hide window.
+  Paused/failed keep it up in both. A paused-only gate was tried first and rejected — forcing a
+  pause before Close is an extra step.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)
