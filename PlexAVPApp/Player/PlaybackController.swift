@@ -27,12 +27,6 @@ final class PlaybackController {
     /// is hidden until the user toggles it on.
     let diagnostics = PlaybackDiagnostics()
 
-    /// Observable surface for the floating "Stats for Nerds" overlay (#7). Modeled as its own
-    /// `@Observable` object (mirroring `buffering`) so PlayerView can float the diagnostics panel
-    /// over the video — and the Stats info-panel tab can toggle it — without making the whole
-    /// controller observable. Off until the user taps the Stats tab's "Show" launcher.
-    let statsOverlay = StatsOverlayState()
-
     /// Observable surface for playback failures so the UI (PlayerView/DetailView) can
     /// show an error + Retry. Modeled as its own `@Observable` object (mirroring
     /// `diagnostics`) rather than making the whole controller observable, keeping the
@@ -234,17 +228,41 @@ final class PlaybackController {
     /// Chapter markers for the current item, if Plex provided any. Empty when none —
     /// the player hides the Chapters info-panel tab in that case.
     ///
+    /// Seeded from the launching item, but that copy often comes from a listing payload
+    /// that omits chapters — `DetailView` backfills them with an async metadata refresh,
+    /// and tapping Play can beat that round-trip (seen live as a missing Chapters tab).
+    /// `loadChaptersIfNeeded()` makes the player independent of the caller's copy.
+    ///
     /// NOTE: visionOS's AVKit does NOT expose `AVNavigationMarkersGroup` /
     /// `AVPlayerItem.navigationMarkerGroups` (tvOS/iOS only), so native scrubber chapter
     /// ticks are unavailable here; we surface chapters via the custom Chapters tab and
     /// seek the playhead directly.
-    var chapters: [Chapter] { item.chapters ?? [] }
+    private(set) var chapters: [Chapter]
+
+    /// Fetch full metadata (`includeChapters`/`includeMarkers`) when the launching item
+    /// carried no chapters — see `chapters`. Returns `true` when chapters were newly
+    /// populated so the control surface can re-install the info tabs. Also re-derives the
+    /// Skip Intro/Credits ranges, which ride the same race.
+    func loadChaptersIfNeeded() async -> Bool {
+        guard isStreaming, chapters.isEmpty, let server, let token else { return false }
+        let req = BrowseAPI.metadata(server: server, token: token,
+                                     identity: identity, ratingKey: item.ratingKey)
+        guard let resp = try? await client.send(req, as: MetadataResponse.self),
+              let full = resp.mediaContainer.metadata.first else { return false }
+        if let markers = full.markers, !markers.isEmpty {
+            skipRanges = Self.deriveSkipRanges(from: markers)
+        }
+        guard let fetched = full.chapters, !fetched.isEmpty else { return false }
+        chapters = fetched
+        return true
+    }
 
     /// Skippable intro/credits ranges derived from the item's Plex markers (#14), in
-    /// SECONDS. Built once from `item.markers` (markers don't change across a Quality
-    /// reload of the same item, so this is derived from the constant `item`). Commercial
-    /// and `.other` markers are intentionally excluded — only intro/credits get a Skip
-    /// button. `endSeconds` is the seek target when the user taps Skip.
+    /// SECONDS. Seeded from `item.markers` (markers don't change across a Quality reload
+    /// of the same item), and re-derived by `loadChaptersIfNeeded()` when the launching
+    /// item was a markerless listing copy. Commercial and `.other` markers are
+    /// intentionally excluded — only intro/credits get a Skip button. `endSeconds` is the
+    /// seek target when the user taps Skip.
     private struct SkipRange {
         let kind: SkipMarkerState.Kind
         let startSeconds: Double
@@ -307,6 +325,7 @@ final class PlaybackController {
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
         self.initialResumeMsOverride = initialResumeMsOverride
+        self.chapters = item.chapters ?? []
         self.speedState.speed = self.playbackSpeed
     }
 
@@ -329,6 +348,7 @@ final class PlaybackController {
         self.machineIdentifier = nil
         // Local files resume from the item's saved offset; no rebuild override.
         self.initialResumeMsOverride = nil
+        self.chapters = item.chapters ?? []
         self.speedState.speed = self.playbackSpeed
     }
 
@@ -983,11 +1003,19 @@ final class PlaybackController {
 
         items.append(Self.metadataItem(identifier: .commonIdentifierTitle, value: item.title))
 
-        // `MediaItem` carries no grandparent/parent (show/episode) fields, so the best
-        // available secondary context is the release year. Only added when present.
-        if let year = item.year {
-            items.append(Self.metadataItem(identifier: .iTunesMetadataReleaseDate,
-                                           value: String(year)))
+        // Release year for the system ⓘ Info card (shown after the runtime). Without this the
+        // card falls back to the transcode stream's creation date — today's year (seen live as
+        // "2026" on a 2013 film). The card only honors `.commonIdentifierCreationDate` with an
+        // NSDate-typed value: STRING values under it and every other plausible date identifier
+        // (quickTime/id3/iTunes) were proven ignored live. See docs/DEVELOPMENT.md.
+        if let year = item.year,
+           let date = DateComponents(calendar: Calendar(identifier: .gregorian),
+                                     year: year, month: 1, day: 1).date {
+            let dateItem = AVMutableMetadataItem()
+            dateItem.identifier = .commonIdentifierCreationDate
+            dateItem.value = date as NSDate
+            dateItem.extendedLanguageTag = "und"
+            items.append(dateItem)
         }
         if let summary = item.summary, !summary.isEmpty {
             items.append(Self.metadataItem(identifier: .commonIdentifierDescription,
@@ -1660,24 +1688,6 @@ final class TransportState {
     func set(paused: Bool) {
         if isPaused != paused { isPaused = paused }
     }
-}
-
-/// Observable state for the floating "Stats for Nerds" overlay (#7). Modeled as its own object
-/// (mirroring `BufferingState`) so PlayerView's overlay shows/hides without making the whole
-/// controller observable. Toggled on by the Stats info-panel tab's launcher and off by either
-/// that launcher or the overlay's own close (X) button.
-@Observable
-@MainActor
-final class StatsOverlayState {
-    /// True while the diagnostics panel is floated over the video. Settable so the Stats
-    /// tab's switch can bind to it directly (`$state.isShown`).
-    var isShown = false
-
-    /// Flip the overlay's visibility. Idempotent companion to the Stats tab's binding.
-    func toggle() { isShown.toggle() }
-
-    /// Hide the overlay (the panel's close button). Idempotent.
-    func hide() { if isShown { isShown = false } }
 }
 
 /// Observable state for the Skip Intro / Skip Credits affordance (#14). Modeled as its own

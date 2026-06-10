@@ -7,28 +7,32 @@ import SwiftUI
 /// Deliberately compact and legible; it never displays any token or URL query material.
 ///
 /// `onClose` is optional: when the panel is presented as an info-panel tab the tab chrome
-/// provides dismissal, so the inline close button is omitted (pass `nil`). It remains
-/// available for any future free-floating overlay presentation.
+/// provides dismissal, so the inline close button is omitted (pass `nil`). `showsHeader`
+/// false also drops the "Stats for Nerds" label and the glass-card chrome — the system
+/// info panel already titles the tab and provides the backdrop.
 @MainActor
 struct StatsForNerdsView: View {
     var diagnostics: PlaybackDiagnostics
     var onClose: (() -> Void)?
+    var showsHeader = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Stats for Nerds", systemImage: "chart.bar.doc.horizontal")
-                    .font(.headline)
-                if let onClose {
-                    Spacer(minLength: 24)
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.callout.weight(.semibold))
+            if showsHeader {
+                HStack {
+                    Label("Stats for Nerds", systemImage: "chart.bar.doc.horizontal")
+                        .font(.headline)
+                    if let onClose {
+                        Spacer(minLength: 24)
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.callout.weight(.semibold))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .padding(.bottom, 2)
             }
-            .padding(.bottom, 2)
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                 row("Connection", diagnostics.connectionHost)
@@ -50,14 +54,19 @@ struct StatsForNerdsView: View {
             }
             .font(.system(.caption, design: .monospaced))
         }
-        .padding(16)
+        .padding(showsHeader ? 16 : 0)
         .frame(width: 340, alignment: .leading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
-        )
-        .shadow(radius: 12, y: 4)
+        .background {
+            if showsHeader {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .shadow(radius: 12, y: 4)
+            }
+        }
     }
 
     @ViewBuilder
