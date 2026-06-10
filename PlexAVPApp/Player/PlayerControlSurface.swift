@@ -57,7 +57,6 @@ final class PlayerControlSurface {
     /// Heuristic "the system chrome is probably visible" signal — bumped by the tap probe
     /// below, auto-clears after the chrome's own auto-hide window. See `installChromeTapProbe`.
     private let chrome = ChromeHeuristic()
-    private let tapProbe = TapProbe()
 
     init(playerVC: AVPlayerViewController,
          controller: PlaybackController,
@@ -76,18 +75,42 @@ final class PlayerControlSurface {
     }
 
     /// visionOS has no transport-bar/chrome visibility callback (`API_UNAVAILABLE(visionos)`),
-    /// so this approximates one: a NON-consuming tap recognizer on the player view fires on the
-    /// same look-and-pinch that summons the system chrome, and bumps `chrome.likelyVisible` for
-    /// the chrome's ~5s auto-hide window. `applyContextualActions` reads it to show Close
-    /// exactly when the user is interacting — without stealing the tap from AVKit (simultaneous
-    /// recognition, `cancelsTouchesInView = false`).
+    /// so this approximates one: NON-consuming tap recognizers fire on the same look-and-pinch
+    /// that summons the system chrome, and bump `chrome.likelyVisible` for the chrome's ~5s
+    /// auto-hide window. `applyContextualActions` reads it to show Close exactly when the user
+    /// is interacting — without stealing the tap from AVKit (simultaneous recognition,
+    /// `cancelsTouchesInView = false`).
+    ///
+    /// A recognizer on `playerVC.view` only sees taps in the EMBEDDED/windowed state — the
+    /// expanded cinema experience hosts the player in a separate scene whose touches never reach
+    /// that view (verified live). So the probe is re-anchored onto every in-process window after
+    /// each experience transition (we are the `experienceController.delegate`), which covers the
+    /// expanded scene's window once it exists.
     private func installChromeTapProbe() {
         guard let playerVC else { return }
-        tapProbe.onTap = { [weak self] in self?.chrome.bump() }
-        let tap = UITapGestureRecognizer(target: tapProbe, action: #selector(TapProbe.fired(_:)))
-        tap.cancelsTouchesInView = false
-        tap.delegate = tapProbe
-        playerVC.view.addGestureRecognizer(tap)
+        playerVC.experienceController.delegate = self
+        reanchorTapProbe()
+    }
+
+    /// (Re)attach a `ChromeTapRecognizer` to the player view and every window of every connected
+    /// scene, stripping stale ones first (idempotent). The recognizer is self-contained — its
+    /// target is itself and the surface is captured weakly — so instances left behind on
+    /// long-lived windows (the main app window hosts the `.fullScreenCover`) are inert no-ops
+    /// after the surface deallocates, never dangling pointers.
+    private func reanchorTapProbe() {
+        var anchors: [UIView] = []
+        if let view = playerVC?.viewIfLoaded { anchors.append(view) }
+        anchors.append(contentsOf: UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows))
+        for anchor in anchors {
+            for case let stale as ChromeTapRecognizer in anchor.gestureRecognizers ?? [] {
+                anchor.removeGestureRecognizer(stale)
+            }
+            let tap = ChromeTapRecognizer()
+            tap.onTap = { [weak self] in self?.chrome.bump() }
+            anchor.addGestureRecognizer(tap)
+        }
     }
 
     private func installInfoTabs() {
@@ -816,19 +839,55 @@ final class ChromeHeuristic {
     }
 }
 
-/// Objective-C target + delegate for the non-consuming tap recognizer on the player view.
-/// `shouldRecognizeSimultaneouslyWith` returns true so AVKit's own tap handling (chrome
-/// summon, transport interaction) is never starved by our probe.
-@MainActor
-final class TapProbe: NSObject, UIGestureRecognizerDelegate {
+/// Non-consuming tap recognizer that is its own target and delegate, so it carries no unretained
+/// pointer to anything outside itself — UIKit target-action does NOT retain targets, and these
+/// recognizers are installed on long-lived windows that outlive the control surface. The `onTap`
+/// closure captures the surface weakly; a recognizer orphaned on the main window after the player
+/// closes is a harmless no-op (and is stripped on the next `reanchorTapProbe`).
+/// `shouldRecognizeSimultaneouslyWith` returns true so AVKit's own tap handling (chrome summon,
+/// transport interaction) is never starved by the probe.
+final class ChromeTapRecognizer: UITapGestureRecognizer, UIGestureRecognizerDelegate {
     var onTap: (() -> Void)?
 
-    @objc func fired(_ gesture: UITapGestureRecognizer) {
-        onTap?()
+    init() {
+        super.init(target: nil, action: nil)
+        addTarget(self, action: #selector(fired))
+        cancelsTouchesInView = false
+        delegate = self
+    }
+
+    @objc private func fired() {
+        if state == .ended { onTap?() }
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         true
     }
+}
+
+// MARK: - Experience transitions
+
+/// Re-anchors the chrome tap probe whenever the player moves between the embedded window and the
+/// expanded cinema scene — the destination window may not exist until the transition completes
+/// (and can appear a beat later), hence the delayed re-runs, mirroring
+/// `CinemaEnvironment.autoExpand`'s polling.
+extension PlayerControlSurface: AVExperienceController.Delegate {
+    func experienceController(_ controller: AVExperienceController,
+                              didChangeTransitionContext context: AVExperienceController.TransitionContext) {
+        guard case .finished = context.status else { return }
+        reanchorTapProbe()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            self?.reanchorTapProbe()
+            try? await Task.sleep(for: .seconds(1))
+            self?.reanchorTapProbe()
+        }
+    }
+
+    func experienceController(_ controller: AVExperienceController,
+                              prepareForTransitionUsing context: AVExperienceController.TransitionContext) async {}
+
+    func experienceController(_ controller: AVExperienceController,
+                              didChangeAvailableExperiences availableExperiences: AVExperienceController.Experiences) {}
 }
