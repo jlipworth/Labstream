@@ -41,7 +41,8 @@ final class PlayerControlSurface {
     private let onBitratePicked: (Int) -> Void
     /// Dismiss hook (the same one the failure overlay / `.fullScreenCover` use). Surfaced as a
     /// native `contextualActions` "Close" so it's reachable in the EXPANDED cinema experience,
-    /// where the floated SwiftUI overlays don't render. Always present when non-nil.
+    /// where the floated SwiftUI overlays don't render. Shown while paused or failed — not
+    /// during normal playback (see `applyContextualActions`).
     private let onClose: (() -> Void)?
     /// Failure-recovery hook: rebuilds the player from the live playhead (a `.id()` bump in
     /// `PlayerView`). Wired to the expanded-mode "Retry" contextual action — `controller.retry()`
@@ -165,10 +166,11 @@ final class PlayerControlSurface {
     }
 
     /// Snapshot the observable state and set `contextualActions` to the matching controls. Reading
-    /// `playbackError.isFailed`, `skipMarker.active` and `upNext.isShown`/`nextItem` here is what
-    /// registers them with the enclosing `withObservationTracking`. Priority for the leading,
-    /// state-driven action: a surfaced failure (Retry) ▸ an active Skip marker ▸ Up Next
-    /// ("Play Next"). Close is always appended so there's a stable exit in every state/both modes.
+    /// `playbackError.isFailed`, `skipMarker.active`, `upNext.isShown`/`nextItem` and
+    /// `transport.isPaused` here is what registers them with the enclosing
+    /// `withObservationTracking`. Priority for the leading, state-driven action: a surfaced
+    /// failure (Retry) ▸ an active Skip marker ▸ Up Next ("Play Next"). Close is appended while
+    /// paused or failed, so the exit is there exactly when the user is interacting (or stuck).
     private func applyContextualActions() {
         guard let playerVC else { return }
 
@@ -206,7 +208,15 @@ final class PlayerControlSurface {
             })
         }
 
-        if let onClose {
+        // Close is offered while PAUSED or FAILED — not during normal playback. The system
+        // renders contextualActions persistently over the video (until the first tap ties them
+        // to the chrome), so an always-present Close pill sat over the picture from the moment
+        // the player opened. visionOS has no transport-bar-visibility callback to sync with
+        // (`API_UNAVAILABLE(visionos)`), so paused-state is the gate: pausing is the natural
+        // first step of closing, and the failure path needs the exit regardless. Reading
+        // `transport.isPaused` here also registers it with the observation tracking.
+        let needsClose = controller.transport.isPaused || controller.playbackError.isFailed
+        if let onClose, needsClose {
             actions.append(UIAction(title: "Close",
                                     image: UIImage(systemName: "xmark")) { [weak self] _ in
                 Task { @MainActor in
