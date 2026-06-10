@@ -612,15 +612,24 @@ final class MusicPlayerController {
         Task { [weak self] in
             guard let data = await Self.fetchArtworkData(url: url),
                   let image = UIImage(data: data) else { return }
+            let artwork = Self.makeArtwork(image)
             await MainActor.run {
                 guard let self, self.current?.ratingKey == ratingKey else { return }
-                let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                 self.currentArtwork = artwork
                 if let track = self.current {
                     self.updateNowPlayingInfo(for: track)
                 }
             }
         }
+    }
+
+    /// MPMediaItemArtwork's request handler is invoked on MediaPlayer's own serial queue
+    /// (e.g. while serializing Now Playing info), so it must NOT be actor-isolated — a
+    /// closure formed inside this @MainActor class inherits MainActor isolation and the
+    /// runtime's dispatch_assert_queue check SIGTRAPs (seen live: crash on first song).
+    /// Building it in a nonisolated context keeps the handler callable from any thread.
+    private nonisolated static func makeArtwork(_ image: UIImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
     /// Build the `/photo/:/transcode` URL for a square 600×600 artwork image, mirroring
