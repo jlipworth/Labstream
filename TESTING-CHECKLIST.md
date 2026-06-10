@@ -77,16 +77,28 @@ required**.
       keep the old AVMediaSelection path.
 - [x] **Quality menu polish (GH #5)** ✅ verified — "quality seems to work as intended" (ladder,
       live switch + same-playhead resume).
-- [ ] **Stats overlay (GH #6)** — 🔁 RETEST (fix shipped): the panel is now hosted in the
-      player's `contentOverlayView` (travels with the video into the expanded platter window)
-      instead of a floated SwiftUI sibling, and the Stats tab launcher is a plain switch row
-      (the bordered button drew the stray hover bubble). Verify: overlay renders in EXPANDED
-      (the key check — this was a spike), still works windowed, ✕ tappable in windowed, no
-      hover-bubble artifact on the tab.
-- [ ] **Chapter thumbnail scroller (GH #10)** — ✅ core verified (real thumbnails + timestamps,
-      tap seeks; GH #9 did NOT reproduce). 🔁 RETEST polish: cards bumped 200×112 → 280×158 so
-      the rail fills the system-fixed panel height. (Real chapter titles already preferred —
-      PMS supplies no `tag` for the tested rip.)
+- [x] **Stats for Nerds (GH #6)** — ✅ final form: an inline **"Stats" info-panel tab** (live
+      diagnostics grid inside the system ⓘ panel). Third approach after two dead ends: a
+      floated SwiftUI overlay and `contentOverlayView` both never composite in the EXPANDED
+      cinema scene (system chrome is the only surface that renders there — see
+      docs/DEVELOPMENT.md). Verified visible by user. A floating overlay remains possible in
+      windowed mode only, if ever wanted as an addition.
+- [x] **ⓘ Info card year (was "2026")** — ✅ VERIFIED: card now shows the release year. Fix:
+      `externalMetadata` `.commonIdentifierCreationDate` with an **NSDate** value — string
+      values are ignored under every date identifier (proven live, see docs/DEVELOPMENT.md).
+- [x] **Platter ✕ closes the player** — ✅ VERIFIED ("takes me back to the content menu").
+      The system ✕ under the expanded screen only collapses to embedded (system scene, can't
+      quit the app); an unflagged completed expanded→embedded transition is treated as Close
+      (`appInitiatedCollapse`). Known trade-off: the chrome's shrink-to-window control also
+      closes the player (TransitionContext has no initiator field).
+- [x] **Chapter thumbnail scroller (GH #10)** — ✅ VERIFIED end-to-end: real thumbnails +
+      titles + timestamps, tap seeks, the orange ring + auto-scroll follow the tapped card,
+      and the panel auto-dismisses after a pick — in EXPANDED the panel is an in-process
+      platter ornament window with no presentation/close API, so dismissal hides the
+      backing window and the next tab appearance un-hides it (see docs/DEVELOPMENT.md).
+      Chapters tab also no longer vanishes on a fast Play: the player backfills
+      chapters/markers itself (`loadChaptersIfNeeded`) instead of racing DetailView's
+      metadata refresh.
 - [x] **Hover highlight hugs cards (GH #20)** — ✅ VERIFIED (Home rail poster): the highlight
       hugs the artwork's rounded rect, no capsule bleed. Final mechanism: card links use a
       custom `.buttonStyle(.card)` (custom styles get NO automatic hover effect — reshaping

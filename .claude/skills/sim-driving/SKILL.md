@@ -5,10 +5,19 @@ description: Drive the visionOS simulator hands-free — synthetic clicks, scree
 
 # Driving the visionOS simulator
 
+> **⛔ STATUS: NOT USABLE right now (user decision, 2026-06-10).** Clicks proved too
+> unreliable — repeated misses/swallowed clicks even with correct coordinates — and the
+> mouse takeover disrupts the user. Do NOT use the click helper for testing; the user
+> drives all simulator interaction. The passive parts (screenshots, log reading,
+> crop-to-measure) remain fine and expected. Revisit only if the user asks.
+
 Claude can exercise the app's UI itself: screenshot → locate target → synthetic click →
-screenshot/logs to verify. Use this for anything reachable by tap. Still hand off to the
-user for gaze-hover effects (a real cursor hover ≠ gaze highlight rendering in all cases),
-pinch-drag gestures, and anything in the EXPANDED cinema scene (system-owned).
+screenshot/logs to verify. Use this for anything reachable by tap — including the
+EXPANDED cinema scene's SYSTEM chrome (tab strip, transport, Close pill): clicks are
+real gaze+pinch input, so they work there (verified live; it's only *app-process*
+overlays that the expanded scene never receives). Still hand off to the user for
+gaze-hover effects (a real cursor hover ≠ gaze highlight rendering in all cases) and
+pinch-drag gestures.
 
 ## The click helper
 
@@ -26,6 +35,20 @@ AppleScript `System Events → click at` does NOT work (no real CGEvents). Cavea
   click (a click without prior activation is silently swallowed — verified).
 - It commandeers the user's real mouse for ~0.5s per click. Warn the user before a long
   clicking sequence so they keep hands off.
+
+## If the Simulator window is missing
+
+The device can stay booted with its window closed (`window 1 … Invalid index`).
+`open -a Simulator` does NOT reopen it. Reopen via the menu:
+
+```applescript
+tell application "System Events" to tell process "Simulator"
+    set frontmost to true
+    click menu item 1 of menu "visionOS 26.5" of menu item "visionOS 26.5" of ¬
+        menu "Open Simulator" of menu item "Open Simulator" of ¬
+        menu "File" of menu bar item "File" of menu bar 1
+end tell
+```
 
 ## Coordinate mapping (device px → screen pt)
 
@@ -65,6 +88,22 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
 After a click, sleep ~2s before screenshotting (navigation/animation settles). If a click
 seems to no-op: re-check Simulator was frontmost, then re-derive coords from a fresh crop —
 those two cover every miss seen so far.
+
+## Player chrome (auto-hide)
+
+The player's chrome + info-tab strip auto-hide after ~5s. Chain the reveal-tap and the
+target click in ONE Bash command so the chrome is still up:
+
+```sh
+osascript -e 'tell application "Simulator" to activate'; sleep 0.4
+/tmp/simclick 865 588    # tap video center → chrome appears
+sleep 1
+/tmp/simclick <X> <Y>    # the actual target (tab pill, transport control…)
+```
+
+At window frame (10, 51, 1708×1013) with the expanded player, the info-tab pills sit at
+screen y≈758: Info≈578, Quality≈635, Subtitles≈703, Audio≈769, Speed≈828, Stats≈886.
+(Chapters only appears when the item has chapter markers.) Re-derive if the window moved.
 
 ## Standard loop
 

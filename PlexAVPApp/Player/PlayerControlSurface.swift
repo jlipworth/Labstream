@@ -30,9 +30,10 @@ import PlexKit
 ///     alternates); local files keep the audible `AVMediaSelectionGroup` path
 ///     (`AudioTabView`, soft switch, no reload).
 ///   • **Speed** — pick a playback rate (0.5×–2×). See `SpeedTabView`.
-///   • **Stats** — a switch that toggles the "Stats for Nerds" diagnostics overlay, floated
-///     by `PlayerView` (windowed-only; no in-process overlay composites in the expanded
-///     experience, #6). See `StatsTabView` / `StatsOverlayView`.
+///
+/// Stats for Nerds (#6) is an inline info-panel tab (`StatsTabView`) — the panel is SYSTEM
+/// chrome, so it's the only stats surface that renders in the EXPANDED cinema experience
+/// (no in-process overlay composites there).
 @MainActor
 final class PlayerControlSurface {
 
@@ -59,6 +60,14 @@ final class PlayerControlSurface {
     /// below, auto-clears after the chrome's own auto-hide window. See `installChromeTapProbe`.
     private let chrome = ChromeHeuristic()
 
+    /// Set right before the Close action's own expanded→embedded transition so the delegate
+    /// can tell it apart from a SYSTEM-initiated collapse (the platter ✕ under the screen,
+    /// or the chrome's shrink-to-window control — `TransitionContext` carries no initiator,
+    /// so the two are indistinguishable). An unflagged completed collapse means the user hit
+    /// one of those, and per #28 feedback that should close the player, not strand it
+    /// embedded — so the delegate calls `onClose`.
+    private var appInitiatedCollapse = false
+
     /// The info-panel tabs as last installed, kept for `dismissInfoPanel`'s rebuild fallback.
     private var infoTabs: [UIViewController] = []
     /// The Chapters tab host — the anchor `dismissInfoPanel` walks up from.
@@ -78,6 +87,13 @@ final class PlayerControlSurface {
         installInfoTabs()
         installChromeTapProbe()
         rebuildContextualActions()
+        // The launching MediaItem may be a listing copy without chapters (tapping Play can
+        // beat DetailView's async metadata refresh — seen live as a missing Chapters tab).
+        // Backfill from PMS and rebuild the tab strip if chapters turn up.
+        Task { @MainActor [weak self] in
+            guard let self, await self.controller.loadChaptersIfNeeded() else { return }
+            self.installInfoTabs()
+        }
     }
 
     /// visionOS has no transport-bar/chrome visibility callback (`API_UNAVAILABLE(visionos)`),
@@ -191,10 +207,12 @@ final class PlayerControlSurface {
         }
         tabs.append(makeTab(speed, title: "Speed", systemImage: "speedometer"))
 
-        // Stats: a launcher that toggles the floating diagnostics overlay (#7). The numbers are
-        // rendered over the VIDEO by PlayerView, not inline here, so they stay visible while
-        // watching instead of vanishing when the ⓘ panel closes.
-        let stats = StatsTabView(state: controller.statsOverlay)
+        // Stats (#6): live diagnostics rendered INLINE in the panel. This is the only stats
+        // surface that works in the EXPANDED cinema experience — no in-process overlay
+        // composites there (floated SwiftUI, contentOverlayView, customOverlayViewController:
+        // all tried/ruled out), but the ⓘ panel is SYSTEM chrome and renders in both modes.
+        // The grid observes `controller.diagnostics`, so it updates live while the panel is up.
+        let stats = StatsTabView(diagnostics: controller.diagnostics)
         tabs.append(makeTab(stats, title: "Stats", systemImage: "chart.bar.doc.horizontal"))
 
         infoTabs = tabs
@@ -216,17 +234,31 @@ final class PlayerControlSurface {
     /// ornament closed — and restoring them a beat later. (Re-assigning the SAME array did
     /// NOT collapse it, verified live.)
     private func dismissInfoPanel() {
+        var chain: [String] = []
         var vc: UIViewController? = chaptersTabVC
         while let current = vc {
+            chain.append(String(describing: type(of: current)))
             if let presenter = current.presentingViewController {
+                NSLog("[VP] dismissInfoPanel: presented ancestor, dismissing via %@",
+                      String(describing: type(of: presenter)))
                 presenter.dismiss(animated: true)
                 return
             }
             vc = current.parent
         }
+        let window = chaptersTabVC?.viewIfLoaded?.window
+        NSLog("[VP] dismissInfoPanel: ornament fallback (experience=%@ window=%@ chain=%@)",
+              playerVC?.experienceController.experience == .expanded ? "expanded" : "embedded",
+              window.map { String(describing: type(of: $0)) } ?? "nil",
+              chain.joined(separator: " > "))
+        // The panel is an in-process platter ornament window. Emptying the tab array closes
+        // it in WINDOWED but is ignored in EXPANDED (verified live) — there, hiding the
+        // backing window is the only in-process lever. `InfoTabHostingController` un-hides
+        // it on the next tab appearance, so a reopened panel is never invisible.
+        window?.isHidden = true
         playerVC?.customInfoViewControllers = []
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: .milliseconds(800))
             guard let self, let playerVC = self.playerVC else { return }
             playerVC.customInfoViewControllers = self.infoTabs
         }
@@ -319,6 +351,7 @@ final class PlayerControlSurface {
             || chrome.likelyVisible
             || controller.transport.isPaused
             || controller.playbackError.isFailed
+
         if let onClose, needsClose {
             actions.append(UIAction(title: "Close",
                                     image: UIImage(systemName: "xmark")) { [weak self] _ in
@@ -337,6 +370,7 @@ final class PlayerControlSurface {
                     // runs when the cover is dismantled.
                     self?.playerVC?.player?.pause()
                     if let pvc = self?.playerVC, pvc.experienceController.experience != .embedded {
+                        self?.appInitiatedCollapse = true
                         _ = await pvc.experienceController.transition(to: .embedded)
                     }
                     onClose()
@@ -352,7 +386,7 @@ final class PlayerControlSurface {
     /// the panel.
     private func makeTab(_ rootView: some View, title: String, systemImage: String,
                          panelHeight: CGFloat = 300) -> UIViewController {
-        let host = UIHostingController(rootView: AnyView(rootView))
+        let host = InfoTabHostingController(rootView: AnyView(rootView))
         host.title = title
         host.tabBarItem = UITabBarItem(title: title,
                                        image: UIImage(systemName: systemImage),
@@ -367,6 +401,19 @@ final class PlayerControlSurface {
         // a shorter panel rather than floating in empty space.
         host.preferredContentSize = CGSize(width: 420, height: panelHeight)
         return host
+    }
+}
+
+/// Host for every info-panel tab. Exists to undo `dismissInfoPanel`'s window-hide hack:
+/// in the EXPANDED experience the panel is an in-process platter ornament
+/// (`_MRUIPlatterOrnamentBackingWindow`, verified live) with no presentation to dismiss
+/// and no public close API, so dismissal HIDES that window. If the system later reuses
+/// the same backing window for the next panel open, the tab's appearance callback is the
+/// reopen signal — un-hide it here so the panel is never invisibly "open".
+private final class InfoTabHostingController: UIHostingController<AnyView> {
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        view.window?.isHidden = false
     }
 }
 
@@ -601,7 +648,16 @@ private struct ChaptersTabView: View {
                                         index: index,
                                         isCurrent: index == currentIndex,
                                         thumbnailURL: thumbnailURL(chapter.thumb),
-                                        onTap: onJump)
+                                        onTap: { startMs in
+                                            // Immediate in-panel feedback: ring + center the
+                                            // picked card (the panel may stay up — programmatic
+                                            // dismissal is best-effort, see `dismissInfoPanel`).
+                                            currentIndex = index
+                                            withAnimation {
+                                                proxy.scrollTo(index, anchor: .center)
+                                            }
+                                            onJump(startMs)
+                                        })
                                 .id(index)
                         }
                     }
@@ -872,50 +928,20 @@ private struct AudioStreamsTabView: View {
     private var activeID: Int? { choices.first { $0.isSelected }?.id }
 }
 
-/// Stats info-panel tab (#7): toggles the on-video "Stats for Nerds" overlay. Rather than render
-/// the diagnostics inline in the ⓘ panel (where they vanish the moment the panel closes), this
-/// flips a persistent overlay floated by `PlayerView` so the numbers stay visible while
-/// watching — the Emby-style treatment. A plain switch row (not a bordered button):
-/// the bordered style drew a stray hover-highlight bubble in the visionOS info panel (#6).
+/// Stats info-panel tab (#6): the live "Stats for Nerds" diagnostics grid, rendered inline.
+/// The ⓘ panel is system chrome, so this is the ONLY stats surface that displays in the
+/// EXPANDED cinema experience — every floated/overlay approach was tried and ruled out
+/// (floated SwiftUI sibling: windowed-only; `contentOverlayView`: never composited on
+/// visionOS, verified live; `customOverlayViewController`: tvOS-only). No header row —
+/// the system panel already titles the tab.
 private struct StatsTabView: View {
-    @Bindable var state: StatsOverlayState
+    let diagnostics: PlaybackDiagnostics
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: DS.Space.md) {
-                Toggle(isOn: $state.isShown) {
-                    VStack(alignment: .leading, spacing: DS.Space.xs) {
-                        Text("Stats overlay")
-                        Text("Live playback diagnostics over the video.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(DS.Space.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-/// The floated "Stats for Nerds" overlay, composited by `PlayerView` as a ZStack sibling of the
-/// player (#6). Renders nothing until the user flips the Stats tab's switch, then floats the live
-/// diagnostics top-leading — clear of the bottom-center transport and AVKit's top-trailing "…"
-/// menu. Suppressed while a failure is surfaced so it doesn't float over the error/Retry overlay.
-/// WINDOWED-ONLY by platform limitation: the expanded cinema scene composites no in-process
-/// overlay, `contentOverlayView` is never rendered on visionOS (verified live), and
-/// `customOverlayViewController` is tvOS-only.
-struct StatsOverlayView: View {
-    let state: StatsOverlayState
-    let diagnostics: PlaybackDiagnostics
-    let error: PlaybackError
-
-    var body: some View {
-        if state.isShown, !error.isFailed {
-            StatsForNerdsView(diagnostics: diagnostics, onClose: { state.hide() })
-                .padding(DS.Space.lg)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .transition(.opacity)
+            StatsForNerdsView(diagnostics: diagnostics, showsHeader: false)
+                .padding(DS.Space.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -990,7 +1016,24 @@ extension PlayerControlSurface: AVExperienceController.Delegate {
 
     func experienceController(_ controller: AVExperienceController,
                               didChangeTransitionContext context: AVExperienceController.TransitionContext) {
-        guard case .finished = context.status else { return }
+        guard case .finished(let result) = context.status else { return }
+
+        // Platter ✕ / shrink-to-window: the system collapses the expanded scene back to
+        // embedded on its own. The cinema scene is system-owned, so its ✕ can only ever dock
+        // the player back into our window — it cannot quit the app. The user expects "✕ under
+        // the screen = done watching", so treat any collapse WE didn't initiate as a close.
+        // `TransitionContext` has no initiator field (checked the XROS 26.5 swiftinterface),
+        // so the chrome's shrink control is swept up in this too — accepted trade-off.
+        if case .completed = result,
+           context.fromExperience == .expanded, context.toExperience == .embedded,
+           !appInitiatedCollapse {
+            NSLog("[VP] system collapse (platter close) -> closing player")
+            appInitiatedCollapse = false
+            onClose?()
+            return
+        }
+        appInitiatedCollapse = false
+
         reanchorTapProbe()
         if playerVC?.experienceController.experience == .expanded {
             // Add Close permanently after a short grace so it doesn't sit over the picture

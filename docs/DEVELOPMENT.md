@@ -56,6 +56,39 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
     Close for the chrome's ~5s auto-hide window.
   Paused/failed keep it up in both. A paused-only gate was tried first and rejected — forcing a
   pause before Close is an extra step.
+- **Expanded cinema scene = system chrome only.** App-process pixels never composite there:
+  floated SwiftUI siblings don't render, `contentOverlayView` is never composited (verified), and
+  `customOverlayViewController` is tvOS-only. The surfaces that DO work in expanded are all
+  system chrome: `contextualActions` pills, the transport, and the ⓘ info panel —
+  `customInfoViewControllers` tabs render and are fully interactive there. Hence Stats for
+  Nerds (#6) lives as an inline info-panel tab (`StatsTabView`), the only stats surface visible
+  in expanded; a floating overlay remains possible in *windowed* mode only.
+- **ⓘ Info card year:** the card shows a year after the runtime, sourced from the stream's
+  creation date — for a live transcode that's *today's* year (seen as "2026" on a 2013 film).
+  Override: `externalMetadata` item `.commonIdentifierCreationDate` with an **NSDate-typed
+  value** (Jan 1 of the release year) — verified working. STRING values are ignored under that
+  identifier and every other plausible one (`quickTimeMetadataCreationDate`,
+  `id3MetadataRecordingTime`, `iTunesMetadataReleaseDate`) — all proven live. Title
+  (`.commonIdentifierTitle`) and description (`.commonIdentifierDescription`) work as strings;
+  cap the description ~150 chars or it pushes the title off the card.
+- **Closing the ⓘ info panel programmatically:** there is no public API, and in EXPANDED the
+  panel is an in-process platter ornament (`_MRUIPlatterOrnamentBackingWindow` →
+  `_MRUIPlatterOrnamentRootViewController`, verified via the dismiss instrumentation) with NO
+  `presentingViewController` anywhere in the tab's ancestor chain. Emptying
+  `customInfoViewControllers` closes it in WINDOWED but is ignored in EXPANDED. Working
+  recipe (verified): hide the tab's `view.window` + empty-then-restore the tab array; every
+  tab host (`InfoTabHostingController`) un-hides its window on `viewDidAppear` so a reopened
+  panel is never invisible. Re-assigning the SAME tabs array does nothing.
+- **Play-vs-metadata race:** listing payloads omit chapters/markers; `DetailView` backfills
+  them asynchronously and tapping Play can win that race (seen live as a missing Chapters
+  tab). The player no longer depends on the caller's copy — `loadChaptersIfNeeded()` fetches
+  full metadata and the control surface re-installs the tab strip when chapters arrive.
+- **The platter ✕ under the expanded screen cannot quit the app** — the cinema scene is
+  system-owned and its ✕ only collapses the player back into the host window (AVKit docks it).
+  `AVExperienceController.TransitionContext` carries no initiator (checked the XROS 26.5
+  swiftinterface: just `status`/`fromExperience`/`toExperience`), so a system collapse is
+  detected as "completed expanded→embedded we didn't flag" (`appInitiatedCollapse`) and treated
+  as Close. Trade-off (accepted): the chrome's shrink-to-window control also closes the player.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)
