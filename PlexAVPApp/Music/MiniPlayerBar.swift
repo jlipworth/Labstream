@@ -1,9 +1,9 @@
 import SwiftUI
 import PlexKit
 
-/// Compact persistent playback bar, overlaid at the bottom of `RootView` so music
-/// keeps playing (and stays controllable) while browsing. Renders nothing when the
-/// queue is empty; tapping anywhere outside the transport buttons opens the full
+/// Compact persistent playback bar, mounted as `RootView`'s bottom scene ornament so
+/// music keeps playing (and stays controllable) while browsing. Renders nothing when
+/// the queue is empty; tapping anywhere outside the transport buttons opens the full
 /// `NowPlayingView` sheet.
 struct MiniPlayerBar: View {
     @Environment(MusicPlayerController.self) private var player
@@ -14,6 +14,7 @@ struct MiniPlayerBar: View {
     private let artSize: CGFloat = 44
 
     var body: some View {
+        let _ = NSLog("[VP] MiniPlayerBar body: current=%@", player.current?.title ?? "nil")
         if let current = player.current {
             HStack(spacing: DS.Space.md) {
                 PosterImage(path: current.thumb ?? current.parentThumb,
@@ -54,19 +55,14 @@ struct MiniPlayerBar: View {
             .padding(.horizontal, DS.Space.lg)
             .frame(height: 64)
             .frame(maxWidth: 480)
-            .background(.regularMaterial,
-                        in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                    .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
-            )
+            // Ornament content gets its platter look from glassBackgroundEffect —
+            // material backgrounds render flat and z-fight the window edge here.
+            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: DS.Radius.card,
+                                                        style: .continuous))
             // Whole bar opens Now Playing; the explicit Buttons above still win the tap.
             .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
             .onTapGesture { presentNowPlaying = true }
             .hoverEffect(.highlight)
-            // Float clear of the window edge.
-            .padding(.horizontal, DS.Space.xxl)
-            .padding(.bottom, DS.Space.lg)
             .sheet(isPresented: $presentNowPlaying) {
                 NowPlayingView()
             }

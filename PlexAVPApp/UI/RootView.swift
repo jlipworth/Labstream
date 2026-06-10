@@ -40,9 +40,11 @@ struct RootView: View {
             }
         }
         // The mini player spans every tab so music keeps a visible handle while
-        // browsing; it renders nothing when no track is loaded (#17). safeAreaInset
-        // (not overlay) so scrollable content shortens instead of being covered.
-        .safeAreaInset(edge: .bottom) {
+        // browsing; it renders nothing when no track is loaded (#17). A bottom scene
+        // ornament — NOT safeAreaInset, which a visionOS TabView simply never displays
+        // (verified live: body ran with a current track, nothing rendered). The
+        // ornament floats below the window glass, the platform idiom for transport.
+        .ornament(attachmentAnchor: .scene(.bottom)) {
             MiniPlayerBar()
         }
         .environment(appModel)
