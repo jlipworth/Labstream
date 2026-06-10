@@ -52,7 +52,7 @@ struct MusicLibraryView: View {
             }
         }
         .navigationDestination(for: MediaItem.self) { item in
-            musicDestination(for: item)
+            musicDestination(for: item, sectionKey: selectedSection?.key)
         }
         .task(id: appModel.serverBaseURL) { await load() }
         .refreshable { await load() }
@@ -86,10 +86,14 @@ struct MusicLibraryView: View {
 /// The one place a music `MediaItem` resolves to a destination view, shared by the
 /// Music tab and (Phase 3) SearchView. Tracks never navigate — they play — so there
 /// is deliberately no `.track` destination (MUSIC-DESIGN §2).
+///
+/// `sectionKey` enables the artist.id discography search; callers without one
+/// (e.g. cross-section search results) pass nil and the artist view falls back
+/// to the children endpoint.
 @ViewBuilder
-func musicDestination(for item: MediaItem) -> some View {
+func musicDestination(for item: MediaItem, sectionKey: String?) -> some View {
     switch item.kind {
-    case .artist: ArtistDetailView(artist: item)
+    case .artist: ArtistDetailView(artist: item, sectionKey: sectionKey)
     case .album: AlbumDetailView(album: item)
     // .playlist arrives with PlaylistDetailView in Phase 5.
     default: EmptyView()
