@@ -101,7 +101,7 @@ struct PlayerView: View {
         self.onClose = onClose
         self.onRequestPlay = nil
         let identity = ClientIdentity(clientIdentifier: "offline",
-                                      product: "plex-avp-app",
+                                      product: "VisionPlex",
                                       version: "0.1.0",
                                       deviceName: "Apple Vision Pro")
         let client = PlexClient(identity: identity)
