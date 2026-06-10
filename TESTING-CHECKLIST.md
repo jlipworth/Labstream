@@ -69,19 +69,34 @@ required**.
 - [x] **Playback speed + Now Playing metadata** ✅ verified — Speed tab changes rate and survives
       a Quality reload. (Control Center metadata not separately re-checked.)
 - [ ] **Buffering indicator** — centered spinner on a real stall, NOT on manual pause.
-- [ ] **Audio soundtrack picker (GH #3)** ❌ FAILED live test — shows "No alternate audio tracks"
-      even on titles with an English track: PMS only muxes the active track into the stream, so
-      the HLS media-selection group is empty. Needs a metadata-driven picker (`streamType=2` +
-      `audioStreamID` reload) — see the issue comment.
+- [ ] **Audio soundtrack picker (GH #3)** — 🔁 RETEST (fix shipped): the Audio tab on streaming
+      sessions is now metadata-driven (Plex `Stream` streamType=2, not the HLS group — PMS only
+      muxes the active track, which caused the old "No alternate audio tracks"). Verify: tab
+      lists at least the active track ("English …" ✓); on a multi-track title, switching PUTs
+      `audioStreamID` + rebuilds the transcode and resumes at the same playhead. Local files
+      keep the old AVMediaSelection path.
 - [x] **Quality menu polish (GH #5)** ✅ verified — "quality seems to work as intended" (ladder,
       live switch + same-playhead resume).
-- [~] **Stats overlay (GH #6)** — ⚠️ partial: works in the windowed state (panel, live numbers,
-      tappable ✕) but NEVER renders in the expanded experience (floated SwiftUI sibling — same
-      expanded-scene limitation as #8); launcher-tab UX + hover-bubble artifact also flagged.
-      See the issue comment for the `contentOverlayView` fix idea.
-- [x] **Chapter thumbnail scroller (GH #10)** ✅ verified — real thumbnails + timestamps, tap
-      seeks. GH #9 (all entries "Chapter 1 / 0:00") did NOT reproduce. Polish tracked in #10:
-      panel too tall, prefer real chapter titles when PMS provides them.
+- [ ] **Stats overlay (GH #6)** — 🔁 RETEST (fix shipped): the panel is now hosted in the
+      player's `contentOverlayView` (travels with the video into the expanded platter window)
+      instead of a floated SwiftUI sibling, and the Stats tab launcher is a plain switch row
+      (the bordered button drew the stray hover bubble). Verify: overlay renders in EXPANDED
+      (the key check — this was a spike), still works windowed, ✕ tappable in windowed, no
+      hover-bubble artifact on the tab.
+- [ ] **Chapter thumbnail scroller (GH #10)** — ✅ core verified (real thumbnails + timestamps,
+      tap seeks; GH #9 did NOT reproduce). 🔁 RETEST polish: cards bumped 200×112 → 280×158 so
+      the rail fills the system-fixed panel height. (Real chapter titles already preferred —
+      PMS supplies no `tag` for the tested rip.)
+- [x] **Hover highlight hugs cards (GH #20)** — ✅ VERIFIED (Home rail poster): the highlight
+      hugs the artwork's rounded rect, no capsule bleed. Final mechanism: card links use a
+      custom `.buttonStyle(.card)` (custom styles get NO automatic hover effect — reshaping
+      or disabling the automatic one both failed live) + explicit `.gazeHighlight()` on the
+      artwork (episode rows: whole material card). Music cells share the fix; eyeball during
+      the #17 music pass.
+- [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
+      with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
+      persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
+      tab shows 4 Mbps checked; change quality in-player → Settings reflects it.
 
 ## C. Music (GH #17 — Plexamp-style module)
 

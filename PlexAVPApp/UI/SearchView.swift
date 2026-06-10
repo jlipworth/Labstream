@@ -103,7 +103,7 @@ private struct SearchHubSection: View {
                         NavigationLink(value: item) {
                             PosterCell(item: item)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.card)
                     }
                 }
                 .padding(.horizontal, DS.Space.xxl)
