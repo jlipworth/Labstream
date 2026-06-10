@@ -960,6 +960,26 @@ final class PlaybackController {
                                 targetBitrateKbps: maxVideoBitrateKbps)
 
         let streamURL = transcode.startM3U8URL()
+        // Issue #4 evidence (read-only): does PMS's master playlist advertise an
+        // I-frame variant (`EXT-X-I-FRAME-STREAM-INF`)? If yes, AVKit renders scrub
+        // thumbnails for free and #4 closes with zero client code. One fire-and-forget
+        // fetch; playback never waits on it. Remove once the answer is recorded.
+        Task.detached(priority: .utility) {
+            // Let AVPlayer establish the session first; a master-playlist re-read
+            // afterwards is the routine HLS refresh PMS already serves players.
+            try? await Task.sleep(for: .seconds(8))
+            guard let (data, _) = try? await URLSession.shared.data(from: streamURL),
+                  let playlist = String(data: data, encoding: .utf8) else {
+                NSLog("[VP] #4 m3u8 probe: fetch failed")
+                return
+            }
+            let hasIFrames = playlist.contains("EXT-X-I-FRAME-STREAM-INF")
+            NSLog("[VP] #4 m3u8 probe: iframe-variant=%@ tags=%@",
+                  hasIFrames ? "YES" : "NO",
+                  playlist.split(separator: "\n").filter { $0.hasPrefix("#EXT-X-") }
+                      .map { $0.split(separator: ":").first.map(String.init) ?? "" }
+                      .joined(separator: ","))
+        }
         let asset = AVURLAsset(url: streamURL)
         let playerItem = AVPlayerItem(asset: asset)
         // Offset priming (the `offset` param + `#EXT-X-START`) is the FAST path: PMS
