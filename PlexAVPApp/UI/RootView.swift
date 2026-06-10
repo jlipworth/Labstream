@@ -10,11 +10,12 @@ struct RootView: View {
     let appModel: AppModel
     let authManager: AuthManager
     let downloadManager: DownloadManager
+    let musicPlayer: MusicPlayerController
 
     @State private var selection: AppTab = .home
 
     enum AppTab: Hashable {
-        case home, libraries, search, offline, settings
+        case home, libraries, search, music, offline, settings
     }
 
     var body: some View {
@@ -28,6 +29,9 @@ struct RootView: View {
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack { SearchView() }
             }
+            Tab("Music", systemImage: "music.note", value: AppTab.music) {
+                NavigationStack { MusicLibraryView() }
+            }
             Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
                 NavigationStack { OfflineLibraryView(manager: downloadManager) }
             }
@@ -35,8 +39,15 @@ struct RootView: View {
                 NavigationStack { SettingsView(authManager: authManager) }
             }
         }
+        // The mini player spans every tab so music keeps a visible handle while
+        // browsing; it renders nothing when no track is loaded (#17). safeAreaInset
+        // (not overlay) so scrollable content shortens instead of being covered.
+        .safeAreaInset(edge: .bottom) {
+            MiniPlayerBar()
+        }
         .environment(appModel)
         .environment(downloadManager)
+        .environment(musicPlayer)
     }
 }
 

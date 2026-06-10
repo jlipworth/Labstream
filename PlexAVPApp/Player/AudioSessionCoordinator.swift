@@ -10,10 +10,24 @@ import UIKit
 /// once per controller lifetime (both are idempotent, so a Quality reload — which
 /// re-enters the controller's `load` — never double-registers), and teardown
 /// releases the session, notifying other audio apps so they can resume.
+///
+/// Shared by video (`PlaybackController`, the defaults: `.moviePlayback` mode,
+/// pause on background) and music (`MusicPlayerController`: `.default` mode,
+/// `pausesOnBackground: false` so audio keeps playing when the app loses the
+/// foreground / the headset chrome changes). The interruption and route-change
+/// handling is identical for both.
 @MainActor
 final class AudioSessionCoordinator {
 
     private let player: AVPlayer
+
+    /// `AVAudioSession` mode applied in `activate()`. `.moviePlayback` for video
+    /// (the default, matching the original extraction), `.default` for music.
+    private let mode: AVAudioSession.Mode
+
+    /// Whether losing the foreground should pause playback. True for video (it can't
+    /// decode/render in the background); false for music, which should keep playing.
+    private let pausesOnBackground: Bool
 
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
@@ -26,17 +40,21 @@ final class AudioSessionCoordinator {
     /// event cannot restart video behind the user's back.
     private var wasPlayingBeforeInterruption = false
 
-    init(player: AVPlayer) {
+    init(player: AVPlayer,
+         mode: AVAudioSession.Mode = .moviePlayback,
+         pausesOnBackground: Bool = true) {
         self.player = player
+        self.mode = mode
+        self.pausesOnBackground = pausesOnBackground
     }
 
-    /// Configure and activate the shared `AVAudioSession` for video playback.
+    /// Configure and activate the shared `AVAudioSession` for playback.
     ///
-    /// Category `.playback` with mode `.moviePlayback` is the correct combination for a
-    /// video player: it routes audio to the cinema/system output, plays through the silent
-    /// switch (a movie's audio should not be muted by it), and is what AVKit expects for the
-    /// docked/expanded screen. Activate once before the first item loads; subsequent
-    /// (re)loads (e.g. a Quality reload) reuse the already-active session.
+    /// Category `.playback` with the stored `mode` — `.moviePlayback` for video (routes
+    /// audio to the cinema/system output, plays through the silent switch, and is what
+    /// AVKit expects for the docked/expanded screen), `.default` for music. Activate once
+    /// before the first item loads; subsequent (re)loads (e.g. a Quality reload) reuse
+    /// the already-active session.
     ///
     /// Conservative by design: audio already worked without explicit config, so `.playback`
     /// must not regress that — it's the documented category for exactly this use and does not
@@ -45,7 +63,7 @@ final class AudioSessionCoordinator {
     func activate() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setCategory(.playback, mode: mode)
             try session.setActive(true)
         } catch {
             NSLog("AudioSessionCoordinator: AVAudioSession configuration failed (%@)",
@@ -67,10 +85,11 @@ final class AudioSessionCoordinator {
         }
     }
 
-    /// Register the audio-session (interruption / route-change) and app-lifecycle
-    /// (background) observers exactly once for this coordinator's lifetime. Idempotent: a
-    /// second call is a no-op, so we never double-register. All closures hop to the
-    /// `@MainActor` before touching player state, satisfying Swift 6 strict concurrency.
+    /// Register the audio-session (interruption / route-change) observers — and, when
+    /// `pausesOnBackground` is set, the app-lifecycle (background) observers — exactly once
+    /// for this coordinator's lifetime. Idempotent: a second call is a no-op, so we never
+    /// double-register. All closures hop to the `@MainActor` before touching player state,
+    /// satisfying Swift 6 strict concurrency.
     func installObservers() {
         guard interruptionObserver == nil else { return }
         let center = NotificationCenter.default
@@ -103,24 +122,27 @@ final class AudioSessionCoordinator {
         // Background-aware playback (P5): on visionOS the immersive player loses the active
         // scene when the user leaves; video can't decode/render in the background and a live
         // transcode session would keep churning. Pause on resign-active / background. We do
-        // NOT auto-resume on return — that's the user's choice.
-        resignActiveObserver = center.addObserver(
-            forName: UIApplication.willResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.pauseForBackground()
+        // NOT auto-resume on return — that's the user's choice. Music sessions opt out
+        // (`pausesOnBackground: false`): audio-only playback keeps going in the background.
+        if pausesOnBackground {
+            resignActiveObserver = center.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.pauseForBackground()
+                }
             }
-        }
 
-        didEnterBackgroundObserver = center.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.pauseForBackground()
+            didEnterBackgroundObserver = center.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.pauseForBackground()
+                }
             }
         }
     }
