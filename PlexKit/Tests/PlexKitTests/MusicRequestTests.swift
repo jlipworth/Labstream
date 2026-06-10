@@ -56,6 +56,28 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(v("X-Plex-Container-Size") == "50")
 }
 
+@Test func asymmetricPagingEmitsNeitherItem() {
+    // Start and size only emit together — a lone X-Plex-Container-Start would
+    // make PMS page wrongly. Either half alone must produce NO paging items.
+    let startOnly = MusicRequest.artists(server: server, token: "tok", identity: id,
+                                         sectionKey: "3", containerStart: 100)
+    let sizeOnly = MusicRequest.artists(server: server, token: "tok", identity: id,
+                                        sectionKey: "3", containerSize: 50)
+    for r in [startOnly, sizeOnly] {
+        let names = r.queryItems.map(\.name)
+        #expect(!names.contains("X-Plex-Container-Start"))
+        #expect(!names.contains("X-Plex-Container-Size"))
+    }
+}
+
+@Test func sortAloneEmitsNoPaging() {
+    let r = MusicRequest.artists(server: server, token: "tok", identity: id,
+                                 sectionKey: "3", sort: "titleSort")
+    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
+    #expect(v("sort") == "titleSort")
+    #expect(!r.queryItems.map(\.name).contains("X-Plex-Container-Start"))
+}
+
 @Test func albumsAcceptSortAndPaging() {
     let r = MusicRequest.albums(server: server, token: "tok", identity: id, sectionKey: "3",
                                 sort: "titleSort", containerStart: 0, containerSize: 60)
@@ -87,6 +109,16 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     // Paged: history is unbounded, a rail only needs the head.
     #expect(v("X-Plex-Container-Start") == "0")
     #expect(v("X-Plex-Container-Size") == "20")
+    // No account scoping unless asked: server-wide history by default.
+    #expect(!r.queryItems.map(\.name).contains("accountID"))
+}
+
+@Test func playHistoryScopesToAccountWhenGiven() {
+    // With an owner token PMS returns EVERY household member's plays unless
+    // accountID filters; the owner is accountID=1 on the server's own endpoint.
+    let r = MusicRequest.playHistory(server: server, token: "tok", identity: id,
+                                     librarySectionID: "3", accountID: "1")
+    #expect(r.queryItems.first { $0.name == "accountID" }?.value == "1")
 }
 
 // MARK: - Shuffle Library / artist leaves / popular
@@ -118,19 +150,23 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(v("group") == "title")
     #expect(v("sort") == "ratingCount:desc")
     #expect(v("limit") == "5")
-    // The greater-than filter lives in the item NAME: `ratingCount>>` = "0".
+    // Filter operators live in the item NAME: `ratingCount>>` = "0", and the
+    // plexapi subformat exclusion keeps compilation/live dupes out of Popular.
     #expect(v("ratingCount>>") == "0")
+    #expect(v("album.subformat!") == "Compilation,Live")
 }
 
-@Test func popularTracksGreaterThanFilterPercentEncodes() throws {
-    // Documents the wire shape: URLComponents must encode `>` so PMS sees
-    // `ratingCount%3E%3E=0` (decoding back to `ratingCount>>=0`).
+@Test func popularTracksFilterOperatorsPercentEncodeOnTheWire() throws {
+    // Exercise the REAL assembly path (PlexRequest.urlRequest), not a parallel
+    // reconstruction: PMS must see `ratingCount%3E%3E=0` and the encoded `!`
+    // name `album.subformat%21=Compilation,Live` (or a raw `!`, which is legal
+    // in a query) — what matters is the operator survives into the final URL.
     let r = MusicRequest.popularTracks(server: server, token: "tok", identity: id,
                                        sectionKey: "3", artistRatingKey: "777")
-    var components = try #require(URLComponents(url: r.url, resolvingAgainstBaseURL: false))
-    components.queryItems = r.queryItems
-    let query = try #require(components.url?.query)
+    let query = try #require(r.urlRequest().url?.query)
     #expect(query.contains("ratingCount%3E%3E=0"))
+    #expect(query.contains("album.subformat!=Compilation,Live")
+            || query.contains("album.subformat%21=Compilation,Live"))
 }
 
 // MARK: - Track stream URL

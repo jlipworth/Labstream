@@ -58,10 +58,31 @@ public struct MetadataResponse: Decodable, Sendable {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.size = try c.decodeIfPresent(Int.self, forKey: .size)
             // `Metadata` may be absent (e.g. an empty container); treat as [].
-            self.metadata = try c.decodeIfPresent([MediaItem].self, forKey: .metadata) ?? []
+            // Decode LOSSILY, element by element: some endpoints mix in rows that
+            // don't fit `MediaItem` — `/status/sessions/history/all` keeps entries
+            // for since-DELETED items with no `ratingKey` — and an all-or-nothing
+            // array decode would let one such row throw away the whole response.
+            guard c.contains(.metadata) else { self.metadata = []; return }
+            var rows = try c.nestedUnkeyedContainer(forKey: .metadata)
+            var items: [MediaItem] = []
+            while !rows.isAtEnd {
+                if let item = try? rows.decode(MediaItem.self) {
+                    items.append(item)
+                } else if (try? rows.decode(OpaqueRow.self)) == nil {
+                    // Skipping requires decoding *something* to advance the index;
+                    // if even an opaque object won't decode, bail with what we have
+                    // rather than spin (a failed decode does not consume the row).
+                    break
+                }
+            }
+            self.metadata = items
         }
     }
 }
+
+/// Consumes one arbitrary element of an unkeyed container so lossy array decodes
+/// can advance past rows that don't fit the expected model.
+private struct OpaqueRow: Decodable {}
 
 public struct MediaItem: Decodable, Sendable, Identifiable {
     public let ratingKey: String
