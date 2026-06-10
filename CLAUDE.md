@@ -47,6 +47,13 @@ xcrun simctl io booted screenshot /tmp/visionplex-test.png   # then Read the PNG
 xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'
 ```
 
+⚠️ STALE-PROCESS TRAP (bit us live): a running copy of the app can survive
+`simctl install` (and `terminate` may report "found nothing to terminate" while it
+lives on), so the user can keep interacting with the OLD binary after a fix is
+installed. Before concluding a fix failed from a new .ips crash report, check the
+report's `procLaunch` time and image UUIDs against the build time / `dwarfdump --uuid`
+of the fixed dylib.
+
 When a fix is speculative, instrument it with `NSLog` first and read the log after the
 user exercises it — one build cycle instead of two. NEVER NSLog a raw string that may
 contain `%` — always `NSLog("%@", str)`.
