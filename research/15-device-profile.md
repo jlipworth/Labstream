@@ -3,7 +3,7 @@
 > **Update (2026-06): partially shipped.** The decision-only probe slice
 > (`directPlayProbeDecisionURL()` + `visionOSDirectPlayProbe`) landed in PlexKit with
 > unit coverage; the app-side half (loading direct-play instead of `start.m3u8`) is
-> deferred and tracked as [GitHub issue #7](https://github.com/jlipworth/plex-avp-app/issues/7).
+> deferred and tracked as [GitHub issue #7](https://github.com/jlipworth/VisionPlex/issues/7).
 > (File renamed from `13-device-profile.md` — the number collided with
 > `13-playback-state-apis.md`.)
 >

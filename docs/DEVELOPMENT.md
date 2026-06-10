@@ -1,7 +1,7 @@
 # Development notes
 
 Durable, easy-to-forget facts about building and working on this app. Task/bug tracking lives in
-[GitHub Issues](https://github.com/jlipworth/plex-avp-app/issues); see the [README](../README.md)
+[GitHub Issues](https://github.com/jlipworth/VisionPlex/issues); see the [README](../README.md)
 for the basic build/run.
 
 ## Build, test, run

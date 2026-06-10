@@ -1,4 +1,4 @@
-# plex-avp-app
+# VisionPlex
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Platform: visionOS 26.5](https://img.shields.io/badge/Platform-visionOS%2026.5-black.svg)](https://developer.apple.com/visionos/)
@@ -45,7 +45,7 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 ## Project structure
 
 ```
-plex-avp-app/
+VisionPlex/
 ├── PlexAVPApp/            # visionOS app (SwiftUI)
 │   ├── App/              # app entry + session state
 │   ├── Auth/             # Plex PIN OAuth + Keychain
