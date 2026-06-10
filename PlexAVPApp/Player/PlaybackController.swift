@@ -713,6 +713,97 @@ final class PlaybackController {
         didApplyAudioPreference = true
     }
 
+    // MARK: - Audio (metadata-driven, streaming) — GH #3
+
+    /// A selectable audio track sourced from Plex part metadata (`Stream`, streamType=2).
+    ///
+    /// Streaming sessions can't use the AVMediaSelection path above: PMS muxes only the
+    /// part's *selected* audio track into the HLS transcode, so the audible group never
+    /// lists alternates. The real track list lives in the item's metadata, and switching
+    /// means PUTting the new `audioStreamID` on the part and rebuilding the transcode.
+    struct AudioStreamChoice: Identifiable, Sendable {
+        /// PMS `Stream.id` — what `audioStreamID` expects.
+        let id: Int
+        let displayName: String
+        let isSelected: Bool
+    }
+
+    /// The media part backing this streaming session (the one `startStreaming` transcodes:
+    /// `mediaIndex` + partIndex 0). `nil` when the item metadata carries no Media/Part.
+    private var streamingPart: Part? {
+        guard let media = item.media, media.indices.contains(mediaIndex) else { return nil }
+        return media[mediaIndex].part.first
+    }
+
+    /// After a successful `selectAudioStream` PUT, the locally-known active stream id.
+    /// The `item` snapshot's `selected` flags are stale from that point on, so the loader
+    /// prefers this override when rebuilding the checkmarked list.
+    private var audioStreamIDOverride: Int?
+
+    /// Build the Audio tab's track list from part metadata. Synchronous — pure reads of the
+    /// decoded item. Returns an empty array when the metadata carries no audio streams (the
+    /// tab then falls back to its empty state).
+    func loadAudioStreamChoices() -> [AudioStreamChoice] {
+        guard let part = streamingPart else { return [] }
+        let streams = part.audioStreams
+        guard !streams.isEmpty else { return [] }
+
+        // Active track: a live override from a switch this session, else the PMS `selected`
+        // flag (sent only on the active track), else the container default, else the first.
+        let selectedID = audioStreamIDOverride
+            ?? streams.first { $0.selected == true }?.id
+            ?? streams.first { $0.isDefault == true }?.id
+            ?? streams[0].id
+
+        // Label preference: displayTitle ("English (AAC Stereo)") is PMS's purpose-built
+        // short label; fall back through the longer/raw fields, then a positional name.
+        var choices: [AudioStreamChoice] = []
+        var seenCounts: [String: Int] = [:]
+        for (index, stream) in streams.enumerated() {
+            var label = stream.displayTitle
+                ?? stream.extendedDisplayTitle
+                ?? stream.language
+                ?? "Track \(index + 1)"
+            let priorCount = seenCounts[label, default: 0]
+            seenCounts[label] = priorCount + 1
+            if priorCount > 0 { label += " \(priorCount + 1)" }
+            choices.append(AudioStreamChoice(id: stream.id,
+                                             displayName: label,
+                                             isSelected: stream.id == selectedID))
+        }
+        return choices
+    }
+
+    /// Switch the active audio track for a streaming session: persist the selection on the
+    /// part server-side, then rebuild the transcode at the live playhead (same mechanics as
+    /// the Quality reload — PMS can't swap audio mid-session, so the stream must restart).
+    /// Also persists the language preference so the next item auto-selects it.
+    func selectAudioStream(_ choice: AudioStreamChoice) async {
+        guard isStreaming, let server, let token, let part = streamingPart else { return }
+        guard !choice.isSelected else { return }
+        let request = StreamSelectionRequest.selectAudioStream(server: server,
+                                                               token: token,
+                                                               identity: identity,
+                                                               partID: part.id,
+                                                               audioStreamID: choice.id)
+        do {
+            try await client.send(request)
+        } catch {
+            NSLog("PlaybackController: audio stream selection failed: \(error)")
+            return
+        }
+        audioStreamIDOverride = choice.id
+        if let lang = part.audioStreams.first(where: { $0.id == choice.id })?.languageTag,
+           !lang.isEmpty {
+            UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
+        }
+        // Restart the transcode where the viewer is — mirror `reload(bitrateKbps:)`.
+        let resumeMs = currentResumeMs
+        didAutoRetry = false
+        removeObservers()
+        beginStreaming(resumeOffsetMsOverride: resumeMs)
+    }
+
     // MARK: - Playback speed (R5)
 
     /// Apply a new playback rate chosen in the Speed info tab. Persists the choice (so it
@@ -900,9 +991,21 @@ final class PlaybackController {
         }
         if let summary = item.summary, !summary.isEmpty {
             items.append(Self.metadataItem(identifier: .commonIdentifierDescription,
-                                           value: summary))
+                                           value: Self.infoPanelSummary(summary)))
         }
         return items
+    }
+
+    /// Cap the description fed to the system ⓘ Info tab. That card gives the description as
+    /// many lines as the text wants and pushes the TITLE off the top of the panel when a Plex
+    /// summary runs long (verified live) — the system only ellipsizes well past the point
+    /// where the layout has already broken. 240 still clipped the title (5 wrapped lines);
+    /// 150 keeps it to ~3 so the whole card fits. Word-boundary cut, then an ellipsis.
+    private static func infoPanelSummary(_ summary: String, limit: Int = 150) -> String {
+        guard summary.count > limit else { return summary }
+        let cut = summary.prefix(limit)
+        let trimmed = cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? String(cut)
+        return trimmed + "…"
     }
 
     /// Construct a single string-valued `AVMetadataItem` for the given common identifier.
@@ -1566,10 +1669,11 @@ final class TransportState {
 @Observable
 @MainActor
 final class StatsOverlayState {
-    /// True while the diagnostics panel is floated over the video.
-    private(set) var isShown = false
+    /// True while the diagnostics panel is floated over the video. Settable so the Stats
+    /// tab's switch can bind to it directly (`$state.isShown`).
+    var isShown = false
 
-    /// Flip the overlay's visibility (the Stats tab's Show/Hide launcher).
+    /// Flip the overlay's visibility. Idempotent companion to the Stats tab's binding.
     func toggle() { isShown.toggle() }
 
     /// Hide the overlay (the panel's close button). Idempotent.

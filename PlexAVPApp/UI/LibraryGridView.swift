@@ -118,7 +118,7 @@ struct LibraryGridView: View {
                             NavigationLink(value: item) {
                                 PosterCell(item: item, width: DS.Poster.gridMin)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.card)
                         }
                     }
                     .padding(DS.Space.xl)

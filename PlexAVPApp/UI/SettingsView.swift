@@ -1,12 +1,14 @@
 import SwiftUI
 import PlexKit
 
-/// Settings tab: current server + re-discover, download storage usage, and sign out.
+/// Settings tab: current server + re-discover, default streaming quality, download storage
+/// usage, and sign out.
 ///
-/// NOTE: the playback bitrate control used to live here, but quality now lives in the
-/// in-player Quality menu (which reloads the stream live and persists the choice to the
-/// shared `@AppStorage("maxVideoBitrateKbps")` key). The picker was removed from here to
-/// avoid two competing surfaces for the same setting.
+/// The "Streaming quality" picker (#21) and the in-player Quality tab are two views of the
+/// SAME persisted `@AppStorage("maxVideoBitrateKbps")` key and share one ladder
+/// (`StreamingQuality`): this picker sets the cap new playback sessions start at, while the
+/// in-player tab additionally reloads the live stream — a pick in either place is reflected
+/// in the other.
 struct SettingsView: View {
     let authManager: AuthManager
 
@@ -15,13 +17,36 @@ struct SettingsView: View {
 
     @State private var rediscovering = false
 
+    /// Default bitrate cap for NEW playback sessions — the same key `PlayerView` seeds each
+    /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
+    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
+
     var body: some View {
         Form {
             serverSection
+            playbackSection
             storageSection
             accountSection
         }
         .navigationTitle("Settings")
+    }
+
+    // MARK: Playback
+
+    private var playbackSection: some View {
+        SwiftUI.Section {
+            Picker(selection: $maxVideoBitrateKbps) {
+                ForEach(StreamingQuality.ladder) { option in
+                    Text(StreamingQuality.label(kbps: option.kbps)).tag(option.kbps)
+                }
+            } label: {
+                Label("Streaming quality", systemImage: "slider.horizontal.3")
+            }
+        } header: {
+            Text("Playback")
+        } footer: {
+            Text("The quality new streams start at. Changing quality inside the player updates this too.")
+        }
     }
 
     // MARK: Server
