@@ -8,6 +8,7 @@ import PlexKit
 /// visionOS pause while the headset is off and resume when it's worn again, so an
 /// in-progress download may appear "stuck" until the user puts the headset back on.
 public struct OfflineLibraryView: View {
+    @Environment(MusicPlayerController.self) private var musicPlayer
     @State private var manager: DownloadManager
     @State private var playing: DownloadRecord?
 
@@ -103,6 +104,9 @@ public struct OfflineLibraryView: View {
             HStack(spacing: 16) {
                 if isComplete {
                     Button {
+                        // Music and video share one audio session — yield music
+                        // before launching the offline player (#17).
+                        musicPlayer.pauseForVideo()
                         playing = record
                     } label: {
                         Image(systemName: "play.circle.fill").font(.title2)
@@ -137,8 +141,12 @@ public struct OfflineLibraryView: View {
         .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            if isComplete { playing = record }
-            else if isFailed { manager.retry(ratingKey: record.ratingKey) }
+            if isComplete {
+                musicPlayer.pauseForVideo()
+                playing = record
+            } else if isFailed {
+                manager.retry(ratingKey: record.ratingKey)
+            }
         }
     }
 

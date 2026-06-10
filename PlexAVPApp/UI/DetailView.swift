@@ -22,6 +22,7 @@ struct DetailView: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
+    @Environment(MusicPlayerController.self) private var musicPlayer
 
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
@@ -225,6 +226,9 @@ struct DetailView: View {
                     // Defense-in-depth (#15): music is filtered from browse, but never let
                     // a music item launch the video player. Unreachable in normal flow.
                     guard !detailed.isMusic else { return }
+                    // Video and music share one audio session — pause music and yield
+                    // the system transport so AirPods controls drive the video (#17).
+                    musicPlayer.pauseForVideo()
                     playLocalURL = nil
                     playingItem = detailed
                     presentingPlayer = true
@@ -251,6 +255,7 @@ struct DetailView: View {
     private var downloadButton: some View {
         if let local = localURL {
             Button {
+                musicPlayer.pauseForVideo()
                 playLocalURL = local
                 playingItem = detailed
                 presentingPlayer = true
