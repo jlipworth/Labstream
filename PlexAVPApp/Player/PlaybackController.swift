@@ -809,7 +809,7 @@ final class PlaybackController {
         do {
             try await client.send(request)
         } catch {
-            NSLog("PlaybackController: audio stream selection failed: \(error)")
+            NSLog("PlaybackController: audio stream selection failed: %@", String(describing: error))
             return
         }
         audioStreamIDOverride = choice.id
@@ -945,11 +945,11 @@ final class PlaybackController {
             if case .unsupported = response.decision {
                 // Best-effort: still attempt playback; PMS often plays despite an
                 // odd decision code. Logged for the integration pass.
-                NSLog("PlaybackController: transcode decision unsupported: \(String(describing: response.generalDecisionText))")
+                NSLog("PlaybackController: transcode decision unsupported: %@", String(describing: response.generalDecisionText))
             }
         } catch {
             guard !Task.isCancelled, generation == playbackGeneration else { return }
-            NSLog("PlaybackController: decision call failed (\(error)); attempting start.m3u8 anyway")
+            NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", String(describing: error))
         }
 
         // Seed the Stats-for-Nerds static facts (no token is ever read here).
