@@ -198,7 +198,19 @@ struct DetailView: View {
         }
         .background(artBackdrop)
         .navigationTitle(detailed.title)
-        .task { await refreshMetadata() }
+        .task {
+            await refreshMetadata()
+            // Deep-link autoplay (#24): a "Play …" intent armed the router right
+            // before pushing this view; consume it once metadata is in and present
+            // the player — the same sequence as tapping the Play button.
+            if DeepLinkRouter.shared.consumeAutoPlay(for: detailed.ratingKey),
+               !detailed.isMusic {
+                musicPlayer.pauseForVideo()
+                playLocalURL = nil
+                playingItem = detailed
+                presentingPlayer = true
+            }
+        }
         .fullScreenCover(isPresented: $presentingPlayer) {
             playerCover
         }

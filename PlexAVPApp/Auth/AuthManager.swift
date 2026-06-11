@@ -346,6 +346,8 @@ final class AuthManager {
     /// Clear all auth state and return to login. Call on sign-out or any 401.
     func signOut() {
         cancelPendingLogin()
+        // Library titles must not linger in system search after sign-out (#24).
+        SpotlightIndexer.deleteAll()
         appModel.isSwitchingBackend = false
         switch appModel.activeBackend {
         case .plex:
