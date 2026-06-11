@@ -137,6 +137,11 @@ struct HomeView: View {
             hubs = resp.mediaContainer.hub
             loadedServer = server
             loadState = .loaded
+            // System integration (#24): make the just-browsed items findable in
+            // Spotlight, and refresh the "Play <title> on VisionPlex" Siri phrase
+            // vocabulary (drawn from the entity query's suggestions).
+            SpotlightIndexer.index(hubs.hidingMusic.flatMap(\.metadata))
+            VisionPlexShortcuts.updateAppShortcutParameters()
         } catch {
             loadState = .failed(friendlyMessage(error))
         }

@@ -1,0 +1,129 @@
+import Foundation
+import Observation
+import PMSKit
+
+/// Bridges out-of-app entry points — App Intents (Siri/Shortcuts) and CoreSpotlight
+/// results — into the single-window UI (issue #24).
+///
+/// The app has ONE WindowGroup (see docs/DEVELOPMENT.md: no `openWindow` / second
+/// scene), so "open item X" means: land on the Home tab and push X onto its
+/// NavigationStack. Intents run in-process but outside the SwiftUI environment, so
+/// they can't reach the `@State`-owned `AppModel`/`AuthManager` directly; instead
+/// `ContentView` registers the live instances here at launch and intents talk to
+/// this process-lifetime singleton. `RootView` observes `pending` and performs the
+/// actual navigation.
+@MainActor
+@Observable
+final class DeepLinkRouter {
+    static let shared = DeepLinkRouter()
+
+    /// One navigation request from an intent or a Spotlight result.
+    ///
+    /// `id` is a nonce so two consecutive requests for the SAME item still trip
+    /// `.onChange` in RootView (Equatable on the payload alone would coalesce them).
+    struct Route: Equatable, Identifiable {
+        enum Target: Equatable {
+            /// A fully-formed item (an intent that already holds the metadata).
+            case item(MediaItem)
+            /// Just a ratingKey (a Spotlight hit / entity id); the consumer fetches
+            /// the metadata before navigating.
+            case ratingKey(String)
+        }
+        let id = UUID()
+        let target: Target
+        /// When true the destination should start playback, not just show detail.
+        let autoPlay: Bool
+    }
+
+    /// The route waiting to be performed. RootView consumes it (resets to `nil`)
+    /// once handled; it survives here untouched if set before RootView mounts
+    /// (cold launch from an intent while the restore splash is still up).
+    var pending: Route?
+
+    // MARK: - Live app objects
+
+    /// Registered by ContentView once the real instances exist. Weak: the router is
+    /// a process-lifetime singleton and must never extend object lifetimes —
+    /// AppModel/AuthManager are owned by ContentView's `@State`.
+    private(set) weak var appModel: AppModel?
+    private(set) weak var authManager: AuthManager?
+
+    func register(appModel: AppModel, authManager: AuthManager) {
+        self.appModel = appModel
+        self.authManager = authManager
+    }
+
+    /// Everything an intent/entity query needs to issue browse requests, or `nil`
+    /// when there's no signed-in, resolved server. Tokens stay inside — callers
+    /// pass this straight to the `BrowseAPI` builders and never persist any of it.
+    struct BrowseContext {
+        let server: URL
+        let token: String
+        let identity: ClientIdentity
+        let client: PlexClient
+    }
+
+    var browseContext: BrowseContext? {
+        guard let appModel,
+              let server = appModel.serverBaseURL,
+              let token = appModel.serverToken else { return nil }
+        return BrowseContext(server: server, token: token,
+                             identity: appModel.identity, client: appModel.client)
+    }
+
+    // MARK: - Requests
+
+    func open(ratingKey: String, autoPlay: Bool) {
+        pending = Route(target: .ratingKey(ratingKey), autoPlay: autoPlay)
+    }
+
+    func open(item: MediaItem, autoPlay: Bool) {
+        pending = Route(target: .item(item), autoPlay: autoPlay)
+    }
+
+    // MARK: - AutoPlay handshake
+
+    /// "Play X" intents need DetailView to start playback once it's on screen.
+    /// RootView arms this right before pushing the item; DetailView consumes it
+    /// from its `.task`. Time-boxed so an arm whose push somehow never landed can't
+    /// surprise-autoplay a manual visit to the same item minutes later.
+    private var autoPlayArm: (ratingKey: String, armedAt: ContinuousClock.Instant)?
+
+    func requestAutoPlay(forRatingKey ratingKey: String) {
+        autoPlayArm = (ratingKey, .now)
+    }
+
+    func consumeAutoPlay(for ratingKey: String) -> Bool {
+        guard let arm = autoPlayArm, arm.ratingKey == ratingKey else { return false }
+        autoPlayArm = nil
+        return arm.armedAt.duration(to: .now) < .seconds(30)
+    }
+
+    // MARK: - Session readiness (for intents)
+
+    /// One-shot guard so the router only ever kicks a single restore of its own.
+    private var didKickRestore = false
+
+    /// Wait until the app has a signed-in, resolved server — the precondition for
+    /// every intent/entity query. Returns `false` (never throws) when it can't get
+    /// there, so callers surface their own user-facing error.
+    ///
+    /// Launch sequencing: ContentView's `.task` normally runs `restoreSession()`
+    /// itself, so we first just wait for that to land. If it hasn't after a short
+    /// grace (e.g. the system launched us in the background for Shortcuts parameter
+    /// resolution, where the scene may not be connected), kick one restore directly.
+    func ensureBrowseReady(timeout: Duration = .seconds(12)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        let graceUntil = clock.now.advanced(by: .seconds(2))
+        while clock.now < deadline {
+            if let appModel, appModel.isBrowseReady { return true }
+            if clock.now >= graceUntil, !didKickRestore, let authManager {
+                didKickRestore = true
+                _ = await authManager.restoreSession()
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return appModel?.isBrowseReady ?? false
+    }
+}

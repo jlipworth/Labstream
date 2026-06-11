@@ -537,7 +537,28 @@ These reproduced on the headset but NOT in the simulator, so sim verification is
 
 ---
 
-## D. Deferred / optional (tracked in issues)
+## D. System integration (GH #24 — App Intents + Spotlight slice)
+
+- [ ] **Shortcuts: Play Media (GH #24)** — Shortcuts app → new shortcut → search "VisionPlex" →
+      **Play Media**. Tapping the "Title" parameter should suggest the On Deck list and allow
+      free-text search of the library (music never appears, per #15). Running the shortcut
+      foregrounds the app, lands on Home, pushes the item's DetailView, and starts playback
+      (resume point honored). For a SHOW, playback starts at the first unwatched-ordered episode
+      (first leaf); if episode resolution fails it falls back to opening the season browser.
+- [ ] **Shortcuts: Open Media (GH #24)** — same as above but only opens the DetailView, no
+      autoplay.
+- [ ] **Shortcuts: Continue Watching (GH #24)** — zero-parameter intent resumes the top On Deck
+      item; with an empty On Deck it errors with "There's nothing in Continue Watching right now."
+- [ ] **Intent while signed out (GH #24)** — after sign-out, any intent fails with the
+      "VisionPlex isn't signed in to a Plex server…" dialog; no crash, no half-open UI.
+- [ ] **Spotlight indexing (GH #24)** — browse Home + a library grid, then system search
+      (Home View search field): browsed titles appear (episodes under "Show · SxEy · Title").
+      Tapping a result opens the app and pushes that item's DetailView (no autoplay, no second
+      window). Sign-out removes the entries from system search.
+
+---
+
+## E. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
   direct-play `start.m3u8` when Streaming quality is "Direct Play / Maximum" and PMS can copy the
