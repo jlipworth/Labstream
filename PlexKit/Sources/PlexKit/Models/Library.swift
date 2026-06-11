@@ -48,15 +48,21 @@ public struct MetadataResponse: Decodable, Sendable {
 
     public struct Container: Decodable, Sendable {
         public let size: Int?
+        /// Full result count across ALL pages of a paged listing (PMS `totalSize`,
+        /// present when the request was paged with `X-Plex-Container-Start/-Size`).
+        /// Lets a grid pre-size its scroll range to the whole library.
+        public let totalSize: Int?
         public let metadata: [MediaItem]
         enum CodingKeys: String, CodingKey {
             case size
+            case totalSize
             case metadata = "Metadata"
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             self.size = try c.decodeIfPresent(Int.self, forKey: .size)
+            self.totalSize = try c.decodeIfPresent(Int.self, forKey: .totalSize)
             // `Metadata` may be absent (e.g. an empty container); treat as [].
             // Decode LOSSILY, element by element: some endpoints mix in rows that
             // don't fit `MediaItem` — `/status/sessions/history/all` keeps entries
