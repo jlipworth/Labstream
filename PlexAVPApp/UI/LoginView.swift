@@ -11,6 +11,12 @@ import PMSKit
 ///   2. We observe `authManager.state` and, once it reaches `.authenticated`,
 ///      close the web sheet if one is open (`webAuth.cancel()`). ContentView
 ///      then switches to `RootView` when `appModel.isAuthenticated` flips.
+///
+/// Visual language (#18): the welcome card follows the branding brainstorm's
+/// "blue cinema glow" direction — the logo tile sits in a cool-blue/warm-amber
+/// ambience that echoes the stripe colors of the mark, and "Plex" in the title
+/// picks up the wordmark's amber. Brand colors are local constants on purpose:
+/// no new catalog assets while #19's transparent glyph is in flight.
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -19,44 +25,20 @@ struct LoginView: View {
     @State private var working = false
     @State private var errorMessage: String?
 
+    /// Brand accents sampled from the VisionPlex artwork (mark stripe blue
+    /// ≈ #00A3FF, wordmark amber ≈ #FFB833).
+    private static let brandBlue = Color(red: 0.00, green: 0.64, blue: 1.00)
+    private static let brandAmber = Color(red: 1.00, green: 0.72, blue: 0.20)
+
     var body: some View {
         VStack(spacing: DS.Space.xl) {
-            // The real VisionPlex artwork as an app-icon-style tile in a soft glow (#18) —
-            // replaces the placeholder play.tv.fill SF Symbol.
-            ZStack {
-                Circle()
-                    .fill(.tint.opacity(0.18))
-                    .frame(width: 156, height: 156)
-                    .blur(radius: 24)
-                Image("VisionPlexLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 132, height: 132)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card + 8,
-                                                style: .continuous))
-            }
-
-            VStack(spacing: DS.Space.md) {
-                Text("VisionPlex")
-                    .font(.extraLargeTitle.bold())
-
-                Text("Sign in to your Plex account to browse and play your libraries in the headset.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 520)
-            }
+            header
 
             content
                 .padding(.top, DS.Space.sm)
 
             if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, DS.Space.lg)
-                    .padding(.vertical, DS.Space.md)
-                    .background(.red.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+                errorBanner(errorMessage)
             }
         }
         .padding(DS.Space.xxxl + DS.Space.md)
@@ -83,6 +65,53 @@ struct LoginView: View {
         }
     }
 
+    // MARK: - Header (logo tile + title + tagline)
+
+    /// App-icon-style logo tile in a two-tone brand ambience. The old flat tint
+    /// circle read as placeholder; this echoes the artwork's own palette — a cool
+    /// glow up-leading, a warm one down-trailing — kept subtle under the glass.
+    private var header: some View {
+        VStack(spacing: DS.Space.xl) {
+            ZStack {
+                Circle()
+                    .fill(Self.brandBlue.opacity(0.20))
+                    .frame(width: 150, height: 150)
+                    .blur(radius: 36)
+                    .offset(x: -36, y: -26)
+                Circle()
+                    .fill(Self.brandAmber.opacity(0.16))
+                    .frame(width: 150, height: 150)
+                    .blur(radius: 36)
+                    .offset(x: 36, y: 30)
+                // Single swap point for #19's transparent `VisionPlexGlyph` asset.
+                Image("VisionPlexLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 132, height: 132)
+                    .clipShape(logoTileShape)
+                    .overlay(logoTileShape.strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 10)
+            }
+
+            VStack(spacing: DS.Space.md) {
+                Text("Vision\(Text("Plex").foregroundStyle(Self.brandAmber))")
+                    .font(.extraLargeTitle.bold())
+
+                Text("Your whole Plex library, in your space.")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 520)
+            }
+        }
+    }
+
+    private var logoTileShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: DS.Radius.card + 8, style: .continuous)
+    }
+
+    // MARK: - Flow states
+
     @ViewBuilder
     private var content: some View {
         switch authManager.state {
@@ -92,41 +121,85 @@ struct LoginView: View {
             // the background the whole time; the in-headset browser is opt-in.
             VStack(spacing: DS.Space.lg) {
                 VStack(spacing: DS.Space.xs) {
-                    Text("Enter this code at plex.tv/link")
-                        .font(.headline)
+                    Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(Self.brandAmber))")
+                        .font(.title3)
                     Text("on your phone, tablet, or computer")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                Text(code)
-                    .font(.extraLargeTitle.monospaced().weight(.semibold))
-                    .tracking(6)
-                    .padding(.horizontal, DS.Space.xl)
-                    .padding(.vertical, DS.Space.md)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+
+                // The hero moment of sign-in: one glass cell per character (the
+                // link PIN is always 4 chars), Apple-pairing-code style, instead
+                // of a single cramped chip.
+                HStack(spacing: DS.Space.md) {
+                    ForEach(Array(code.enumerated()), id: \.offset) { _, character in
+                        Text(String(character))
+                            .font(.system(size: 54, weight: .semibold, design: .monospaced))
+                            .frame(width: 76, height: 96)
+                            .background(.thinMaterial, in: codeCellShape)
+                            .overlay(codeCellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                    }
+                }
+                .padding(.vertical, DS.Space.xs)
+
                 HStack(spacing: DS.Space.sm) {
                     ProgressView()
                     Text("Waiting for authorization…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+
                 Button("Open Plex sign-in in this headset instead") {
                     webAuth.start(url) { }
                 }
                 .buttonStyle(.bordered)
             }
         default:
-            Button {
-                Task { await startLogin() }
-            } label: {
-                Label("Sign in with Plex", systemImage: "person.crop.circle")
-                    .font(.title2)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 4)
+            VStack(spacing: DS.Space.lg) {
+                Button {
+                    Task { await startLogin() }
+                } label: {
+                    Label("Sign in with Plex", systemImage: "person.crop.circle")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(working)
+
+                Text("Signing in shows a short code you can enter from any device — no typing in the headset.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(working)
         }
+    }
+
+    private var codeCellShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+    }
+
+    // MARK: - Error presentation
+
+    /// Glass banner consistent with the DS chip family: material background with
+    /// a red hairline + icon, primary-colored text (legible on glass, unlike the
+    /// old all-red label on a red wash).
+    private func errorBanner(_ message: String) -> some View {
+        Label {
+            Text(message)
+                .foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+        .font(.callout)
+        .multilineTextAlignment(.leading)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.vertical, DS.Space.md)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+            .strokeBorder(.red.opacity(0.35), lineWidth: 0.5))
     }
 
     private func startLogin() async {
