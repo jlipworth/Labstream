@@ -1761,13 +1761,19 @@ final class PlaybackController {
     /// refill), the current transcode session will never deliver — restart the transcode at
     /// that offset (in-place `beginStreaming`, mirroring `reload(bitrateKbps:)`; this is a
     /// stall, not a surfaced failure, so no AVKit wedge and no `.id()` view rebuild needed).
-    /// A jump that recovered on its own — buffered content, the transcoder caught up, or the
-    /// user is simply paused — is a logged no-op.
+    /// A jump that recovered on its own — buffered content, or the transcoder caught up — is
+    /// a logged no-op. (A paused player with a HEALTHY buffer is also left alone; only
+    /// paused-AND-starved restarts, see the buffer-flags note below.)
     private func confirmSeekStallRestart() {
         seekRestartTimer?.invalidate()
         seekRestartTimer = nil
         guard isStreaming, !playbackError.isFailed, let current = player.currentItem else { return }
-        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+        // Starvation is judged by the BUFFER FLAGS, not `timeControlStatus`: AVKit leaves the
+        // player `.paused` (not `.waitingToPlayAtSpecifiedRate`) after an interactive scrub
+        // that lands starved — proven live, status=0 bufferEmpty=1 in the #25 logs — and a
+        // paused-but-starved session can never refill at the target either. Only an actively
+        // `.playing` player is left alone.
+        guard player.timeControlStatus != .playing,
               current.isPlaybackBufferEmpty,
               !current.isPlaybackLikelyToKeepUp else {
             let okMsg = String(format: "[VP] seek: jump recovered without restart (status=%d bufferEmpty=%d keepUp=%d)",
