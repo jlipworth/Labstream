@@ -112,6 +112,12 @@ metadata, and review-specific release automation can be handled in a later publi
   swiftinterface: just `status`/`fromExperience`/`toExperience`), so a system collapse is
   detected as "completed expanded→embedded we didn't flag" (`appInitiatedCollapse`) and treated
   as Close. Trade-off (accepted): the chrome's shrink-to-window control also closes the player.
+- **SIMULATOR ONLY — leftmost rail item needs a double-click.** Sweeping the pointer in
+  from the left passes simulated gaze over the leading TabView ornament, which expands
+  (labels overlay the content edge) and its region captures the first click — seen in logs
+  as a `MRUIFeedbackTypeCircularButtonTouchDown` feedback with no navigation. Not an app
+  bug and not fixable app-side (the ornament is system-managed; real gaze can't target the
+  tab bar and a poster at once). Workaround: approach leftmost content from above/below/right.
 - **Transcode sessions must be stopped explicitly** — HLS gives PMS no end-of-playback
   signal, so a closed/rebuilt player orphans a live FFmpeg job until the server's
   inactivity reaper runs (seen live: open-session pile-up on the PMS pod). Teardown fires
