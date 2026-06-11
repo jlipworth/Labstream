@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 // MARK: - Episode hierarchy decoding
 

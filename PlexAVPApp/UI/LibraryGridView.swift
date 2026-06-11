@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Libraries tab: lists the server's sections (`GET /library/sections`); selecting
 /// one pushes a `LibraryGridView` of its items.

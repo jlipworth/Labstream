@@ -9,7 +9,7 @@ import Foundation
 /// show→season→episode), so only the top-level listings live here.
 ///
 /// Kept pure (no networking) so the URLs/params are unit-testable, mirroring the
-/// other PlexKit builders (`ChildrenRequest`, `OptimizeRequest`, …).
+/// other PMSKit builders (`ChildrenRequest`, `OptimizeRequest`, …).
 public enum MusicRequest {
 
     /// List artists in a music section:

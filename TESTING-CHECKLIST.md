@@ -1,7 +1,7 @@
 # Testing Checklist — live verification pass
 
-_Everything below is implemented + build-verified on `main` (app builds green; the full `PlexKit`
-suite passes — run `cd PlexKit && swift test`) but the unchecked items are NOT yet human-verified
+_Everything below is implemented + build-verified on `main` (app builds green; the full `PMSKit`
+suite passes — run `cd PMSKit && swift test`) but the unchecked items are NOT yet human-verified
 in the headset/simulator. Work through them in one pass._
 
 **Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlex/issues)).
@@ -193,7 +193,7 @@ required**.
 
 ## D. Deferred / optional (tracked in issues)
 
-- **GH #7 — DeviceProfile + Direct Stream within cap:** PlexKit probe groundwork
+- **GH #7 — DeviceProfile + Direct Stream within cap:** PMSKit probe groundwork
   (`directPlayProbeDecisionURL()`) shipped with unit coverage; the app-side half (actually loading
   direct-play instead of `start.m3u8`) is deferred — it touches resume-priming, `subtitles=auto`,
   and the **CRITICAL `Safari` client-profile constraint** (see docs/DEVELOPMENT.md), so it needs its

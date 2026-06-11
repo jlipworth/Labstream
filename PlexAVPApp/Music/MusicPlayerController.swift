@@ -4,7 +4,7 @@ import AVKit
 import AVFAudio
 import MediaPlayer
 import UIKit
-import PlexKit
+import PMSKit
 
 /// Queue-based music playback for the Plexamp-style music module (#17).
 ///

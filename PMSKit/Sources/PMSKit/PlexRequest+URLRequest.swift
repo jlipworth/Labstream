@@ -4,7 +4,7 @@ extension PlexRequest {
     /// Compose the final `URLRequest` from this descriptor: merge `queryItems`
     /// into the URL, set the HTTP method, apply headers, and attach the body.
     ///
-    /// Lives in PlexKit (not the app) so the wire shape is unit-testable next to
+    /// Lives in PMSKit (not the app) so the wire shape is unit-testable next to
     /// the builders — load-bearing for filters whose operator rides in the query
     /// item NAME (`ratingCount>>`, `album.subformat!`) and must percent-encode.
     public func urlRequest() -> URLRequest {

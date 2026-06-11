@@ -1,5 +1,5 @@
 import Testing
-@testable import PlexKit
+@testable import PMSKit
 
 // Three chapters starting at 0ms, 12_000ms, 28_000ms.
 private let chapters: [Chapter] = [

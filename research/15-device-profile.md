@@ -1,7 +1,7 @@
 # 15 — Apple Vision Pro DeviceProfile: Direct Play for in-cap content (RESEARCH / PROPOSAL ONLY)
 
 > **Update (2026-06): partially shipped.** The decision-only probe slice
-> (`directPlayProbeDecisionURL()` + `visionOSDirectPlayProbe`) landed in PlexKit with
+> (`directPlayProbeDecisionURL()` + `visionOSDirectPlayProbe`) landed in PMSKit with
 > unit coverage; the app-side half (loading direct-play instead of `start.m3u8`) is
 > deferred and tracked as [GitHub issue #7](https://github.com/jlipworth/VisionPlex/issues/7).
 > (File renamed from `13-device-profile.md` — the number collided with
@@ -16,9 +16,9 @@
 > Cross-refs: `research/09-transcode-api-deep-dive.md` (the wire format and
 > decision vocabulary this builds on), `research/10-apple-media-api-inventory.md`
 > (AVFoundation surface). Source of truth in code:
-> `PlexKit/Sources/PlexKit/Transcode/TranscodeRequest.swift`,
-> `PlexKit/Sources/PlexKit/Transcode/DeviceProfile.swift`,
-> `PlexKit/Sources/PlexKit/Transcode/DecisionResponse.swift`,
+> `PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift`,
+> `PMSKit/Sources/PMSKit/Transcode/DeviceProfile.swift`,
+> `PMSKit/Sources/PMSKit/Transcode/DecisionResponse.swift`,
 > `PlexAVPApp/Player/PlaybackController.swift`.
 
 ---

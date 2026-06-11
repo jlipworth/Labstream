@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Compact persistent playback bar, mounted as `RootView`'s bottom scene ornament so
 /// music keeps playing (and stays controllable) while browsing. Renders nothing when

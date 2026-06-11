@@ -1,6 +1,6 @@
 import SwiftUI
 import AVKit
-import PlexKit
+import PMSKit
 
 /// SwiftUI wrapper around `AVPlayerViewController` that plays a Plex title in the
 /// visionOS system cinema environment.

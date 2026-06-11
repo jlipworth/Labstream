@@ -1,6 +1,6 @@
 import SwiftUI
 import AVKit
-import PlexKit
+import PMSKit
 
 /// Builds and owns the coherent in-player control surface layered on top of the native
 /// `AVPlayerViewController`, matching the official Plex / Emby players.

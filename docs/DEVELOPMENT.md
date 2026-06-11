@@ -12,8 +12,8 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
-# PlexKit unit tests
-(cd PlexKit && swift test)
+# PMSKit unit tests
+(cd PMSKit && swift test)
 
 # Repo hygiene (redaction/signing guardrails)
 ./scripts/ci-hygiene.sh
@@ -28,7 +28,7 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
 
 - App bundle id: `com.jlipworth.VisionPlex` · Sim: "Apple Vision Pro" (visionOS 26.5).
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
-  `PlexKit/Sources`, `PlexKit/Tests`) — no `project.pbxproj` edits needed.
+  `PMSKit/Sources`, `PMSKit/Tests`) — no `project.pbxproj` edits needed.
 
 ## Personal-device signing
 

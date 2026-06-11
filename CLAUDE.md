@@ -1,6 +1,6 @@
 # VisionPlex (PlexAVPApp) — Claude Code notes
 
-visionOS Plex client. App code in `PlexAVPApp/`, networking/model layer in `PlexKit/`
+visionOS Plex client. App code in `PlexAVPApp/`, networking/model layer in `PMSKit/`
 (local Swift package with its own tests). Design rationale and hard-won AVKit findings
 live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the player.
 
@@ -25,8 +25,8 @@ APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/P
 xcrun simctl install booted "$APP"
 xcrun simctl terminate booted com.jlipworth.VisionPlex; xcrun simctl launch booted com.jlipworth.VisionPlex
 
-# PlexKit unit tests
-cd PlexKit && swift test
+# PMSKit unit tests
+cd PMSKit && swift test
 ```
 
 New Swift files are picked up automatically (file-system-synchronized groups) — never
@@ -58,7 +58,7 @@ When a fix is speculative, instrument it with `NSLog` first and read the log aft
 user exercises it — one build cycle instead of two. NEVER NSLog a raw string that may
 contain `%` — always `NSLog("%@", str)`.
 
-SourceKit diagnostics like "No such module 'PlexKit'/'UIKit'" are phantom noise in this
+SourceKit diagnostics like "No such module 'PMSKit'/'UIKit'" are phantom noise in this
 project — `xcodebuild` is the only truth.
 
 Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).

@@ -1,6 +1,6 @@
 import SwiftUI
 import UIKit
-import PlexKit
+import PMSKit
 
 /// Async artwork loader for Plex thumbnails / art.
 ///

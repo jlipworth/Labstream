@@ -1,5 +1,5 @@
 import Testing
-@testable import PlexKit
+@testable import PMSKit
 
 @Test func headersIncludeRequiredPlexFields() {
     let id = ClientIdentity(clientIdentifier: "ABC-123",

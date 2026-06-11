@@ -13,7 +13,7 @@ import Foundation
 /// are additive params PMS ignores when absent.
 ///
 /// Kept pure (no networking) so the URL/params are unit-testable, mirroring the other
-/// PlexKit builders (`TimelineRequest`, `OptimizeRequest`, …). The UI's `BrowseAPI`
+/// PMSKit builders (`TimelineRequest`, `OptimizeRequest`, …). The UI's `BrowseAPI`
 /// delegates to this so all child-fetch wiring has one source of truth.
 public enum ChildrenRequest {
     public static func children(server: URL,

@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 private let server = URL(string: "https://192.168.1.10:32400")!
 private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex", version: "0.1.0", deviceName: "AVP")
