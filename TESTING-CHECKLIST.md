@@ -38,10 +38,13 @@ required**.
 - [x] **Quality-reload keeps playhead** ✅ verified in sim — switching the Mbps cap mid-playback
       rebuffers briefly then resumes at the same playhead; a normal Resume lands at the right offset
       with no double-seek.
-- [~] **Failed-playback error UI + retry (GH #8)** — ⏸️ live test tracked in the issue. Force a bad
-      stream (kill network) → one silent auto-retry, then a "Playback failed" overlay with Retry
-      (resumes at last playhead) + Close; no spinner/controls stacked over the dialog; works in the
-      expanded state too.
+- [x] **Failed-playback error UI + retry (GH #8)** — ✅ VERIFIED live (expanded state, network
+      kill): stall watchdog → silent auto-retry → Retry pill in the contextualActions (the only
+      surface that renders in expanded; the central dialog is the windowed counterpart). Retry
+      collapses to windowed first, rebuilds, re-expands, and resumes at the playhead — including
+      retry-while-still-offline twice (failure re-surfaces cleanly) then a third retry that
+      recovered. The windowed dialog no longer flashes during the collapse (failure flag is
+      cleared when the pill kicks off the retry).
 - [~] **Progress scrobble / mark-watched** — watch past ~90% → marked watched and leaves/refreshes
       Continue Watching; stop mid-way → reopening offers Resume at that offset.
 - [~] **Download integrity + progress** — ⏸️ awaiting final human check. Fresh download progresses
