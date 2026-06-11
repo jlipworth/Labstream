@@ -12,13 +12,12 @@ test fixtures use a fake token (`"tok"`). The repo is currently **private**.
 
 ### The one blocker — real server identity is in the repo
 
-The owner's real Plex hostname (`plex.example.internal`) and LAN IP (`192.0.2.10`) appear:
+The owner's real Plex hostname and LAN IP appeared (literals deliberately not repeated here):
 
-1. **In the current tree**, as literal guard strings:
-   - `scripts/ci-hygiene.sh:104-105` — a "forbidden strings" scanner that embeds the very
-     secrets it is meant to block.
-   - `docs/superpowers/plans/2026-06-10-signing-repo-readiness.md:181` — quotes that guard regex.
-2. **In git history** — 6 commits contain the hostname, 5 contain the IP.
+1. **In the current tree**, as literal guard strings — `scripts/ci-hygiene.sh` (a "forbidden
+   strings" scanner that embedded the very secrets it was meant to block) and a planning doc that
+   quoted that regex.
+2. **In git history** — 6 commits contained the hostname, 5 contained the IP.
 
 Making the repo public exposes both the tree and the full history. This must be cleaned first.
 
@@ -39,25 +38,26 @@ builds green against the renamed package.
 
 ## Plan A — Public-repo cleanup (execute now)
 
-Decision (owner): **rewrite history with `git-filter-repo`**, preserving all 89 commits.
+Decision (owner): **rewrite history with `git-filter-repo`**, preserving all commits.
 
 Ordered steps:
 
 1. **Safety backup.** `git bundle create ../visionplex-backup-<stamp>.bundle --all` so the
    pre-rewrite state is fully recoverable.
-2. **Rewrite the tree guard first.** Change `scripts/ci-hygiene.sh` so it detects the forbidden
-   host/IP **without storing them in plaintext** — match against base64-encoded needles decoded at
-   runtime (the literal never appears in the repo). Keep the generic `X-Plex-Token:` / `PLEX_TOKEN=`
-   checks as-is. Fix the quoted regex in the plan doc the same way (or genericize it). Commit.
-3. **Rewrite history.** Run `git-filter-repo --replace-text` with:
-   - `plex.example.internal==>plex.example.internal`
-   - `192.0.2.10==>192.0.2.10`
-   This rewrites every ref (all branches: `main`, `icon/19-layered`, `music/17-22-redesign`, and
-   local close-A/B/C). All commit SHAs change.
+2. **Rewrite the tree guard first — DONE.** `scripts/ci-hygiene.sh` no longer stores the host/IP
+   at all: it now keeps only the generic `X-Plex-Token:` / `PLEX_TOKEN=` markers plus a
+   **one-way SHA-256 fingerprint** guard. The plaintext lives nowhere in the repo, yet any tracked
+   file that reintroduces the exact hostname or IP hashes to a stored digest and fails the build
+   (portable across Alpine `sha256sum` / macOS `shasum`). The planning doc that quoted the old
+   regex is scrubbed in the same pass.
+3. **Rewrite history.** Run `git-filter-repo --replace-text` with an off-repo rules file mapping the
+   real hostname/IP (and any bare domain fragment) to the documentation placeholders
+   `plex.example.internal` / `192.0.2.10`. This rewrites every ref (all branches: `main`,
+   `icon/19-layered`, `music/17-22-redesign`, and the local close-A/B/C). All commit SHAs change.
 4. **Re-add origin and force-push** all branches (`filter-repo` drops the remote by design).
-5. **Verify clean:** `git log --all -S'example'` and `-S'192.0.2.10'` both return nothing;
+5. **Verify clean:** a history search (`git log --all -S …`) for the real host/IP returns nothing;
    `./scripts/ci-hygiene.sh` passes; `git grep` over HEAD is clean.
-6. **Polish:** set GitHub `description` + topics confirm; normalize test IP (optional).
+6. **Polish:** set GitHub `description`; normalize test IP (optional).
 7. **GATED — owner flips visibility to public** (or authorizes me to). This is the final, deliberate
    step; nothing auto-publishes.
 
