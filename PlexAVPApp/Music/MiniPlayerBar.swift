@@ -14,7 +14,6 @@ struct MiniPlayerBar: View {
     private let artSize: CGFloat = 44
 
     var body: some View {
-        let _ = NSLog("[VP] MiniPlayerBar body: current=%@", player.current?.title ?? "nil")
         // The sheet must hang off a node that stays in the hierarchy while the bar
         // itself is gone — scene ornaments float ABOVE window sheets, so leaving the
         // bar visible under NowPlayingView reads as a dead duplicate control.

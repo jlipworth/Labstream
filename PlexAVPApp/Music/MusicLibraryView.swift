@@ -246,13 +246,6 @@ private struct MusicHomePivot: View {
                                                    identity: appModel.identity,
                                                    sectionKey: section.key)
             let resp = try await appModel.client.send(hubsReq, as: HubsResponse.self)
-            // Phase-0 evidence (MUSIC-DESIGN §8): what hubs does THIS PMS return, with
-            // which identifiers and item types? Read back via `log show`.
-            for hub in resp.mediaContainer.hub {
-                NSLog("[VP] music hub: id=%@ title=%@ type=%@ size=%d",
-                      hub.hubIdentifier ?? "nil", hub.title, hub.type ?? "nil",
-                      hub.metadata.count)
-            }
             hubs = resp.mediaContainer.hub.compactMap { hub in
                 // The played hub carries ARTISTS; our history-songs rail replaces it.
                 // Prefix-match the identifier; exact ids drift across PMS versions.
