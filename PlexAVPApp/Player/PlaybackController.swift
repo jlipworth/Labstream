@@ -783,10 +783,6 @@ final class PlaybackController {
     /// decoded item. Returns an empty array when the metadata carries no audio streams (the
     /// tab then falls back to its empty state).
     func loadAudioStreamChoices() -> [AudioStreamChoice] {
-        NSLog("[VP] audio tab: refreshed=%d mediaCount=%d streams=%d",
-              refreshedItem != nil ? 1 : 0,
-              (refreshedItem ?? item).media?.count ?? -1,
-              streamingPart?.audioStreams.count ?? -1)
         guard let part = streamingPart else { return [] }
         let streams = part.audioStreams
         guard !streams.isEmpty else { return [] }
