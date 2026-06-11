@@ -54,8 +54,16 @@ struct RootView: View {
         .onChange(of: musicPlayer.navigationRequest) { _, item in
             guard let item else { return }
             musicPlayer.navigationRequest = nil
+            NSLog("[VP] goTo %@ '%@': from tab=%@ pathCount=%d",
+                  item.type, item.title, String(describing: selection), musicPath.count)
             selection = .music
-            musicPath.append(item)
+            // Push on the NEXT runloop tick: appending in the same transaction as
+            // the tab switch can land before the stack is mounted, which leaves the
+            // back button popping a stack the UI never showed.
+            Task { @MainActor in
+                musicPath.append(item)
+                NSLog("[VP] goTo pushed: pathCount=%d", musicPath.count)
+            }
         }
         .environment(appModel)
         .environment(downloadManager)

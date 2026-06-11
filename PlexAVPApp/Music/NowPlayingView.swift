@@ -14,36 +14,35 @@ struct NowPlayingView: View {
     @State private var isScrubbing = false
     @State private var scrubSeconds: Double = 0
 
-    /// Hero artwork ceiling; the live size shrinks to keep the transport on screen.
-    private let artSize: CGFloat = 420
+    /// Hero artwork size — small enough that title, scrubber and transport all fit
+    /// in the sheet without scrolling (420 pushed the controls below the fold; a
+    /// GeometryReader-driven size broke the sheet's centering — keep this fixed).
+    private let artSize: CGFloat = 300
 
     var body: some View {
-        GeometryReader { geo in
-            let hero = heroArtSize(for: geo.size)
-            ZStack {
-                artBackdrop
+        ZStack {
+            artBackdrop
 
-                ScrollView {
-                    VStack(spacing: DS.Space.xl) {
-                        errorBanner
+            ScrollView {
+                VStack(spacing: DS.Space.xl) {
+                    errorBanner
 
-                        PosterImage(path: artPath, width: hero, height: hero,
-                                    cornerRadius: DS.Radius.poster)
-                            .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
-                                                                         style: .continuous)))
+                    PosterImage(path: artPath, width: artSize, height: artSize,
+                                cornerRadius: DS.Radius.poster)
+                        .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
+                                                                     style: .continuous)))
 
-                        titleBlock
-                        scrubber
-                            .frame(maxWidth: max(hero, 360))
-                        transportRow
+                    titleBlock
+                    scrubber
+                        .frame(maxWidth: 420)
+                    transportRow
 
-                        if !player.queue.isEmpty {
-                            upNext
-                        }
+                    if !player.queue.isEmpty {
+                        upNext
                     }
-                    .padding(DS.Space.xxl)
-                    .frame(maxWidth: .infinity)
                 }
+                .padding(DS.Space.xxl)
+                .frame(maxWidth: .infinity)
             }
         }
         // visionOS sheets have no system dismiss affordance, so every sheet needs an
@@ -66,12 +65,6 @@ struct NowPlayingView: View {
     /// Album-first art (track thumbs 404 on some PMS builds — see `musicArtPath`).
     private var artPath: String? {
         player.current?.musicArtPath
-    }
-
-    /// Shrink the hero art so title, scrubber and transport fit WITHOUT scrolling
-    /// (~440pt of chrome below the art); floor it so a short sheet still shows art.
-    private func heroArtSize(for size: CGSize) -> CGFloat {
-        min(artSize, max(200, size.height - 440))
     }
 
     // MARK: - Backdrop
@@ -329,7 +322,7 @@ struct NowPlayingView: View {
             .background(.regularMaterial,
                         in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         }
-        .frame(maxWidth: artSize + DS.Space.xxxl * 2)
+        .frame(maxWidth: 520)
     }
 }
 

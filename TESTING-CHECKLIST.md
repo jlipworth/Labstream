@@ -165,8 +165,15 @@ required**.
       sheet is up and returns on dismissal.
 - [ ] **Go to artist / album** — in Now Playing, tapping the artist line opens the artist
       page and the album line opens the album page (sheet closes, Music tab pushes).
-- [ ] **Now Playing fits unscrolled** — art scales down so title, scrubber and transport
-      are all visible without scrolling; Up Next remains below the fold.
+- [ ] **Now Playing fits unscrolled** — smaller (300pt) art so title, scrubber and
+      transport are all visible without scrolling AND centered (the first attempt's
+      GeometryReader broke sheet alignment); Up Next remains below the fold.
+- [ ] **Scrollbar spans the full library** — Artists/Albums grids pre-size to the
+      section's totalSize: dragging the scroll indicator to the bottom lands on the
+      TRUE end of the list in one motion; rows passed over fill in as shimmer
+      placeholders → art when their page arrives (#23 part 2; A–Z rail still open).
+- [ ] **Go to artist/album back button** — after a go-to from Now Playing, Back pops
+      to where the Music tab previously was. (Instrumented: `[VP] goTo` NSLogs.)
 
 ---
 
