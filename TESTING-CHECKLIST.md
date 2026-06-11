@@ -180,10 +180,14 @@ required**.
       All load()s now no-op when already loaded; pull-to-refresh, sort changes and server
       changes still refetch. Applies to Music root/pivots/artist/album AND Home,
       Libraries, library grid, season browser, Search.
-- [ ] **Album page artist link** — artist name under the album title pushes the artist
-      page (falls back to track metadata when the album item lacks parent linkage).
-- [ ] **Episode page show link** — show name above an episode title pushes the show's
-      season browser.
+- [x] **Album page artist link** — ✅ verified live: artist name under the album title
+      pushes the artist page (falls back to track metadata when the album item lacks
+      parent linkage).
+- [x] **Episode page show link** — ✅ verified live: show name above an episode title
+      pushes the show's season browser.
+- [x] **Stop controls** — ✅ verified live: mini-bar ✕ and Now Playing ⏹ end the session
+      (full teardown: stopped scrobble, session deactivated, queue cleared, bar gone);
+      playing again afterward re-prepares the session cleanly.
 
 ---
 
