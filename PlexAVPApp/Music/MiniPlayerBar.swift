@@ -48,6 +48,22 @@ struct MiniPlayerBar: View {
                     .padding(DS.Space.lg)
                     .accessibilityLabel("Close")
                 }
+                // Stop ends the session outright (vs ✕, which just tucks the sheet
+                // away and leaves the music playing behind the mini bar).
+                .overlay(alignment: .topLeading) {
+                    Button {
+                        player.stop()
+                        presentNowPlaying = false
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.body.weight(.semibold))
+                            .padding(DS.Space.md)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.circle)
+                    .padding(DS.Space.lg)
+                    .accessibilityLabel("Stop music")
+                }
                 .presentationSizing(.fitted)
         }
     }
@@ -88,6 +104,19 @@ struct MiniPlayerBar: View {
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
+
+                // "Turn the music off": full teardown — clears the queue, so the bar
+                // (current == nil) removes itself.
+                Button {
+                    player.stop()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, DS.Space.sm)
+                .accessibilityLabel("Stop music")
             }
             .padding(.horizontal, DS.Space.lg)
             .frame(height: 64)
