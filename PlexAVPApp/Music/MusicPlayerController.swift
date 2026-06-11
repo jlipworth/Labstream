@@ -58,6 +58,11 @@ final class MusicPlayerController {
     /// Whether playback is actively running (mirrors the player's `timeControlStatus`).
     private(set) var isPlaying = false
 
+    /// Set by Now Playing's "go to artist/album" taps; `RootView` consumes it by
+    /// switching to the Music tab and pushing the item onto its navigation stack
+    /// (the sheet itself sits outside any NavigationStack, so it can't push).
+    var navigationRequest: MediaItem?
+
     /// Live playhead (seconds), updated by a 0.5s periodic time observer.
     private(set) var elapsedSeconds: Double = 0
 

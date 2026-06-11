@@ -395,11 +395,10 @@ private struct MusicTrackRail: View {
         }
     }
 
-    /// Track art: its own thumb when present, else the album's.
+    /// Track cells show the resolved music art (album cover; track thumbs 404 here).
     private func displayItem(for track: MediaItem) -> MediaItem {
-        guard track.thumb == nil else { return track }
-        return MediaItem(ratingKey: track.ratingKey, title: track.title,
-                         type: track.type, thumb: track.parentThumb)
+        MediaItem(ratingKey: track.ratingKey, title: track.title,
+                  type: track.type, thumb: track.musicArtPath)
     }
 
     private func play(from tapped: MediaItem) async {
@@ -684,6 +683,19 @@ private struct MusicSkeleton: View {
 }
 
 // MARK: - Shared music cell & geometry
+
+extension MediaItem {
+    /// Best artwork path for a music item. Proven live against this PMS: track-level
+    /// `thumb` paths 404 (PMS advertises them anyway), and a `…/thumb/-1` suffix is
+    /// the server's "no art" sentinel (also a 404). So tracks prefer the album cover
+    /// (`parentThumb`), then artist art; everything skips `/-1` paths.
+    var musicArtPath: String? {
+        let candidates = kind == .track
+            ? [parentThumb, grandparentThumb, thumb, art]
+            : [thumb, parentThumb, art]
+        return candidates.compactMap { $0 }.first { !$0.hasSuffix("/-1") }
+    }
+}
 
 /// Square-art geometry for music (album covers and artist portraits are 1:1, unlike
 /// the 2:3 posters in `DS.Poster`). Internal so every music view shares one scale.
