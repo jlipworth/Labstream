@@ -323,6 +323,11 @@ final class PlayerControlSurface {
                                         image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                     guard let self else { return }
                     Task { @MainActor in
+                        // Retry is now in flight and this controller is about to be
+                        // discarded — clear the surfaced failure FIRST so the windowed
+                        // `PlaybackErrorOverlay` (which observes it) doesn't flash a second
+                        // "Retry" dialog during the collapse below (seen live, GH #8).
+                        self.controller.playbackError.clear()
                         // Rebuilding while the EXPANDED cinema scene is up wedges it (GH #8,
                         // live: black, tap-dead player after Retry): the `.id()` bump
                         // dismantles the expanded VC and auto-expands a fresh one into the
@@ -332,7 +337,6 @@ final class PlayerControlSurface {
                         // autoExpand re-enters the cinema experience cleanly.
                         if let pvc = self.playerVC,
                            pvc.experienceController.experience != .embedded {
-                            NSLog("[VP] retry: collapsing expanded scene before rebuild")
                             self.appInitiatedCollapse = true
                             _ = await pvc.experienceController.transition(to: .embedded)
                         }
