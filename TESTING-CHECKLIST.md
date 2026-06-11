@@ -99,12 +99,19 @@ required**.
       Chapters tab also no longer vanishes on a fast Play: the player backfills
       chapters/markers itself (`loadChaptersIfNeeded`) instead of racing DetailView's
       metadata refresh.
-- [x] **Hover highlight hugs cards (GH #20)** — ✅ VERIFIED (Home rail poster): the highlight
-      hugs the artwork's rounded rect, no capsule bleed. Final mechanism: card links use a
-      custom `.buttonStyle(.card)` (custom styles get NO automatic hover effect — reshaping
-      or disabling the automatic one both failed live) + explicit `.gazeHighlight()` on the
-      artwork (episode rows: whole material card). Music cells share the fix; eyeball during
-      the #17 music pass.
+- [x] **Card clicks route to the right card (was: leftmost-poster misrouting)** — ✅ VERIFIED
+      (Home rail, tap-log instrumented): taps across the leftmost card's full extent open THAT
+      card. Root cause: ANY custom SwiftUI `ButtonStyle` gets the link's gaze region registered
+      displaced (~1.35× about the window center) — see the gotcha in docs/DEVELOPMENT.md. Fix:
+      every card/row link now uses `.cardLink()` (built-in `.plain` + a `contentShape` that
+      shapes its automatic highlight); `CardButtonStyle`/`.gazeHighlight()` are deleted.
+      - [ ] Spot-check routing on the migrated surfaces: season grid + episode rows (Detail),
+            library grid, search rails, chapter cards (player ⓘ Chapters), music rails/grids,
+            album/artist/Now Playing track rows — first/last items especially.
+      - [ ] **Highlight regression eyeball (supersedes GH #20's old mechanism):** `.plain`'s
+            highlight reads bigger than the old inset one, "workable for now" on Home posters
+            (user-accepted). Check it isn't unbearable on track/episode rows, where the old
+            chip highlight sat inset inside the material card.
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
