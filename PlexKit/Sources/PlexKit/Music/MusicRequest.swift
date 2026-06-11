@@ -118,6 +118,46 @@ public enum MusicRequest {
                    ])
     }
 
+    /// Albums by OTHER artists containing this artist's tracks ("Appears On" —
+    /// Various Artists compilations, features):
+    /// `GET …/all?type=9&track.originalTitle={artistTitle}`.
+    ///
+    /// Compilation tracks carry the performing artist as the track's
+    /// `originalTitle` TEXT; PMS does not link them to the artist node (proven
+    /// live: every artist-scoped hub showed 0 while these tracks existed).
+    /// The filter is an EXACT string match — PMS has no contains operator on
+    /// the wire (`~=` is silently ignored, substrings return 0) — so credit
+    /// strings like "Artist feat. X" are missed. Known v1 limitation.
+    ///
+    /// Callers should drop albums the artist already owns (artist.id overlap).
+    public static func appearsOnAlbums(server: URL,
+                                       token: String,
+                                       identity: ClientIdentity,
+                                       sectionKey: String,
+                                       artistTitle: String) -> PlexRequest {
+        sectionAll(server: server, token: token, identity: identity,
+                   sectionKey: sectionKey, type: 9,
+                   extraQueryItems: [
+                       .init(name: "track.originalTitle", value: artistTitle),
+                       .init(name: "sort", value: "originallyAvailableAt:desc"),
+                   ])
+    }
+
+    /// The artist-page shelf taxonomy as PMS provides it (Plexamp's structure):
+    /// `GET /library/metadata/{ratingKey}/related?excludeFields=summary` →
+    /// hubs like `artist.albums.singles` "Singles & EPs", `.compilation`,
+    /// `.live`, `.remix`, plus `artist.similar`. Decodes via `HubsResponse`;
+    /// prefix-match identifiers, skip size=0 hubs.
+    public static func relatedHubs(server: URL,
+                                   token: String,
+                                   identity: ClientIdentity,
+                                   ratingKey: String) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)/related"),
+                    method: "GET",
+                    queryItems: [.init(name: "excludeFields", value: "summary")],
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
     /// One page of randomly-ordered tracks for Shuffle Library:
     /// `GET …/all?type=10&sort=random` with a single explicit container page.
     /// NEVER paged further — `sort=random` re-randomizes per request, so page 2
@@ -154,7 +194,8 @@ public enum MusicRequest {
     /// &sort=ratingCount:desc&limit={n}`. Filter operators (`>>`, `!`) live in
     /// the query item NAME and URL-encode (`ratingCount%3E%3E=0`). The
     /// subformat exclusion keeps compilation/live duplicates out of Popular.
-    /// ⚠️ Provisional pending the Phase-0 live-PMS verification (MUSIC-DESIGN §8).
+    /// ✅ Live-verified (Phase 0): sensible ratingCount ordering, rows carry
+    /// Media/Part (directly playable), subformat exclusion honored.
     public static func popularTracks(server: URL,
                                      token: String,
                                      identity: ClientIdentity,

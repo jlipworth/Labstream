@@ -136,17 +136,27 @@ required**.
 
 - [ ] **Pivot shell** — Music tab shows a Home | Artists | Albums segmented control; switching
       pivots keeps the library Picker working; switching libraries resets to Home.
-- [ ] **Home rails** — server hubs render as rails in server order (Recently Played / Recently
-      Added / etc. as the PMS provides); artist cells are CIRCULAR, albums square. NOTE: v1
+- [ ] **Home rails** — server hubs render as rails in server order (Recently Added / Most
+      Played / etc. as the PMS provides); artist cells are CIRCULAR, albums square. NOTE: v1
       deliberately drops track-level hub items — a hub vanishing may just mean it only had
       tracks, not a bug.
-- [ ] **Recently Played advancement (Phase-0 evidence)** — play a track, pull-to-refresh Home:
-      does the rail advance? Claude reads `[VP] music hub:` NSLog lines for the hub identifiers.
+- [ ] **Recently Played = SONGS rail** — Home's first rail shows recently played TRACKS
+      (newest first, from play history; replaces the server's artist-typed played hub).
+      Tapping a song REPLAYS it (queues the rail from that song) — it does not navigate.
+      Play a track, pull-to-refresh Home: the rail should lead with it.
 - [ ] **Shuffle Library** — bottom pill queues ~200 random tracks and starts playback shuffled.
 - [ ] **Artists/Albums pivots** — sorted grids; sort menu works; scrolling to the bottom loads
       the next page (200/page) without duplicates.
-- [ ] **#4 probe (video)** — play any movie/episode ≥10s; Claude reads `[VP] #4 m3u8 probe:`
-      to learn whether PMS advertises an I-frame variant (YES → #4 closes free).
+- [x] **#4 probe (video)** — ✅ answered: `iframe-variant=NO` — PMS does not advertise an
+      I-frame variant on transcode sessions; no free trick-play thumbnails (#4 parked).
+- [ ] **Artist page shelves (Plexamp-style)** — an artist page shows, in order: Popular
+      (ranked top tracks on a card — tap plays from that row), Albums, any PMS-categorized
+      shelves (Singles & EPs / Compilations / …), **Appears On** (albums by OTHER artists
+      containing their tracks — e.g. Wolfgang Lohr → the Bart&Baker compilation), Similar
+      Artists (circular cells). KNOWN LIMIT: "Artist feat. X" track credits don't surface
+      in Appears On (PMS exact-match only).
+- [ ] **Artist discography completeness** — Wolfgang Lohr shows both singles (was "No
+      albums"); Yazoo shows 3 albums incl. "In Your Room" (children endpoint dropped it).
 
 ---
 
