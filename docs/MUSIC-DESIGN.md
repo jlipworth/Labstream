@@ -392,6 +392,32 @@ end. **v1 = phases 0–7.**
   the history fallback as primary; (c) `/hubs/search` music-hub decode shape;
   (d) the popular-tracks query incl. `>>=` encoding. Findings recorded here
   and in DEVELOPMENT.md. *This de-risks the only design-shaping unknowns.*
+
+  **Phase-0 FINDINGS (live PMS, June 2026):**
+  - Section hubs returned: `music.recent.played.1` (type=ARTIST, not album/track),
+    `music.recent.added.1` (album), `music.recent.artist.1`, `music.top.period.1`,
+    `music.recent.genre.1`, `music.popular.1` ("Most Played in April", album),
+    `music.vault.1`, `music.recent.label.1`, `music.touring.1`, `music.videos.new.1`
+    (clip). Several size=0. → prefix-match works; the played hub is artists, so
+    the app renders its own Recently Played SONGS rail from `playHistory` instead.
+  - **`/library/metadata/{rk}/children` UNDER-LISTS artist discographies**:
+    returned size=0 for an artist owning two singles (both with parentRatingKey
+    pointing at him), and dropped an appears-on album for another. Own albums
+    must come from `…/all?type=9&artist.id={rk}` (plexapi shape). Children stays
+    only as the no-sectionKey fallback.
+  - **Appears On**: compilation tracks carry the performing artist as the track's
+    `originalTitle` TEXT, NOT linked to the artist node (every artist-scoped hub
+    showed 0 while the tracks existed). Query: `…/all?type=9&
+    track.originalTitle={artist title}` — EXACT match only; PMS has no contains
+    operator on the wire (`~=` is silently ignored), so "Artist feat. X" credit
+    strings are missed (known v1 limitation).
+  - **`/library/metadata/{rk}/related`** provides Plexamp's artist-page shelf
+    taxonomy as hubs: `artist.albums.singles` "Singles & EPs", `.live`,
+    `.soundtrack`, `.compilation`, `.demo`, `.remix`, plus `artist.similar`.
+  - **popularTracks verified**: sensible `ratingCount:desc` ordering, rows carry
+    Media/Part (directly playable), `album.subformat!` exclusion honored.
+  - **#4 probe**: transcode master playlist has NO `EXT-X-I-FRAME-STREAM-INF`
+    (only `#EXT-X-STREAM-INF`) — no free trick-play thumbnails on this PMS.
 - **Phase 1 — PlexKit builders + tests.** `sectionHubs`, `playHistory`,
   `randomTracks`, `allLeaves`, `popularTracks`, `PlaylistRequest`,
   paging/sort params on `artists`/`albums`, `MediaItem` field + `Kind`

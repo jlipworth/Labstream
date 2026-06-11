@@ -158,8 +158,10 @@ private struct MusicHomePivot: View {
 
     /// Hubs that survived filtering (artist/album items only, non-empty).
     @State private var hubs: [Hub] = []
-    /// Ladder rung 2: Recently-Played albums synthesized from play history.
-    @State private var historyAlbums: [MediaItem] = []
+    /// Recently-Played SONGS from play history — always shown first, replacing the
+    /// server's `music.recent.played` hub (which carries artists; Plexamp-style
+    /// recents are the tracks themselves).
+    @State private var historyTracks: [MediaItem] = []
     /// Ladder rung 3: recently-added albums when hubs failed entirely.
     @State private var fallbackAlbums: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
@@ -177,15 +179,15 @@ private struct MusicHomePivot: View {
                                        description: Text(message))
                     .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
-                if hubs.isEmpty && historyAlbums.isEmpty && fallbackAlbums.isEmpty {
+                if hubs.isEmpty && historyTracks.isEmpty && fallbackAlbums.isEmpty {
                     ContentUnavailableView("Empty library",
                                            systemImage: "music.note",
                                            description: Text("No music in \(section.title)."))
                         .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                        if !historyAlbums.isEmpty {
-                            MusicRail(title: "Recently Played", items: historyAlbums)
+                        if !historyTracks.isEmpty {
+                            MusicTrackRail(title: "Recently Played", tracks: historyTracks)
                         }
                         ForEach(hubs) { hub in
                             MusicRail(title: hub.title, items: hub.metadata)
@@ -252,6 +254,9 @@ private struct MusicHomePivot: View {
                       hub.metadata.count)
             }
             hubs = resp.mediaContainer.hub.compactMap { hub in
+                // The played hub carries ARTISTS; our history-songs rail replaces it.
+                // Prefix-match the identifier; exact ids drift across PMS versions.
+                if (hub.hubIdentifier ?? "").hasPrefix("music.recent.played") { return nil }
                 let items = hub.metadata.filter { $0.kind == .artist || $0.kind == .album }
                 guard !items.isEmpty else { return nil }
                 return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title,
@@ -259,29 +264,20 @@ private struct MusicHomePivot: View {
                            size: items.count, metadata: items)
             }
 
-            // Rung 2 — no usable Recently-Played hub: synthesize it from history.
-            // Prefix-match the identifier; exact ids drift across PMS versions.
-            let hasPlayedHub = hubs.contains {
-                ($0.hubIdentifier ?? "").hasPrefix("music.recent.played")
-            }
-            if !hasPlayedHub {
-                historyAlbums = await loadHistoryAlbums(server: server, token: token)
-            } else {
-                historyAlbums = []
-            }
+            historyTracks = await loadHistoryTracks(server: server, token: token)
             fallbackAlbums = []
             loadState = .loaded
         } catch {
             // Rung 3 — hubs failed entirely: degrade to exactly the old layout.
             hubs = []
-            historyAlbums = []
+            historyTracks = []
             await loadFallback(server: server, token: token)
         }
     }
 
-    /// Play history → unique albums, newest first: each track row contributes its
-    /// album (`parentRatingKey`) once, so the rail navigates like any album cell.
-    private func loadHistoryAlbums(server: URL, token: String) async -> [MediaItem] {
+    /// Play history → unique recently-played SONGS, newest first. History rows are
+    /// skinny (no Media/Part) — the rail re-fetches full metadata on tap to play.
+    private func loadHistoryTracks(server: URL, token: String) async -> [MediaItem] {
         let req = MusicRequest.playHistory(server: server, token: token,
                                            identity: appModel.identity,
                                            librarySectionID: section.key, count: 40)
@@ -289,18 +285,13 @@ private struct MusicHomePivot: View {
         else { return [] }
 
         var seen = Set<String>()
-        var albums: [MediaItem] = []
-        for item in resp.mediaContainer.metadata {
-            guard let albumKey = item.parentRatingKey, seen.insert(albumKey).inserted
-            else { continue }
-            albums.append(MediaItem(ratingKey: albumKey,
-                                    title: item.parentTitle ?? "Album",
-                                    type: "album",
-                                    thumb: item.parentThumb,
-                                    parentTitle: item.grandparentTitle))
-            if albums.count >= 20 { break }
+        var tracks: [MediaItem] = []
+        for item in resp.mediaContainer.metadata where item.kind == .track {
+            guard seen.insert(item.ratingKey).inserted else { continue }
+            tracks.append(item)
+            if tracks.count >= 20 { break }
         }
-        return albums
+        return tracks
     }
 
     private func loadFallback(server: URL, token: String) async {
@@ -340,8 +331,9 @@ private struct MusicHomePivot: View {
     }
 }
 
-/// Horizontal rail of square art cells — the shared hub-rail UI.
-private struct MusicRail: View {
+/// Horizontal rail of square art cells — the shared hub-rail UI (also the shelf
+/// unit on `ArtistDetailView`, hence not private).
+struct MusicRail: View {
     let title: String
     let items: [MediaItem]
 
@@ -366,6 +358,72 @@ private struct MusicRail: View {
                 .padding(.vertical, DS.Space.sm)
             }
             .scrollClipDisabled() // let hover-lifted art breathe past the rail edge
+        }
+    }
+}
+
+/// Horizontal rail of recently-played SONGS. Tap REPLAYS (Plexamp's Recent Plays
+/// behavior — items replay, they don't navigate). History rows are skinny (no
+/// Media/Part), so a tap fetches full metadata for the whole rail in one
+/// comma-keyed request and queues it starting from the tapped song.
+private struct MusicTrackRail: View {
+    let title: String
+    let tracks: [MediaItem]
+
+    @Environment(AppModel.self) private var appModel
+    @Environment(MusicPlayerController.self) private var player
+
+    @State private var isStarting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            Text(title)
+                .font(.title2.bold())
+                .padding(.horizontal, DS.Space.xxl)
+
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: DS.Space.xl) {
+                    ForEach(tracks.prefix(20)) { track in
+                        Button {
+                            Task { await play(from: track) }
+                        } label: {
+                            SquareArtCell(item: displayItem(for: track),
+                                          size: MusicArt.railSize,
+                                          subtitle: track.grandparentTitle)
+                        }
+                        .buttonStyle(.card)
+                        .disabled(isStarting)
+                    }
+                }
+                .padding(.horizontal, DS.Space.xxl)
+                .padding(.vertical, DS.Space.sm)
+            }
+            .scrollClipDisabled() // let hover-lifted art breathe past the rail edge
+        }
+    }
+
+    /// Track art: its own thumb when present, else the album's.
+    private func displayItem(for track: MediaItem) -> MediaItem {
+        guard track.thumb == nil else { return track }
+        return MediaItem(ratingKey: track.ratingKey, title: track.title,
+                         type: track.type, thumb: track.parentThumb)
+    }
+
+    private func play(from tapped: MediaItem) async {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
+        isStarting = true
+        defer { isStarting = false }
+        let keys = tracks.prefix(20).map(\.ratingKey).joined(separator: ",")
+        let req = BrowseAPI.metadata(server: server, token: token,
+                                     identity: appModel.identity, ratingKey: keys)
+        do {
+            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            let full = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            guard !full.isEmpty else { return }
+            let index = full.firstIndex { $0.ratingKey == tapped.ratingKey } ?? 0
+            player.play(tracks: full, startingAt: index)
+        } catch {
+            NSLog("[VP] recently-played replay failed: %@", String(describing: error))
         }
     }
 }
