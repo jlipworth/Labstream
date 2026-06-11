@@ -1,27 +1,46 @@
 import SwiftUI
 import PlexKit
 
-/// An artist's discography: a compact header (portrait + name + bio) above an
-/// adaptive grid of their albums. Albums come from the section search
-/// `…/all?type=9&artist.id={rk}` (the plexapi/Plex Web shape) — the children
-/// endpoint under-lists, proven live: size=0 for an artist owning two albums,
-/// and appears-on albums missing for others. Children remains only as the
-/// fallback when no `sectionKey` is in hand (cross-section search results).
+/// An artist's page, Plexamp-style: header (portrait + name + bio) above shelves in
+/// Plexamp's order — Popular tracks, Albums, the PMS-categorized release shelves
+/// (Singles & EPs / Soundtracks / Compilations / Live / …), Appears On, and Similar
+/// Artists.
+///
+/// Sourcing (all proven against a live PMS — see MUSIC-DESIGN §6):
+/// - Own discography: `…/all?type=9&artist.id={rk}` — NOT `/children`, which
+///   under-lists (returned size=0 for an artist owning two albums).
+/// - Categorized shelves + Similar Artists: `/library/metadata/{rk}/related` hubs
+///   (`artist.albums.singles` "Singles & EPs", `.compilation`, `artist.similar`, …).
+/// - Appears On: `…/all?type=9&track.originalTitle={name}` — compilation tracks
+///   carry the performing artist as TEXT, unlinked to the artist node; exact-match
+///   only ("Artist feat. X" credits are missed — PMS has no contains operator).
+/// - Popular: plexapi's `popularTracks` query (ratingCount:desc, compilations/live
+///   excluded); rows come back with Media/Part, so they play directly.
 struct ArtistDetailView: View {
     let artist: MediaItem
-    /// Music section the artist was browsed from; nil → children fallback.
+    /// Music section the artist was browsed from; nil → children fallback
+    /// (cross-section search results), which renders a single Albums shelf.
     var sectionKey: String? = nil
 
     @Environment(AppModel.self) private var appModel
+    @Environment(MusicPlayerController.self) private var player
 
+    @State private var popular: [MediaItem] = []
+    /// Own albums not already on a categorized shelf (the LPs, typically).
     @State private var albums: [MediaItem] = []
+    /// PMS-categorized release shelves (Singles & EPs / Compilations / …), server order.
+    @State private var categorized: [Hub] = []
+    @State private var appearsOn: [MediaItem] = []
+    @State private var similar: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
-
-    private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
-                                    spacing: DS.Space.xl)]
 
     /// Header portrait size — larger than a grid cell, smaller than an album hero.
     private let portraitSize: CGFloat = 160
+
+    private var isEmpty: Bool {
+        popular.isEmpty && albums.isEmpty && categorized.isEmpty
+            && appearsOn.isEmpty && similar.isEmpty
+    }
 
     var body: some View {
         ScrollView {
@@ -30,20 +49,20 @@ struct ArtistDetailView: View {
 
                 switch loadState {
                 case .idle, .loading:
-                    albumSkeleton
+                    shelfSkeleton
                 case .failed(let message):
                     ContentUnavailableView("Couldn’t load \(artist.title)",
                                            systemImage: "exclamationmark.triangle",
                                            description: Text(message))
                         .frame(maxWidth: .infinity, minHeight: 360)
                 case .loaded:
-                    if albums.isEmpty {
+                    if isEmpty {
                         ContentUnavailableView("No albums",
                                                systemImage: "music.note",
                                                description: Text("Nothing to show for \(artist.title)."))
                             .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
-                        albumGrid
+                        shelves
                     }
                 }
             }
@@ -74,27 +93,52 @@ struct ArtistDetailView: View {
         .padding(.horizontal, DS.Space.xxl)
     }
 
-    private var albumGrid: some View {
-        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-            ForEach(albums) { album in
-                NavigationLink(value: album) {
-                    SquareArtCell(item: album,
-                                  size: MusicArt.gridMin,
-                                  subtitle: album.year.map(String.init))
+    @ViewBuilder
+    private var shelves: some View {
+        if !popular.isEmpty { popularList }
+        if !albums.isEmpty { MusicRail(title: "Albums", items: albums) }
+        ForEach(categorized) { hub in
+            MusicRail(title: hub.title, items: hub.metadata)
+        }
+        if !appearsOn.isEmpty { MusicRail(title: "Appears On", items: appearsOn) }
+        if !similar.isEmpty { MusicRail(title: "Similar Artists", items: similar) }
+    }
+
+    /// Top tracks on a material card, ranked; tap plays the popular list from there.
+    private var popularList: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            Text("Popular")
+                .font(.title2.bold())
+
+            VStack(spacing: 0) {
+                ForEach(Array(popular.enumerated()), id: \.element.id) { index, track in
+                    Button {
+                        player.play(tracks: popular, startingAt: index)
+                    } label: {
+                        PopularTrackRow(rank: index + 1, track: track,
+                                        isCurrent: player.current?.ratingKey == track.ratingKey)
+                    }
+                    .buttonStyle(.card)
+
+                    if index < popular.count - 1 {
+                        Divider().padding(.leading, DS.Space.xxl + DS.Space.lg)
+                    }
                 }
-                .buttonStyle(.card)
             }
+            .padding(.vertical, DS.Space.sm)
+            .background(.regularMaterial,
+                        in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         }
         .padding(.horizontal, DS.Space.xxl)
     }
 
-    /// Shimmering square placeholders keeping the grid's gutters while albums load.
-    private var albumSkeleton: some View {
-        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+    /// Shimmering shelf placeholders while everything loads.
+    private var shelfSkeleton: some View {
+        HStack(spacing: DS.Space.xl) {
             ForEach(0..<6, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                     .fill(.regularMaterial)
-                    .frame(width: MusicArt.gridMin, height: MusicArt.gridMin)
+                    .frame(width: MusicArt.railSize, height: MusicArt.railSize)
                     .overlay { ShimmerView() }
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
             }
@@ -108,22 +152,140 @@ struct ArtistDetailView: View {
             return
         }
         loadState = .loading
-        let req: PlexRequest
-        if let sectionKey {
-            req = MusicRequest.artistAlbums(server: server, token: token,
-                                            identity: appModel.identity,
-                                            sectionKey: sectionKey,
-                                            artistRatingKey: artist.ratingKey)
-        } else {
-            req = BrowseAPI.children(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: artist.ratingKey)
+        guard let sectionKey else {
+            await loadViaChildren(server: server, token: token)
+            return
         }
+        let identity = appModel.identity
+
+        // Discography is the primary request (drives the failure state); the other
+        // shelves are best-effort and degrade to absent.
+        async let relatedResp = try? appModel.client.send(
+            MusicRequest.relatedHubs(server: server, token: token, identity: identity,
+                                     ratingKey: artist.ratingKey),
+            as: HubsResponse.self)
+        async let appearsResp = try? appModel.client.send(
+            MusicRequest.appearsOnAlbums(server: server, token: token, identity: identity,
+                                         sectionKey: sectionKey, artistTitle: artist.title),
+            as: MetadataResponse.self)
+        async let popularResp = try? appModel.client.send(
+            MusicRequest.popularTracks(server: server, token: token, identity: identity,
+                                       sectionKey: sectionKey,
+                                       artistRatingKey: artist.ratingKey),
+            as: MetadataResponse.self)
+
+        let own: [MediaItem]
+        do {
+            let resp = try await appModel.client.send(
+                MusicRequest.artistAlbums(server: server, token: token, identity: identity,
+                                          sectionKey: sectionKey,
+                                          artistRatingKey: artist.ratingKey),
+                as: MetadataResponse.self)
+            own = resp.mediaContainer.metadata
+        } catch {
+            loadState = .failed(friendlyMessage(error))
+            return
+        }
+
+        let hubs = (await relatedResp)?.mediaContainer.hub ?? []
+        categorized = hubs.compactMap { hub in
+            guard (hub.hubIdentifier ?? "").hasPrefix("artist.albums.") else { return nil }
+            let items = hub.metadata.filter { $0.kind == .album }
+            guard !items.isEmpty else { return nil }
+            return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title,
+                       type: hub.type, hubIdentifier: hub.hubIdentifier,
+                       size: items.count, metadata: items)
+        }
+        similar = hubs.first { ($0.hubIdentifier ?? "").hasPrefix("artist.similar") }?
+            .metadata.filter { $0.kind == .artist } ?? []
+
+        // "Albums" = own discography minus anything PMS already shelved (Singles &
+        // EPs etc.); "Appears On" = track-credit albums minus the artist's own.
+        let categorizedKeys = Set(categorized.flatMap(\.metadata).map(\.ratingKey))
+        albums = own.filter { !categorizedKeys.contains($0.ratingKey) }
+        let ownKeys = Set(own.map(\.ratingKey))
+        appearsOn = ((await appearsResp)?.mediaContainer.metadata ?? [])
+            .filter { $0.kind == .album && !ownKeys.contains($0.ratingKey) }
+        popular = (await popularResp)?.mediaContainer.metadata.filter { $0.kind == .track } ?? []
+
+        loadState = .loaded
+    }
+
+    /// No section key in hand: the legacy children walk, one flat Albums shelf.
+    private func loadViaChildren(server: URL, token: String) async {
+        let req = BrowseAPI.children(server: server, token: token,
+                                     identity: appModel.identity, ratingKey: artist.ratingKey)
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            albums = resp.mediaContainer.metadata
+            albums = resp.mediaContainer.metadata.filter { $0.kind == .album }
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
         }
     }
+}
+
+/// One ranked popular-track row: rank (or a tinted waveform when playing), title,
+/// and duration. Sibling of `AlbumDetailView`'s TrackRow, with rank instead of
+/// track number and no per-row artist (it's always this artist's page).
+private struct PopularTrackRow: View {
+    let rank: Int
+    let track: MediaItem
+    let isCurrent: Bool
+
+    var body: some View {
+        HStack(spacing: DS.Space.lg) {
+            Group {
+                if isCurrent {
+                    Image(systemName: "waveform")
+                        .foregroundStyle(.tint)
+                } else {
+                    Text(String(rank))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.subheadline.monospacedDigit())
+            .frame(width: DS.Space.xxl, alignment: .trailing)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.body)
+                    .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                    .lineLimit(1)
+                // On a track, `parentTitle` is the album.
+                if let album = track.parentTitle, !album.isEmpty {
+                    Text(album)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: DS.Space.md)
+
+            if let duration = track.duration {
+                Text(formatPopularDuration(milliseconds: duration))
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.vertical, DS.Space.sm + 2)
+        .contentShape(Rectangle())
+        // Same #20 treatment as the album track rows: .card style + explicit
+        // chip-radius highlight inset inside the material card.
+        .gazeHighlight(cornerRadius: DS.Radius.chip)
+        .padding(.horizontal, DS.Space.sm)
+    }
+}
+
+/// Format a track duration as `m:ss`, or `h:mm:ss` at an hour or more.
+private func formatPopularDuration(milliseconds: Int) -> String {
+    let total = milliseconds / 1000
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let seconds = total % 60
+    return hours > 0
+        ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        : String(format: "%d:%02d", minutes, seconds)
 }

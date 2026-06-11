@@ -138,6 +138,27 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
+@Test func appearsOnAlbumsFiltersByTrackOriginalTitle() {
+    // Compilation appearances are TEXT-matched (track.originalTitle is an
+    // exact-match filter; PMS links no artist node for them — proven live).
+    let r = MusicRequest.appearsOnAlbums(server: server, token: "tok", identity: id,
+                                         sectionKey: "3", artistTitle: "Wolfgang Lohr")
+    #expect(r.url.path == "/library/sections/3/all")
+    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
+    #expect(v("type") == "9")
+    #expect(v("track.originalTitle") == "Wolfgang Lohr")
+    #expect(v("sort") == "originallyAvailableAt:desc")
+}
+
+@Test func relatedHubsTargetsMetadataRelated() {
+    let r = MusicRequest.relatedHubs(server: server, token: "tok", identity: id,
+                                     ratingKey: "2982")
+    #expect(r.url.path == "/library/metadata/2982/related")
+    #expect(r.method == "GET")
+    #expect(r.queryItems.first { $0.name == "excludeFields" }?.value == "summary")
+    #expect(r.headers["X-Plex-Token"] == "tok")
+}
+
 // MARK: - Shuffle Library / artist leaves / popular
 
 @Test func randomTracksIsSingleRandomSortedTrackPage() {
