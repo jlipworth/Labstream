@@ -278,6 +278,8 @@ struct LibraryGridView: View {
             slots = fresh
             firstCharacters = (await initialsResponse)?.libraryEntries(totalSize: total) ?? []
             loadState = .loaded
+            // Make the browsed page findable in system search (#24).
+            SpotlightIndexer.index(items)
         } catch {
             loadState = .failed(friendlyMessage(error))
         }

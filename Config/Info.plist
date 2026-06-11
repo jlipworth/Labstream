@@ -11,6 +11,14 @@
 		<string>audio</string>
 	</array>
 
+	<!-- CoreSpotlight deep links (#24): declare the search-result continuation
+	     activity so taps on indexed library items reliably route back into the
+	     app (handled via onContinueUserActivity in ContentView). -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.apple.corespotlightitem</string>
+	</array>
+
 	<!-- Export compliance (#appstore): the app uses only standard HTTPS/TLS
 	     (exempt encryption), so declare non-exempt encryption = NO. This skips
 	     the per-upload export-compliance question in App Store Connect. -->
