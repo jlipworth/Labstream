@@ -109,12 +109,14 @@ private struct SearchHubSection: View {
                         NavigationLink(value: item) {
                             PosterCell(item: item)
                         }
-                        .buttonStyle(.card)
+                        .cardLink()
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
                 .padding(.vertical, DS.Space.sm)
             }
+            // contentMargins, not .padding on the lazy content — see the hit-region
+            // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
+            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
             .scrollClipDisabled()
         }
     }

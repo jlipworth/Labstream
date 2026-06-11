@@ -112,12 +112,26 @@ metadata, and review-specific release automation can be handled in a later publi
   swiftinterface: just `status`/`fromExperience`/`toExperience`), so a system collapse is
   detected as "completed expanded→embedded we didn't flag" (`appInitiatedCollapse`) and treated
   as Close. Trade-off (accepted): the chrome's shrink-to-window control also closes the player.
-- **SIMULATOR ONLY — leftmost rail item needs a double-click.** Sweeping the pointer in
-  from the left passes simulated gaze over the leading TabView ornament, which expands
-  (labels overlay the content edge) and its region captures the first click — seen in logs
-  as a `MRUIFeedbackTypeCircularButtonTouchDown` feedback with no navigation. Not an app
-  bug and not fixable app-side (the ornament is system-managed; real gaze can't target the
-  tab bar and a poster at once). Workaround: approach leftmost content from above/below/right.
+- **Never put a CUSTOM `ButtonStyle` on a poster/card link — use `.cardLink()`
+  (built-in `.plain`).** On visionOS, ANY custom `ButtonStyle` gets the link's
+  gaze/hover hit region REGISTERED DISPLACED — measured ≈1.35× scaled about the
+  window center, so edge cards drift the most and clicks on rail card N open card
+  N+1 (first reported as "the leftmost poster clicks the wrong item"; center cards
+  worked, which hid the pattern). Proven by live bisection: structure changes
+  (lazy→plain stacks, padding→`contentMargins`, dropping `scrollClipDisabled`/hover
+  lift) changed nothing; removing the style fixed it; restoring it regressed it.
+  NOT fixable inside the style: adding `contentShape(.hoverEffect, …)` +
+  `hoverEffect(.highlight)` and/or removing the press `scaleEffect` still misroutes.
+  Built-in styles (`.plain`, default) register through a correct path; `.cardLink()`
+  wraps `.plain` + a `contentShape(.hoverEffect, …)` to shape its automatic
+  highlight. Related: gaze hover is rendered OUT-OF-PROCESS — `.onHover` never
+  fires for gaze, so the app cannot observe or debug hover; diagnose routing with
+  `.simultaneousGesture(SpatialTapGesture(coordinateSpace: .global))` logging
+  instead. (A second, simulator-only effect can stack on top: sweeping in from the
+  left expands the leading TabView ornament, whose region can eat the first
+  click — `MRUIFeedbackTypeCircularButtonTouchDown` in logs. Also still prefer
+  `.contentMargins(..., for: .scrollContent)` over padding lazy rail content; it
+  keeps insets out of card geometry.)
 - **Transcode sessions must be stopped explicitly** — HLS gives PMS no end-of-playback
   signal, so a closed/rebuilt player orphans a live FFmpeg job until the server's
   inactivity reaper runs (seen live: open-session pile-up on the PMS pod). Teardown fires

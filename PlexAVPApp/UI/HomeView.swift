@@ -91,12 +91,15 @@ private struct HubRail: View {
                         NavigationLink(value: item) {
                             PosterCell(item: item)
                         }
-                        .buttonStyle(.card)
+                        .cardLink()
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
                 .padding(.vertical, DS.Space.sm)
             }
+            // Inset the scroll content via contentMargins, not .padding on the stack —
+            // keeps the inset out of the cards' own geometry (see the gaze-routing
+            // gotcha in docs/DEVELOPMENT.md).
+            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
             .scrollClipDisabled() // let hover-lifted posters breathe past the rail edge
         }
     }
@@ -117,7 +120,6 @@ struct PosterCell: View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: width, height: height)
                 .overlay(alignment: .bottom) { progressSliver }
-                .gazeHighlight()
                 .posterHover()
 
             VStack(alignment: .leading, spacing: 2) {
@@ -145,9 +147,9 @@ struct PosterCell: View {
             }
         }
         .frame(width: width, alignment: .leading)
-        // NOTE (#20): the wrapping NavigationLink uses `.buttonStyle(.card)` (no automatic
-        // hover effect); the gaze highlight is the explicit `.gazeHighlight()` on the
-        // poster image above.
+        // NOTE: no `.gazeHighlight()` here — the wrapping link uses `.cardLink()`, whose
+        // built-in `.plain` style draws (and correctly registers) the gaze highlight.
+        // A custom ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
     }
 
     /// "S{x}E{y} · {title}" for an episode poster's second line, gracefully dropping the
