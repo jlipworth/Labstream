@@ -125,4 +125,9 @@ useful reference for the transcode-decision and download paths.
 This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the
 full text.
 
+For distribution through the Apple App Store / TestFlight, a GPLv3 **section 7 additional permission**
+applies — see [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md). It resolves the well-known
+GPL-vs-App-Store conflict while keeping copyleft fully intact: the source stays GPL and any fork must
+remain open.
+
 Copyright (C) 2026 Jonathan Lipworth
