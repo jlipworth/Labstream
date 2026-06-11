@@ -147,7 +147,7 @@ struct PosterCell: View {
             }
         }
         .frame(width: width, alignment: .leading)
-        // NOTE: no `.gazeHighlight()` here — the wrapping link uses `.cardLink()`, whose
+        // NOTE: no hover effect here — the wrapping link uses `.cardLink()`, whose
         // built-in `.plain` style draws (and correctly registers) the gaze highlight.
         // A custom ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
     }

@@ -170,7 +170,7 @@ struct AlbumDetailView: View {
                              albumArtist: albumArtist,
                              isCurrent: player.current?.ratingKey == track.ratingKey)
                 }
-                .buttonStyle(.card)
+                .cardLink(cornerRadius: DS.Radius.chip)
 
                 if index < tracks.count - 1 {
                     Divider().padding(.leading, DS.Space.xxl + DS.Space.lg)
@@ -267,12 +267,9 @@ private struct TrackRow: View {
         .padding(.horizontal, DS.Space.lg)
         .padding(.vertical, DS.Space.sm + 2)
         .contentShape(Rectangle())
-        // .card style (no automatic glow) + an explicit per-row highlight kept inside
-        // the material card — `.plain` here drew the system's oversized capsule past
-        // the card edge (#20's trap, regressed on the music rows). The outer inset
-        // keeps the chip-radius (10) highlight clear of the card's larger corner
-        // curve (20) on the first/last rows, where flush corners visibly poke out.
-        .gazeHighlight(cornerRadius: DS.Radius.chip)
+        // Highlight comes from the wrapping button's `.cardLink(cornerRadius: .chip)` —
+        // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
+        // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
     }
 }
