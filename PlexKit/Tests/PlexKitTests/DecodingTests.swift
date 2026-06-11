@@ -128,6 +128,24 @@ import Foundation
     #expect(c.mediaContainer.metadata.isEmpty)
 }
 
+@Test func decodesPagedContainerTotalSize() throws {
+    let json = """
+    {"MediaContainer":{"size":200,"totalSize":454,"Metadata":[
+      {"ratingKey":"1","title":"ABBA","type":"artist"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    #expect(c.mediaContainer.totalSize == 454)
+}
+
+@Test func totalSizeAbsentOnUnpagedContainer() throws {
+    let json = """
+    {"MediaContainer":{"size":1,"Metadata":[
+      {"ratingKey":"1","title":"ABBA","type":"artist"}]}}
+    """.data(using: .utf8)!
+    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
+    #expect(c.mediaContainer.totalSize == nil)
+}
+
 @Test func decodesHubs() throws {
     let json = """
     {"MediaContainer":{"size":2,"Hub":[

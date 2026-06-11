@@ -530,9 +530,13 @@ private struct MusicAlbumsPivot: View {
 
 // MARK: - Shared paged grid
 
-/// Adaptive grid over a paged section listing: loads `pageSize` items, appends the
-/// next page when the tail cell appears, stops when a short page arrives. Reloads
-/// from page zero whenever `sortKey` changes.
+/// Adaptive grid over a paged section listing, pre-sized to the section's FULL
+/// `totalSize`: every row exists from the start (unloaded ones as shimmer
+/// placeholders), so the scrollbar's range spans the whole library and dragging it
+/// to the bottom lands on the true end of the list. A placeholder appearing fetches
+/// exactly the page that contains it (random access via `X-Plex-Container-Start`),
+/// so a long-distance drag loads what the viewport shows — not everything between.
+/// Reloads from scratch whenever `sortKey` changes.
 private struct PagedArtGrid<SortMenu: View>: View {
     let section: PlexSection
     let sortKey: String
@@ -542,10 +546,12 @@ private struct PagedArtGrid<SortMenu: View>: View {
 
     @Environment(AppModel.self) private var appModel
 
-    @State private var items: [MediaItem] = []
+    /// One slot per item in the full listing; `nil` = not fetched yet.
+    @State private var slots: [MediaItem?] = []
     @State private var loadState: HomeView.LoadState = .idle
-    @State private var isLoadingMore = false
-    @State private var reachedEnd = false
+    /// Page indices currently in flight (a failed page is removed so a placeholder
+    /// re-appearing retries it).
+    @State private var loadingPages: Set<Int> = []
 
     private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
                                     spacing: DS.Space.xl)]
@@ -561,7 +567,7 @@ private struct PagedArtGrid<SortMenu: View>: View {
                                        description: Text(message))
                     .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
-                if items.isEmpty {
+                if slots.isEmpty {
                     ContentUnavailableView("Empty library",
                                            systemImage: "music.note",
                                            description: Text("No music in \(section.title)."))
@@ -575,26 +581,24 @@ private struct PagedArtGrid<SortMenu: View>: View {
                         .padding(.horizontal, DS.Space.xxl)
 
                         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-                            ForEach(items) { item in
-                                NavigationLink(value: item) {
-                                    SquareArtCell(item: item, size: MusicArt.gridMin,
-                                                  subtitle: subtitle(item))
-                                }
-                                .buttonStyle(.card)
-                                .onAppear {
-                                    if item.id == items.last?.id {
-                                        Task { await loadMore() }
+                            // Position-keyed: a slot's identity is its place in the
+                            // listing; its content arrives when the page loads.
+                            ForEach(slots.indices, id: \.self) { index in
+                                if let item = slots[index] {
+                                    NavigationLink(value: item) {
+                                        SquareArtCell(item: item, size: MusicArt.gridMin,
+                                                      subtitle: subtitle(item))
                                     }
+                                    .buttonStyle(.card)
+                                } else {
+                                    placeholderCell
+                                        .onAppear {
+                                            Task { await loadPage(containing: index) }
+                                        }
                                 }
                             }
                         }
                         .padding(.horizontal, DS.Space.xxl)
-
-                        if isLoadingMore {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, DS.Space.lg)
-                        }
                     }
                     .padding(.vertical, DS.Space.xl)
                 }
@@ -604,41 +608,63 @@ private struct PagedArtGrid<SortMenu: View>: View {
         .refreshable { await load() }
     }
 
+    /// Shimmer stand-in matching a loaded cell's footprint (art + one text line).
+    private var placeholderCell: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+                .fill(.regularMaterial)
+                .frame(width: MusicArt.gridMin, height: MusicArt.gridMin)
+                .overlay { ShimmerView() }
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
+            RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                .fill(.regularMaterial)
+                .frame(width: MusicArt.gridMin * 0.6, height: 16)
+        }
+        .frame(width: MusicArt.gridMin, alignment: .leading)
+    }
+
     private func load() async {
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
         loadState = .loading
-        reachedEnd = false
+        loadingPages = []
         do {
             let req = request(server, token, appModel.identity, 0)
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            items = resp.mediaContainer.metadata
-            reachedEnd = items.count < musicGridPageSize
+            let page = resp.mediaContainer.metadata
+            // Pre-size to the full listing so the scroll range is the whole library;
+            // no totalSize (shouldn't happen on a paged request) degrades to page 1.
+            let total = max(resp.mediaContainer.totalSize ?? page.count, page.count)
+            var fresh = [MediaItem?](repeating: nil, count: total)
+            for (i, item) in page.enumerated() { fresh[i] = item }
+            slots = fresh
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
         }
     }
 
-    private func loadMore() async {
-        guard !isLoadingMore, !reachedEnd,
+    /// Fetch the fixed-size page containing `index` and fill its slots in place.
+    private func loadPage(containing index: Int) async {
+        let page = index / musicGridPageSize
+        guard !loadingPages.contains(page),
               let server = appModel.serverBaseURL, let token = appModel.serverToken
         else { return }
-        isLoadingMore = true
-        defer { isLoadingMore = false }
+        loadingPages.insert(page)
+        let start = page * musicGridPageSize
         do {
-            let req = request(server, token, appModel.identity, items.count)
+            let req = request(server, token, appModel.identity, start)
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            let page = resp.mediaContainer.metadata
-            // Dedupe defensively: a library edit between pages can shift offsets.
-            let known = Set(items.map(\.ratingKey))
-            items.append(contentsOf: page.filter { !known.contains($0.ratingKey) })
-            reachedEnd = page.count < musicGridPageSize
+            for (i, item) in resp.mediaContainer.metadata.enumerated()
+            where slots.indices.contains(start + i) {
+                slots[start + i] = item
+            }
         } catch {
-            // A failed page is non-fatal: keep what we have; the tail cell retries
-            // on its next appearance.
+            // Non-fatal: drop the in-flight mark so the placeholder retries when
+            // it next appears.
+            loadingPages.remove(page)
         }
     }
 }
