@@ -239,22 +239,38 @@ final class PlaybackController {
     /// seek the playhead directly.
     private(set) var chapters: [Chapter]
 
+    /// Full-metadata copy backfilled by `loadChaptersIfNeeded()`. The launching item is
+    /// often a listing copy that omits chapters AND `Media>Part>Stream` (the Audio tab's
+    /// data source — live: "No audio track metadata" on a multi-track movie). Everything
+    /// that mines part/stream metadata should prefer this over `item`.
+    private var refreshedItem: MediaItem?
+
     /// Fetch full metadata (`includeChapters`/`includeMarkers`) when the launching item
-    /// carried no chapters — see `chapters`. Returns `true` when chapters were newly
-    /// populated so the control surface can re-install the info tabs. Also re-derives the
-    /// Skip Intro/Credits ranges, which ride the same race.
+    /// carried no chapters or no audio-stream metadata — see `chapters`/`refreshedItem`.
+    /// Returns `true` when chapters or audio streams were newly populated so the control
+    /// surface can re-install the info tabs. Also re-derives the Skip Intro/Credits
+    /// ranges, which ride the same race.
     func loadChaptersIfNeeded() async -> Bool {
-        guard isStreaming, chapters.isEmpty, let server, let token else { return false }
+        let needChapters = chapters.isEmpty
+        let needStreams = streamingPart?.audioStreams.isEmpty ?? true
+        guard isStreaming, needChapters || needStreams, let server, let token else { return false }
         let req = BrowseAPI.metadata(server: server, token: token,
                                      identity: identity, ratingKey: item.ratingKey)
         guard let resp = try? await client.send(req, as: MetadataResponse.self),
               let full = resp.mediaContainer.metadata.first else { return false }
+        refreshedItem = full
         if let markers = full.markers, !markers.isEmpty {
             skipRanges = Self.deriveSkipRanges(from: markers)
         }
-        guard let fetched = full.chapters, !fetched.isEmpty else { return false }
-        chapters = fetched
-        return true
+        var updated = false
+        if needChapters, let fetched = full.chapters, !fetched.isEmpty {
+            chapters = fetched
+            updated = true
+        }
+        if needStreams, streamingPart?.audioStreams.isEmpty == false {
+            updated = true
+        }
+        return updated
     }
 
     /// Skippable intro/credits ranges derived from the item's Plex markers (#14), in
@@ -750,8 +766,11 @@ final class PlaybackController {
 
     /// The media part backing this streaming session (the one `startStreaming` transcodes:
     /// `mediaIndex` + partIndex 0). `nil` when the item metadata carries no Media/Part.
+    /// Prefers the backfilled `refreshedItem`: listing copies omit `Stream` children, so
+    /// the launching item's part often has no audio metadata (the play-vs-metadata race).
     private var streamingPart: Part? {
-        guard let media = item.media, media.indices.contains(mediaIndex) else { return nil }
+        let source = refreshedItem ?? item
+        guard let media = source.media, media.indices.contains(mediaIndex) else { return nil }
         return media[mediaIndex].part.first
     }
 
@@ -764,6 +783,10 @@ final class PlaybackController {
     /// decoded item. Returns an empty array when the metadata carries no audio streams (the
     /// tab then falls back to its empty state).
     func loadAudioStreamChoices() -> [AudioStreamChoice] {
+        NSLog("[VP] audio tab: refreshed=%d mediaCount=%d streams=%d",
+              refreshedItem != nil ? 1 : 0,
+              (refreshedItem ?? item).media?.count ?? -1,
+              streamingPart?.audioStreams.count ?? -1)
         guard let part = streamingPart else { return [] }
         let streams = part.audioStreams
         guard !streams.isEmpty else { return [] }
