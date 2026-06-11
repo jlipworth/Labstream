@@ -87,13 +87,29 @@ extension View {
                      RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .hoverEffect(.highlight)
     }
+
+    /// visionOS-safe style for poster/card `NavigationLink`s. MUST ride a BUILT-IN
+    /// button style: any custom `ButtonStyle` gets its gaze/hover region registered
+    /// displaced (~1.35× about the window center), so pinches on a rail card route to
+    /// a NEIGHBOR card — proven live by bisection, see the gotcha in
+    /// docs/DEVELOPMENT.md. `.plain` registers through the correct path and routes
+    /// clicks accurately; the `contentShape(.hoverEffect, …)` reshapes its automatic
+    /// system highlight to the card's rounded rect.
+    func cardLink(cornerRadius: CGFloat = DS.Radius.poster) -> some View {
+        buttonStyle(.plain)
+            .contentShape(.hoverEffect,
+                          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
 }
 
-/// Button style for poster/card `NavigationLink`s (#20). Built-in styles (`.plain`
-/// included) attach an automatic gaze highlight shaped by the system — verified live to
-/// be an oversized capsule around the whole link that no `.contentShape(.hoverEffect, …)`
-/// or `.hoverEffectDisabled()` juggling could tame. Custom button styles get NO automatic
-/// hover effect (documented), so cells opt their artwork in with `.gazeHighlight(…)`.
+/// Button style for poster/card `NavigationLink`s (#20).
+///
+/// ⚠️ DEPRECATED — DO NOT USE FOR NEW CALL SITES; migrate existing ones to
+/// `.cardLink()`. Custom ButtonStyles get their gaze/hover hit region registered
+/// DISPLACED on visionOS, routing pinches to a neighboring card (proven live —
+/// clicks on the right half of rail card N opened card N+1; adding
+/// `contentShape(.hoverEffect, …)`/`hoverEffect(.highlight)` inside the style does
+/// NOT fix it). See docs/DEVELOPMENT.md.
 struct CardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

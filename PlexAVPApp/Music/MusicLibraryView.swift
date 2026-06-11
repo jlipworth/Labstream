@@ -359,9 +359,11 @@ struct MusicRail: View {
                         .buttonStyle(.card)
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
                 .padding(.vertical, DS.Space.sm)
             }
+            // contentMargins, not .padding on the lazy content — see the hit-region
+            // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
+            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
             .scrollClipDisabled() // let hover-lifted art breathe past the rail edge
         }
     }
@@ -400,9 +402,11 @@ private struct MusicTrackRail: View {
                         .disabled(isStarting)
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
                 .padding(.vertical, DS.Space.sm)
             }
+            // contentMargins, not .padding on the lazy content — see the hit-region
+            // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
+            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
             .scrollClipDisabled() // let hover-lifted art breathe past the rail edge
         }
     }
