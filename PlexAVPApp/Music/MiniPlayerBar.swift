@@ -15,8 +15,21 @@ struct MiniPlayerBar: View {
 
     var body: some View {
         let _ = NSLog("[VP] MiniPlayerBar body: current=%@", player.current?.title ?? "nil")
-        if let current = player.current {
-            HStack(spacing: DS.Space.md) {
+        // The sheet must hang off a node that stays in the hierarchy while the bar
+        // itself is gone — scene ornaments float ABOVE window sheets, so leaving the
+        // bar visible under NowPlayingView reads as a dead duplicate control.
+        ZStack {
+            if let current = player.current, !presentNowPlaying {
+                bar(for: current)
+            }
+        }
+        .sheet(isPresented: $presentNowPlaying) {
+            NowPlayingView()
+        }
+    }
+
+    private func bar(for current: MediaItem) -> some View {
+        HStack(spacing: DS.Space.md) {
                 PosterImage(path: current.thumb ?? current.parentThumb,
                             width: artSize, height: artSize,
                             cornerRadius: DS.Radius.chip)
@@ -63,11 +76,5 @@ struct MiniPlayerBar: View {
             .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
             .onTapGesture { presentNowPlaying = true }
             .hoverEffect(.highlight)
-            .sheet(isPresented: $presentNowPlaying) {
-                NowPlayingView()
-            }
-        } else {
-            EmptyView()
-        }
     }
 }
