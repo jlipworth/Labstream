@@ -163,17 +163,27 @@ required**.
       loader now retries transient failures).
 - [x] **Mini bar vs Now Playing** — ✅ verified live: bar disappears while the Now Playing
       sheet is up and returns on dismissal.
-- [ ] **Go to artist / album** — in Now Playing, tapping the artist line opens the artist
-      page and the album line opens the album page (sheet closes, Music tab pushes).
-- [ ] **Now Playing fits unscrolled** — smaller (300pt) art so title, scrubber and
-      transport are all visible without scrolling AND centered (the first attempt's
-      GeometryReader broke sheet alignment); Up Next remains below the fold.
-- [ ] **Scrollbar spans the full library** — Artists/Albums grids pre-size to the
-      section's totalSize: dragging the scroll indicator to the bottom lands on the
-      TRUE end of the list in one motion; rows passed over fill in as shimmer
-      placeholders → art when their page arrives (#23 part 2; A–Z rail still open).
-- [ ] **Go to artist/album back button** — after a go-to from Now Playing, Back pops
-      to where the Music tab previously was. (Instrumented: `[VP] goTo` NSLogs.)
+- [x] **Go to artist / album** — ✅ verified live: in Now Playing, tapping the artist line
+      opens the artist page and the album line opens the album page (sheet closes, Music
+      tab pushes).
+- [x] **Now Playing fits unscrolled** — ✅ verified live: fitted 620×700 sheet, 300pt art,
+      title/scrubber/transport visible without scrolling. TWO live-bitten traps recorded
+      in MiniPlayerBar: content taller than the sheet's grant gets CLIPPED top+bottom
+      (760 ate the art and the close X), and the close X must overlay the sheet wrapper's
+      frame, not NowPlayingView's ZStack (the 900pt backdrop's overflow carries an inner
+      overlay into the clipped margin).
+- [x] **Scrollbar spans the full library** — ✅ verified live: Artists/Albums grids
+      pre-size to totalSize; drag-to-bottom lands on the true end, placeholders fill in
+      (#23 part 2; A–Z rail still open).
+- [x] **Back returns to where you were** — ✅ verified live (spot checks): root cause was
+      every view's `.task` re-firing on pop-back and reloading (resetting pivot/scroll).
+      All load()s now no-op when already loaded; pull-to-refresh, sort changes and server
+      changes still refetch. Applies to Music root/pivots/artist/album AND Home,
+      Libraries, library grid, season browser, Search.
+- [ ] **Album page artist link** — artist name under the album title pushes the artist
+      page (falls back to track metadata when the album item lacks parent linkage).
+- [ ] **Episode page show link** — show name above an episode title pushes the show's
+      season browser.
 
 ---
 

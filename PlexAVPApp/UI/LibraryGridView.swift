@@ -48,7 +48,7 @@ struct LibrariesView: View {
             DetailView(item: item)
         }
         .task { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(force: true) }
     }
 
     private func icon(for type: String) -> String {
@@ -61,7 +61,10 @@ struct LibrariesView: View {
         }
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
+        // `.task` re-fires on pop-back; the section list doesn't change mid-session,
+        // so only first load and pull-to-refresh fetch.
+        if !force, case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
@@ -130,6 +133,9 @@ struct LibraryGridView: View {
     }
 
     private func load() async {
+        // `.task` re-fires on pop-back from an item; reloading the whole grid then
+        // would dump the scroll position the user is returning to. Load once.
+        if case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
