@@ -322,7 +322,22 @@ final class PlayerControlSurface {
                 actions.append(UIAction(title: "Retry",
                                         image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
                     guard let self else { return }
-                    Task { @MainActor in onRetry(self.controller) }
+                    Task { @MainActor in
+                        // Rebuilding while the EXPANDED cinema scene is up wedges it (GH #8,
+                        // live: black, tap-dead player after Retry): the `.id()` bump
+                        // dismantles the expanded VC and auto-expands a fresh one into the
+                        // same system-owned scene mid-teardown. Mirror the Close path:
+                        // collapse to embedded first — flagged so the delegate doesn't read
+                        // it as a platter close — THEN rebuild; the fresh controller's
+                        // autoExpand re-enters the cinema experience cleanly.
+                        if let pvc = self.playerVC,
+                           pvc.experienceController.experience != .embedded {
+                            NSLog("[VP] retry: collapsing expanded scene before rebuild")
+                            self.appInitiatedCollapse = true
+                            _ = await pvc.experienceController.transition(to: .embedded)
+                        }
+                        onRetry(self.controller)
+                    }
                 })
             }
         } else if let marker = controller.skipMarker.active {
