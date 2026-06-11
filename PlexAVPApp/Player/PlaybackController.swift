@@ -396,6 +396,7 @@ final class PlaybackController {
         upNextTask = nil
         playbackGeneration += 1
         timeline.report(state: .stopped, force: true)
+        sendTranscodeStop()
         player.pause()
         removeObservers()
         // Tear down the session/lifecycle observers (kept separate from the per-item
@@ -403,6 +404,24 @@ final class PlaybackController {
         // resume (#17).
         audioSession.removeObservers()
         audioSession.deactivate()
+    }
+
+    /// Whether the final `/video/:/transcode/universal/stop` was already fired, so
+    /// repeated teardowns (dismantle + explicit stop paths) send it exactly once.
+    private var sentTranscodeStop = false
+
+    /// Best-effort: tell PMS to kill this session's transcode job. HLS gives the
+    /// server no end-of-playback signal, so skipping this orphans a live FFmpeg
+    /// process per close/rebuild until the inactivity reaper runs — observed live as
+    /// a pile-up of open transcoder sessions on the server. Detached fire-and-forget:
+    /// teardown must not block on (or fail with) the network.
+    private func sendTranscodeStop() {
+        guard isStreaming, !sentTranscodeStop, let server, let token else { return }
+        sentTranscodeStop = true
+        let req = TranscodeRequest.stop(server: server, token: token,
+                                        identity: identity, sessionID: sessionID)
+        let client = self.client
+        Task.detached { try? await client.send(req) }
     }
 
     // MARK: - Subtitles (soft renditions)
