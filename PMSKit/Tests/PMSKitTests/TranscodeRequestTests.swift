@@ -67,6 +67,17 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(p.clientProfileExtra.contains("protocol=hls"))
 }
 
+@Test func stopRequestTargetsUniversalStopWithSession() {
+    let req = TranscodeRequest.stop(server: server, token: "tok", identity: id,
+                                    sessionID: "SESSION-1")
+    #expect(req.url.path == "/video/:/transcode/universal/stop")
+    #expect(req.method == "GET")
+    func v(_ n: String) -> String? { req.queryItems.first { $0.name == n }?.value }
+    #expect(v("session") == "SESSION-1")
+    #expect(v("X-Plex-Token") == "tok")
+    #expect(v("X-Plex-Client-Identifier") == "CID")
+}
+
 // MARK: - Extra over-testing (plan: HEVC fMP4, subtitle burn-in, non-zero partIndex)
 
 @Test func deviceProfileDeclaresHEVCInFMP4Container() {

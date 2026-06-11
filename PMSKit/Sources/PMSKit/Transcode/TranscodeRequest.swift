@@ -184,6 +184,28 @@ public struct TranscodeRequest: Sendable, Equatable {
         return buildURL(path: "/video/:/transcode/universal/start", queryItems: items)
     }
 
+    /// `/video/:/transcode/universal/stop` — gracefully end the server-side transcode
+    /// session. HLS playback gives PMS no signal that the client left (segments just
+    /// stop being requested), so without this every player close/rebuild orphans a
+    /// live FFmpeg job until the server's inactivity reaper notices — orphans burn
+    /// CPU and count against the concurrent-transcode limit. Official clients hit
+    /// this endpoint on close; so do we. Static because teardown happens long after
+    /// the full `TranscodeRequest` parameter set is gone — only the session matters.
+    public static func stop(server: URL,
+                            token: String,
+                            identity: ClientIdentity,
+                            sessionID: String) -> PlexRequest {
+        let url = server.appendingPathComponent("/video/:/transcode/universal/stop")
+        var items: [URLQueryItem] = [
+            .init(name: "session", value: sessionID),
+            .init(name: "X-Plex-Token", value: token),
+        ]
+        items.append(contentsOf: TimelineRequest.identityQueryItems(identity))
+        return PlexRequest(url: url, method: "GET",
+                           queryItems: items,
+                           headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
     private func buildURL(path: String, queryItems: [URLQueryItem]) -> URL {
         guard var components = URLComponents(url: server, resolvingAgainstBaseURL: false) else {
             preconditionFailure("TranscodeRequest: server URL is not decomposable: \(server)")
