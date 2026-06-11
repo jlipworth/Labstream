@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PlexKit
 
 /// Async artwork loader for Plex thumbnails / art.
@@ -24,28 +25,27 @@ struct PosterImage: View {
 
     @Environment(AppModel.self) private var appModel
 
+    @State private var loaded: Image?
+    @State private var failed = false
+
     var body: some View {
         Group {
-            if let url = transcodeURL {
-                AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .transition(.opacity)
-                    case .failure:
-                        placeholder
-                    case .empty:
-                        skeleton
-                    @unknown default:
-                        placeholder
-                    }
-                }
-            } else {
+            if let loaded {
+                loaded
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .transition(.opacity)
+            } else if failed || transcodeURL == nil {
                 placeholder
+            } else {
+                skeleton
             }
         }
+        // task(id:) replaces AsyncImage, which retries NOTHING: one burst of failed
+        // requests during a fast scroll left a whole grid page as permanent
+        // placeholders (seen live). This loader retries transient errors with
+        // backoff; a definitive 4xx (e.g. PMS's 404 for absent art) fails fast.
+        .task(id: transcodeURL) { await load() }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
@@ -53,6 +53,31 @@ struct PosterImage: View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
         )
+    }
+
+    private func load() async {
+        guard let url = transcodeURL else { return }
+        loaded = nil
+        failed = false
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(300 << attempt))
+            }
+            guard !Task.isCancelled else { return }
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if (400..<500).contains(status) { break } // missing art — don't hammer
+                guard status == 200, let ui = UIImage(data: data) else { continue }
+                withAnimation(.easeOut(duration: 0.35)) { loaded = Image(uiImage: ui) }
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                continue // transient (timeout, reset under burst load) — retry
+            }
+        }
+        failed = true
     }
 
     /// Neutral fallback when there's no artwork or it fails to load.

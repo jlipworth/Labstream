@@ -14,32 +14,36 @@ struct NowPlayingView: View {
     @State private var isScrubbing = false
     @State private var scrubSeconds: Double = 0
 
-    /// Hero artwork size.
+    /// Hero artwork ceiling; the live size shrinks to keep the transport on screen.
     private let artSize: CGFloat = 420
 
     var body: some View {
-        ZStack {
-            artBackdrop
+        GeometryReader { geo in
+            let hero = heroArtSize(for: geo.size)
+            ZStack {
+                artBackdrop
 
-            ScrollView {
-                VStack(spacing: DS.Space.xl) {
-                    errorBanner
+                ScrollView {
+                    VStack(spacing: DS.Space.xl) {
+                        errorBanner
 
-                    PosterImage(path: artPath, width: artSize, height: artSize,
-                                cornerRadius: DS.Radius.poster)
-                        .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
-                                                                     style: .continuous)))
+                        PosterImage(path: artPath, width: hero, height: hero,
+                                    cornerRadius: DS.Radius.poster)
+                            .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
+                                                                         style: .continuous)))
 
-                    titleBlock
-                    scrubber
-                    transportRow
+                        titleBlock
+                        scrubber
+                            .frame(maxWidth: max(hero, 360))
+                        transportRow
 
-                    if !player.queue.isEmpty {
-                        upNext
+                        if !player.queue.isEmpty {
+                            upNext
+                        }
                     }
+                    .padding(DS.Space.xxl)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(DS.Space.xxl)
-                .frame(maxWidth: .infinity)
             }
         }
         // visionOS sheets have no system dismiss affordance, so every sheet needs an
@@ -59,9 +63,15 @@ struct NowPlayingView: View {
         }
     }
 
-    /// The current track's artwork path: its own thumb, else the album cover.
+    /// Album-first art (track thumbs 404 on some PMS builds — see `musicArtPath`).
     private var artPath: String? {
-        player.current?.thumb ?? player.current?.parentThumb
+        player.current?.musicArtPath
+    }
+
+    /// Shrink the hero art so title, scrubber and transport fit WITHOUT scrolling
+    /// (~440pt of chrome below the art); floor it so a short sheet still shows art.
+    private func heroArtSize(for size: CGSize) -> CGFloat {
+        min(artSize, max(200, size.height - 440))
     }
 
     // MARK: - Backdrop
@@ -86,7 +96,9 @@ struct NowPlayingView: View {
 
     // MARK: - Metadata
 
-    /// Track / artist / album, in descending visual weight.
+    /// Track / artist / album, in descending visual weight. Artist and album are
+    /// tappable (Plexamp's "go to artist" / "go to album"): the sheet dismisses and
+    /// `RootView` routes the item into the Music tab's navigation stack.
     private var titleBlock: some View {
         VStack(spacing: DS.Space.xs) {
             Text(player.current?.title ?? "Nothing Playing")
@@ -94,19 +106,61 @@ struct NowPlayingView: View {
                 .lineLimit(1)
             // On a track, grandparentTitle == artist and parentTitle == album.
             if let artist = player.current?.grandparentTitle {
-                Text(artist)
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Button {
+                    goTo(artistItem)
+                } label: {
+                    Text(artist)
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, DS.Space.sm)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .hoverEffect(.highlight)
+                .disabled(artistItem == nil)
             }
             if let albumTitle = player.current?.parentTitle {
-                Text(albumTitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                Button {
+                    goTo(albumItem)
+                } label: {
+                    Text(albumTitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .padding(.horizontal, DS.Space.sm)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .hoverEffect(.highlight)
+                .disabled(albumItem == nil)
             }
         }
         .multilineTextAlignment(.center)
+    }
+
+    /// The playing track's artist as a navigable item, when PMS linked one.
+    private var artistItem: MediaItem? {
+        guard let track = player.current,
+              let key = track.grandparentRatingKey,
+              let title = track.grandparentTitle else { return nil }
+        return MediaItem(ratingKey: key, title: title, type: "artist",
+                         thumb: track.grandparentThumb)
+    }
+
+    /// The playing track's album as a navigable item.
+    private var albumItem: MediaItem? {
+        guard let track = player.current,
+              let key = track.parentRatingKey,
+              let title = track.parentTitle else { return nil }
+        return MediaItem(ratingKey: key, title: title, type: "album",
+                         thumb: track.parentThumb)
+    }
+
+    private func goTo(_ item: MediaItem?) {
+        guard let item else { return }
+        player.navigationRequest = item
+        dismiss()
     }
 
     /// Compact warning when the controller surfaces a playback error.
@@ -151,7 +205,6 @@ struct NowPlayingView: View {
             .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: artSize)
     }
 
     // MARK: - Transport

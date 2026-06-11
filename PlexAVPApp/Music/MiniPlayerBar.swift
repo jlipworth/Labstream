@@ -29,7 +29,7 @@ struct MiniPlayerBar: View {
 
     private func bar(for current: MediaItem) -> some View {
         HStack(spacing: DS.Space.md) {
-                PosterImage(path: current.thumb ?? current.parentThumb,
+                PosterImage(path: current.musicArtPath,
                             width: artSize, height: artSize,
                             cornerRadius: DS.Radius.chip)
 

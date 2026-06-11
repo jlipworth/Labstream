@@ -155,8 +155,18 @@ required**.
       containing their tracks — e.g. Wolfgang Lohr → the Bart&Baker compilation), Similar
       Artists (circular cells). KNOWN LIMIT: "Artist feat. X" track credits don't surface
       in Appears On (PMS exact-match only).
-- [ ] **Artist discography completeness** — Wolfgang Lohr shows both singles (was "No
-      albums"); Yazoo shows 3 albums incl. "In Your Room" (children endpoint dropped it).
+- [x] **Artist discography completeness** — ✅ verified live: Wolfgang Lohr shows both
+      singles + Appears On; Yazoo believed working (3 albums incl. "In Your Room").
+- [ ] **Music art everywhere** — Recently Played song cells, mini bar and Now Playing show
+      ALBUM art (track-level thumbs 404 on this PMS; `…/thumb/-1` = no art). A fast drag
+      down the Artists grid no longer strands a page of film-glyph placeholders (the
+      loader now retries transient failures).
+- [x] **Mini bar vs Now Playing** — ✅ verified live: bar disappears while the Now Playing
+      sheet is up and returns on dismissal.
+- [ ] **Go to artist / album** — in Now Playing, tapping the artist line opens the artist
+      page and the album line opens the album page (sheet closes, Music tab pushes).
+- [ ] **Now Playing fits unscrolled** — art scales down so title, scrubber and transport
+      are all visible without scrolling; Up Next remains below the fold.
 
 ---
 
