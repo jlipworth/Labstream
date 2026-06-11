@@ -112,6 +112,12 @@ metadata, and review-specific release automation can be handled in a later publi
   swiftinterface: just `status`/`fromExperience`/`toExperience`), so a system collapse is
   detected as "completed expanded→embedded we didn't flag" (`appInitiatedCollapse`) and treated
   as Close. Trade-off (accepted): the chrome's shrink-to-window control also closes the player.
+- **Transcode sessions must be stopped explicitly** — HLS gives PMS no end-of-playback
+  signal, so a closed/rebuilt player orphans a live FFmpeg job until the server's
+  inactivity reaper runs (seen live: open-session pile-up on the PMS pod). Teardown fires
+  `GET /video/:/transcode/universal/stop?session=` (`TranscodeRequest.stop`) from
+  `PlaybackController.stop()`. Same-session reloads (quality/audio) don't need it — PMS
+  replaces the job in place; progressive downloads end with the HTTP connection.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)
