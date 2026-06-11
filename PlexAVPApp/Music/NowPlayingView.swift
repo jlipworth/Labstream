@@ -45,21 +45,10 @@ struct NowPlayingView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        // visionOS sheets have no system dismiss affordance, so every sheet needs an
-        // explicit close control (same rule as DownloadOptionsSheet).
-        .overlay(alignment: .topTrailing) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .padding(DS.Space.md)
-            }
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.circle)
-            .padding(DS.Space.lg)
-            .accessibilityLabel("Close")
-        }
+        // NOTE: the close X lives in `MiniPlayerBar`'s sheet wrapper, NOT here — an
+        // overlay on this ZStack anchors to the 900pt-wide backdrop's bounds, which
+        // overflow the 620pt fitted sheet, so the button lands in the clipped margin
+        // (live bug: the X silently vanished and the sheet was undismissable).
     }
 
     /// Album-first art (track thumbs 404 on some PMS builds — see `musicArtPath`).

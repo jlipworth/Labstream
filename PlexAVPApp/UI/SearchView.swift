@@ -9,6 +9,8 @@ struct SearchView: View {
     @State private var query = ""
     @State private var hubs: [Hub] = []
     @State private var loadState: HomeView.LoadState = .idle
+    /// The query the current results were fetched for (pop-back no-op guard).
+    @State private var loadedQuery: String?
 
     var body: some View {
         ScrollView {
@@ -64,6 +66,9 @@ struct SearchView: View {
             loadState = .idle
             return
         }
+        // `.task(id:)` re-fires on pop-back from a result with the query unchanged;
+        // re-running then would flash the spinner and dump the scroll position.
+        if trimmed == loadedQuery, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
         if Task.isCancelled { return }
@@ -79,6 +84,7 @@ struct SearchView: View {
             let resp = try await appModel.client.send(req, as: HubsResponse.self)
             if Task.isCancelled { return }
             hubs = resp.mediaContainer.hub
+            loadedQuery = trimmed
             loadState = .loaded
         } catch {
             if Task.isCancelled { return }

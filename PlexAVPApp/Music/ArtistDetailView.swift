@@ -147,6 +147,9 @@ struct ArtistDetailView: View {
     }
 
     private func load() async {
+        // `.task` re-fires when popping back from a pushed album; reloading then
+        // resets the scroll position the user is returning to. Load once.
+        if case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return

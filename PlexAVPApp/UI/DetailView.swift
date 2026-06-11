@@ -50,6 +50,15 @@ struct DetailView: View {
         _detailed = State(initialValue: item)
     }
 
+    /// An episode's show as a pushable container item (episode hierarchy:
+    /// show = grandparent, season = parent).
+    private var showItem: MediaItem? {
+        guard let key = detailed.grandparentRatingKey,
+              let title = detailed.grandparentTitle else { return nil }
+        return MediaItem(ratingKey: key, title: title, type: "show",
+                         thumb: detailed.grandparentThumb)
+    }
+
     var body: some View {
         // Show/season are CONTAINERS: they carry no Media/Part and must be drilled into
         // (a series download/play of a container ratingKey makes PMS return HTTP 400).
@@ -79,9 +88,24 @@ struct DetailView: View {
                     if detailed.kind == .episode {
                         VStack(alignment: .leading, spacing: DS.Space.xs) {
                             if let show = detailed.grandparentTitle, !show.isEmpty {
-                                Text(show)
-                                    .font(.title3.weight(.semibold))
-                                    .foregroundStyle(.secondary)
+                                // Tappable like the music pages' artist links: pushes
+                                // the show's season browser onto the same stack.
+                                if let showItem {
+                                    NavigationLink(value: showItem) {
+                                        Text(show)
+                                            .font(.title3.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, DS.Space.sm)
+                                            .contentShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .hoverEffect(.highlight)
+                                    .padding(.leading, -DS.Space.sm)
+                                } else {
+                                    Text(show)
+                                        .font(.title3.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                             HStack(spacing: DS.Space.sm) {
                                 if let code = detailed.seasonEpisodeCode {
@@ -574,6 +598,9 @@ struct ContainerBrowserView: View {
     }
 
     private func load() async {
+        // `.task` re-fires when popping back from a pushed season/episode; reloading
+        // then resets the scroll position the user is returning to. Load once.
+        if case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return

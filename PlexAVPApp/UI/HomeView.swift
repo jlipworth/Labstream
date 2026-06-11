@@ -8,6 +8,8 @@ struct HomeView: View {
 
     @State private var hubs: [Hub] = []
     @State private var loadState: LoadState = .idle
+    /// The server the current hubs were loaded from (pop-back no-op guard).
+    @State private var loadedServer: URL?
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -48,10 +50,14 @@ struct HomeView: View {
         }
         // Re-run whenever the server URL resolves after discovery/rediscovery.
         .task(id: appModel.serverBaseURL) { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(force: true) }
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
+        // `.task` also re-fires every time the stack pops back to Home; without this
+        // guard the rails reload and dump the scroll position the user returned to.
+        // A real server change (different URL) still reloads.
+        if !force, loadedServer == appModel.serverBaseURL, case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No reachable Plex server selected.")
             return
@@ -61,6 +67,7 @@ struct HomeView: View {
         do {
             let resp = try await appModel.client.send(req, as: HubsResponse.self)
             hubs = resp.mediaContainer.hub
+            loadedServer = server
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))

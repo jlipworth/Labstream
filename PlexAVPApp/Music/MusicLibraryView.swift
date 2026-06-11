@@ -14,6 +14,8 @@ struct MusicLibraryView: View {
     @State private var loadState: HomeView.LoadState = .idle
     /// Key of the section the user is browsing (only meaningful with 2+ sections).
     @State private var selectedSectionKey: String?
+    /// The server the current sections were loaded from (pop-back no-op guard).
+    @State private var loadedServer: URL?
 
     var body: some View {
         Group {
@@ -55,7 +57,7 @@ struct MusicLibraryView: View {
             musicDestination(for: item, sectionKey: selectedSection?.key)
         }
         .task(id: appModel.serverBaseURL) { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(force: true) }
     }
 
     /// The section to browse: the explicit selection, else the first music section.
@@ -63,17 +65,23 @@ struct MusicLibraryView: View {
         sections.first { $0.key == selectedSectionKey } ?? sections.first
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
+        // `.task` re-fires every time the stack pops back to this root view; without
+        // this guard the reload tears down MusicHomeView and resets the pivot/scroll
+        // state the user is popping back TO (live bug: Back always landed on a fresh
+        // Home pivot). Only pull-to-refresh and a real server change refetch.
+        if !force, loadedServer == appModel.serverBaseURL, case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No reachable Plex server selected.")
             return
         }
-        loadState = .loading
+        if case .loaded = loadState {} else { loadState = .loading }
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
             sections = resp.mediaContainer.directory.filter(\.isMusic)
             if selectedSectionKey == nil { selectedSectionKey = sections.first?.key }
+            loadedServer = server
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
@@ -206,7 +214,7 @@ private struct MusicHomePivot: View {
             }
         }
         .task { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(force: true) }
     }
 
     private var shuffleButton: some View {
@@ -233,7 +241,11 @@ private struct MusicHomePivot: View {
         .padding(.top, DS.Space.md)
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
+        // `.task` re-fires on every pop-back/tab-return; reloading then would swap
+        // the rails for the skeleton and throw away scroll position. Refresh only
+        // on first load or explicit pull-to-refresh.
+        if !force, case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
@@ -552,6 +564,10 @@ private struct PagedArtGrid<SortMenu: View>: View {
     /// Page indices currently in flight (a failed page is removed so a placeholder
     /// re-appearing retries it).
     @State private var loadingPages: Set<Int> = []
+    /// The sort the current `slots` were loaded under — `.task(id: sortKey)` also
+    /// re-fires on pop-back/reappear, and only a real sort CHANGE should reload
+    /// (a reload would dump the user's scroll position back to the top).
+    @State private var loadedSortKey: String?
 
     private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
                                     spacing: DS.Space.xl)]
@@ -605,7 +621,7 @@ private struct PagedArtGrid<SortMenu: View>: View {
             }
         }
         .task(id: sortKey) { await load() }
-        .refreshable { await load() }
+        .refreshable { await load(force: true) }
     }
 
     /// Shimmer stand-in matching a loaded cell's footprint (art + one text line).
@@ -623,7 +639,10 @@ private struct PagedArtGrid<SortMenu: View>: View {
         .frame(width: MusicArt.gridMin, alignment: .leading)
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
+        // Reappear-driven `.task` runs are no-ops once loaded; only a sort change
+        // or pull-to-refresh rebuilds the slots (and so resets scroll).
+        if !force, loadedSortKey == sortKey, case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
@@ -640,6 +659,7 @@ private struct PagedArtGrid<SortMenu: View>: View {
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.enumerated() { fresh[i] = item }
             slots = fresh
+            loadedSortKey = sortKey
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
