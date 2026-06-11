@@ -2,7 +2,7 @@ import Foundation
 import AVKit
 import AVFAudio
 import UIKit
-import PlexKit
+import PMSKit
 
 /// Owns the `AVPlayer` for one playback session and drives Plex playback state.
 ///

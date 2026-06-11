@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Lets the user pick a QUALITY before an offline download starts, then kicks off the
 /// transfer through `DownloadManager.optimizeAndDownload(_:quality:mediaIndex:partIndex:)`.

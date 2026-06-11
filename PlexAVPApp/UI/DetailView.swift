@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Item detail: artwork, rich metadata, and the primary actions — a real per-item
 /// submenu modeled on the official Plex / Emby item pages.

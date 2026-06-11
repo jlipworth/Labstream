@@ -11,7 +11,7 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 **offline downloads** of capped copies of your library.
 
 > **Status: working app.** End-to-end playback runs in the visionOS 26.5 simulator and on device.
-> Build is green and the `PlexKit` package ships a full unit-test suite (`cd PlexKit && swift test`).
+> Build is green and the `PMSKit` package ships a full unit-test suite (`cd PMSKit && swift test`).
 > This is a single-user, sideload-only project — there is no App Store build.
 
 ## What this app does
@@ -38,7 +38,7 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 
 - **SwiftUI** app shell with **AVKit / AVFoundation** for transcoded HLS playback and Cinema Environment docking
 - **Swift 6** with strict concurrency
-- **`PlexKit`** — a local Swift package providing the hand-rolled Plex API layer (auth, library browse,
+- **`PMSKit`** — a local Swift package providing the hand-rolled Plex API layer (auth, library browse,
   transcode decision, playback-state endpoints, TV + music hierarchy), fully unit-tested
 - **Xcode 26**, targeting **visionOS 26.5**
 
@@ -54,7 +54,7 @@ VisionPlex/
 │   ├── Music/            # Plexamp-style music browse + audio player
 │   ├── Downloads/        # offline transfers + offline library
 │   └── UI/               # Home · Libraries · Search · Detail
-├── PlexKit/              # local Swift package: Plex API layer (+ tests)
+├── PMSKit/              # local Swift package: Plex API layer (+ tests)
 ├── research/             # design research that informed the build
 └── docs/                 # supporting notes
 ```
@@ -75,10 +75,10 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
-Run the `PlexKit` test suite:
+Run the `PMSKit` test suite:
 
 ```bash
-cd PlexKit && swift test
+cd PMSKit && swift test
 ```
 
 For personal-device signing, create a local-only `Signing.local.xcconfig` containing only your Apple Developer Team ID. The bundle ID and signing style are committed project settings:
@@ -96,11 +96,11 @@ Local validation before handing off:
 xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
-(cd PlexKit && swift test)
+(cd PMSKit && swift test)
 ./scripts/ci-hygiene.sh
 ```
 
-Woodpecker runs the portable CI checks only: `PlexKit` tests and repo hygiene. The unsigned
+Woodpecker runs the portable CI checks only: `PMSKit` tests and repo hygiene. The unsigned
 visionOS simulator `xcodebuild` remains a local macOS/Xcode validation step unless or until a future
 macOS-runner CI job is added. A future App Store/TestFlight pass can add distribution signing,
 entitlements review, screenshots, privacy metadata, and store-specific release automation later; it

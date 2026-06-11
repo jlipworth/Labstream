@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// App root. Owns the long-lived state objects and switches between the login
 /// flow and the browse UI based on `appModel.isBrowseReady`.

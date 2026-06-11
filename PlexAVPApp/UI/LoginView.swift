@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Sign-in screen. Drives the Plex PIN-OAuth flow via `AuthManager`:
 ///   1. "Sign in with Plex" creates a PIN and shows the linking code as the

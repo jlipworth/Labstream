@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 // MARK: - Music detection (issue #15)
 //

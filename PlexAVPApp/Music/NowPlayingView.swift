@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Full now-playing screen, presented as a sheet from `MiniPlayerBar`: blurred
 /// cover-art backdrop, big centered artwork, scrubber, transport controls and the

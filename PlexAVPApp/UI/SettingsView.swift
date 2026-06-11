@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Settings tab: current server + re-discover, default streaming quality, download storage
 /// usage, and sign out.

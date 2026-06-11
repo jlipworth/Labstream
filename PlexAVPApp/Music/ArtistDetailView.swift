@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// An artist's page, Plexamp-style: header (portrait + name + bio) above shelves in
 /// Plexamp's order — Popular tracks, Albums, the PMS-categorized release shelves

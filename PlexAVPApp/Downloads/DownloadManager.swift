@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import PlexKit
+import PMSKit
 import AVFoundation   // D1: AVURLAsset playability probe on a finished download
 import os
 
@@ -445,7 +445,7 @@ public final class DownloadManager {
     /// Trigger the server-side optimized (capped-bitrate) version of `item`.
     ///
     /// // TODO(live): verify optimize endpoint + targetTagID against the live
-    /// server (research/11). PlexKit's `OptimizeRequest.create` encodes a
+    /// server (research/11). PMSKit's `OptimizeRequest.create` encodes a
     /// BEST-EFFORT contract: a flat `PUT /library/optimize` carrying
     /// `title`/`target`/`targetTagID` plus python-plexapi's nested `Item[...]`
     /// MediaSettings params. The REAL Plex optimize is NOT this static PUT — it

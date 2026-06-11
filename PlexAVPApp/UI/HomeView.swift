@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Home tab: the server's hubs (`GET /hubs`) rendered as horizontal poster rails,
 /// Swiftfin-style. Each rail is one `Hub`; tapping a poster opens `DetailView`.

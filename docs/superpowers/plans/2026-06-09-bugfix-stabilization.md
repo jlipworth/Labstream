@@ -4,9 +4,9 @@
 
 **Goal:** Fix the high-signal repo-audit bugs without starting the Keystone overlay redesign.
 
-**Architecture:** Stabilize state transitions at the app boundaries: auth discovery must produce either a browse-ready server token/base URL or visible unauthenticated/error state; downloads must only expose validated completed files and respect the selected media version; playback startup/retry must be cancellable and generation-guarded. Small PlexKit/request fixes should be covered by package tests; app-level behavior should use extracted pure helpers where feasible plus visionOS build verification.
+**Architecture:** Stabilize state transitions at the app boundaries: auth discovery must produce either a browse-ready server token/base URL or visible unauthenticated/error state; downloads must only expose validated completed files and respect the selected media version; playback startup/retry must be cancellable and generation-guarded. Small PMSKit/request fixes should be covered by package tests; app-level behavior should use extracted pure helpers where feasible plus visionOS build verification.
 
-**Tech Stack:** Swift 6, SwiftUI/Observation, AVKit/AVFoundation, URLSession background downloads, Xcode visionOS simulator, Swift Testing in PlexKit.
+**Tech Stack:** Swift 6, SwiftUI/Observation, AVKit/AVFoundation, URLSession background downloads, Xcode visionOS simulator, Swift Testing in PMSKit.
 
 ---
 
@@ -16,9 +16,9 @@
 - `PlexAVPApp/Auth/AuthManager.swift`: make restore/login discovery explicit, set selected server token, cancel PIN polling.
 - `PlexAVPApp/Auth/KeychainStore.swift`: expose checked token persistence while keeping current simulator fallback behavior narrow.
 - `PlexAVPApp/Networking/PlexClient.swift`: preserve cancellation errors.
-- `PlexKit/Sources/PlexKit/Models/Library.swift`: lenient section decoding.
-- `PlexKit/Sources/PlexKit/Auth/PinAuth.swift`: percent-encode auth fragment values.
-- `PlexKit/Tests/PlexKitTests/*`: failing tests first for PlexKit behavior.
+- `PMSKit/Sources/PMSKit/Models/Library.swift`: lenient section decoding.
+- `PMSKit/Sources/PMSKit/Auth/PinAuth.swift`: percent-encode auth fragment values.
+- `PMSKit/Tests/PMSKitTests/*`: failing tests first for PMSKit behavior.
 - `PlexAVPApp/Downloads/DownloadStore.swift`: expose only completed local URLs, persist resume offset, sanitize filenames.
 - `PlexAVPApp/Downloads/DownloadManager.swift`: selected media indices, background handler race fix.
 - `PlexAVPApp/UI/DetailView.swift`: use server token, thread media index into downloads, fix failed/download labels and offline playback guard.
@@ -29,16 +29,16 @@
 
 ---
 
-### Task 1: PlexKit low-risk test-first fixes
+### Task 1: PMSKit low-risk test-first fixes
 
 **Files:**
-- Modify: `PlexKit/Sources/PlexKit/Models/Library.swift`
-- Modify: `PlexKit/Sources/PlexKit/Auth/PinAuth.swift`
-- Test: `PlexKit/Tests/PlexKitTests/LibraryDecodeTests.swift`
-- Test: `PlexKit/Tests/PlexKitTests/PinAuthTests.swift`
+- Modify: `PMSKit/Sources/PMSKit/Models/Library.swift`
+- Modify: `PMSKit/Sources/PMSKit/Auth/PinAuth.swift`
+- Test: `PMSKit/Tests/PMSKitTests/LibraryDecodeTests.swift`
+- Test: `PMSKit/Tests/PMSKitTests/PinAuthTests.swift`
 
 - [ ] Write failing tests for empty `Directory` decoding and auth URL fragment escaping.
-- [ ] Run targeted `swift test` from `PlexKit` and verify failure.
+- [ ] Run targeted `swift test` from `PMSKit` and verify failure.
 - [ ] Implement custom decode/default and fragment encoding.
 - [ ] Re-run targeted and full `swift test`.
 
@@ -87,7 +87,7 @@
 **Files:**
 - No required source edits.
 
-- [ ] Run `swift test` in `PlexKit`.
+- [ ] Run `swift test` in `PMSKit`.
 - [ ] Run `xcodebuild`/XcodeBuildMCP visionOS simulator build.
 - [ ] Run `git diff --check`.
 - [ ] Summarize which existing GitHub issues are addressed and which new issues remain worth creating.
