@@ -178,7 +178,7 @@ fi
 
 printf '== obvious secret placeholder check ==\n'
 if git ls-files | rg -v '(^|/)\.gitignore$|(^|/)ci-hygiene\.sh$' | xargs rg -n --hidden --no-ignore-vcs \
-  'X-Plex-Token:|PLEX_TOKEN=|plex01\.example\.org|10\.42\.1\.224' 2>/dev/null; then
+  'X-Plex-Token:|PLEX_TOKEN=' 2>/dev/null; then  # host/IP now guarded by SHA-256 fingerprint, not literals
   fail 'forbidden Plex token/server string found'
 fi
 
