@@ -13,6 +13,9 @@ struct RootView: View {
     let musicPlayer: MusicPlayerController
 
     @State private var selection: AppTab = .home
+    /// Music tab's navigation path, lifted here so Now Playing's "go to
+    /// artist/album" (which lives in a sheet, outside the stack) can push into it.
+    @State private var musicPath = NavigationPath()
 
     enum AppTab: Hashable {
         case home, libraries, search, music, offline, settings
@@ -30,7 +33,7 @@ struct RootView: View {
                 NavigationStack { SearchView() }
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
-                NavigationStack { MusicLibraryView() }
+                NavigationStack(path: $musicPath) { MusicLibraryView() }
             }
             Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
                 NavigationStack { OfflineLibraryView(manager: downloadManager) }
@@ -46,6 +49,13 @@ struct RootView: View {
         // ornament floats below the window glass, the platform idiom for transport.
         .ornament(attachmentAnchor: .scene(.bottom)) {
             MiniPlayerBar()
+        }
+        // Now Playing's "go to artist/album": land on the Music tab and push.
+        .onChange(of: musicPlayer.navigationRequest) { _, item in
+            guard let item else { return }
+            musicPlayer.navigationRequest = nil
+            selection = .music
+            musicPath.append(item)
         }
         .environment(appModel)
         .environment(downloadManager)
