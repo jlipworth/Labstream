@@ -29,7 +29,7 @@
   - Update agent build/install commands and bundle ID.
   - Preserve existing unrelated user edits by patching only relevant command/bundle lines.
 - Create: `.woodpecker/plexkit.yml`
-  - Run `swift test` in `PlexKit` on push, pull request, and manual events.
+  - Run `swift test` in `PMSKit` on push, pull request, and manual events.
 - Create: `.woodpecker/hygiene.yml`
   - Run repository checks through `scripts/ci-hygiene.sh`.
 - Create: `scripts/ci-hygiene.sh`
@@ -261,10 +261,10 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
-Run the `PlexKit` test suite:
+Run the `PMSKit` test suite:
 
 ```bash
-cd PlexKit && swift test
+cd PMSKit && swift test
 ```
 
 For a physical Apple Vision Pro, sign in to your Apple account in Xcode and create an ignored local signing file:
@@ -281,7 +281,7 @@ Local validation and Woodpecker CI run the portable checks:
 
 ```bash
 ./scripts/ci-hygiene.sh
-cd PlexKit && swift test
+cd PMSKit && swift test
 ```
 
 A future App Store/TestFlight pass would add App Store Connect metadata, distribution signing, privacy labels, screenshots, and archive/upload docs. That is intentionally not part of the current readiness pass.
@@ -302,8 +302,8 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
-# PlexKit unit tests
-cd PlexKit && swift test
+# PMSKit unit tests
+cd PMSKit && swift test
 
 # Repo hygiene checks used by Woodpecker
 ./scripts/ci-hygiene.sh
@@ -318,7 +318,7 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp
 
 - App bundle id: `com.jlipworth.VisionPlex` · Sim: "Apple Vision Pro" (visionOS 26.5).
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
-  `PlexKit/Sources`, `PlexKit/Tests`) — no `project.pbxproj` edits needed.
+  `PMSKit/Sources`, `PMSKit/Tests`) — no `project.pbxproj` edits needed.
 ````
 
 Expected: command examples use the new bundle ID.
@@ -405,7 +405,7 @@ steps:
   - name: plexkit-tests
     image: swift:6.0
     commands:
-      - cd PlexKit
+      - cd PMSKit
       - swift test
 YAML
 ```
@@ -449,12 +449,12 @@ Expected:
 ci-hygiene: ok
 ```
 
-- [ ] **Step 4: Run PlexKit tests locally**
+- [ ] **Step 4: Run PMSKit tests locally**
 
 Run:
 
 ```bash
-cd PlexKit && swift test
+cd PMSKit && swift test
 ```
 
 Expected: test suite passes.
@@ -507,7 +507,7 @@ Expected: `** BUILD SUCCEEDED **`.
 Run:
 
 ```bash
-cd PlexKit && swift test
+cd PMSKit && swift test
 ```
 
 Expected: all tests pass.

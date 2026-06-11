@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Music tab root: the Plexamp-style entry point for the server's music libraries
 /// (`artist`-type sections). One music section renders inline; multiple sections get

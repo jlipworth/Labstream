@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 @Test func decodesMediaContainerSections() throws {
     let json = """

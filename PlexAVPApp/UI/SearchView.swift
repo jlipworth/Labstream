@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Search tab: queries `GET /hubs/search?query=` and renders the grouped hub
 /// results into the same Detail flow as browse. Debounced via `.task(id:)`.

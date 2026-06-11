@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import PlexKit
+import PMSKit
 
 /// Drives the Plex PIN-OAuth login flow and persists the result.
 ///

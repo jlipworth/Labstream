@@ -1,5 +1,5 @@
 import Foundation
-import PlexKit
+import PMSKit
 
 /// Typed errors surfaced by `PlexClient`. The whole app maps failures to these
 /// so callers (AuthManager, players, downloads) can react uniformly — most
@@ -13,7 +13,7 @@ public enum PlexError: Error, Sendable {
 
 /// Thin live executor for a `PlexRequest`.
 ///
-/// All request *building* lives in PlexKit (pure, tested). This actor only:
+/// All request *building* lives in PMSKit (pure, tested). This actor only:
 ///   1. turns a `PlexRequest` into a `URLRequest`,
 ///   2. runs it on an injected `URLSession`,
 ///   3. maps the HTTP status to a typed `PlexError`,

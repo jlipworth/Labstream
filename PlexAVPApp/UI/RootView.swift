@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Top-level authenticated UI: a tab strip of Home · Libraries · Search, plus an
 /// Offline entry and a Settings control. Created once the user is signed in.
@@ -70,11 +70,11 @@ struct RootView: View {
 
 // MARK: - Library request builders (UI-owned)
 //
-// The committed PlexKit ships builders for auth/transcode/timeline/optimize but
+// The committed PMSKit ships builders for auth/transcode/timeline/optimize but
 // not for the plain browse endpoints (sections, hubs, search, item children).
 // Those are simple GETs, so the UI builds the `PlexRequest`s directly using the
 // shared `PlexHeaders.standard(...)`. Keeping them here (a UI-owned file) avoids
-// touching PlexKit and keeps all browse wiring in one place.
+// touching PMSKit and keeps all browse wiring in one place.
 enum BrowseAPI {
     /// `GET /library/sections` — the list of libraries on the server.
     static func sections(server: URL, token: String, identity: ClientIdentity) -> PlexRequest {
@@ -112,7 +112,7 @@ enum BrowseAPI {
     }
 
     /// `GET /library/metadata/<ratingKey>/children` — one level of the TV hierarchy:
-    /// a show's seasons, or a season's episodes. Delegates to the pure PlexKit builder.
+    /// a show's seasons, or a season's episodes. Delegates to the pure PMSKit builder.
     static func children(server: URL, token: String, identity: ClientIdentity,
                          ratingKey: String) -> PlexRequest {
         ChildrenRequest.children(server: server, token: token,

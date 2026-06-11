@@ -1,3 +1,3 @@
-public enum PlexKit {
+public enum PMSKit {
     public static let version = "0.1.0"
 }

@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import PlexKit
+import PMSKit
 
 /// Central app state, observed by SwiftUI.
 ///

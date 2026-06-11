@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Plexamp-signature album page: the cover art bleeds behind the whole screen as a
 /// heavily-blurred backdrop, with the real cover, album credits, Play/Shuffle actions

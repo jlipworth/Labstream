@@ -309,14 +309,14 @@ Play Next / Add to Queue).
 
 ---
 
-## 6. Data layer (endpoints → PlexKit)
+## 6. Data layer (endpoints → PMSKit)
 
 Living artifact — keep this table updated as builders land. All new builders
-are pure URL constructors with unit tests in PlexKit (`MusicRequestTests`
+are pure URL constructors with unit tests in PMSKit (`MusicRequestTests`
 style). Confidence: ✅ = confirmed (python-plexapi source or already proven in
 this repo), ⚠️ = verify against live PMS before building UI on it.
 
-| Surface | Endpoint | PlexKit status | Conf. |
+| Surface | Endpoint | PMSKit status | Conf. |
 |---|---|---|---|
 | Home rails | `GET /hubs/sections/{key}?count=20&excludeFields=summary` | **new** `MusicRequest.sectionHubs` (`Hub` decodes already) | ✅ path, ⚠️ hub ids → prefix-match only |
 | Recently-Played fallback | `GET /status/sessions/history/all?sort=viewedAt:desc&librarySectionID={id}` | **new** `MusicRequest.playHistory` | ✅ |
@@ -333,7 +333,7 @@ this repo), ⚠️ = verify against live PMS before building UI on it.
 | Artwork | `/photo/:/transcode` (+ `blur`/`blendColor` v2 tint) | existing; extend v2 | ✅ |
 | Scrobble/timeline | `TimelineRequest` (`/:/timeline`, `/:/scrobble`) | keep | ✅ proven |
 
-`MediaItem` additive optional decodes (PlexKit, unit-tested):
+`MediaItem` additive optional decodes (PMSKit, unit-tested):
 `originalTitle` (compilation track artist), `lastViewedAt`, `parentYear`,
 `ratingCount`. `MediaItem.Kind` gains `.artist/.album/.track/.playlist`.
 
@@ -370,7 +370,7 @@ prefix; only needed for opus/ogg), lyrics (Stream type-4 detection), `/:/rate`.
 - `NowPlayingView`: queue reorder/remove/clear + pre-scroll anchor.
 - `MiniPlayerBar`: + previous, + queue button, + passive hairline, − NSLog
   (MiniPlayerBar.swift:17), width 560.
-- `MediaItem.Kind` (PlexKit MediaItem+Hierarchy.swift): music cases.
+- `MediaItem.Kind` (PMSKit MediaItem+Hierarchy.swift): music cases.
 - `docs/DEVELOPMENT.md`: record the no-bar-volume rationale and any new
   verified findings (contextMenu-on-card behavior, onMove-under-gaze).
 
@@ -418,7 +418,7 @@ end. **v1 = phases 0–7.**
     Media/Part (directly playable), `album.subformat!` exclusion honored.
   - **#4 probe**: transcode master playlist has NO `EXT-X-I-FRAME-STREAM-INF`
     (only `#EXT-X-STREAM-INF`) — no free trick-play thumbnails on this PMS.
-- **Phase 1 — PlexKit builders + tests.** `sectionHubs`, `playHistory`,
+- **Phase 1 — PMSKit builders + tests.** `sectionHubs`, `playHistory`,
   `randomTracks`, `allLeaves`, `popularTracks`, `PlaylistRequest`,
   paging/sort params on `artists`/`albums`, `MediaItem` field + `Kind`
   additions. Pure URL builders + decodes; zero app risk.

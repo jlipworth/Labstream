@@ -22,6 +22,14 @@ The owner's real Plex hostname (`plex.example.internal`) and LAN IP (`192.0.2.10
 
 Making the repo public exposes both the tree and the full history. This must be cleaned first.
 
+### Local Swift package rename — DONE (2026-06-11)
+
+The local package was named `PlexKit`, colliding with an unrelated well-known MIT-licensed
+`PlexKit` library on GitHub. It is the owner's own bespoke code (no shared lineage), so it was
+renamed **`PlexKit` → `PMSKit`** (package, module, `enum` namespace, test target, directory tree,
+Xcode local-package reference, CI config, and docs). Verified: 131 PMSKit tests pass and the app
+builds green against the renamed package.
+
 ### Minor polish (optional, non-blocking)
 
 - GitHub repo `description` and `homepageUrl` are empty (topics already set).
@@ -60,10 +68,16 @@ single-owner repo with no forks/collaborators, and step 1's bundle is the recove
 
 Documented so the owner can decide if/when to pursue it. **Not** part of this cleanup.
 
-- **License conflict (decide first).** GPLv3 is widely held to be incompatible with App Store
-  distribution (FSF/VLC precedent: the store's DRM + usage-restriction terms conflict with GPLv3
-  §6). As sole copyright holder, the owner can relicense or dual-license; shipping as-is under
-  GPLv3 is a real review/legal risk. **No store work should start until this is resolved.**
+- **License — decided: keep GPLv3, add an Apple App Store exception.** GPL itself is held to be
+  incompatible with App Store distribution (FSF/VLC precedent — note the VLC case was GPLv2, so
+  changing GPL *version* does not help; the conflict is copyleft's "no added restrictions" rule vs
+  the store's usage terms). The owner's goal is specifically to **force any derivative to stay
+  open-source**, which is exactly what copyleft provides — so relicensing to a permissive license is
+  rejected. Instead, when the store path is pursued, add a **GPLv3 §7 additional-permission notice**
+  granting distribution through Apple's App Store. This resolves only the Apple-terms conflict; it
+  does **not** waive copyleft (App Store distributors still must ship GPL source — no proprietary
+  forks). As sole copyright holder the owner also retains dual-licensing rights over their own copy.
+  The exception text is drafted/applied only when store work begins; it is not added now.
 - **Apple Developer Program** — paid membership ($99/yr); register the `com.jlipworth.VisionPlex`
   App ID; create distribution certificate + provisioning profile.
 - **Export compliance** — add `ITSAppUsesNonExemptEncryption` (HTTPS-only → standard exemption).

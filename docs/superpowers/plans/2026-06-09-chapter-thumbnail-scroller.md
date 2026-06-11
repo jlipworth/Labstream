@@ -6,27 +6,27 @@
 
 > **Implementation note (superseded):** The thumbnail-loading approach below changed during implementation. The Chapters info tab is hosted in a bare `UIHostingController` outside the SwiftUI environment, so `PosterImage`'s `@Environment(AppModel.self)` lookup couldn't resolve and silently fell back to a placeholder. The shipped code instead vends the `/photo/:/transcode` URL from `PlaybackController.chapterThumbnailURL(for:)` and `ChapterCard` renders it via `AsyncImage`. The rest of the plan (the rail layout, `indexOfChapter` helper, current-chapter highlight + auto-scroll) shipped as written.
 
-**Architecture:** Fully additive — native AVKit chrome (`showsPlaybackControls = true`) is untouched; only the contents of the already-registered Chapters info tab change. The one piece of pure logic (current-chapter selection) lives in PlexKit so it is unit-testable; the rail and card are SwiftUI views in the app. Thumbnails reuse the existing `PosterImage` loader (Plex `/photo/:/transcode`), so there is no new networking.
+**Architecture:** Fully additive — native AVKit chrome (`showsPlaybackControls = true`) is untouched; only the contents of the already-registered Chapters info tab change. The one piece of pure logic (current-chapter selection) lives in PMSKit so it is unit-testable; the rail and card are SwiftUI views in the app. Thumbnails reuse the existing `PosterImage` loader (Plex `/photo/:/transcode`), so there is no new networking.
 
-**Tech Stack:** Swift 6, SwiftUI, AVKit (visionOS 26), PlexKit (local SPM package), swift-testing (`import Testing`).
+**Tech Stack:** Swift 6, SwiftUI, AVKit (visionOS 26), PMSKit (local SPM package), swift-testing (`import Testing`).
 
 **Spec:** `docs/superpowers/specs/2026-06-09-chapter-thumbnail-scroller-design.md`
 
 ---
 
-### Task 1: Current-chapter selection (pure logic in PlexKit)
+### Task 1: Current-chapter selection (pure logic in PMSKit)
 
 **Files:**
-- Modify: `PlexKit/Sources/PlexKit/Models/Library.swift` (add an extension after the `Chapter` struct, which ends at line 272)
-- Test: `PlexKit/Tests/PlexKitTests/ChapterSelectionTests.swift` (create)
+- Modify: `PMSKit/Sources/PMSKit/Models/Library.swift` (add an extension after the `Chapter` struct, which ends at line 272)
+- Test: `PMSKit/Tests/PMSKitTests/ChapterSelectionTests.swift` (create)
 
 - [ ] **Step 1: Write the failing test**
 
-Create `PlexKit/Tests/PlexKitTests/ChapterSelectionTests.swift`:
+Create `PMSKit/Tests/PMSKitTests/ChapterSelectionTests.swift`:
 
 ```swift
 import Testing
-@testable import PlexKit
+@testable import PMSKit
 
 // Three chapters starting at 0ms, 12_000ms, 28_000ms.
 private let chapters: [Chapter] = [
@@ -71,12 +71,12 @@ private let chapters: [Chapter] = [
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path PlexKit --filter ChapterSelectionTests`
+Run: `swift test --package-path PMSKit --filter ChapterSelectionTests`
 Expected: FAIL to compile — `value of type '[Chapter]' has no member 'indexOfChapter'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-In `PlexKit/Sources/PlexKit/Models/Library.swift`, immediately after the closing brace of the `Chapter` struct (line 272), add:
+In `PMSKit/Sources/PMSKit/Models/Library.swift`, immediately after the closing brace of the `Chapter` struct (line 272), add:
 
 ```swift
 public extension Array where Element == Chapter {
@@ -99,13 +99,13 @@ public extension Array where Element == Chapter {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path PlexKit --filter ChapterSelectionTests`
+Run: `swift test --package-path PMSKit --filter ChapterSelectionTests`
 Expected: PASS (7 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add PlexKit/Sources/PlexKit/Models/Library.swift PlexKit/Tests/PlexKitTests/ChapterSelectionTests.swift
+git add PMSKit/Sources/PMSKit/Models/Library.swift PMSKit/Tests/PMSKitTests/ChapterSelectionTests.swift
 git commit -m "feat(player): add current-chapter selection helper for chapter scroller"
 ```
 
@@ -289,9 +289,9 @@ with:
 Run: `xcodebuild build -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,name=Apple Vision Pro'`
 Expected: BUILD SUCCEEDED, with no remaining "unused `ChapterCard`" warning.
 
-- [ ] **Step 4: Run the full PlexKit test suite (no regressions)**
+- [ ] **Step 4: Run the full PMSKit test suite (no regressions)**
 
-Run: `swift test --package-path PlexKit`
+Run: `swift test --package-path PMSKit`
 Expected: PASS (all existing tests + the 7 new ChapterSelection tests).
 
 - [ ] **Step 5: Commit**

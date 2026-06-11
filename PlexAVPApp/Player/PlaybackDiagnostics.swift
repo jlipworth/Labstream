@@ -1,6 +1,6 @@
 import Foundation
 import AVKit
-import PlexKit
+import PMSKit
 
 /// Live, observable diagnostics for the "Stats for Nerds" overlay (Emby-style).
 ///

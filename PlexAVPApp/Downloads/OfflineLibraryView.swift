@@ -1,5 +1,5 @@
 import SwiftUI
-import PlexKit
+import PMSKit
 
 /// Lists offline downloads with live progress + delete, and plays a completed
 /// file through the shared Task 11 player (`PlayerView(localFile:item:)`).

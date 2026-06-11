@@ -1,6 +1,6 @@
 import Foundation
 import AVKit
-import PlexKit
+import PMSKit
 
 /// Reports playback state to PMS for one playback session: the ~10s timeline
 /// heartbeats, play/pause/stop transitions, and the watched-state scrobble.

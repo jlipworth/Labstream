@@ -8,7 +8,7 @@
 > [GitHub Issues](https://github.com/jlipworth/VisionPlex/issues) and
 > `docs/DEVELOPMENT.md`.
 
-Synthesis of 10 research agents: core-code audits (playback / downloads / PlexKit), competitive feature inventories (Plex, Emby/Infuse/Plexi/Aurora/VidHub/MrMC, Swiftfin, jellyfin-web), and Apple visionOS/AVFoundation platform briefs. Drives implementation. File:line locations are from the live tree.
+Synthesis of 10 research agents: core-code audits (playback / downloads / PMSKit), competitive feature inventories (Plex, Emby/Infuse/Plexi/Aurora/VidHub/MrMC, Swiftfin, jellyfin-web), and Apple visionOS/AVFoundation platform briefs. Drives implementation. File:line locations are from the live tree.
 
 ---
 
@@ -20,7 +20,7 @@ Synthesis of 10 research agents: core-code audits (playback / downloads / PlexKi
 
 **The single biggest architectural finding** (confirmed by Apple Forums 762008 + WWDC25): our custom controls are cinema-only because **we never enter the Expanded experience** and the player lives in a `.fullScreenCover` (embedded mode). `customInfoViewControllers` tabs only render in Expanded. The two strategic fixes are: present the player as **exclusive window content** and/or call `experienceController.transition(to: .expanded)`, OR build a **custom SwiftUI control overlay** over the player. Swiftfin and jellyfin-web both prove the custom-overlay path is what unlocks inline controls, on-video stats, trick-play, language pickers, and a Done button in one move — it resolves tasks #1, #2, #3, #5, #6, #7 simultaneously.
 
-**Biggest opportunities, in order:** (a) fix the core bugs above; (b) custom SwiftUI control overlay (the keystone); (c) PlexKit data-layer gaps that block features — decode `Part.Stream` (audio/subtitle languages), request `includeChapters`/`includeMarkers` (chapters + Skip Intro/Credits), wire the existing-but-unused PlayQueue (next-episode/autoplay); (d) an accurate AVP DeviceProfile so PMS direct-plays more and transcodes less (improves quality, preserves tracks); (e) trick-play (server-side: emit an HLS I-frame playlist).
+**Biggest opportunities, in order:** (a) fix the core bugs above; (b) custom SwiftUI control overlay (the keystone); (c) PMSKit data-layer gaps that block features — decode `Part.Stream` (audio/subtitle languages), request `includeChapters`/`includeMarkers` (chapters + Skip Intro/Credits), wire the existing-but-unused PlayQueue (next-episode/autoplay); (d) an accurate AVP DeviceProfile so PMS direct-plays more and transcodes less (improves quality, preserves tracks); (e) trick-play (server-side: emit an HLS I-frame playlist).
 
 **Key platform truths that reframe several "tasks":**
 - Audio collapsing to one track and generic "CC" labels are **PMS transcode / HLS-manifest problems**, not AVKit limitations. AVKit labels tracks from `EXT-X-MEDIA` `LANGUAGE`/`NAME`. The real fix is server-side (request multi-rendition / direct-play) plus a client-side `locale`/`extendedLanguageTag` fallback for labels.
@@ -66,7 +66,7 @@ Deduped across audits. Severity: bug (incorrect/blocking) / risk (latent) / gap 
 | D11 | **Dead/unverified optimize-queue path still shipped** as public API with unreachable error states/labels. | polish | `DownloadManager.swift:121-161, 265-318, 324`; `OptimizeRequest.swift:83-134` | Delete the optimize-queue path + its now-dead error cases/labels (or finish it properly). | M |
 | D12 | **No concurrency cap; `isDiscretionary=false` + cellular** — many large transcodes can run at once over cellular, hammering PMS. | polish | `DownloadManager.swift:352-356, 416-428` | Bound concurrent transcoded downloads (1–2) via an app-level queue; reconsider cellular default. | S |
 
-### PlexKit data layer (blocks feature work)
+### PMSKit data layer (blocks feature work)
 
 | # | Title | Sev | Location | Fix | Effort |
 |---|-------|-----|----------|-----|--------|
@@ -76,7 +76,7 @@ Deduped across audits. Severity: bug (incorrect/blocking) / risk (latent) / gap 
 | K4 | **Only one Media version surfaced** — no multi-version/edition selection. | gap | `Models/Library.swift:67, 196-238` | When `media.count>1`, expose a version picker; pass chosen Media/Part to the decision (mediaIndex/partIndex). | M |
 | K5 | **Timeline lacks `X-Plex-Session-Identifier`** — PMS can't correlate timeline with the transcode session or dedupe concurrent sessions. | polish | `TimelineRequest.swift:11-122`; `PlaybackController.swift:405-416` | Add a stable per-playback `X-Plex-Session-Identifier` to timeline/scrobble + decision; skip heartbeats when `durationMs==0`. | S |
 | K6 | **ResourceDiscovery drops fields useful for server selection** (owned, presence, publicAddressMatches, connection address/port/protocol). | polish | `Auth/ResourceDiscovery.swift:64-124` | Decode those fields; prefer owned+present servers; skip clearly-unroutable local addresses before probing. | S |
-| K7 | **Missing API surfaces** for feature work: GET/create playQueue wired in; includeChapters/markers/extras + Marker; Part.Stream + audioStreamID/subtitleStreamID on decision; PUT default-stream; BIF/trick-play endpoint; section `/all` sort/filter + container paging. | gap | `PlexKit/Sources/PlexKit` | Add builders/params (see §3 per-area). | L |
+| K7 | **Missing API surfaces** for feature work: GET/create playQueue wired in; includeChapters/markers/extras + Marker; Part.Stream + audioStreamID/subtitleStreamID on decision; PUT default-stream; BIF/trick-play endpoint; section `/all` sort/filter + container paging. | gap | `PMSKit/Sources/PMSKit` | Add builders/params (see §3 per-area). | L |
 
 ---
 
@@ -234,7 +234,7 @@ For each: best clients / do-we-have-it / visionOS recommendation / priority / ef
 - **#9** Quality-reload resume fix (P2).
 - **#10** Download integrity: body validation + error surfacing + state machine (D1/D2/D3).
 - **#11** Progress-based scrobble + Continue-Watching refresh (P9).
-- **#12** PlexKit `Part.Stream` + markers + PlayQueue wiring (K1/K2/K3).
+- **#12** PMSKit `Part.Stream` + markers + PlayQueue wiring (K1/K2/K3).
 - **#13** Accurate AVP DeviceProfile + Direct Play within cap (P10).
 - **#14** Skip Intro / Skip Credits.
 - **#15** Up Next / autoplay-next episode.

@@ -58,7 +58,7 @@ Add a small `.woodpecker/` setup modeled after the user's other repos: simple YA
 
 Initial pipelines:
 
-- `plexkit.yml`: run `cd PlexKit && swift test`.
+- `plexkit.yml`: run `cd PMSKit && swift test`.
 - `hygiene.yml`: run repository checks that do not require Apple signing credentials, such as `git diff --check`, committed-secret/local-signing guard checks, and lightweight docs/reference validation.
 
 Avoid Discord notification/secrets plumbing in the first pass. It can be added later if the repo starts relying on Woodpecker status notifications.
@@ -73,7 +73,7 @@ Update the README and development docs to answer the practical setup questions f
 - simulator build command with signing disabled
 - device signing setup with `Signing.local.xcconfig`
 - device trust/developer-mode note
-- `PlexKit` test command
+- `PMSKit` test command
 - Woodpecker CI coverage and limitations
 - secret hygiene: never commit Plex tokens, client identifiers, local signing files, or generated provisioning assets
 
@@ -100,7 +100,7 @@ Keep these as documented future steps only. Do not add publication-only settings
 Implementation should prove the readiness work with:
 
 - `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,name=Apple Vision Pro' -configuration Debug build CODE_SIGNING_ALLOWED=NO`
-- `cd PlexKit && swift test`
+- `cd PMSKit && swift test`
 - `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -showBuildSettings` filtered for bundle/signing/product values
 - `git diff --check`
 - confirm no ignored local signing file or secret-like artifact is staged

@@ -1,5 +1,5 @@
 import Foundation
-import PlexKit
+import PMSKit
 
 /// Explicit lifecycle state for a download, persisted so a relaunch can tell a
 /// FINISHED transfer from a STALLED one. Previously completion was inferred from

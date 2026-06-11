@@ -14,23 +14,23 @@
 
 ## Testing strategy (read first)
 
-The pure-logic core is split into a **local SwiftPM package** `PlexKit/` so its tests run with plain `swift test` — **no Xcode, no simulator runtime required**. The app target depends on `PlexKit` as a local package. This is what lets the workflow compile-gate and test-gate every logic task immediately.
+The pure-logic core is split into a **local SwiftPM package** `PMSKit/` so its tests run with plain `swift test` — **no Xcode, no simulator runtime required**. The app target depends on `PMSKit` as a local package. This is what lets the workflow compile-gate and test-gate every logic task immediately.
 
-- **`PlexKit/Sources/PlexKit/`** — pure logic: models, header builder, URL/param builders, response decoders, the transcode-decision logic. No UIKit/AVKit/SwiftUI imports.
-- **`PlexKit/Tests/PlexKitTests/`** — Swift Testing unit tests. Run: `cd PlexKit && swift test`.
-- **App target `PlexAVPApp/`** — SwiftUI views, AVKit player, RealityKit environment, Keychain, live `URLSession` wiring. Imports `PlexKit`. Compile-gate: `xcodebuild -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' build CODE_SIGNING_ALLOWED=NO` (needs the platform/runtime download finished).
+- **`PMSKit/Sources/PMSKit/`** — pure logic: models, header builder, URL/param builders, response decoders, the transcode-decision logic. No UIKit/AVKit/SwiftUI imports.
+- **`PMSKit/Tests/PMSKitTests/`** — Swift Testing unit tests. Run: `cd PMSKit && swift test`.
+- **App target `PlexAVPApp/`** — SwiftUI views, AVKit player, RealityKit environment, Keychain, live `URLSession` wiring. Imports `PMSKit`. Compile-gate: `xcodebuild -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' build CODE_SIGNING_ALLOWED=NO` (needs the platform/runtime download finished).
 - **Manual/device** — auth round-trip, a forced 8 Mbps transcode play, resume, optimize+download+offline-play, theater docking. These are checklists at the end, run by the human on the headset.
 
 **Gate per task:** logic tasks must end green on `swift test`; app-target tasks must end green on the `xcodebuild` build. Never mark a task done on a red gate.
 
 ---
 
-## Task 0: Local PlexKit package + wire into app
+## Task 0: Local PMSKit package + wire into app
 
 **Files:**
-- Create: `PlexKit/Package.swift`
-- Create: `PlexKit/Sources/PlexKit/PlexKit.swift`
-- Create: `PlexKit/Tests/PlexKitTests/SanityTests.swift`
+- Create: `PMSKit/Package.swift`
+- Create: `PMSKit/Sources/PMSKit/PMSKit.swift`
+- Create: `PMSKit/Tests/PMSKitTests/SanityTests.swift`
 - Modify: `PlexAVPApp.xcodeproj/project.pbxproj` (add local package dependency — the ONE allowed pbxproj edit)
 
 - [ ] **Step 1: Write `Package.swift`**
@@ -40,23 +40,23 @@ The pure-logic core is split into a **local SwiftPM package** `PlexKit/` so its 
 import PackageDescription
 
 let package = Package(
-    name: "PlexKit",
+    name: "PMSKit",
     platforms: [.visionOS(.v26), .macOS(.v15)],
-    products: [.library(name: "PlexKit", targets: ["PlexKit"])],
+    products: [.library(name: "PMSKit", targets: ["PMSKit"])],
     targets: [
-        .target(name: "PlexKit"),
-        .testTarget(name: "PlexKitTests", dependencies: ["PlexKit"]),
+        .target(name: "PMSKit"),
+        .testTarget(name: "PMSKitTests", dependencies: ["PMSKit"]),
     ]
 )
 ```
 
-> `.macOS(.v15)` is included so `swift test` runs on the Mac host without the visionOS runtime. Keep PlexKit free of platform-specific imports.
+> `.macOS(.v15)` is included so `swift test` runs on the Mac host without the visionOS runtime. Keep PMSKit free of platform-specific imports.
 
 - [ ] **Step 2: Placeholder source + sanity test**
 
-`PlexKit.swift`:
+`PMSKit.swift`:
 ```swift
-public enum PlexKit {
+public enum PMSKit {
     public static let version = "0.1.0"
 }
 ```
@@ -64,21 +64,21 @@ public enum PlexKit {
 `SanityTests.swift`:
 ```swift
 import Testing
-@testable import PlexKit
+@testable import PMSKit
 
 @Test func versionExists() {
-    #expect(PlexKit.version == "0.1.0")
+    #expect(PMSKit.version == "0.1.0")
 }
 ```
 
 - [ ] **Step 3: Run test to verify it passes**
 
-Run: `cd PlexKit && swift test`
+Run: `cd PMSKit && swift test`
 Expected: PASS, 1 test.
 
-- [ ] **Step 4: Add PlexKit as a local package dependency of the app target**
+- [ ] **Step 4: Add PMSKit as a local package dependency of the app target**
 
-In Xcode this is "Add Local Package". Headless, add to `project.pbxproj`: an `XCLocalSwiftPackageReference "PlexKit"` in the project's `packageReferences`, and a `XCSwiftPackageProductDependency` (productName `PlexKit`) in the target's `packageProductDependencies` + a `PBXBuildFile` referencing it in the Frameworks phase. (This is the only sanctioned pbxproj edit; do it carefully and re-verify the project parses.)
+In Xcode this is "Add Local Package". Headless, add to `project.pbxproj`: an `XCLocalSwiftPackageReference "PMSKit"` in the project's `packageReferences`, and a `XCSwiftPackageProductDependency` (productName `PMSKit`) in the target's `packageProductDependencies` + a `PBXBuildFile` referencing it in the Frameworks phase. (This is the only sanctioned pbxproj edit; do it carefully and re-verify the project parses.)
 
 - [ ] **Step 5: Verify app still builds**
 
@@ -88,26 +88,26 @@ Expected: BUILD SUCCEEDED.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -A && git commit -m "Task 0: PlexKit local package wired into app target"
+git add -A && git commit -m "Task 0: PMSKit local package wired into app target"
 ```
 
 ---
 
-## Task 1: Identity & client headers (PlexKit)
+## Task 1: Identity & client headers (PMSKit)
 
 The stable client identity and the `X-Plex-*` header set that every request carries. Pure logic → fully tested.
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/ClientIdentity.swift`
-- Create: `PlexKit/Sources/PlexKit/PlexHeaders.swift`
-- Create: `PlexKit/Sources/PlexKit/PlexRequest.swift` (shared request descriptor used by all builders — defined here so Tasks 3–7 can fan out without an ordering dependency)
-- Create: `PlexKit/Tests/PlexKitTests/PlexHeadersTests.swift`
+- Create: `PMSKit/Sources/PMSKit/ClientIdentity.swift`
+- Create: `PMSKit/Sources/PMSKit/PlexHeaders.swift`
+- Create: `PMSKit/Sources/PMSKit/PlexRequest.swift` (shared request descriptor used by all builders — defined here so Tasks 3–7 can fan out without an ordering dependency)
+- Create: `PMSKit/Tests/PMSKitTests/PlexHeadersTests.swift`
 
 - [ ] **Step 1: Write the failing test**
 
 ```swift
 import Testing
-@testable import PlexKit
+@testable import PMSKit
 
 @Test func headersIncludeRequiredPlexFields() {
     let id = ClientIdentity(clientIdentifier: "ABC-123",
@@ -133,7 +133,7 @@ import Testing
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cd PlexKit && swift test --filter PlexHeadersTests`
+Run: `cd PMSKit && swift test --filter PlexHeadersTests`
 Expected: FAIL (types not defined).
 
 - [ ] **Step 3: Implement**
@@ -194,29 +194,29 @@ public struct PlexRequest: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 5: Run to verify pass** — `cd PlexKit && swift test --filter PlexHeadersTests` → PASS.
+- [ ] **Step 5: Run to verify pass** — `cd PMSKit && swift test --filter PlexHeadersTests` → PASS.
 - [ ] **Step 6: Commit** — `git commit -am "Task 1: client identity + Plex headers + PlexRequest"`
 
 > The actual UUID generation + persistence (Keychain) lives in the app target (Task 8); `ClientIdentity` here is the pure value type the app injects.
 
 ---
 
-## Task 2: Core models (PlexKit)
+## Task 2: Core models (PMSKit)
 
 Decodable models for the JSON the app consumes. Keep them minimal — only fields we use.
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/Models/Resources.swift` (server discovery)
-- Create: `PlexKit/Sources/PlexKit/Models/Library.swift` (sections, hubs, metadata, media/part)
-- Create: `PlexKit/Sources/PlexKit/Models/TranscodeDecision.swift`
-- Create: `PlexKit/Tests/PlexKitTests/DecodingTests.swift`
+- Create: `PMSKit/Sources/PMSKit/Models/Resources.swift` (server discovery)
+- Create: `PMSKit/Sources/PMSKit/Models/Library.swift` (sections, hubs, metadata, media/part)
+- Create: `PMSKit/Sources/PMSKit/Models/TranscodeDecision.swift`
+- Create: `PMSKit/Tests/PMSKitTests/DecodingTests.swift`
 
 - [ ] **Step 1: Write failing decode tests** using captured JSON fixtures.
 
 ```swift
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 @Test func decodesMediaContainerSections() throws {
     let json = """
@@ -244,7 +244,7 @@ import Foundation
 }
 ```
 
-- [ ] **Step 2: Run to verify fail.** `cd PlexKit && swift test --filter DecodingTests` → FAIL.
+- [ ] **Step 2: Run to verify fail.** `cd PMSKit && swift test --filter DecodingTests` → FAIL.
 - [ ] **Step 3: Implement the models.** Use `CodingKeys` to map Plex's capitalized container keys (`MediaContainer`, `Directory`, `Metadata`, `Media`, `Part`, `Hub`) to Swift camelCase. Make numeric fields that Plex sometimes sends as strings tolerant where needed. Mark all `Sendable`.
 
 ```swift
@@ -272,24 +272,24 @@ public struct Section: Decodable, Sendable, Identifiable {
 - [ ] **Step 4: Run to verify pass.** → PASS.
 - [ ] **Step 5: Commit.** `git commit -am "Task 2: core Decodable models"`
 
-> Capture real fixtures from the live server during integration (Task 13) and add them under `Tests/PlexKitTests/Fixtures/` to harden decoding against the actual payloads.
+> Capture real fixtures from the live server during integration (Task 13) and add them under `Tests/PMSKitTests/Fixtures/` to harden decoding against the actual payloads.
 
 ---
 
-## Task 3: PIN-OAuth request builders (PlexKit)
+## Task 3: PIN-OAuth request builders (PMSKit)
 
 The OAuth PIN flow as pure request descriptors (URL + method + headers + body), so they're testable without networking. The app target executes them (Task 9).
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/Auth/PinAuth.swift`
-- Create: `PlexKit/Tests/PlexKitTests/PinAuthTests.swift`
+- Create: `PMSKit/Sources/PMSKit/Auth/PinAuth.swift`
+- Create: `PMSKit/Tests/PMSKitTests/PinAuthTests.swift`
 
 - [ ] **Step 1: Failing tests**
 
 ```swift
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app", version: "0.1.0", deviceName: "AVP")
 
@@ -346,11 +346,11 @@ public enum PinAuth {
 
 ---
 
-## Task 4: Server discovery + connection ranking (PlexKit)
+## Task 4: Server discovery + connection ranking (PMSKit)
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/Auth/ResourceDiscovery.swift`
-- Create: `PlexKit/Tests/PlexKitTests/ResourceDiscoveryTests.swift`
+- Create: `PMSKit/Sources/PMSKit/Auth/ResourceDiscovery.swift`
+- Create: `PMSKit/Tests/PMSKitTests/ResourceDiscoveryTests.swift`
 
 - [ ] **Step 1: Failing tests** — request builder targets `clients.plex.tv/api/v2/resources`, and a `bestConnection` ranker prefers local over relay.
 
@@ -375,21 +375,21 @@ public enum PinAuth {
 
 ---
 
-## Task 5: Transcode decision + start.m3u8 URL builder (PlexKit) — CORE
+## Task 5: Transcode decision + start.m3u8 URL builder (PMSKit) — CORE
 
 The heart of the app. Port param shapes from `python-plexapi.getStreamURL()` and `research/09`. **Do NOT replicate python-plexapi's `partIndex=mediaIndex` bug** (research/09) — `partIndex` is its own index.
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/Transcode/DeviceProfile.swift`
-- Create: `PlexKit/Sources/PlexKit/Transcode/TranscodeRequest.swift`
-- Create: `PlexKit/Tests/PlexKitTests/TranscodeRequestTests.swift`
+- Create: `PMSKit/Sources/PMSKit/Transcode/DeviceProfile.swift`
+- Create: `PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift`
+- Create: `PMSKit/Tests/PMSKitTests/TranscodeRequestTests.swift`
 
 - [ ] **Step 1: Failing tests**
 
 ```swift
 import Testing
 import Foundation
-@testable import PlexKit
+@testable import PMSKit
 
 private let server = URL(string: "https://192.0.2.10:32400")!
 private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app", version: "0.1.0", deviceName: "AVP")
@@ -442,14 +442,14 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app"
 
 ---
 
-## Task 6: Playback-state request builders (PlexKit)
+## Task 6: Playback-state request builders (PMSKit)
 
 Timeline / scrobble / playQueues. **Encapsulate the HTTP method** — official Redoc says timeline=POST, scrobble/unscrobble=PUT; legacy clients use GET. Expose a `method` knob, default to the legacy GET that's known-working, and leave a live-test note (research/13).
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/Playback/TimelineRequest.swift`
-- Create: `PlexKit/Sources/PlexKit/Playback/PlayQueue.swift`
-- Create: `PlexKit/Tests/PlexKitTests/PlaybackStateTests.swift`
+- Create: `PMSKit/Sources/PMSKit/Playback/TimelineRequest.swift`
+- Create: `PMSKit/Sources/PMSKit/Playback/PlayQueue.swift`
+- Create: `PMSKit/Tests/PMSKitTests/PlaybackStateTests.swift`
 
 - [ ] **Step 1: Failing tests**
 
@@ -478,13 +478,13 @@ Timeline / scrobble / playQueues. **Encapsulate the HTTP method** — official R
 
 ---
 
-## Task 7: Optimize (Media Optimizer) request builder (PlexKit)
+## Task 7: Optimize (Media Optimizer) request builder (PMSKit)
 
 Capped offline download trigger. **Port exact params from `python-plexapi Video.optimize()` source** — read it first, then implement to match, because the endpoint/param names are easy to get subtly wrong. Target preset = "Optimized for TV – 8 Mbps 1080p".
 
 **Files:**
-- Create: `PlexKit/Sources/PlexKit/Optimize/OptimizeRequest.swift`
-- Create: `PlexKit/Tests/PlexKitTests/OptimizeTests.swift`
+- Create: `PMSKit/Sources/PMSKit/Optimize/OptimizeRequest.swift`
+- Create: `PMSKit/Tests/PMSKitTests/OptimizeTests.swift`
 
 - [ ] **Step 1:** Read `python-plexapi`'s `Video.optimize`/`Library.optimize` to confirm the endpoint (`/library/optimize` family) and param names (`title`, `target`, `targetTagID`, `deviceProfile`, `videoQuality`/preset). Write the test to that confirmed shape:
 
@@ -514,7 +514,7 @@ Capped offline download trigger. **Port exact params from `python-plexapi Video.
 
 ## Task 8: PlexClient — live URLSession executor (app target)
 
-Now leave PlexKit's pure world. A thin async executor that runs a `PlexRequest`/builds the final `URLRequest`, plus a TLS note for self-signed Plex certs.
+Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/builds the final `URLRequest`, plus a TLS note for self-signed Plex certs.
 
 **Files:**
 - Create: `PlexAVPApp/Networking/PlexClient.swift`
@@ -522,7 +522,7 @@ Now leave PlexKit's pure world. A thin async executor that runs a `PlexRequest`/
 
 - [ ] **Step 1:** Implement `PlexRequest.urlRequest()` (compose `URLComponents` from url+queryItems, set method/headers/body). **Step 2:** Implement `actor PlexClient` with `func send<T: Decodable>(_ r: PlexRequest, as: T.Type) async throws -> T` and `func send(_ r: PlexRequest) async throws -> Data`, using an injected `URLSession`. Map non-2xx to a typed `PlexError` (`.unauthorized`, `.serverUnreachable`, `.http(Int)`, `.decoding`). **Step 3:** Handle Plex's self-signed certs for direct LAN IP connections via a `URLSessionDelegate` that trusts the server cert **only for known Plex hosts** (document the risk; prefer the `*.plex.direct` hostnames from discovery which have valid certs). **Step 4:** Compile-gate `xcodebuild ... build`. **Step 5: Commit** `"Task 8: live PlexClient executor"`.
 
-> No unit test here (it's I/O); it's exercised by the integration checklist (Task 13). Keep ALL logic in PlexKit so this file stays a thin, obvious shell.
+> No unit test here (it's I/O); it's exercised by the integration checklist (Task 13). Keep ALL logic in PMSKit so this file stays a thin, obvious shell.
 
 ---
 
@@ -551,7 +551,7 @@ Now leave PlexKit's pure world. A thin async executor that runs a `PlexRequest`/
 
 - [ ] **Step 1:** `RootView` switches on `AppModel.token == nil` → `LoginView`, else the tab UI. **Step 2:** `HomeView` loads hubs; horizontal rails of posters. **Step 3:** `LibraryGridView` loads a section's items into a `LazyVGrid`. **Step 4:** `DetailView` shows metadata + actions; Play routes to Task 11, Download to Task 12. **Step 5:** `PosterImage` builds a sized `/photo/:/transcode` URL and loads via `AsyncImage`/a small cache. **Step 6:** Compile-gate + (once runtime present) launch in simulator and click through with a stub server. **Step 7: Commit** `"Task 10: browse UI (home/library/detail)"`.
 
-> Follows the Swiftfin-style Home·Libraries·Search model from research/05. Views are thin; all URL building comes from PlexKit.
+> Follows the Swiftfin-style Home·Libraries·Search model from research/05. Views are thin; all URL building comes from PMSKit.
 
 ---
 
@@ -584,7 +584,7 @@ Now leave PlexKit's pure world. A thin async executor that runs a `PlexRequest`/
 **Files:**
 - Create: `PlexAVPApp/UI/SearchView.swift` (`GET /hubs/search?query=`)
 - Create: `PlexAVPApp/UI/SettingsView.swift` (server picker, sign out, storage usage, default bitrate)
-- Create: `PlexKit/Tests/PlexKitTests/Fixtures/` (real captured payloads)
+- Create: `PMSKit/Tests/PMSKitTests/Fixtures/` (real captured payloads)
 
 - [ ] **Step 1:** `SearchView` queries `/hubs/search` and renders grouped results into the existing Detail flow. **Step 2:** `SettingsView` — switch server (re-rank connections), sign out (clear Keychain), show download storage, set the default `maxVideoBitrate`. **Step 3:** During live testing, capture real JSON from the server and add as fixtures; re-run `swift test` to harden the decoders (Task 2). **Step 4:** Compile-gate + full `swift test`. **Step 5: Commit** `"Task 13: search + settings + fixture hardening"`.
 
@@ -609,5 +609,5 @@ Not workflow-automatable — these are yours to run once the app installs on the
 
 - **Spec coverage:** transcoding (Tasks 5, 8, 11), theater (Task 11), downloads (Tasks 7, 12), auth (Tasks 3–4, 9), browse/search/settings (Tasks 10, 13), playback-state (Task 6, 11). All three headline features mapped. 3D SBS intentionally **out of v1** per spec §2.
 - **Risk concentration:** Task 5 (transcode URL) and Task 7 (optimize) carry the most uncertainty (version-dependent params) — both are pure-function tested and pinned to `python-plexapi`/live captures so drift is caught by a red test, not a black screen.
-- **Parallelizability for the workflow:** `PlexRequest` is defined in Task 1, so Tasks 3–7 are independent PlexKit files (sharing only that type + Task 1's headers) → safe to fan out after Tasks 0–2 land. Tasks 8–13 touch the app target and have real dependencies → pipeline in order.
+- **Parallelizability for the workflow:** `PlexRequest` is defined in Task 1, so Tasks 3–7 are independent PMSKit files (sharing only that type + Task 1's headers) → safe to fan out after Tasks 0–2 land. Tasks 8–13 touch the app target and have real dependencies → pipeline in order.
 - **No device dependency to write code:** every task except the final checklist completes against `swift test` + `xcodebuild build`; nothing needs the headset until verification.
