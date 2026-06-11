@@ -356,7 +356,7 @@ struct MusicRail: View {
                                           size: MusicArt.railSize,
                                           subtitle: item.parentTitle)
                         }
-                        .buttonStyle(.card)
+                        .cardLink()
                     }
                 }
                 .padding(.vertical, DS.Space.sm)
@@ -398,7 +398,7 @@ private struct MusicTrackRail: View {
                                           size: MusicArt.railSize,
                                           subtitle: track.grandparentTitle)
                         }
-                        .buttonStyle(.card)
+                        .cardLink()
                         .disabled(isStarting)
                     }
                 }
@@ -609,7 +609,7 @@ private struct PagedArtGrid<SortMenu: View>: View {
                                         SquareArtCell(item: item, size: MusicArt.gridMin,
                                                       subtitle: subtitle(item))
                                     }
-                                    .buttonStyle(.card)
+                                    .cardLink()
                                 } else {
                                     placeholderCell
                                         .onAppear {
@@ -774,7 +774,6 @@ struct SquareArtCell: View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: size, height: size,
                         cornerRadius: artRadius)
-                .gazeHighlight(cornerRadius: artRadius)
                 .posterHover()
 
             VStack(alignment: .leading, spacing: 2) {
@@ -790,7 +789,7 @@ struct SquareArtCell: View {
             }
         }
         .frame(width: size, alignment: .leading)
-        // NOTE (#20): the wrapping NavigationLink uses `.buttonStyle(.card)` (no automatic
-        // hover effect); the gaze highlight is the explicit `.gazeHighlight()` on the art above.
+        // NOTE: highlight comes from the wrapping link's `.cardLink()` — a custom
+        // ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
     }
 }

@@ -294,13 +294,12 @@ struct NowPlayingView: View {
                         .padding(.horizontal, DS.Space.lg)
                         .padding(.vertical, DS.Space.sm)
                         .contentShape(Rectangle())
-                        // Per-row highlight inside the card; `.plain` drew the system's
-                        // oversized capsule past the card edge (#20's trap). Outer inset
-                        // keeps the chip corners clear of the card corner on end rows.
-                        .gazeHighlight(cornerRadius: DS.Radius.chip)
                         .padding(.horizontal, DS.Space.sm)
                     }
-                    .buttonStyle(.card)
+                    // Built-in style via `.cardLink()` — a custom ButtonStyle misregisters
+                    // the gaze region and misroutes pinches to a NEIGHBORING row
+                    // (DEVELOPMENT.md); the chip-radius contentShape tames its highlight.
+                    .cardLink(cornerRadius: DS.Radius.chip)
 
                     if index < player.queue.count - 1 {
                         Divider().padding(.leading, DS.Space.xxl + DS.Space.md)

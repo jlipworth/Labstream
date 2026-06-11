@@ -79,15 +79,6 @@ extension View {
     /// Apply the standard poster hover lift. Purely visual; does not affect hit-testing.
     func posterHover() -> some View { modifier(PosterHoverEffect()) }
 
-    /// Explicit gaze highlight pinned to this view's rounded rect (#20). Apply to the card
-    /// artwork (or the whole material card for `EpisodeRow`) inside a `.buttonStyle(.card)`
-    /// link — that style adds no automatic effect, so this is the only highlight drawn.
-    func gazeHighlight(cornerRadius: CGFloat = DS.Radius.poster) -> some View {
-        contentShape(.hoverEffect,
-                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .hoverEffect(.highlight)
-    }
-
     /// visionOS-safe style for poster/card `NavigationLink`s. MUST ride a BUILT-IN
     /// button style: any custom `ButtonStyle` gets its gaze/hover region registered
     /// displaced (~1.35× about the window center), so pinches on a rail card route to
@@ -100,26 +91,6 @@ extension View {
             .contentShape(.hoverEffect,
                           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
-}
-
-/// Button style for poster/card `NavigationLink`s (#20).
-///
-/// ⚠️ DEPRECATED — DO NOT USE FOR NEW CALL SITES; migrate existing ones to
-/// `.cardLink()`. Custom ButtonStyles get their gaze/hover hit region registered
-/// DISPLACED on visionOS, routing pinches to a neighboring card (proven live —
-/// clicks on the right half of rail card N opened card N+1; adding
-/// `contentShape(.hoverEffect, …)`/`hoverEffect(.highlight)` inside the style does
-/// NOT fix it). See docs/DEVELOPMENT.md.
-struct CardButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-    }
-}
-
-extension ButtonStyle where Self == CardButtonStyle {
-    static var card: CardButtonStyle { CardButtonStyle() }
 }
 
 /// A pill-shaped spec/metadata chip used across Detail and cards. Centralised so the
