@@ -142,6 +142,19 @@ final class PlaybackController {
     /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
     /// state. Cancelled the moment playback genuinely resumes (`.playing`).
     private var stallWatchdog: Timer?
+    /// Observer for `AVPlayerItem.timeJumpedNotification` — the only in-process signal of a user
+    /// seek on visionOS (#25): AVKit's user-navigation delegate callbacks
+    /// (`willResumePlaybackAfterUserNavigatedFromTime:toTime:`) are `API_UNAVAILABLE(visionos)`,
+    /// checked in the XROS 26.5 AVPlayerViewController.h.
+    private var timeJumpedObserver: NSObjectProtocol?
+    /// Debounce/confirmation timer for a seek that lands the player in starved territory (#25).
+    /// Re-armed on every jump so a user scrubbing around coalesces onto the last target.
+    private var seekRestartTimer: Timer?
+    /// True once the CURRENT item has genuinely played (reached `.playing`). Gates the
+    /// seek-during-stall restart (#25): the start path repositions the playhead itself (offset
+    /// priming / the client-side resume fallback), and a slow initial prime must not be misread
+    /// as a dead seek — the stall watchdog owns start-time recovery. Reset per item in `load(_:)`.
+    private var hasPlayedThisItem = false
     private var started = false
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
@@ -1184,6 +1197,7 @@ final class PlaybackController {
         // Reset per-item state for the new player item: a fresh load is a fresh resume
         // (didSeek), a fresh readiness gate, and a clean error surface (P2/P3/P8).
         didSeek = false
+        hasPlayedThisItem = false
         timeline.isReadyForReporting = false
         didApplySavedSubtitle = false
         didApplyAudioPreference = false
@@ -1297,6 +1311,26 @@ final class PlaybackController {
             }
         }
 
+        // Seek-during-stall recovery (#25): while the transcoder is stalled the scrubber is
+        // effectively pinned — even when AVPlayer accepts the drag, PMS only produces segments
+        // forward from the session's current point, so a seek elsewhere sits starved forever
+        // (seen live: stuck at 14:12, dragging to 26:56 doesn't take). `timeJumpedNotification`
+        // is the only in-process signal of a user seek on visionOS (the AVKit user-navigation
+        // delegate callbacks are `API_UNAVAILABLE(visionos)`); on each jump we arm a short
+        // confirmation window and, if the player is still starved at the new position when it
+        // elapses, restart the transcode at that offset — the same in-place rebuild mechanics
+        // as the Quality reload / `selectAudioStream` (PMS replaces the same-session job, no
+        // explicit stop needed).
+        timeJumpedObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.timeJumpedNotification,
+            object: playerItem,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleTimeJump()
+            }
+        }
+
         // Periodic heartbeat ~ every 10s.
         let interval = CMTime(seconds: timelineIntervalSeconds, preferredTimescale: 1)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
@@ -1354,6 +1388,9 @@ final class PlaybackController {
                     self.armStallWatchdog()
                 } else if status == .playing {
                     self.cancelStallWatchdog()
+                    // The item has genuinely played: from here on, a time jump that strands the
+                    // player starved is a dead seek (#25), not a slow initial prime.
+                    self.hasPlayedThisItem = true
                 }
             }
         }
@@ -1392,6 +1429,14 @@ final class PlaybackController {
         // Cancel the stall watchdog so a stale timer can't fire across a reload / auto-retry /
         // teardown and surface an error against a freshly-loaded item.
         cancelStallWatchdog()
+        if let timeJumpedObserver {
+            NotificationCenter.default.removeObserver(timeJumpedObserver)
+            self.timeJumpedObserver = nil
+        }
+        // Cancel a pending seek-stall confirmation so it can't fire across a reload/teardown
+        // and restart a freshly-loaded session at a stale offset (#25).
+        seekRestartTimer?.invalidate()
+        seekRestartTimer = nil
         // Clear any lingering spinner state across a reload/teardown so it can't get stuck on.
         buffering.set(false)
         diagnosticsTimer?.invalidate()
@@ -1621,6 +1666,12 @@ final class PlaybackController {
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
         guard stallWatchdog == nil, !playbackError.isFailed else { return }
+        // #25 instrumentation: snapshot the seekable ranges at stall onset. If they collapse
+        // during a stall, that's the suspected mechanic behind the pinned system scrubber
+        // (AVKit clamps drags to the seekable span). Strip after live verification.
+        let stallMsg = String(format: "[VP] seek: stall began at %.1fs (seekable=%@)",
+                              player.currentTime().seconds, seekableRangesDescription())
+        NSLog("%@", stallMsg)
         let timer = Timer(timeInterval: stallTimeoutSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleStallTimeout()
@@ -1657,6 +1708,95 @@ final class PlaybackController {
                 userInfo: [NSLocalizedDescriptionKey:
                     "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."]))
         }
+    }
+
+    // MARK: - Seek-during-stall recovery (#25)
+
+    /// How long after a time jump we wait before checking whether the player is starved at the
+    /// new position. Long enough that a seek into already-buffered/produced content starts
+    /// playing (or at least reports likely-to-keep-up) and is left alone; short enough that a
+    /// dead seek recovers promptly instead of pinning the scrubber. Repeat jumps re-arm the
+    /// window, so a user scrubbing around coalesces onto their final target.
+    private let seekStallConfirmSeconds: TimeInterval = 2.0
+
+    /// Handle a playhead jump (seek) on the current item. Streaming only: a seek into territory
+    /// the transcoder hasn't produced can never make progress on its own — PMS only transcodes
+    /// forward from the session's offset, so the player sits starved at the target forever and
+    /// the scrubber reads as pinned (#25, seen live while stalled mid-buffer). Arm the
+    /// confirmation window; `confirmSeekStallRestart` does the actual starvation check.
+    ///
+    /// Deliberately fires for OUR programmatic seeks too (chapter jump, Skip Intro/Credits):
+    /// they share the same failure mode when they land beyond the transcoder's progress.
+    private func handleTimeJump() {
+        guard isStreaming, !playbackError.isFailed else { return }
+        // Ignore jumps before this item first plays — see `hasPlayedThisItem`. This also
+        // prevents a restart loop: a restarted session re-primes (starved for a while) and
+        // must not re-trigger off its own positioning jumps.
+        guard hasPlayedThisItem else { return }
+
+        // #25 instrumentation (strip after live verification): record every jump with the
+        // player state so the live test shows whether stalled drags reach the app at all —
+        // if AVKit swallows the drag entirely, no line appears and the fix can't engage.
+        let item = player.currentItem
+        let jumpMsg = String(format: "[VP] seek: time jumped to %.1fs (status=%d bufferEmpty=%d keepUp=%d seekable=%@)",
+                             player.currentTime().seconds,
+                             player.timeControlStatus.rawValue,
+                             (item?.isPlaybackBufferEmpty ?? false) ? 1 : 0,
+                             (item?.isPlaybackLikelyToKeepUp ?? false) ? 1 : 0,
+                             seekableRangesDescription())
+        NSLog("%@", jumpMsg)
+
+        seekRestartTimer?.invalidate()
+        let timer = Timer(timeInterval: seekStallConfirmSeconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.confirmSeekStallRestart()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        seekRestartTimer = timer
+    }
+
+    /// Fired `seekStallConfirmSeconds` after the most recent jump. If the player is genuinely
+    /// starved at the jumped-to position (waiting on data with an empty buffer it can't
+    /// refill), the current transcode session will never deliver — restart the transcode at
+    /// that offset (in-place `beginStreaming`, mirroring `reload(bitrateKbps:)`; this is a
+    /// stall, not a surfaced failure, so no AVKit wedge and no `.id()` view rebuild needed).
+    /// A jump that recovered on its own — buffered content, the transcoder caught up, or the
+    /// user is simply paused — is a logged no-op.
+    private func confirmSeekStallRestart() {
+        seekRestartTimer?.invalidate()
+        seekRestartTimer = nil
+        guard isStreaming, !playbackError.isFailed, let current = player.currentItem else { return }
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+              current.isPlaybackBufferEmpty,
+              !current.isPlaybackLikelyToKeepUp else {
+            let okMsg = String(format: "[VP] seek: jump recovered without restart (status=%d bufferEmpty=%d keepUp=%d)",
+                               player.timeControlStatus.rawValue,
+                               current.isPlaybackBufferEmpty ? 1 : 0,
+                               current.isPlaybackLikelyToKeepUp ? 1 : 0)
+            NSLog("%@", okMsg)
+            return
+        }
+        // `currentResumeMs` reads the live playhead, which after the seek IS the user's target.
+        let resumeMs = currentResumeMs
+        let restartMsg = String(format: "[VP] seek: starved %.0fs after jump; restarting transcode at %dms",
+                                seekStallConfirmSeconds, resumeMs)
+        NSLog("%@", restartMsg)
+        // Restart the transcode where the viewer wants to be — mirror `reload(bitrateKbps:)`.
+        didAutoRetry = false
+        removeObservers()
+        beginStreaming(resumeOffsetMsOverride: resumeMs)
+    }
+
+    /// Compact "start-end,start-end" (seconds) rendering of the current item's seekable ranges
+    /// for the #25 instrumentation; "EMPTY" when they collapsed (the suspected pin mechanic).
+    private func seekableRangesDescription() -> String {
+        guard let current = player.currentItem else { return "no-item" }
+        let ranges = current.seekableTimeRanges.map(\.timeRangeValue)
+        guard !ranges.isEmpty else { return "EMPTY" }
+        return ranges.map { range in
+            String(format: "%.1f-%.1f", range.start.seconds, range.end.seconds)
+        }.joined(separator: ",")
     }
 }
 
