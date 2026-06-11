@@ -21,6 +21,21 @@ struct AlbumDetailView: View {
     /// artist → album → track).
     private var albumArtist: String? { album.parentTitle }
 
+    /// The album's artist as a pushable item. Albums from hub rails sometimes omit
+    /// `parentRatingKey`, so fall back to the loaded tracks' grandparent linkage.
+    private var artistItem: MediaItem? {
+        if let key = album.parentRatingKey, let title = albumArtist {
+            return MediaItem(ratingKey: key, title: title, type: "artist",
+                             thumb: album.parentThumb)
+        }
+        if let track = tracks.first, let key = track.grandparentRatingKey,
+           let title = track.grandparentTitle {
+            return MediaItem(ratingKey: key, title: title, type: "artist",
+                             thumb: track.grandparentThumb)
+        }
+        return nil
+    }
+
     var body: some View {
         ZStack {
             artBackdrop
@@ -90,9 +105,24 @@ struct AlbumDetailView: View {
                 Text(album.title)
                     .font(.largeTitle.bold())
                 if let artist = albumArtist, !artist.isEmpty {
-                    Text(artist)
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
+                    // Tappable like Now Playing's "go to artist" — this view already
+                    // lives in the music stack, so a plain value link pushes directly.
+                    if let artistItem {
+                        NavigationLink(value: artistItem) {
+                            Text(artist)
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, DS.Space.sm)
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .hoverEffect(.highlight)
+                        .padding(.leading, -DS.Space.sm) // keep text flush with the title
+                    } else {
+                        Text(artist)
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let year = album.year {
                     Text(String(year))
@@ -166,6 +196,9 @@ struct AlbumDetailView: View {
     }
 
     private func load() async {
+        // `.task` re-fires on pop-back/reappear; tracks don't change mid-session,
+        // so load once and keep the view (and its scroll position) stable.
+        if case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
