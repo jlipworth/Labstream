@@ -118,7 +118,7 @@ struct ArtistDetailView: View {
                         PopularTrackRow(rank: index + 1, track: track,
                                         isCurrent: player.current?.ratingKey == track.ratingKey)
                     }
-                    .buttonStyle(.card)
+                    .cardLink(cornerRadius: DS.Radius.chip)
 
                     if index < popular.count - 1 {
                         Divider().padding(.leading, DS.Space.xxl + DS.Space.lg)
@@ -275,9 +275,8 @@ private struct PopularTrackRow: View {
         .padding(.horizontal, DS.Space.lg)
         .padding(.vertical, DS.Space.sm + 2)
         .contentShape(Rectangle())
-        // Same #20 treatment as the album track rows: .card style + explicit
-        // chip-radius highlight inset inside the material card.
-        .gazeHighlight(cornerRadius: DS.Radius.chip)
+        // Same treatment as the album track rows: highlight from the wrapping button's
+        // `.cardLink(cornerRadius: .chip)`; custom styles misroute pinches (DEVELOPMENT.md).
         .padding(.horizontal, DS.Space.sm)
     }
 }

@@ -577,7 +577,7 @@ struct ContainerBrowserView: View {
                 NavigationLink(value: season) {
                     PosterCell(item: season, width: DS.Poster.gridMin)
                 }
-                .buttonStyle(.card)
+                .cardLink()
             }
         }
         .padding(DS.Space.xl)
@@ -591,7 +591,7 @@ struct ContainerBrowserView: View {
                 NavigationLink(value: episode) {
                     EpisodeRow(episode: episode)
                 }
-                .buttonStyle(.card)
+                .cardLink(cornerRadius: DS.Radius.card)
             }
         }
         .padding(DS.Space.xl)
@@ -647,10 +647,8 @@ struct EpisodeRow: View {
         }
         .padding(DS.Space.md)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        // NOTE (#20): the wrapping NavigationLink uses `.buttonStyle(.card)` (no automatic
-        // hover effect); the whole material card lights up via this explicit highlight
-        // (unlike posters, where only the artwork does).
-        .gazeHighlight(cornerRadius: DS.Radius.card)
+        // NOTE: highlight comes from the wrapping link's `.cardLink(cornerRadius: DS.Radius.card)`
+        // — a custom ButtonStyle here misroutes pinches to neighboring rows (DEVELOPMENT.md).
     }
 
     /// "S{parentIndex}E{index} · {title}", falling back to the bare title.

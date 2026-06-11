@@ -564,7 +564,6 @@ private struct ChapterCard: View {
                         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                             .strokeBorder(Color.accentColor, lineWidth: isCurrent ? 3 : 0)
                     )
-                    .gazeHighlight()
 
                 Text(chapter.tag ?? "Chapter \(index + 1)")
                     .font(.subheadline)
@@ -582,9 +581,9 @@ private struct ChapterCard: View {
             .opacity(isCurrent ? 1.0 : 0.7)
             .contentShape(Rectangle())
         }
-        // Same #20 treatment as browse cards: `.card` adds no automatic hover bubble, the
-        // explicit `.gazeHighlight()` on the thumbnail is the only highlight drawn.
-        .buttonStyle(.card)
+        // Same treatment as browse cards: built-in style via `.cardLink()` — a custom
+        // ButtonStyle misregisters the gaze region and misroutes pinches (DEVELOPMENT.md).
+        .cardLink()
         .disabled(chapter.startTimeOffset == nil)
     }
 
@@ -676,8 +675,11 @@ private struct ChaptersTabView: View {
                                 .id(index)
                         }
                     }
-                    .padding(DS.Space.md)
+                    .padding(.vertical, DS.Space.md)
                 }
+                // contentMargins, not .padding on the lazy content — see the hit-region
+                // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes).
+                .contentMargins(.horizontal, DS.Space.md, for: .scrollContent)
                 .onAppear {
                     currentIndex = chapters.indexOfChapter(at: currentMs())
                     if let target = currentIndex {
