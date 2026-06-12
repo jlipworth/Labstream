@@ -16,6 +16,12 @@ required**.
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
       plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
       **VisionPlex**. Both paths land in the library.
+- [ ] **Welcome screen polish (GH #18)** — at the next natural sign-out, before signing back in:
+      logo tile shows the real artwork with a blue/amber two-tone glow (no flat circle); title reads
+      "Vision**Plex**" with amber "Plex"; tagline "Your whole Plex library, in your space."; the
+      sign-in state shows a hint line about the code; after tapping Sign in, the 4-char code renders
+      as four glass cells with "plex.tv/link" highlighted in amber; an auth failure shows the new
+      glass error banner (red icon + hairline, readable text). Flow itself unchanged (#16 semantics).
 - [x] **Player opens straight into Expanded** ✅ verified — opening any title skips the
       windowed/embedded player and lands in the fullscreen/cinema experience (where Quality/
       Subtitles/Audio tabs live). User can still manually shrink to a window afterwards.
