@@ -35,13 +35,13 @@ Initial Wazuh alert:
 - Agent: `k8s-02`
 - Description: `System running out of memory. Availability of the system is in risk.`
 - Event ID: `1781187740.5106268`
-- First event time: 2026-06-11 14:22:20 UTC / 2026-06-11 18:22:20 home-TZ
+- First event time: 2026-06-11 14:22:20 UTC
 
 Second Plex OOM:
 
 - Pod restart count increased to `2`
 - Last state: `reason: OOMKilled`, exit code `137`
-- Second OOM time from kernel/Plex logs: 2026-06-11 20:04:00 UTC / 2026-06-12 00:04:00 home-TZ / 2026-06-11 16:04:00 EDT on node logs
+- Second OOM time from kernel/Plex logs: 2026-06-11 20:04:00 UTC / 2026-06-11 16:04:00 EDT on node logs
 
 Current state after investigation:
 
@@ -98,7 +98,7 @@ So the workload fell back to CPU/software transcoding.
 
 ## Reconstructed timeline for the second crash
 
-Times below are Plex/node-local EDT from logs. Convert +8 hours for home-TZ, +4 hours for UTC? Specifically, `Jun 11 16:04 EDT` == `Jun 11 20:04 UTC` == `Jun 12 00:04 home-TZ`.
+Times below are Plex/node-local EDT from logs. Convert +4 hours for UTC: `Jun 11 16:04 EDT` == `Jun 11 20:04 UTC`.
 
 ### 15:58:00-16:00:07 EDT
 
