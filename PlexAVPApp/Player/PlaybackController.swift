@@ -931,7 +931,7 @@ final class PlaybackController {
         // burst budget (#27) — explicit user intent re-earns self-healing. (didScrobble is
         // intentionally NOT reset — the same content shouldn't re-scrobble mid-watch.)
         didAutoRetry = false
-        recentSeekRestartUptimes.removeAll()
+        seekRestartBudget.reset()
         removeObservers()
         beginStreaming(resumeOffsetMsOverride: resumeMs)
     }
@@ -948,7 +948,7 @@ final class PlaybackController {
         let resumeMs = currentResumeMs
         didAutoRetry = false
         // Explicit user intent re-earns the seek-restart burst budget (#27).
-        recentSeekRestartUptimes.removeAll()
+        seekRestartBudget.reset()
         playbackError.clear()
         removeObservers()
         beginStreaming(resumeOffsetMsOverride: resumeMs)
@@ -1794,26 +1794,15 @@ final class PlaybackController {
     /// window, so a user scrubbing around coalesces onto their final target.
     private let seekStallConfirmSeconds: TimeInterval = 2.0
 
-    /// Minimum spacing between seek-triggered transcode restarts. Each restart costs PMS a
-    /// fresh (possibly software) transcoder job; without a floor, a user scrubbing while a
-    /// restart is still priming can stack jobs faster than PMS reaps them — the mechanism
-    /// behind the live server OOM (see docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md / #27). A confirmed
-    /// starved seek inside the cooldown isn't dropped: the confirmation re-arms for the
-    /// remainder, so the restart still happens, just rate-limited.
-    private let seekRestartCooldownSeconds: TimeInterval = 5.0
-    /// Runaway escalation (#27): how many seek-restarts may fire within
-    /// `seekRestartBurstWindowSeconds` before we stop self-healing and surface the failure
-    /// overlay instead. The cooldown alone still allows 12 restarts/min indefinitely, and the
+    /// Rate-limit policy for seek-triggered transcode restarts (#27): 5s cooldown between
+    /// restarts, escalate to the failure overlay past 3 restarts in a rolling 60s window.
+    /// The cooldown alone still allows 12 restarts/min indefinitely, and the
     /// play→starve→restart cycle can self-sustain with NO user input (HLS discontinuities fire
     /// `timeJumpedNotification` too) — a budget is what turns "runaway" into "ask the viewer."
-    /// A rolling window rather than a lifetime cap: a long session on a slow server may
-    /// legitimately need many spaced-out restarts over hours.
-    private let seekRestartBurstLimit = 3
-    private let seekRestartBurstWindowSeconds: TimeInterval = 60
-    /// `systemUptime`s of recent seek-triggered restarts (monotonic), pruned to the burst
-    /// window. `last` doubles as the cooldown reference. Cleared on user-intent rebuilds
-    /// (`retry()` / `reload(bitrateKbps:)`) so an explicit Retry restores self-healing.
-    private var recentSeekRestartUptimes: [TimeInterval] = []
+    /// Policy + rationale live in `SeekRestartBudget` (PMSKit), where the spam scenarios are
+    /// unit-tested; reset on user-intent rebuilds (`retry()` / `reload(bitrateKbps:)`).
+    private var seekRestartBudget = SeekRestartBudget(
+        cooldownSeconds: 5.0, burstLimit: 3, burstWindowSeconds: 60)
 
     /// Handle a playhead jump (seek) on the current item. Streaming only: a seek into territory
     /// the transcoder hasn't produced can never make progress on its own — PMS only transcodes
@@ -1879,39 +1868,33 @@ final class PlaybackController {
             NSLog("%@", okMsg)
             return
         }
-        // Rate-limit: if the last seek-restart was under `seekRestartCooldownSeconds` ago,
-        // re-arm the confirmation for the remainder instead of restarting now. The user's
-        // latest target isn't lost — when the re-armed check fires, `currentResumeMs` reads
-        // the live playhead — but PMS never sees restarts stack faster than it can reap.
-        let now = ProcessInfo.processInfo.systemUptime
-        if let last = recentSeekRestartUptimes.last {
-            let remaining = seekRestartCooldownSeconds - (now - last)
-            if remaining > 0 {
-                NSLog("%@", String(format: "[VP] seek: starved but in restart cooldown; re-arming in %.1fs", remaining))
-                let timer = Timer(timeInterval: remaining, repeats: false) { [weak self] _ in
-                    MainActor.assumeIsolated {
-                        self?.confirmSeekStallRestart()
-                    }
+        // Rate-limit (#27): policy lives in SeekRestartBudget (PMSKit, unit-tested).
+        // Deferred → re-arm the confirmation for the cooldown remainder instead of restarting
+        // now; the user's latest target isn't lost — when the re-armed check fires,
+        // `currentResumeMs` reads the live playhead. Escalate → restarts clustering inside
+        // the window mean the stream can't sustain playback; stop silently rebuilding and
+        // put the viewer in charge (Retry / quality reload reset the budget).
+        switch seekRestartBudget.requestRestart(now: ProcessInfo.processInfo.systemUptime) {
+        case .deferred(let remaining):
+            NSLog("%@", String(format: "[VP] seek: starved but in restart cooldown; re-arming in %.1fs", remaining))
+            let timer = Timer(timeInterval: remaining, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.confirmSeekStallRestart()
                 }
-                RunLoop.main.add(timer, forMode: .common)
-                seekRestartTimer = timer
-                return
             }
-        }
-        // Burst budget: restarts clustering inside the window mean the stream can't actually
-        // sustain playback — stop silently rebuilding and put the viewer in charge. Retry (or
-        // a quality reload) clears the window and restores self-healing.
-        recentSeekRestartUptimes.removeAll { now - $0 > seekRestartBurstWindowSeconds }
-        if recentSeekRestartUptimes.count >= seekRestartBurstLimit {
-            NSLog("%@", String(format: "[VP] seek: %d restarts within %.0fs — escalating to failure overlay",
-                               recentSeekRestartUptimes.count, seekRestartBurstWindowSeconds))
+            RunLoop.main.add(timer, forMode: .common)
+            seekRestartTimer = timer
+            return
+        case .escalate(let recentCount):
+            NSLog("%@", String(format: "[VP] seek: %d restarts within 60s — escalating to failure overlay", recentCount))
             surfaceFailure(NSError(
                 domain: "PlexAVPApp.Playback", code: -1002,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Playback keeps falling behind the server. Tap Retry to rebuild the stream, or lower the quality setting."]))
             return
+        case .allow:
+            break
         }
-        recentSeekRestartUptimes.append(now)
         // `currentResumeMs` reads the live playhead, which after the seek IS the user's target.
         let resumeMs = currentResumeMs
         let restartMsg = String(format: "[VP] seek: starved %.0fs after jump; restarting transcode at %dms",
