@@ -392,7 +392,9 @@ final class PlaybackController {
         } else {
             // Use the rebuild resume override on first start when present (recovering from a
             // wedged player); otherwise startStreaming falls back to the item's saved offset.
-            beginStreaming(resumeOffsetMsOverride: initialResumeMsOverride)
+            // First start of this controller: no previous job under this sessionID to stop.
+            beginStreaming(resumeOffsetMsOverride: initialResumeMsOverride,
+                           stoppingPreviousTranscode: false)
         }
         // Resolve the next episode in the background (#15). Network-bound and entirely
         // best-effort: if it fails or there is no next item, the Up Next card simply never
@@ -942,14 +944,37 @@ final class PlaybackController {
         beginStreaming(resumeOffsetMsOverride: resumeMs)
     }
 
-    private func beginStreaming(resumeOffsetMsOverride: Int? = nil) {
+    /// `stoppingPreviousTranscode` is true on every in-place RESTART (quality/audio reload,
+    /// retry, auto-retry, seek-restart) and false only on the initial start: a restart reuses
+    /// `sessionID`, and PMS proved unreliable at reaping the superseded job on its own — a
+    /// live pile-up of software transcoders OOM-killed the server pod (8Gi cgroup) during the
+    /// #25 stall testing. Explicitly stop the old job first (see `stopPreviousTranscode`).
+    private func beginStreaming(resumeOffsetMsOverride: Int? = nil,
+                                stoppingPreviousTranscode: Bool = true) {
         playbackTask?.cancel()
         playbackGeneration += 1
         let generation = playbackGeneration
         playbackTask = Task { [weak self] in
             guard let self else { return }
             await self.startStreaming(resumeOffsetMsOverride: resumeOffsetMsOverride,
+                                      stoppingPreviousTranscode: stoppingPreviousTranscode,
                                       generation: generation)
+        }
+    }
+
+    /// Tell PMS to kill this session's current transcoder before we request a new start.m3u8
+    /// for the same `sessionID`. Awaited (so the stop can never race past the new start and
+    /// whack the replacement job) but bounded to 2s: over a dead network — exactly the retry
+    /// path — an unbounded await would stall the rebuild behind URLSession's 60s timeout.
+    private func stopPreviousTranscode(server: URL, token: String) async {
+        let req = TranscodeRequest.stop(server: server, token: token,
+                                        identity: identity, sessionID: sessionID)
+        let client = self.client
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = try? await client.send(req) }
+            group.addTask { try? await Task.sleep(for: .seconds(2)) }
+            _ = await group.next()
+            group.cancelAll()
         }
     }
 
@@ -958,9 +983,15 @@ final class PlaybackController {
     /// Build (or rebuild) the streaming player item. `resumeOffsetMsOverride` lets a
     /// bitrate reload resume at the live playhead instead of the item's saved viewOffset.
     private func startStreaming(resumeOffsetMsOverride: Int? = nil,
+                                stoppingPreviousTranscode: Bool = true,
                                 generation: Int) async {
         guard let server, let token else { return }
         guard !Task.isCancelled, generation == playbackGeneration else { return }
+        if stoppingPreviousTranscode {
+            NSLog("[VP] transcode: stopping previous job for session before restart")
+            await stopPreviousTranscode(server: server, token: token)
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
+        }
         let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
 
         // 0 (Maximum/Original) maps to a very high ceiling so PMS still emits a
@@ -1719,6 +1750,16 @@ final class PlaybackController {
     /// window, so a user scrubbing around coalesces onto their final target.
     private let seekStallConfirmSeconds: TimeInterval = 2.0
 
+    /// Minimum spacing between seek-triggered transcode restarts. Each restart costs PMS a
+    /// fresh (possibly software) transcoder job; without a floor, a user scrubbing while a
+    /// restart is still priming can stack jobs faster than PMS reaps them — the mechanism
+    /// behind the live server OOM (see docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md / #27). A confirmed
+    /// starved seek inside the cooldown isn't dropped: the confirmation re-arms for the
+    /// remainder, so the restart still happens, just rate-limited.
+    private let seekRestartCooldownSeconds: TimeInterval = 5.0
+    /// `systemUptime` of the last seek-triggered restart (monotonic; nil before the first).
+    private var lastSeekRestartUptime: TimeInterval?
+
     /// Handle a playhead jump (seek) on the current item. Streaming only: a seek into territory
     /// the transcoder hasn't produced can never make progress on its own — PMS only transcodes
     /// forward from the session's offset, so the player sits starved at the target forever and
@@ -1783,6 +1824,26 @@ final class PlaybackController {
             NSLog("%@", okMsg)
             return
         }
+        // Rate-limit: if the last seek-restart was under `seekRestartCooldownSeconds` ago,
+        // re-arm the confirmation for the remainder instead of restarting now. The user's
+        // latest target isn't lost — when the re-armed check fires, `currentResumeMs` reads
+        // the live playhead — but PMS never sees restarts stack faster than it can reap.
+        let now = ProcessInfo.processInfo.systemUptime
+        if let last = lastSeekRestartUptime {
+            let remaining = seekRestartCooldownSeconds - (now - last)
+            if remaining > 0 {
+                NSLog("%@", String(format: "[VP] seek: starved but in restart cooldown; re-arming in %.1fs", remaining))
+                let timer = Timer(timeInterval: remaining, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.confirmSeekStallRestart()
+                    }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                seekRestartTimer = timer
+                return
+            }
+        }
+        lastSeekRestartUptime = now
         // `currentResumeMs` reads the live playhead, which after the seek IS the user's target.
         let resumeMs = currentResumeMs
         let restartMsg = String(format: "[VP] seek: starved %.0fs after jump; restarting transcode at %dms",
