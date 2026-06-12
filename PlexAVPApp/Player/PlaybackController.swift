@@ -88,6 +88,12 @@ final class PlaybackController {
     /// Per-playback transcode session id (also reused as the timeline session).
     private let sessionID = "plex-avp-" + UUID().uuidString
 
+    /// `@AppStorage`-style key for the Direct Stream opt-in (#7 Step 3) — shared with
+    /// SettingsView's toggle, default OFF. Read fresh from UserDefaults on every
+    /// (re)build (`startStreaming`), so flipping the toggle mid-session takes effect on
+    /// the next stream rebuild: the in-headset kill switch from the research/15 plan.
+    static let directStreamEnabledKey = "directStreamEnabled"
+
     // MARK: - Playback speed (R5)
 
     /// `@AppStorage`-style key for the persisted playback rate (UserDefaults-backed so the
@@ -1019,23 +1025,57 @@ final class PlaybackController {
                                          partIndex: 0,
                                          startOffsetSeconds: offsetSeconds)
 
-        // Ask PMS for a transcode decision. We proceed for both directPlay and
-        // transcode; only a hard `.unsupported` aborts. A failed decision call is
-        // non-fatal — fall through and try start.m3u8 anyway.
+        // Direct Stream opt-in (#7 Step 3, default OFF): probe the MDE FIRST with
+        // directPlay=1 + the direct-play-capable profile. Commit to the matching
+        // direct-play start.m3u8 ONLY when PMS confirms it will copy the video stream
+        // (`savesVideoEncode`) — the expensive software re-encode is saved and the server
+        // load drops to a remux. Any other answer, a failed probe, or the toggle being
+        // off falls through to today's exact transcode path, byte-identical.
         var decision: DecisionResponse?
-        do {
-            let decisionReq = PlexRequest(url: transcode.decisionURL(), method: "GET")
-            let response = try await client.send(decisionReq, as: DecisionResponse.self)
-            guard !Task.isCancelled, generation == playbackGeneration else { return }
-            decision = response
-            if case .unsupported = response.decision {
-                // Best-effort: still attempt playback; PMS often plays despite an
-                // odd decision code. Logged for the integration pass.
-                NSLog("PlaybackController: transcode decision unsupported: %@", String(describing: response.generalDecisionText))
+        var streamURL = transcode.startM3U8URL()
+        if UserDefaults.standard.bool(forKey: Self.directStreamEnabledKey) {
+            do {
+                let probeReq = PlexRequest(url: transcode.directPlayProbeDecisionURL(), method: "GET")
+                let probe = try await client.send(probeReq, as: DecisionResponse.self)
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                // #7 instrumentation (strip after live verification): the probe's verdict is
+                // the whole experiment — log every field the rollout plan wants eyeballed.
+                let probeMsg = String(format: "[VP] decision: probe general=%d video=%@ audio=%@ mde=%@",
+                                      probe.generalDecisionCode ?? -1,
+                                      probe.videoDecision ?? "nil",
+                                      probe.audioDecision ?? "nil",
+                                      probe.mdeDecisionText ?? "nil")
+                NSLog("%@", probeMsg)
+                if probe.savesVideoEncode {
+                    NSLog("[VP] decision: PMS will copy video — committing direct-play start.m3u8")
+                    decision = probe
+                    streamURL = transcode.directPlayStartM3U8URL()
+                }
+            } catch {
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                NSLog("PlaybackController: direct-play probe failed (%@); using transcode path", String(describing: error))
             }
-        } catch {
-            guard !Task.isCancelled, generation == playbackGeneration else { return }
-            NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", String(describing: error))
+        }
+
+        // Ask PMS for a transcode decision (skipped when the probe above already committed —
+        // its decision/start pair must stay consistent, research/15 risk #8). We proceed for
+        // both directPlay and transcode; only a hard `.unsupported` aborts. A failed decision
+        // call is non-fatal — fall through and try start.m3u8 anyway.
+        if decision == nil {
+            do {
+                let decisionReq = PlexRequest(url: transcode.decisionURL(), method: "GET")
+                let response = try await client.send(decisionReq, as: DecisionResponse.self)
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                decision = response
+                if case .unsupported = response.decision {
+                    // Best-effort: still attempt playback; PMS often plays despite an
+                    // odd decision code. Logged for the integration pass.
+                    NSLog("PlaybackController: transcode decision unsupported: %@", String(describing: response.generalDecisionText))
+                }
+            } catch {
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", String(describing: error))
+            }
         }
 
         // Seed the Stats-for-Nerds static facts (no token is ever read here).
@@ -1049,7 +1089,7 @@ final class PlaybackController {
         // only EXT-X-STREAM-INF — no I-frame variant, so AVKit gets no free scrub
         // thumbnails here. Recorded on the issue; a custom BIF scrubber is the only
         // remaining route and is parked.
-        let asset = AVURLAsset(url: transcode.startM3U8URL())
+        let asset = AVURLAsset(url: streamURL)
         let playerItem = AVPlayerItem(asset: asset)
         // Offset priming (the `offset` param + `#EXT-X-START`) is the FAST path: PMS
         // positions the session so AVPlayer begins at the resume point with a primed
