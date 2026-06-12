@@ -115,6 +115,20 @@ required**.
             highlight reads bigger than the old inset one, "workable for now" on Home posters
             (user-accepted). Check it isn't unbearable on track/episode rows, where the old
             chip highlight sat inset inside the material card.
+- [ ] **Transcode session lifecycle / server-OOM guards (GH #27)** — fix shipped after the
+      Plex pod OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md); needs a live pass against real PMS
+      while watching the pod (`kubectl -n media exec <pod> -- ps … | grep "Plex Transcoder"`):
+      - [ ] **Stop-before-restart** — quality switch, audio switch, in-player Retry, and a
+            starved-seek restart each log `[VP] transcode: stopping previous job…` and the
+            server never shows more than ONE `Plex Transcoder` for the session.
+      - [ ] **Seek-restart cooldown** — scrub repeatedly into unbuffered territory on a
+            heavy (4K HEVC/EAC3 MKV) title: restarts space ≥5s apart (`re-arming in …`
+            lines), never a burst.
+      - [ ] **Burst budget escalation** — keep forcing starved seeks: after 3 restarts
+            within 60s the error overlay appears ("Playback keeps falling behind…")
+            instead of a 4th restart; Retry clears it and self-healing resumes.
+      - [ ] **Auto-retry budget not refilled by seek restarts** — after a seek restart, a
+            genuinely failing stream surfaces the overlay after at most one silent retry.
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
