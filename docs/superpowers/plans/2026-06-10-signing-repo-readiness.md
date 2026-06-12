@@ -177,8 +177,21 @@ if git ls-files | rg -n '(^|/)Signing\.[^.]+\.xcconfig$|\.mobileprovision$|\.p12
 fi
 
 printf '== obvious secret placeholder check ==\n'
+# Built-in markers are generic patterns only (X-Plex-Token:, PLEX_TOKEN=); the
+# real scrubbed host/IP are guarded by SHA-256 fingerprints, not literals.
+# Additional forbidden strings (the actual sensitive values, e.g. the real
+# hostname/IP that the repo replaces with plex.example.internal / 192.0.2.10)
+# are NEVER hardcoded in the script. They are injected at runtime from:
+#   1. scripts/ci-hygiene.local — untracked + gitignored; one string per line,
+#      '#' comments and blank lines ignored. The script fails loudly if this
+#      file ever becomes tracked by git.
+#   2. CI_EXTRA_FORBIDDEN_FILE — env var path to a same-format file, for a
+#      future CI system to materialize from a secret store.
+#   3. CI_EXTRA_FORBIDDEN — env var with newline-separated strings directly.
+# All extras join the same scan loop; matches on extras are reported by file
+# path only (the matched value is redacted from output).
 if git ls-files | rg -v '(^|/)\.gitignore$|(^|/)ci-hygiene\.sh$' | xargs rg -n --hidden --no-ignore-vcs \
-  'X-Plex-Token:|PLEX_TOKEN=' 2>/dev/null; then  # host/IP now guarded by SHA-256 fingerprint, not literals
+  'X-Plex-Token:|PLEX_TOKEN=' 2>/dev/null; then
   fail 'forbidden Plex token/server string found'
 fi
 

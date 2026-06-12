@@ -99,13 +99,67 @@ while IFS= read -r -d '' path; do
 done < <(git ls-files -z)
 
 # Generic token markers — these are patterns, not secrets.
-for forbidden in \
-  "X-Plex-Token:" \
+forbidden_strings=(
+  "X-Plex-Token:"
   "PLEX_TOKEN="
-do
-  if ((${#scan_paths[@]} > 0)) && git grep -n -I -F -- "$forbidden" -- "${scan_paths[@]}"; then
-    fail "forbidden Plex token string found: $forbidden"
+)
+
+# Extra forbidden strings (the actual sensitive values) are NEVER hardcoded
+# here. They are injected at runtime from sources that are not tracked by git:
+#
+#   1. scripts/ci-hygiene.local — an untracked, gitignored local file.
+#      One string per line; blank lines and lines starting with '#' are ignored.
+#   2. CI_EXTRA_FORBIDDEN_FILE — env var holding a path to a file with the same
+#      format as (1). Intended for a future CI system to materialize from a
+#      secret store (CI is not set up yet; this is just the hook).
+#   3. CI_EXTRA_FORBIDDEN — env var holding newline-separated strings directly
+#      (same comment/blank-line rules), for CI secrets injected as variables.
+#
+# All extras join the same scan loop as the built-in markers above.
+local_forbidden_file="scripts/ci-hygiene.local"
+
+# Defense in depth: the local extras file must never be committable silently.
+if tracked_file "$local_forbidden_file"; then
+  fail "$local_forbidden_file is tracked by git — it must stay untracked (it may contain sensitive strings)"
+fi
+
+append_forbidden_lines() {
+  local line
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    forbidden_strings+=("$line")
+  done
+}
+
+if [[ -f "$local_forbidden_file" ]]; then
+  append_forbidden_lines < "$local_forbidden_file"
+fi
+
+if [[ -n "${CI_EXTRA_FORBIDDEN_FILE:-}" ]]; then
+  [[ -f "$CI_EXTRA_FORBIDDEN_FILE" ]] || fail "CI_EXTRA_FORBIDDEN_FILE points to a missing file: $CI_EXTRA_FORBIDDEN_FILE"
+  append_forbidden_lines < "$CI_EXTRA_FORBIDDEN_FILE"
+fi
+
+if [[ -n "${CI_EXTRA_FORBIDDEN:-}" ]]; then
+  append_forbidden_lines <<< "$CI_EXTRA_FORBIDDEN"
+fi
+
+# Extras may be sensitive — report matches by file path only, never echo the
+# matched string or line content for them.
+builtin_forbidden_count=2
+idx=0
+for forbidden in "${forbidden_strings[@]}"; do
+  if ((idx < builtin_forbidden_count)); then
+    if ((${#scan_paths[@]} > 0)) && git grep -n -I -F -- "$forbidden" -- "${scan_paths[@]}"; then
+      fail "forbidden string found: $forbidden"
+    fi
+  else
+    if ((${#scan_paths[@]} > 0)) && git grep -l -I -F -- "$forbidden" -- "${scan_paths[@]}"; then
+      fail "extra forbidden string #$((idx - builtin_forbidden_count + 1)) found (value redacted; offending files listed above)"
+    fi
   fi
+  idx=$((idx + 1))
 done
 
 # Scrubbed server identity — fingerprint guard.
