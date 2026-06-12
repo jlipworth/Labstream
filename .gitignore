@@ -29,6 +29,7 @@ Packages/
 Package.resolved
 
 # Secrets — never commit Plex tokens / client identifiers
+scripts/ci-hygiene.local
 *.token
 secrets.plist
 Secrets.swift
