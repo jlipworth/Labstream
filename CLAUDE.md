@@ -70,6 +70,12 @@ Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 - Never commit Plex tokens or client identifiers.
 - Never reintroduce the scrubbed real PMS hostname or LAN IP; the repo uses
   `plex.example.internal` / `192.0.2.10` as placeholders.
+- The repo WILL BE MADE PUBLIC eventually. Before committing any externally-authored
+  doc/report/log, scrub personal identifiers: real hostnames/domains, ssh usernames,
+  media titles/library paths, home timezone, local `/path/to/user` paths. If something
+  sensitive was already PUSHED, history must be rewritten with `git filter-repo`
+  (amend/reset suffices only while unpushed). GH issues also become public — keep
+  identifying details out of issue bodies/comments too.
 
 ## Conventions
 
