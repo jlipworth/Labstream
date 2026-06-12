@@ -132,12 +132,32 @@ metadata, and review-specific release automation can be handled in a later publi
   click — `MRUIFeedbackTypeCircularButtonTouchDown` in logs. Also still prefer
   `.contentMargins(..., for: .scrollContent)` over padding lazy rail content; it
   keeps insets out of card geometry.)
-- **Transcode sessions must be stopped explicitly** — HLS gives PMS no end-of-playback
-  signal, so a closed/rebuilt player orphans a live FFmpeg job until the server's
-  inactivity reaper runs (seen live: open-session pile-up on the PMS pod). Teardown fires
-  `GET /video/:/transcode/universal/stop?session=` (`TranscodeRequest.stop`) from
-  `PlaybackController.stop()`. Same-session reloads (quality/audio) don't need it — PMS
-  replaces the job in place; progressive downloads end with the HTTP connection.
+- **Transcode sessions must be stopped explicitly — including before same-session
+  restarts.** HLS gives PMS no end-of-playback signal, so a closed/rebuilt player orphans
+  a live FFmpeg job until the server's inactivity reaper runs (seen live: open-session
+  pile-up on the PMS pod). Teardown fires `GET /video/:/transcode/universal/stop?session=`
+  (`TranscodeRequest.stop`) from `PlaybackController.stop()`. We originally assumed
+  same-session reloads didn't need it ("PMS replaces the job in place") — **disproven by
+  the server OOM** (next bullet): under rapid re-requests the whack-and-replace loses
+  races and jobs stack. Every in-place restart (quality/audio reload, retry, seek-restart)
+  now AWAITS a stop (bounded to 2s) before requesting the new start.m3u8. Progressive
+  downloads still just end with the HTTP connection.
+- **A transcode restart is a server-side fork bomb if unthrottled** (#27,
+  docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md). Each start.m3u8 for a non-direct-playable file
+  forks a full software HEVC→H.264 encode (no HW decode in the pod); during starved
+  scrubbing one session stacked 21 transcoder jobs in ~60s (8 within 1.1s) and OOM-killed
+  the 8Gi pod — twice. Two independent drivers, both needed taming: (a) client-initiated
+  restarts (stop-before-restart above + the budget below); (b) **PMS itself relocates
+  ffmpeg** when AVPlayer requests a segment outside the produced window — AVPlayer fetches
+  HLS segments autonomously during a scrub (seen: 536 404s, 140 concurrent GETs), so client
+  restraint alone is insufficient; the fix for (b) is not seeking into far-unproduced
+  territory on a session that can't keep up. Guard rails: `SeekRestartBudget` (PMSKit,
+  unit-tested spam scenarios) enforces a 5s cooldown between seek-restarts (deferred, not
+  dropped — the confirmation re-arms) and a rolling 3-per-60s burst limit, past which the
+  player stops self-healing and surfaces the failure overlay; explicit user intent
+  (Retry / quality reload) resets the budget, and seek-restarts never refill the silent
+  auto-retry budget. Direct Stream (#7) shrinks the whole cost class: `video_decision=copy`
+  makes a stacked job a ~50MB remux instead of a ~400MB encode.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)
