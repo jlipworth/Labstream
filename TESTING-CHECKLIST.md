@@ -121,6 +121,20 @@ required**.
             highlight reads bigger than the old inset one, "workable for now" on Home posters
             (user-accepted). Check it isn't unbearable on track/episode rows, where the old
             chip highlight sat inset inside the material card.
+- [ ] **Direct Stream opt-in (GH #7 Step 3, experimental, default OFF)** — Settings ▸ Playback ▸
+      "Direct Stream (experimental)". With it ON, play an in-cap HEVC/AC3-or-AAC title and read
+      the log (`[VP] decision:` lines): the probe reports `video=copy` (or `direct play`) and
+      commits the direct-play start.m3u8 — then verify on the server that NO software video
+      transcode is running (`ps` shows no `Plex Transcoder` re-encode / EAE for the session,
+      or Plex dashboard shows Direct Stream). Watch specifically for the HEVC-in-TS
+      "buffers forever" symptom (spinner never clears → toggle OFF, report). Then:
+      - [ ] Above-cap title still probes `video=transcode` and takes today's transcode path
+            (the `isRequired=true` bitrate cap is doing its job).
+      - [ ] Probe-declined and toggle-OFF playback is byte-identical to today (transcode).
+      - [ ] On a committed direct-stream play: resume offset lands, subtitles tab still
+            populates, seek/quality switch/audio switch still work (each rebuild re-probes).
+      - [ ] EAC3-only audio sources: audio still transcodes to AAC (audio=transcode is fine);
+            video must still be copy.
 - [ ] **Transcode session lifecycle / server-OOM guards (GH #27)** — fix shipped after the
       Plex pod OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md); needs a live pass against real PMS
       while watching the pod (`kubectl -n media exec <pod> -- ps … | grep "Plex Transcoder"`):

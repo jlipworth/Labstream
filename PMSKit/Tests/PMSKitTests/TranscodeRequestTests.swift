@@ -250,6 +250,43 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v(decision, "directPlay") == "0")
 }
 
+// MARK: - Direct-play start (issue #7 Step 3) — the playback URL the probe gates
+
+@Test func directPlayStartURLMirrorsProbeParamsOnStartPath() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 1, partIndex: 2)
+    let start = queryItems(req.directPlayStartM3U8URL())
+    let probe = queryItems(req.directPlayProbeDecisionURL())
+    func v(_ items: [URLQueryItem], _ n: String) -> String? { items.first { $0.name == n }?.value }
+    #expect(req.directPlayStartM3U8URL().path == "/video/:/transcode/universal/start.m3u8")
+    // Decision/start consistency (research/15 risk #8): what PMS decided on is what
+    // the player then requests — every param identical except hasMDE.
+    for name in ["path", "protocol", "maxVideoBitrate", "session", "X-Plex-Token",
+                 "mediaIndex", "partIndex", "directPlay", "directStream",
+                 "X-Plex-Client-Profile-Name", "X-Plex-Client-Profile-Extra"] {
+        #expect(v(start, name) == v(probe, name))
+    }
+    #expect(v(start, "directPlay") == "1")
+    #expect(v(start, "hasMDE") == nil)
+    #expect(v(start, "X-Plex-Client-Profile-Name") == "Safari")
+    #expect(v(start, "X-Plex-Client-Profile-Extra")?.contains("add-direct-play-profile") == true)
+    // Exactly one of each overridden param survives.
+    #expect(start.filter { $0.name == "directPlay" }.count == 1)
+    #expect(start.filter { $0.name == "X-Plex-Client-Profile-Extra" }.count == 1)
+}
+
+@Test func directPlayStartURLCarriesResumeOffset() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0,
+                               startOffsetSeconds: 1860)
+    let q = queryItems(req.directPlayStartM3U8URL())
+    #expect(q.first { $0.name == "offset" }?.value == "1860")
+}
+
 // MARK: - Regression guards (production path must stay byte-identical)
 
 @Test func productionStartURLStillDirectPlayZeroAndUnchangedProfile() {
@@ -300,4 +337,68 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
     #expect(r.generalDecisionCode == nil)
     #expect(r.decision == .unsupported(code: -1))
+}
+
+// MARK: - DecisionResponse per-stream decisions (issue #7 Step 1)
+
+@Test func decodesPerStreamDecisions() throws {
+    // The reliable copy-vs-transcode signal lives on Media>Part>Stream (research/09 §3.2):
+    // streamType 1 = video, 2 = audio; `decision` is "copy" / "transcode" / "direct play".
+    let json = """
+    {"MediaContainer":{
+       "generalDecisionCode":1001,"generalDecisionText":"Conversion OK",
+       "mdeDecisionText":"Convert to HLS, copy video, transcode audio",
+       "Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[
+         {"streamType":1,"decision":"copy"},
+         {"streamType":2,"decision":"transcode"},
+         {"streamType":3,"decision":"burn"}
+       ]}]}]}]
+    }}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.videoDecision == "copy")
+    #expect(r.audioDecision == "transcode")
+    #expect(r.mdeDecisionText == "Convert to HLS, copy video, transcode audio")
+    // Video is copied -> the expensive re-encode is saved.
+    #expect(r.savesVideoEncode == true)
+}
+
+@Test func directPlayPerStreamDecisionAlsoSavesVideoEncode() throws {
+    let json = """
+    {"MediaContainer":{"generalDecisionCode":1000,
+       "Metadata":[{"Media":[{"Part":[{"Stream":[
+         {"streamType":1,"decision":"direct play"},
+         {"streamType":2,"decision":"direct play"}
+       ]}]}]}]
+    }}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.videoDecision == "direct play")
+    #expect(r.savesVideoEncode == true)
+}
+
+@Test func transcodedVideoDoesNotSaveVideoEncode() throws {
+    let json = """
+    {"MediaContainer":{"generalDecisionCode":1001,
+       "Metadata":[{"Media":[{"Part":[{"Stream":[
+         {"streamType":1,"decision":"transcode"},
+         {"streamType":2,"decision":"copy"}
+       ]}]}]}]
+    }}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.videoDecision == "transcode")
+    #expect(r.savesVideoEncode == false)
+}
+
+@Test func missingPerStreamDecisionsAreNilAndConservative() throws {
+    // Older/odd servers may omit Metadata entirely — must decode, and the
+    // convenience must answer NO (never claim a saved encode without evidence).
+    let json = """
+    {"MediaContainer":{"generalDecisionCode":1001,"generalDecisionText":"Transcoding"}}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.videoDecision == nil)
+    #expect(r.audioDecision == nil)
+    #expect(r.savesVideoEncode == false)
 }

@@ -137,17 +137,38 @@ public struct TranscodeRequest: Sendable, Equatable {
     /// name `Safari`/subtitles/offset/identity) is identical to `decisionURL()`. Query-param
     /// order is irrelevant to PMS, so this stays consistent with the production decision request.
     public func directPlayProbeDecisionURL() -> URL {
+        var items = directPlayQueryItems()
+        // Decision endpoint: ask the Media Decision Engine for its verdict.
+        items.append(.init(name: "hasMDE", value: "1"))
+        return buildURL(path: "/video/:/transcode/universal/decision", queryItems: items)
+    }
+
+    /// The **direct-play start URL** (#7 Step 3): `start.m3u8` with the exact param set the
+    /// direct-play decision probe used (`directPlay=1` + the direct-play-capable profile).
+    /// Only ever loaded after `directPlayProbeDecisionURL()`'s response shows PMS will copy
+    /// the video stream (`DecisionResponse.savesVideoEncode`) — decision and start MUST stay
+    /// param-identical or PMS may decide one thing and serve another (research/15 risk #8),
+    /// which the shared `directPlayQueryItems()` guarantees structurally. Delivery is still
+    /// HLS via the universal transcoder, so subtitles/resume/timeline paths are unchanged —
+    /// PMS just remuxes (codec copy) instead of re-encoding.
+    public func directPlayStartM3U8URL() -> URL {
+        buildURL(path: "/video/:/transcode/universal/start.m3u8", queryItems: directPlayQueryItems())
+    }
+
+    /// `sharedQueryItems()` with the two direct-play deltas applied: `directPlay` 0→1 and the
+    /// `X-Plex-Client-Profile-Extra` swapped for the direct-play-capable profile. Everything
+    /// else (path/protocol/session/token/cap/indices/profile name `Safari`/subtitles/offset/
+    /// identity) is identical to the production transcode params.
+    private func directPlayQueryItems() -> [URLQueryItem] {
         var items = sharedQueryItems()
         // Allow direct play (production decision/start keep directPlay=0).
         items.removeAll { $0.name == "directPlay" }
         items.append(.init(name: "directPlay", value: "1"))
-        // Advertise the direct-play-capable profile only on this probe.
+        // Advertise the direct-play-capable profile only on this path.
         items.removeAll { $0.name == "X-Plex-Client-Profile-Extra" }
         let probeProfile = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps)
         items.append(.init(name: "X-Plex-Client-Profile-Extra", value: probeProfile.clientProfileExtra))
-        // Decision endpoint: ask the Media Decision Engine for its verdict.
-        items.append(.init(name: "hasMDE", value: "1"))
-        return buildURL(path: "/video/:/transcode/universal/decision", queryItems: items)
+        return items
     }
 
     /// A **single-file** capped-bitrate transcode URL for OFFLINE DOWNLOAD.
