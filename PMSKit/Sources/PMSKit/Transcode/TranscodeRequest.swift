@@ -121,6 +121,17 @@ public struct TranscodeRequest: Sendable, Equatable {
         return buildURL(path: "/video/:/transcode/universal/decision", queryItems: items)
     }
 
+    /// The production decision call as a ready-to-send `PlexRequest`. CRITICAL: carries
+    /// `PlexHeaders.standard` so `Accept: application/json` is set — without it PMS returns
+    /// XML and every decode fails ("Unexpected character '<'"), silently dropping the player
+    /// to the start.m3u8 fallback. Callers MUST use this rather than wrapping `decisionURL()`
+    /// in a bare `PlexRequest`. (The token still rides in the query string; the header set is
+    /// what makes PMS speak JSON.)
+    public func decisionRequest() -> PlexRequest {
+        PlexRequest(url: decisionURL(), method: "GET",
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
     /// `/video/:/transcode/universal/start.m3u8` + the shared params.
     public func startM3U8URL() -> URL {
         buildURL(path: "/video/:/transcode/universal/start.m3u8", queryItems: sharedQueryItems())
@@ -141,6 +152,14 @@ public struct TranscodeRequest: Sendable, Equatable {
         // Decision endpoint: ask the Media Decision Engine for its verdict.
         items.append(.init(name: "hasMDE", value: "1"))
         return buildURL(path: "/video/:/transcode/universal/decision", queryItems: items)
+    }
+
+    /// The direct-play probe (#7) as a ready-to-send `PlexRequest`, with `Accept:
+    /// application/json` (see `decisionRequest()` — same XML-by-default trap, and it bit the
+    /// probe just as hard, so `savesVideoEncode` could never become true).
+    public func directPlayProbeRequest() -> PlexRequest {
+        PlexRequest(url: directPlayProbeDecisionURL(), method: "GET",
+                    headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
     /// The **direct-play start URL** (#7 Step 3): `start.m3u8` with the exact param set the
