@@ -124,9 +124,14 @@ playlist body back to the loopback base.
 The proxy rotates the upstream socket transparently so the user never taps Retry — but it
 must **not** rotate on a legitimately-slow prime (~8s deep seek).
 
-- Discriminator: `URLSession.timeoutIntervalForRequest` resets on each received byte. A
-  *progressing* prime keeps receiving bytes and survives; a *wedged* socket (no bytes) trips
-  the timeout. So "no bytes within the request timeout" ≈ wedged, not slow.
+- **The discriminator is a generous time-to-first-byte deadline set above the known prime
+  ceiling, not byte-progress alone.** A deep-seek prime can hold the connection open with *no
+  bytes flowing* for 7–9s while PMS encodes the first segment, so "no bytes yet" cannot by
+  itself mean "wedged." Instead the upstream request timeout is set comfortably above the
+  observed prime ceiling (config constant, ~20s) so a real prime completes inside it; a socket
+  that produces nothing past that deadline is treated as wedged. `URLSession`'s native
+  byte-progress reset is a *helping* factor (a segment that streams steadily resets the
+  deadline) — it is not the sole mechanism, because a silent prime never gets to reset it.
 - On upstream timeout / connection error for a request: `rotateUpstream()` once, retry the
   same request on the fresh session.
 - Bounded by a cooldown to avoid rotate-storms (reuse the `SeekRestartBudget` shape:
