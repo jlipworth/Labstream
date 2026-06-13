@@ -79,7 +79,7 @@ Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 
 ## Conventions
 
-- GH issue bodies/comments end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`;
-  commits end with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- GH issue bodies/comments end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- Do not add Anthropic/Claude co-author trailers to commits.
 - Verified platform findings (what works windowed vs expanded, proven-impossible
   approaches) belong in `docs/DEVELOPMENT.md`, not just commit messages.
