@@ -161,6 +161,14 @@ final class PlaybackController {
     /// priming / the client-side resume fallback), and a slow initial prime must not be misread
     /// as a dead seek — the stall watchdog owns start-time recovery. Reset per item in `load(_:)`.
     private var hasPlayedThisItem = false
+    /// Continuously-tracked playhead (seconds) while the item is genuinely `.playing`, used to
+    /// measure the SIZE of a subsequent time jump. A real user seek moves the playhead far; a
+    /// transcode restart's re-prime jump and HLS-discontinuity jumps move it only a few to tens
+    /// of seconds. `handleTimeJump` gates the seek-restart on this delta to break the
+    /// restart→re-prime-jump→restart livelock (#27): self-induced small jumps were being read as
+    /// seeks and triggering another restart, creeping the playhead and pinning the scrubber so a
+    /// genuine deep seek never took. Seeded to the (re)start offset in `load(_:)`.
+    private var lastSettledPlayheadSeconds: Double = 0
     private var started = false
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
@@ -1271,6 +1279,10 @@ final class PlaybackController {
         didApplySavedSubtitle = false
         didApplyAudioPreference = false
         pendingResumeMs = resumeOffsetMs
+        // Seed the jump-delta baseline to the (re)start offset so the restarted stream's own
+        // re-prime / HLS-discontinuity jumps register as SMALL deltas and don't re-trigger a
+        // restart (#27 livelock). Updated continuously while `.playing` by the marker observer.
+        lastSettledPlayheadSeconds = Double(resumeOffsetMs ?? 0) / 1000.0
         playbackError.clear()
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
         // unchanged across a Quality reload (same `item`), so we only reset the live UI
@@ -1424,6 +1436,11 @@ final class PlaybackController {
                 self.updateSkipMarker(at: time.seconds)
                 // Drive the Up Next card (#15) off the same fine-grained observer.
                 self.updateUpNext(at: time.seconds)
+                // Track the settled playhead while genuinely playing, so `handleTimeJump` can
+                // measure how far a subsequent jump moved (#27 livelock guard).
+                if self.player.timeControlStatus == .playing, time.seconds.isFinite {
+                    self.lastSettledPlayheadSeconds = time.seconds
+                }
             }
         }
 
@@ -1788,6 +1805,15 @@ final class PlaybackController {
     /// window, so a user scrubbing around coalesces onto their final target.
     private let seekStallConfirmSeconds: TimeInterval = 2.0
 
+    /// Minimum jump distance (seconds) for a `timeJumpedNotification` to count as a user SEEK
+    /// rather than playback progression / an HLS discontinuity / a transcode restart's re-prime
+    /// repositioning. Below this we never arm a restart — small self-induced jumps being read as
+    /// seeks were the source of the #27 self-sustaining restart livelock (each restart's re-prime
+    /// jump triggered the next restart, creeping the playhead and pinning the scrubber so a real
+    /// deep seek never took). A genuine deep seek (the #25 case: 14:12 → 26:56) is minutes away,
+    /// far above this floor.
+    private let seekJumpMinDeltaSeconds: Double = 90
+
     /// Rate-limit policy for seek-triggered transcode restarts (#27): 5s cooldown between
     /// restarts, escalate to the failure overlay past 3 restarts in a rolling 60s window.
     /// The cooldown alone still allows 12 restarts/min indefinitely, and the
@@ -1817,13 +1843,25 @@ final class PlaybackController {
         // player state so the live test shows whether stalled drags reach the app at all —
         // if AVKit swallows the drag entirely, no line appears and the fix can't engage.
         let item = player.currentItem
-        let jumpMsg = String(format: "[VP] seek: time jumped to %.1fs (status=%d bufferEmpty=%d keepUp=%d seekable=%@)",
-                             player.currentTime().seconds,
+        let now = player.currentTime().seconds
+        let jumpDelta = abs(now - lastSettledPlayheadSeconds)
+        let jumpMsg = String(format: "[VP] seek: time jumped to %.1fs (from %.1fs Δ%.1fs status=%d bufferEmpty=%d keepUp=%d seekable=%@)",
+                             now, lastSettledPlayheadSeconds, jumpDelta,
                              player.timeControlStatus.rawValue,
                              (item?.isPlaybackBufferEmpty ?? false) ? 1 : 0,
                              (item?.isPlaybackLikelyToKeepUp ?? false) ? 1 : 0,
                              seekableRangesDescription())
         NSLog("%@", jumpMsg)
+
+        // Only a LARGE jump is a user seek worth a transcode relocate. Small jumps are playback
+        // progression, HLS discontinuities, or a restart's own re-prime repositioning — arming a
+        // restart on those is the #27 self-sustaining livelock that pinned the scrubber. The
+        // delta is measured against the last settled playhead, seeded to the restart offset.
+        guard jumpDelta >= seekJumpMinDeltaSeconds else {
+            NSLog("%@", String(format: "[VP] seek: ignoring %.1fs jump (below %.0fs seek threshold — progression/discontinuity)",
+                               jumpDelta, seekJumpMinDeltaSeconds))
+            return
+        }
 
         seekRestartTimer?.invalidate()
         let timer = Timer(timeInterval: seekStallConfirmSeconds, repeats: false) { [weak self] _ in
