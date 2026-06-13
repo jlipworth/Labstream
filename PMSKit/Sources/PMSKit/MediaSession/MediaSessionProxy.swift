@@ -35,6 +35,13 @@ public actor MediaSessionProxy {
     }
 
     public func open(origin pmsStart: URL) async throws -> MediaSessionHandle {
+        // Re-open (e.g. a bitrate reload) reuses this proxy: tear down any prior listener
+        // before binding a fresh one so we don't leak the old port/connection.
+        if current != nil {
+            origin.stop()
+            connection = nil
+            current = nil
+        }
         // Derive PMS origin (scheme/host/port) and keep the loopback-facing path+query verbatim.
         guard let comps = URLComponents(url: pmsStart, resolvingAgainstBaseURL: false),
               let scheme = comps.scheme, let host = comps.host else {

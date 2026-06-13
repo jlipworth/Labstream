@@ -189,6 +189,13 @@ final class PlaybackController {
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
 
+    /// App-owned media-session proxy (#33): a loopback HTTP origin between AVKit and PMS that
+    /// makes the media plane recoverable (transparent upstream-socket rotate). `AVURLAsset`
+    /// points at the proxy's `localURL`; `mediaProxyGeneration` tracks the live stream so a
+    /// late teardown can't kill a newer session. Player-agnostic — see `MediaSessionProxy`.
+    private let mediaProxy = MediaSessionProxy()
+    private var mediaProxyGeneration: Int?
+
     // MARK: - Extracted collaborators
 
     /// Audio-session config + interruption / route-change / background handling (#17, P5).
@@ -441,6 +448,13 @@ final class PlaybackController {
         playbackGeneration += 1
         timeline.report(state: .stopped, force: true)
         sendTranscodeStop()
+        // Tear down the loopback media proxy (#33). `stop()` is synchronous; the proxy is an
+        // actor, so hop off to release its listener. Stale-generation-safe.
+        if let gen = mediaProxyGeneration {
+            mediaProxyGeneration = nil
+            let proxy = mediaProxy
+            Task { await proxy.stop(generation: gen) }
+        }
         player.pause()
         removeObservers()
         // Tear down the session/lifecycle observers (kept separate from the per-item
@@ -1121,7 +1135,24 @@ final class PlaybackController {
         // only EXT-X-STREAM-INF — no I-frame variant, so AVKit gets no free scrub
         // thumbnails here. Recorded on the issue; a custom BIF scrubber is the only
         // remaining route and is parked.
-        let asset = AVURLAsset(url: streamURL)
+        // Front the PMS stream with the app-owned media-session proxy (#33) so the media
+        // plane is recoverable (transparent upstream-socket rotate; no manual Retry). Falls
+        // back to the direct PMS URL if the loopback origin can't start — playback must never
+        // depend on the proxy being up.
+        var assetURL = streamURL
+        do {
+            let handle = try await mediaProxy.open(origin: streamURL)
+            mediaProxyGeneration = handle.generation
+            assetURL = handle.localURL
+        } catch {
+            NSLog("PlaybackController: media proxy open failed (%@); using direct stream URL",
+                  String(describing: error))
+        }
+        guard !Task.isCancelled, generation == playbackGeneration else {
+            await teardownMediaProxy()
+            return
+        }
+        let asset = AVURLAsset(url: assetURL)
         let playerItem = AVPlayerItem(asset: asset)
         // Offset priming (the `offset` param + `#EXT-X-START`) is the FAST path: PMS
         // positions the session so AVPlayer begins at the resume point with a primed
@@ -1129,8 +1160,19 @@ final class PlaybackController {
         // through as a CLIENT-SIDE FALLBACK (P2 #9): if the player still lands at ~0
         // (PMS didn't honor `#EXT-X-START`), the status observer seeks once we're ready.
         // Previously this was `nil`, so a non-honoring PMS dropped the playhead to 0.
-        guard !Task.isCancelled, generation == playbackGeneration else { return }
+        guard !Task.isCancelled, generation == playbackGeneration else {
+            await teardownMediaProxy()
+            return
+        }
         load(playerItem, resumeOffsetMs: resumeMs)
+    }
+
+    /// Tear down the live media-proxy session, if any. Safe to call repeatedly; the proxy
+    /// ignores a stale generation, so a teardown can't kill a session a newer `open` started.
+    private func teardownMediaProxy() async {
+        guard let gen = mediaProxyGeneration else { return }
+        mediaProxyGeneration = nil
+        await mediaProxy.stop(generation: gen)
     }
 
     // MARK: - Local-file path
