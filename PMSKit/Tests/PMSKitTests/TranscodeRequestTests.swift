@@ -78,6 +78,35 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("X-Plex-Client-Identifier") == "CID")
 }
 
+// MARK: - Decision requests MUST ask for JSON (regression: PMS defaults to XML, which
+// made every decision call fail to decode — "Unexpected character '<'" — so the player
+// silently fell through to start.m3u8 and Direct Stream could never confirm a copy).
+
+@Test func decisionRequestAsksForJSON() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000,
+                               sessionID: "SESSION-1",
+                               mediaIndex: 0, partIndex: 0).decisionRequest()
+    #expect(req.url.path == "/video/:/transcode/universal/decision")
+    #expect(req.method == "GET")
+    #expect(req.headers["Accept"] == "application/json")
+}
+
+@Test func directPlayProbeRequestAsksForJSON() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000,
+                               sessionID: "SESSION-1",
+                               mediaIndex: 0, partIndex: 0).directPlayProbeRequest()
+    #expect(req.url.path == "/video/:/transcode/universal/decision")
+    #expect(req.method == "GET")
+    #expect(req.headers["Accept"] == "application/json")
+    // Still the direct-play probe (directPlay=1) — the header fix must not lose the delta.
+    let q = URLComponents(url: req.url, resolvingAgainstBaseURL: false)!.queryItems ?? []
+    #expect(q.first { $0.name == "directPlay" }?.value == "1")
+}
+
 // MARK: - Extra over-testing (plan: HEVC fMP4, subtitle burn-in, non-zero partIndex)
 
 @Test func deviceProfileDeclaresHEVCInFMP4Container() {
