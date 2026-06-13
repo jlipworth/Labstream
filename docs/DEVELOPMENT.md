@@ -158,6 +158,37 @@ metadata, and review-specific release automation can be handled in a later publi
   (Retry / quality reload) resets the budget, and seek-restarts never refill the silent
   auto-retry budget. Direct Stream (#7) shrinks the whole cost class: `video_decision=copy`
   makes a stacked job a ~50MB remux instead of a ~400MB encode.
+- **PMS transcode is NOT just-in-time one-segment-at-a-time — it races AHEAD then
+  throttles.** Earlier code comments assumed PMS produces segments at ~real-time and a deep
+  client buffer is impossible; that is wrong. The universal transcoder runs flat-out (HW
+  ~2-10x real-time; even our software HEVC→H.264 pod runs faster than playback) and builds a
+  forward window, then PAUSES encoding once it is `TranscoderThrottleBuffer` seconds ahead of
+  the playhead (PMS advanced-setting, default **60s**; "throttled" in logs is the GOOD state).
+  It resumes as the player consumes those ranges, and prunes spent ones behind
+  `TranscoderPruneBuffer` (default **300s**). So a 60s lead of real, already-encoded segments
+  normally exists server-side. (Sources: Plex `TranscoderThrottleBuffer`/`TranscoderPruneBuffer`
+  advanced settings; "If a transcode is throttled, is that bad?" support article; throttle-buffer
+  forum thread — "tells the transcoder how far ahead of where you are to stay … recovers as the
+  player consumes previously transcoded ranges".)
+- **The forward-buffer ceiling is the CLIENT, not the server.** Given the ~60s server lead,
+  the binding limit is AVPlayer: on HLS it caps the realized forward buffer at roughly
+  **2-3 min (~100s)** and may buffer LESS to manage resources, and it largely ignores
+  `preferredForwardBufferDuration` UNLESS `automaticallyWaitsToMinimizeStalling = false`
+  (Apple dev-forum thread 63435; `AVPlayerItem.h`). PMS does not gate/withhold already-produced
+  segments inside the window — the player can pull the whole produced lead immediately. Practical
+  implication: raising `preferredForwardBufferDuration` past ~the server's throttle lead buys
+  nothing on a live transcode (segments past the lead don't exist yet); the lever that matters is
+  the server-side throttle buffer, which we don't control. Direct Stream (`video_decision=copy`)
+  is far cheaper per segment so the lead fills/refills faster (the throttle target is in seconds,
+  not work, so the *depth* is the same — but it recovers from a blip quicker).
+- **Seeking PAST the produced window relocates ffmpeg — this is the (b) fork-bomb driver.**
+  When the player requests a segment outside the produced/throttled window, PMS re-spawns the
+  encoder at that offset (`-ss <offset>`) rather than fast-forwarding the existing job. Seen live
+  in the OOM trace: one session's `Asked for segment 2267…2403` paired with transcode starts at
+  `-ss` 1501/1560/1650/1765/1071/1820/1841/1741 — i.e. AVPlayer's autonomous segment fetches
+  during a scrub each triggered a fresh encode. Hence: do not seek into far-unproduced territory on
+  a session that can't keep up (see `SeekRestartBudget`), and a deeper client buffer does NOT help
+  here — it cannot pre-fetch segments the server hasn't produced.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)
