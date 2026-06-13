@@ -1037,19 +1037,12 @@ final class PlaybackController {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
-                // The probe's verdict is the whole experiment — log the structured fields PMS
-                // actually uses (verified headless against live PMS: a direct-play verdict rides
-                // in mdeDecisionCode=1000 + Part decision="directplay", NOT the per-stream
-                // decisions, which come back nil).
-                let probeMsg = String(format: "[VP] decision: probe general=%d mdeCode=%d part=%@ video=%@ audio=%@",
-                                      probe.generalDecisionCode ?? -1,
-                                      probe.mdeDecisionCode ?? -1,
-                                      probe.partDecision ?? "nil",
-                                      probe.videoDecision ?? "nil",
-                                      probe.audioDecision ?? "nil")
-                NSLog("%@", probeMsg)
+                // PMS signals a direct-play/copy verdict via mdeDecisionCode=1000 or the
+                // Part-level decision (NOT the per-stream decisions, which come back nil) —
+                // see DecisionResponse.savesVideoEncode. Commit to the direct-play start only
+                // when it confirms the video won't be re-encoded.
                 if probe.savesVideoEncode {
-                    NSLog("[VP] decision: PMS will copy video — committing direct-play start.m3u8")
+                    NSLog("PlaybackController: Direct Stream — PMS will copy video; committing direct-play start.m3u8")
                     decision = probe
                     streamURL = transcode.directPlayStartM3U8URL()
                 }
