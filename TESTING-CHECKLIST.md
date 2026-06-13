@@ -149,11 +149,35 @@ required**.
             instead of a 4th restart; Retry clears it and self-healing resumes.
       - [ ] **Auto-retry budget not refilled by seek restarts** — after a seek restart, a
             genuinely failing stream surfaces the overlay after at most one silent retry.
-- [ ] **Poisoned pooled connection recovery (GH #33)** — after reproducing a heavy-stream stall
-      (4K/high bitrate + rapid deep seeks), wait for the failure overlay, then tap Retry. Expected:
-      logs show `switched Retry control-plane requests to a fresh recovery URLSession`, control
-      requests fail fast or recover instead of hanging ~30s, and a healthy PMS can be reached on
-      the first Retry without waiting for the OS to evict the old pooled socket.
+- [ ] **Poisoned pooled connection recovery — CONTROL plane (GH #33)** — after reproducing a
+      heavy-stream stall (4K/high bitrate + rapid deep seeks), wait for the failure overlay, then
+      tap Retry. Expected: logs show `switched Retry control-plane requests to a fresh recovery
+      URLSession`, control requests fail fast or recover instead of hanging ~30s, and a healthy PMS
+      can be reached on the first Retry without waiting for the OS to evict the old pooled socket.
+- [ ] **MediaSessionProxy — MEDIA plane (GH #33, Stage 1)** — the media plane now rides an
+      app-owned loopback origin (`127.0.0.1:<port>`) instead of AVFoundation's unreachable pool, so
+      a poisoned media socket is recoverable without a manual Retry. Headless forwarding correctness
+      first: `./scripts/live-proxy-probe.sh` → expect `>>> PROXY VERDICT: PROXY OK` (start.m3u8 +
+      variant + primed segment all forwarded through the loopback). Then in the sim, reading
+      `xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'`:
+      - [ ] **Normal play through the proxy** — open any title; the log shows
+            `media proxy open ok, loopback=http://127.0.0.1:…`; playback starts and looks identical
+            to before (no regression in time-to-first-frame, subtitles, audio, ⓘ panel). The proxy
+            is in the path, not bypassed (no `media proxy open failed … using direct stream URL`).
+      - [ ] **Deep-seek prime** — resume/seek to a deep offset (~55min): the player primes and
+            plays at the offset through the loopback exactly as the direct path did (the 7–9s deep
+            prime ceiling is unchanged; the proxy must not add latency or a double-seek).
+      - [ ] **Forced-wedge transparent recovery** — mid-playback, briefly kill the network (or use
+            Network Link Conditioner) long enough to wedge the media socket, then restore it.
+            Expected: playback self-resumes within a couple seconds **without** the Retry overlay
+            appearing — the proxy rotated the upstream socket transparently (contrast the OLD
+            behavior: ~30s frozen waiting for the OS to evict the pooled socket). If the network is
+            held down past the burst budget (3 rotates / 60s), the failure surfaces through the
+            existing overlay instead of reconnect-storming.
+      - [ ] **Close mid-stall — no black screen (the original #33 symptom)** — force a stall, and
+            while it's stalled/reconnecting, close the player. Expected: clean return to detail with
+            NO lingering black screen and no audio bleed; the loopback listener is torn down
+            (`stop(generation:)`), and reopening a title starts a fresh session normally.
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
