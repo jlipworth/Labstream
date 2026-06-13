@@ -176,6 +176,14 @@ final class PlaybackController {
     /// seeks and triggering another restart, creeping the playhead and pinning the scrubber so a
     /// genuine deep seek never took. Seeded to the (re)start offset in `load(_:)`.
     private var lastSettledPlayheadSeconds: Double = 0
+    /// The playhead (ms) the most recent qualifying jump landed on — i.e. the user's seek
+    /// TARGET, captured the instant `handleTimeJump` sees it. The seek-restart confirmation
+    /// fires `seekStallConfirmSeconds` later, by which point a seek that couldn't land (empty
+    /// seekable range while the session primes) has snapped `player.currentTime()` BACK to the
+    /// stale pre-seek offset — so restarting at the live playhead reverts the viewer to roughly
+    /// where they started (the "second drag goes back" bug). We restart at this captured target
+    /// instead. Cleared when a jump recovers without a restart or the item resumes `.playing`.
+    private var pendingSeekTargetMs: Int?
     private var started = false
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
@@ -1499,6 +1507,16 @@ final class PlaybackController {
                     // The item has genuinely played: from here on, a time jump that strands the
                     // player starved is a dead seek (#25), not a slow initial prime.
                     self.hasPlayedThisItem = true
+                    // Playback is advancing again — any pending seek target has been honored (or
+                    // is moot). Don't carry it into a later, unrelated jump.
+                    self.pendingSeekTargetMs = nil
+                    // Real playback = the failure is over. Clear any surfaced error so its
+                    // Retry/Close affordance can't linger over playing video: a stall we
+                    // surfaced (handleStallTimeout pauses + sets the error) sometimes recovers
+                    // and resumes anyway — in the expanded cinema scene the pause doesn't always
+                    // hold — and without this the AVKit Retry/Close pills stay stuck on screen,
+                    // reading as dead because the state behind them no longer matches (seen live).
+                    self.playbackError.clear()
                     // Real playback = a successful (re)start: clear any "Reconnecting…" overlay
                     // PlayerView raised for a failure-recovery rebuild (GH #33).
                     self.onPlaybackActive?()
@@ -1811,15 +1829,22 @@ final class PlaybackController {
     }
 
     /// Fired when a stall outlasts `stallTimeoutSeconds`. Confirm the player is genuinely starved
-    /// (empty buffer AND not likely to keep up) rather than, e.g., paused on already-buffered
-    /// content — so we never flash an error over a normal user pause — then surface the failure.
+    /// — still TRYING to play (`.waitingToPlayAtSpecifiedRate`, so not a deliberate user pause)
+    /// yet unable to keep up — then surface the failure. We deliberately do NOT also require
+    /// `isPlaybackBufferEmpty`: a stream that primes a little and then wedges reaches
+    /// `readyToPlay` with a frozen frame and a NON-empty buffer (seen live on a 503-ing server,
+    /// expanded cinema), so the old empty-buffer condition let that case slip through — the
+    /// watchdog cancelled itself without surfacing and stranded the viewer on AVKit's spinner
+    /// with no Retry. Keying on `timeControlStatus` still spares a normal pause (which reports
+    /// `.paused`, not `.waitingToPlayAtSpecifiedRate`).
     /// We surface DIRECTLY (no silent auto-retry): the watchdog already gave the stream 15s to
     /// recover, and over a dead network a retry would just stall again. The overlay's Retry
     /// rebuilds the session once the user's connection is back.
     private func handleStallTimeout() {
         cancelStallWatchdog()
         guard !playbackError.isFailed, let current = player.currentItem else { return }
-        guard current.isPlaybackBufferEmpty, !current.isPlaybackLikelyToKeepUp else { return }
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+              !current.isPlaybackLikelyToKeepUp else { return }
         if let underlying = current.error {
             NSLog("PlaybackController: stream stalled, surfacing failure (%@)",
                   String(describing: underlying))
@@ -1836,11 +1861,18 @@ final class PlaybackController {
     // MARK: - Seek-during-stall recovery (#25)
 
     /// How long after a time jump we wait before checking whether the player is starved at the
-    /// new position. Long enough that a seek into already-buffered/produced content starts
-    /// playing (or at least reports likely-to-keep-up) and is left alone; short enough that a
-    /// dead seek recovers promptly instead of pinning the scrubber. Repeat jumps re-arm the
-    /// window, so a user scrubbing around coalesces onto their final target.
-    private let seekStallConfirmSeconds: TimeInterval = 2.0
+    /// new position. This MUST exceed PMS's deep-seek transcode PRIME time: a seek lands on a
+    /// segment the current session hasn't produced, so PMS must re-prime there, and the headless
+    /// segment probe measured the first primed segment at a deep offset taking ~7–9s to arrive
+    /// (`scripts/live-segment-probe.sh`). At the old 2s the player was ALWAYS still starved when
+    /// this fired, so we restarted the transcode into a prime that was about to succeed — which
+    /// re-incurs another ~8s prime, fires again, and fork-bombs: each restart makes PMS reap the
+    /// previous session, so in-flight segment fetches start 404ing (the `-16849`/`-1008` cascade
+    /// seen live). 10s waits the prime out: a seek that was going to recover reports `.playing`
+    /// and is left alone; only a genuinely dead seek (no segment after the prime window) restarts.
+    /// Stays below `stallTimeoutSeconds` (15s) so the seek path owns recovery, with the stall
+    /// watchdog as the backstop. Repeat jumps re-arm it, so scrubbing coalesces onto the final target.
+    private let seekStallConfirmSeconds: TimeInterval = 10.0
 
     /// Minimum jump distance (seconds) for a `timeJumpedNotification` to count as a user SEEK
     /// rather than playback progression / an HLS discontinuity / a transcode restart's re-prime
@@ -1900,6 +1932,12 @@ final class PlaybackController {
             return
         }
 
+        // Capture the seek TARGET now, while `now` still holds it. By the time the confirmation
+        // fires, a seek that couldn't land (empty seekable range during a prime) has reverted
+        // the live playhead to the stale pre-seek offset; restarting there is the "second drag
+        // snaps back" bug. The latest qualifying jump wins (scrubbing coalesces onto it).
+        if now.isFinite, now > 0 { pendingSeekTargetMs = Int(now * 1000) }
+
         seekRestartTimer?.invalidate()
         let timer = Timer(timeInterval: seekStallConfirmSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -1935,6 +1973,7 @@ final class PlaybackController {
                                current.isPlaybackBufferEmpty ? 1 : 0,
                                current.isPlaybackLikelyToKeepUp ? 1 : 0)
             NSLog("%@", okMsg)
+            pendingSeekTargetMs = nil   // the seek landed; don't carry a stale target forward
             return
         }
         // Rate-limit (#27): policy lives in SeekRestartBudget (PMSKit, unit-tested).
@@ -1964,8 +2003,13 @@ final class PlaybackController {
         case .allow:
             break
         }
-        // `currentResumeMs` reads the live playhead, which after the seek IS the user's target.
-        let resumeMs = currentResumeMs
+        // Restart at the captured seek TARGET, not the live playhead: a seek that couldn't land
+        // (empty seekable range while priming) has by now reverted `player.currentTime()` to the
+        // stale pre-seek offset, so `currentResumeMs` would send us back to roughly where the
+        // viewer started (#25 "second drag snaps back"). Fall back to the live playhead only if
+        // no target was captured (shouldn't happen on this path, but stays safe).
+        let resumeMs = pendingSeekTargetMs ?? currentResumeMs
+        pendingSeekTargetMs = nil
         let restartMsg = String(format: "[VP] seek: starved %.0fs after jump; restarting transcode at %dms",
                                 seekStallConfirmSeconds, resumeMs)
         NSLog("%@", restartMsg)
