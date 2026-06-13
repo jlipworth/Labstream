@@ -28,6 +28,12 @@ struct SettingsView: View {
     /// the in-headset kill switch the research/15 rollout plan calls for.
     @AppStorage(PlaybackController.directStreamEnabledKey) private var directStreamEnabled = false
 
+    /// Experimental fallback player path, default OFF. The normal AVPlayerViewController path
+    /// stays the product default; this routes streaming playback through an app-owned
+    /// AVPlayerLayer presenter with a deterministic scrubber when we need to test whether
+    /// native AVKit chrome is the source of Plex seek/reconnect weirdness.
+    @AppStorage("experimentalCustomPlayerEnabled") private var experimentalCustomPlayerEnabled = false
+
     var body: some View {
         Form {
             serverSection
@@ -52,10 +58,13 @@ struct SettingsView: View {
             Toggle(isOn: $directStreamEnabled) {
                 Label("Direct Stream (experimental)", systemImage: "arrow.triangle.branch")
             }
+            Toggle(isOn: $experimentalCustomPlayerEnabled) {
+                Label("Custom player fallback (experimental)", systemImage: "play.rectangle.on.rectangle")
+            }
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server — turn it off if playback misbehaves.")
+            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server. Custom player fallback keeps the normal player as default, but lets you test an app-owned scrubber if AVKit playback misbehaves.")
         }
     }
 

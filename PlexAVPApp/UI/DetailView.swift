@@ -40,6 +40,16 @@ struct DetailView: View {
     /// underlying item out from under us so we never index past the array.
     @State private var selectedMediaIndex = 0
 
+    /// Experimental fallback player path, default OFF. When enabled, streaming playback uses
+    /// an app-owned AVPlayerLayer presenter with a deterministic scrubber; local downloads
+    /// intentionally stay on the system AVKit player for this first fallback spike.
+    @AppStorage("experimentalCustomPlayerEnabled") private var experimentalCustomPlayerEnabled = false
+
+    /// Same persisted default cap that Settings and PlayerView use. The custom fallback path
+    /// passes it into its `PlaybackController` so the experimental route starts from the same
+    /// quality choice as the stock AVKit route.
+    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
+
     /// Optimistic local override of the server's watched state. `nil` means "use the
     /// value from `detailed`"; once the user toggles we hold their intent here so the row
     /// reflects it immediately, before/independent of the scrobble round-trip.
@@ -358,30 +368,46 @@ struct DetailView: View {
             // top-leading close affordance (clear of the AVKit transport bar / "…" menu).
             // This works in both the inline and expanded player states.
             Group {
-                PlayerView(item: playing,
-                           server: server,
-                           token: token,
-                           identity: appModel.identity,
-                           client: appModel.client,
-                           // The Plex resource clientIdentifier IS the server's machine
-                           // identifier; the play-queue API needs it to resolve the next
-                           // episode for the Up Next card.
-                           mediaIndex: playing.ratingKey == detailed.ratingKey ? selectedMediaIndex : 0,
-                           machineIdentifier: appModel.selectedServer?.clientIdentifier,
-                           onClose: { presentingPlayer = false },
-                           onRequestPlay: { next in
-                               // Up Next advance: swap the presented item to the next
-                               // episode. The `.id` keyed on ratingKey tears down the old
-                               // controller and rebuilds PlayerView for the new episode,
-                               // keeping the cover up for a continuous experience.
-                               playLocalURL = nil
-                               playingItem = next
-                           })
-                // Rebuild PlayerView + its PlaybackController cleanly whenever the playing
-                // item changes (Up Next advance), so the outgoing controller is dismantled
-                // (its `stop()` flushes a final timeline) and a fresh one starts the next.
-                .id(playing.ratingKey)
+                let mediaIndex = playing.ratingKey == detailed.ratingKey ? selectedMediaIndex : 0
+                let machineIdentifier = appModel.selectedServer?.clientIdentifier
+                let playNext: (MediaItem) -> Void = { next in
+                    // Up Next advance: swap the presented item to the next episode. The `.id`
+                    // keyed on ratingKey tears down the old controller and rebuilds the player
+                    // for the new episode, keeping the cover up for a continuous experience.
+                    playLocalURL = nil
+                    playingItem = next
+                }
+
+                if experimentalCustomPlayerEnabled {
+                    CustomPlayerView(item: playing,
+                                     server: server,
+                                     token: token,
+                                     identity: appModel.identity,
+                                     client: appModel.client,
+                                     maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                     mediaIndex: mediaIndex,
+                                     machineIdentifier: machineIdentifier,
+                                     onClose: { presentingPlayer = false },
+                                     onRequestPlay: playNext)
+                } else {
+                    PlayerView(item: playing,
+                               server: server,
+                               token: token,
+                               identity: appModel.identity,
+                               client: appModel.client,
+                               // The Plex resource clientIdentifier IS the server's machine
+                               // identifier; the play-queue API needs it to resolve the next
+                               // episode for the Up Next card.
+                               mediaIndex: mediaIndex,
+                               machineIdentifier: machineIdentifier,
+                               onClose: { presentingPlayer = false },
+                               onRequestPlay: playNext)
+                }
             }
+            // Rebuild PlayerView + its PlaybackController cleanly whenever the playing
+            // item changes (Up Next advance), so the outgoing controller is dismantled
+            // (its `stop()` flushes a final timeline) and a fresh one starts the next.
+            .id(playing.ratingKey)
             .ignoresSafeArea()
         } else {
             ContentUnavailableView("Can’t play",
