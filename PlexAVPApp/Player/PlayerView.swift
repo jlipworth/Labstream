@@ -17,8 +17,9 @@ struct PlayerView: View {
     /// Builds the controller. The `Int?` is an optional resume override (ms) used when the
     /// player is REBUILT to recover from a wedged AVKit state after a failure — the fresh
     /// controller resumes at the captured live playhead instead of the item's saved offset.
-    /// `nil` on the normal first build.
-    private let controllerFactory: @MainActor (Int?) -> PlaybackController
+    /// The optional `PlexClient` is a one-shot recovery client for #33, used only on Retry
+    /// rebuilds to avoid reusing a poisoned pooled connection.
+    private let controllerFactory: @MainActor (Int?, PlexClient?) -> PlaybackController
 
     /// Dismiss hook for the presenting container (the `.fullScreenCover` in `DetailView`).
     /// AVPlayerViewController does NOT supply a system Close button on visionOS, so without
@@ -70,6 +71,10 @@ struct PlayerView: View {
     /// healthy cold-start prime, below the ~30s the OS takes to evict a poisoned socket.
     private let reconnectTimeoutSeconds: Double = 20
 
+    /// Fresh control-plane client handed to the NEXT recovery rebuild (#33). Nil for the normal
+    /// first build and cleared after the rebuilt controller is published.
+    @State private var rebuildClientOverride: PlexClient?
+
     /// Streaming initializer (contract).
     ///
     /// `maxVideoBitrateKbps` is optional: when omitted the controller starts at the
@@ -89,14 +94,14 @@ struct PlayerView: View {
          onRequestPlay: ((MediaItem) -> Void)? = nil) {
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
-        self.controllerFactory = { resumeMsOverride in
+        self.controllerFactory = { resumeMsOverride, recoveryClient in
             // Fall back to the persisted cap when the caller doesn't specify one.
             let cap = maxVideoBitrateKbps ?? UserDefaults.standard.object(forKey: "maxVideoBitrateKbps") as? Int ?? 8000
             return PlaybackController(item: item,
                                       server: server,
                                       token: token,
                                       identity: identity,
-                                      client: client,
+                                      client: recoveryClient ?? client,
                                       maxVideoBitrateKbps: cap,
                                       mediaIndex: mediaIndex,
                                       machineIdentifier: machineIdentifier,
@@ -119,7 +124,7 @@ struct PlayerView: View {
                                       version: "0.1.0",
                                       deviceName: "Apple Vision Pro")
         let client = PlexClient(identity: identity)
-        self.controllerFactory = { _ in
+        self.controllerFactory = { _, _ in
             PlaybackController(localFile: localFile,
                                item: item,
                                identity: identity,
@@ -132,7 +137,7 @@ struct PlayerView: View {
          onClose: (() -> Void)? = nil) {
         self.onClose = onClose
         self.onRequestPlay = nil
-        self.controllerFactory = { _ in
+        self.controllerFactory = { _, _ in
             PlaybackController(localFile: localFile,
                                item: item,
                                identity: identity,
@@ -157,6 +162,7 @@ struct PlayerView: View {
         ZStack(alignment: .topLeading) {
             PlayerRepresentable(controllerFactory: controllerFactory,
                                 resumeMsOverride: rebuildResumeMs,
+                                recoveryClientOverride: rebuildClientOverride,
                                 onBitratePicked: { maxVideoBitrateKbps = $0 },
                                 onClose: onClose,
                                 onRetry: { rebuildPlayer(from: $0) },
@@ -169,6 +175,7 @@ struct PlayerView: View {
                                     // stream genuinely plays (GH #33).
                                     $0.onPlaybackActive = { isReconnecting = false }
                                     controller = $0
+                                    rebuildClientOverride = nil
                                 })
                 // A new id tears down the wedged AVPlayerViewController and builds a fresh one
                 // on rebuild (failure recovery), giving un-wedged controls + a reset experience.
@@ -268,6 +275,9 @@ struct PlayerView: View {
         // Show the "Reconnecting…" overlay across the rebuild + cold-load window (GH #33);
         // cleared when the fresh controller reports playback via `onPlaybackActive`.
         isReconnecting = true
+        // Also hand the rebuilt controller a fresh short-timeout URLSession for control-plane
+        // requests, so retry setup/timeline/stop don't inherit a poisoned pooled connection.
+        rebuildClientOverride = current.recoveryControlClient()
         // Drop the stale reference so the error overlay (and other `if let controller` overlays)
         // clear immediately; the rebuilt controller republishes via `onControllerReady`.
         controller = nil
@@ -469,10 +479,12 @@ private struct PlaybackErrorOverlay: View {
 /// Stats menus) once the view controller exists, so the custom transport-bar items and
 /// the stats overlay are wired to the same `PlaybackController`.
 private struct PlayerRepresentable: UIViewControllerRepresentable {
-    let controllerFactory: @MainActor (Int?) -> PlaybackController
+    let controllerFactory: @MainActor (Int?, PlexClient?) -> PlaybackController
     /// Resume override (ms) forwarded to the factory on a failure-recovery rebuild; `nil` on
     /// the normal first build (the controller then uses the item's saved offset).
     let resumeMsOverride: Int?
+    /// Fresh recovery client for #33 Retry rebuilds. Nil during normal playback startup.
+    let recoveryClientOverride: PlexClient?
     /// Persists the user's Quality choice up into `@AppStorage`.
     let onBitratePicked: (Int) -> Void
     /// Dismiss hook for the presenting `.fullScreenCover`. Surfaced by the control surface as a
@@ -489,7 +501,7 @@ private struct PlayerRepresentable: UIViewControllerRepresentable {
     let onControllerReady: (PlaybackController) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(controller: controllerFactory(resumeMsOverride),
+        Coordinator(controller: controllerFactory(resumeMsOverride, recoveryClientOverride),
                     onBitratePicked: onBitratePicked,
                     onClose: onClose,
                     onRetry: onRetry)
