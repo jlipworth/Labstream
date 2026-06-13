@@ -56,6 +56,20 @@ struct PlayerView: View {
     /// playhead we captured at failure time, not the stale on-disk offset. `nil` on first build.
     @State private var rebuildResumeMs: Int?
 
+    /// True from the moment a failure-recovery rebuild starts until the fresh controller reports
+    /// genuine playback (`onPlaybackActive`). Drives the "Reconnecting…" overlay (GH #33): during
+    /// the rebuild `controller` is nil and the cold load may never enter
+    /// `.waitingToPlayAtSpecifiedRate` (when `start.m3u8` itself hangs), so neither the #21
+    /// spinner nor any `if let controller` overlay renders — leaving a bare black canvas with no
+    /// exit. This flag is independent of `controller`, so the overlay (spinner + Close) covers
+    /// that whole window.
+    @State private var isReconnecting = false
+
+    /// How long the reconnect watchdog waits for a recovery rebuild to reach playback before
+    /// giving up and surfacing the Retry/Close failure overlay (GH #33). Comfortably above a
+    /// healthy cold-start prime, below the ~30s the OS takes to evict a poisoned socket.
+    private let reconnectTimeoutSeconds: Double = 20
+
     /// Streaming initializer (contract).
     ///
     /// `maxVideoBitrateKbps` is optional: when omitted the controller starts at the
@@ -151,6 +165,9 @@ struct PlayerView: View {
                                     // controller (#15): the controller calls this when the
                                     // Up Next countdown elapses / play-to-end / "Play Now".
                                     $0.onAdvanceToNext = onRequestPlay
+                                    // Dismiss the "Reconnecting…" overlay once the rebuilt
+                                    // stream genuinely plays (GH #33).
+                                    $0.onPlaybackActive = { isReconnecting = false }
                                     controller = $0
                                 })
                 // A new id tears down the wedged AVPlayerViewController and builds a fresh one
@@ -205,12 +222,37 @@ struct PlayerView: View {
                 BufferingOverlay(state: controller.buffering)
             }
 
+            // Reconnecting overlay (GH #33): during a failure-recovery rebuild `controller` is
+            // nil and the fresh cold load may hang without ever entering the buffering state, so
+            // no other overlay renders. Show a spinner + Close so the rebuild is never a bare,
+            // inescapable black canvas. Suppressed once a failure surfaces (the error overlay,
+            // with its own Retry/Close, takes over) and cleared when playback resumes.
+            if isReconnecting, controller?.playbackError.isFailed != true {
+                ReconnectingOverlay(onClose: onClose)
+            }
+
             // Stats for Nerds (#6) lives INSIDE the ⓘ info panel (a system-chrome "Stats"
             // tab, see PlayerControlSurface) — the only stats surface that renders in the
             // expanded cinema experience. Floating it here was the previous approach and
             // only ever worked windowed: `contentOverlayView` exists on visionOS but is
             // never composited (verified live), `customOverlayViewController` is tvOS-only,
             // and the expanded scene renders no in-process overlay at all.
+        }
+        // Reconnect watchdog (GH #33): a recovery rebuild whose cold `start.m3u8` hangs on a
+        // poisoned pooled connection produces no AVPlayer error and never enters
+        // `.waitingToPlayAtSpecifiedRate`, so neither `handlePlaybackFailure` nor the stall
+        // watchdog (which needs that state) ever fires — the "Reconnecting…" spinner would
+        // otherwise hang forever with only Close as an exit. Bound it: keyed on
+        // `playerGeneration` so every rebuild re-arms it; on a successful reconnect
+        // `onPlaybackActive` clears `isReconnecting` long before the deadline, making this a
+        // no-op. If the deadline passes still reconnecting, surface the failure so the
+        // Retry/Close overlay replaces the dead spinner.
+        .task(id: playerGeneration) {
+            guard isReconnecting else { return }
+            try? await Task.sleep(for: .seconds(reconnectTimeoutSeconds))
+            guard !Task.isCancelled, isReconnecting, let controller else { return }
+            isReconnecting = false
+            controller.surfaceReconnectTimeout()
         }
     }
 
@@ -223,6 +265,9 @@ struct PlayerView: View {
     @MainActor
     private func rebuildPlayer(from current: PlaybackController) {
         rebuildResumeMs = current.currentResumeMs
+        // Show the "Reconnecting…" overlay across the rebuild + cold-load window (GH #33);
+        // cleared when the fresh controller reports playback via `onPlaybackActive`.
+        isReconnecting = true
         // Drop the stale reference so the error overlay (and other `if let controller` overlays)
         // clear immediately; the rebuilt controller republishes via `onControllerReady`.
         controller = nil
@@ -252,6 +297,36 @@ private struct BufferingOverlay: View {
             .allowsHitTesting(false)
             .transition(.opacity)
         }
+    }
+}
+
+/// "Reconnecting…" overlay shown over the player during a failure-recovery rebuild and the
+/// fresh player's cold load (GH #33). Unlike `BufferingOverlay` it does NOT read the controller
+/// (which is nil for part of that window) and it IS hit-testable, because it owns the only exit
+/// the viewer has while the rebuild hangs — a Close button. The centered card is the only
+/// interactive region; the surrounding frame has no background, so it never traps touches.
+/// INLINE-state only: SwiftUI overlays don't composite in the expanded cinema experience, where
+/// AVKit's own loading indicator and the Close `contextualAction` cover this instead.
+private struct ReconnectingOverlay: View {
+    let onClose: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: DS.Space.lg) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Reconnecting…")
+                .font(.headline)
+            if let onClose {
+                Button(role: .cancel, action: onClose) {
+                    Text("Close").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(DS.Space.xl)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(.opacity)
     }
 }
 

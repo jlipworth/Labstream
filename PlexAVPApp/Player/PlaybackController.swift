@@ -55,6 +55,13 @@ final class PlaybackController {
     /// next episode). Nil for sessions with no advance handler (e.g. offline playback).
     var onAdvanceToNext: ((MediaItem) -> Void)?
 
+    /// Fired whenever the item reaches `.playing`. PlayerView uses it to dismiss the
+    /// "Reconnecting…" overlay shown during a failure-recovery rebuild (GH #33): the overlay
+    /// covers the window where this controller is nil / the fresh item hasn't started, and
+    /// genuine playback is the signal that the rebuild succeeded. Idempotent — safe to fire on
+    /// every play transition (including post-rebuffer resumes).
+    var onPlaybackActive: (() -> Void)?
+
     // Inputs.
     private let item: MediaItem
     private let client: PlexClient
@@ -1477,6 +1484,9 @@ final class PlaybackController {
                     // The item has genuinely played: from here on, a time jump that strands the
                     // player starved is a dead seek (#25), not a slow initial prime.
                     self.hasPlayedThisItem = true
+                    // Real playback = a successful (re)start: clear any "Reconnecting…" overlay
+                    // PlayerView raised for a failure-recovery rebuild (GH #33).
+                    self.onPlaybackActive?()
                 }
             }
         }
@@ -1741,6 +1751,18 @@ final class PlaybackController {
         playbackError.set(error)
     }
 
+    /// Surface a "couldn't reconnect" failure when a recovery rebuild outlasts the View's
+    /// reconnect watchdog (GH #33). A poisoned pooled connection can make the cold `start.m3u8`
+    /// hang with no AVPlayer error and without ever entering `.waitingToPlayAtSpecifiedRate`, so
+    /// neither `handlePlaybackFailure` nor the stall watchdog fires — the "Reconnecting…" spinner
+    /// would hang forever. PlayerView calls this to convert that dead spinner into the same
+    /// Retry/Close overlay every other failure uses. Idempotent.
+    func surfaceReconnectTimeout() {
+        guard !playbackError.isFailed else { return }
+        NSLog("PlaybackController: reconnect watchdog timed out, surfacing failure (#33)")
+        surfaceFailure(ReconnectTimeoutError())
+    }
+
     // MARK: - Stall watchdog (#8 hardening)
 
     /// How long (seconds) a continuous stall may last before we treat it as a failure. Generous
@@ -1955,6 +1977,15 @@ final class PlaybackController {
 /// Observable failure surface for a `PlaybackController`. Modeled as its own object
 /// (mirroring `PlaybackDiagnostics`) so PlayerView/DetailView can react to a failure and
 /// show an error + Retry without the whole controller needing to be `@Observable`.
+/// Error surfaced when a failure-recovery rebuild can't reach playback within the View's
+/// reconnect watchdog window (GH #33). Its `localizedDescription` becomes the Retry/Close
+/// overlay's message, so it's written for the viewer, not the log.
+struct ReconnectTimeoutError: LocalizedError {
+    var errorDescription: String? {
+        "Couldn't reconnect to the server. It may be busy or briefly unreachable — try again."
+    }
+}
+
 @Observable
 @MainActor
 final class PlaybackError {
