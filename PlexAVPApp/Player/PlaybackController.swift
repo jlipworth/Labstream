@@ -1035,8 +1035,7 @@ final class PlaybackController {
         var streamURL = transcode.startM3U8URL()
         if UserDefaults.standard.bool(forKey: Self.directStreamEnabledKey) {
             do {
-                let probeReq = PlexRequest(url: transcode.directPlayProbeDecisionURL(), method: "GET")
-                let probe = try await client.send(probeReq, as: DecisionResponse.self)
+                let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 // #7 instrumentation (strip after live verification): the probe's verdict is
                 // the whole experiment — log every field the rollout plan wants eyeballed.
@@ -1063,8 +1062,7 @@ final class PlaybackController {
         // call is non-fatal — fall through and try start.m3u8 anyway.
         if decision == nil {
             do {
-                let decisionReq = PlexRequest(url: transcode.decisionURL(), method: "GET")
-                let response = try await client.send(decisionReq, as: DecisionResponse.self)
+                let response = try await client.send(transcode.decisionRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 decision = response
                 if case .unsupported = response.decision {
