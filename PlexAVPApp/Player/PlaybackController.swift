@@ -1144,6 +1144,7 @@ final class PlaybackController {
             let handle = try await mediaProxy.open(origin: streamURL)
             mediaProxyGeneration = handle.generation
             assetURL = handle.localURL
+            NSLog("PlaybackController: media proxy open ok, loopback=%@", handle.localURL.absoluteString)
         } catch {
             NSLog("PlaybackController: media proxy open failed (%@); using direct stream URL",
                   String(describing: error))
