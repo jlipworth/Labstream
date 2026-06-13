@@ -24,3 +24,12 @@ import Foundation
 
     #expect(config.waitsForConnectivity == false)
 }
+
+@Test func mediaUpstreamConfigIsEphemeralWithGenerousTimeout() {
+    let config = PlexSessionConfiguration.mediaUpstream(timeout: 20)
+
+    #expect(config.timeoutIntervalForRequest == 20)
+    #expect(config.urlCache == nil)
+    #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
+    #expect(config.waitsForConnectivity == false)
+}
