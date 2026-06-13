@@ -33,6 +33,8 @@ Package.resolved
 secrets.plist
 Secrets.swift
 .env
+# Live PMS integration-probe creds (real token + hostname) — see *.example
+scripts/plex-live.env
 
 # Per-developer signing (Apple Developer Team ID) — never commit
 Signing.local.xcconfig

@@ -27,8 +27,17 @@ public enum Decision: Sendable, Equatable {
 public struct DecisionResponse: Decodable, Sendable, Equatable {
     public let generalDecisionCode: Int?
     public let generalDecisionText: String?
-    /// Free-text MDE explanation, e.g. "Convert to HLS, copy video, transcode audio".
+    /// The Media Decision Engine's own decision code (`hasMDE=1`). On a direct-play probe
+    /// PMS returns **1000 = direct play** here while leaving `generalDecisionCode` nil — the
+    /// reliable structured direct-play signal (verified against live PMS, issue #7).
+    public let mdeDecisionCode: Int?
+    /// Free-text MDE explanation, e.g. "Convert to HLS, copy video, transcode audio" or
+    /// "Direct play OK." — human-readable only; NEVER gate logic on this string.
     public let mdeDecisionText: String?
+    /// Part-level `decision` of the first part ("directplay" / "copy" / "transcode"). PMS sets
+    /// this on a full direct play and may leave the per-stream decisions nil, so it's a
+    /// distinct copy-vs-re-encode signal from `videoDecision`.
+    public let partDecision: String?
     /// Per-stream `decision` for the video stream (streamType 1) of the first part.
     public let videoDecision: String?
     /// Per-stream `decision` for the audio stream (streamType 2) of the first part.
@@ -38,6 +47,7 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
     enum ContainerKeys: String, CodingKey {
         case generalDecisionCode
         case generalDecisionText
+        case mdeDecisionCode
         case mdeDecisionText
         case metadata = "Metadata"
     }
@@ -45,18 +55,22 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
     /// Minimal Metadata>Media>Part>Stream spine, decoded only for the `decision` attributes.
     private struct Metadata: Decodable { let Media: [Media]? }
     private struct Media: Decodable { let Part: [Part]? }
-    private struct Part: Decodable { let Stream: [Stream]? }
+    private struct Part: Decodable { let decision: String?; let Stream: [Stream]? }
     private struct Stream: Decodable {
         let streamType: Int?
         let decision: String?
     }
 
     public init(generalDecisionCode: Int?, generalDecisionText: String?,
+                mdeDecisionCode: Int? = nil,
                 mdeDecisionText: String? = nil,
+                partDecision: String? = nil,
                 videoDecision: String? = nil, audioDecision: String? = nil) {
         self.generalDecisionCode = generalDecisionCode
         self.generalDecisionText = generalDecisionText
+        self.mdeDecisionCode = mdeDecisionCode
         self.mdeDecisionText = mdeDecisionText
+        self.partDecision = partDecision
         self.videoDecision = videoDecision
         self.audioDecision = audioDecision
     }
@@ -66,9 +80,12 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
         let container = try root.nestedContainer(keyedBy: ContainerKeys.self, forKey: .mediaContainer)
         self.generalDecisionCode = try container.decodeIfPresent(Int.self, forKey: .generalDecisionCode)
         self.generalDecisionText = try container.decodeIfPresent(String.self, forKey: .generalDecisionText)
+        self.mdeDecisionCode = try container.decodeIfPresent(Int.self, forKey: .mdeDecisionCode)
         self.mdeDecisionText = try container.decodeIfPresent(String.self, forKey: .mdeDecisionText)
         let metadata = try container.decodeIfPresent([Metadata].self, forKey: .metadata)
-        let streams = metadata?.first?.Media?.first?.Part?.first?.Stream ?? []
+        let part = metadata?.first?.Media?.first?.Part?.first
+        self.partDecision = part?.decision
+        let streams = part?.Stream ?? []
         self.videoDecision = streams.first { $0.streamType == 1 }?.decision
         self.audioDecision = streams.first { $0.streamType == 2 }?.decision
     }
@@ -78,14 +95,21 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
         Decision(generalDecisionCode: generalDecisionCode ?? -1)
     }
 
-    /// True when PMS will NOT re-encode video — `videoDecision` is "copy" or
-    /// "direct play"/"directplay" — i.e. the expensive software transcode is saved and the
-    /// direct-play start URL is worth committing to. Conservative: an absent per-stream
-    /// decision answers false (never claim a saved encode without evidence).
+    /// True when PMS will NOT re-encode video — i.e. the expensive software transcode is
+    /// saved and the direct-play start URL is worth committing to (#7). PMS signals this three
+    /// ways, and a probe may use only one of them, so we accept any:
+    ///   1. `mdeDecisionCode == 1000` — whole-file direct play (per-stream decisions left nil),
+    ///   2. Part-level `decision` is "copy"/"directplay" — remux or direct play of the part,
+    ///   3. per-stream video `decision` is "copy"/"directplay" — Direct Stream (copy video,
+    ///      transcode audio), where the part decision may read "transcode".
+    /// Conservative: with none of these present, answer false (never claim a saved encode
+    /// without evidence). Codes/enums only — never the English `mdeDecisionText`.
     public var savesVideoEncode: Bool {
-        guard let v = videoDecision?.lowercased().replacingOccurrences(of: " ", with: "") else {
-            return false
+        if mdeDecisionCode == 1000 { return true }            // direct play OK
+        func isCopyOrDirect(_ s: String?) -> Bool {
+            guard let v = s?.lowercased().replacingOccurrences(of: " ", with: "") else { return false }
+            return v == "copy" || v == "directplay"
         }
-        return v == "copy" || v == "directplay"
+        return isCopyOrDirect(partDecision) || isCopyOrDirect(videoDecision)
     }
 }
