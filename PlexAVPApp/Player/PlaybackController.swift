@@ -965,6 +965,33 @@ final class PlaybackController {
         beginStreaming(resumeOffsetMsOverride: resumeMs)
     }
 
+    /// App-owned scrubber commit hook for the experimental custom player path (#38).
+    ///
+    /// Native AVKit scrubber callbacks are unavailable on visionOS, so `PlayerView` has to infer
+    /// user intent from `AVPlayerItem.timeJumpedNotification`. The fallback player owns the
+    /// scrubber directly and can pass the user's intended target here. In-buffer targets still use
+    /// a native `AVPlayer.seek`; out-of-buffer streaming targets bypass the doomed native seek and
+    /// enter the same server-safe final-target rebuild policy that current `main` uses for #33/#25.
+    func performUserSeek(toMs targetMs: Int) {
+        let clamped = max(0, targetMs)
+        let target = CMTime(value: CMTimeValue(clamped), timescale: 1000)
+        let seconds = Double(clamped) / 1000
+
+        guard isStreaming, !playbackError.isFailed else {
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            return
+        }
+
+        if isWithinLoadedRanges(seconds: seconds) {
+            cancelPendingFinalTargetRebuild()
+            NSLog("%@", String(format: "[VP] custom-player: native seek within loaded range target=%dms", clamped))
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        } else {
+            NSLog("%@", String(format: "[VP] custom-player: final-target rebuild requested target=%dms", clamped))
+            scheduleFinalTargetRebuild(toMs: clamped)
+        }
+    }
+
     /// Fresh control-plane client for a retry/rebuild after the stream wedged (#33).
     /// PlayerView uses this when it performs the full `.id()` rebuild, and in-place retry
     /// callers use `switchToRecoveryControlClient()` directly.
