@@ -64,7 +64,7 @@ final class PlaybackController {
 
     // Inputs.
     private let item: MediaItem
-    private let client: PlexClient
+    private var client: PlexClient
     private let identity: ClientIdentity
 
     /// Streaming context. `nil` for local-file playback (no timeline reporting then,
@@ -962,11 +962,26 @@ final class PlaybackController {
         guard isStreaming else { return }
         let resumeMs = currentResumeMs
         didAutoRetry = false
+        switchToRecoveryControlClient()
         // Explicit user intent re-earns the seek-restart burst budget (#27).
         seekRestartBudget.reset()
         playbackError.clear()
         removeObservers()
         beginStreaming(resumeOffsetMsOverride: resumeMs)
+    }
+
+    /// Fresh control-plane client for a retry/rebuild after the stream wedged (#33).
+    /// PlayerView uses this when it performs the full `.id()` rebuild, and in-place retry
+    /// callers use `switchToRecoveryControlClient()` directly.
+    func recoveryControlClient() -> PlexClient {
+        PlexClient.recovery(identity: identity)
+    }
+
+    private func switchToRecoveryControlClient() {
+        let freshClient = recoveryControlClient()
+        client = freshClient
+        timeline.useClient(freshClient)
+        NSLog("PlaybackController: switched Retry control-plane requests to a fresh recovery URLSession")
     }
 
     /// `stoppingPreviousTranscode` is true on every in-place RESTART (quality/audio reload,

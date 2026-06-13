@@ -20,7 +20,7 @@ final class TimelineReporter {
     private let server: URL?
     private let token: String?
     private let identity: ClientIdentity
-    private let client: PlexClient
+    private var client: PlexClient
     private let player: AVPlayer
 
     /// True once the current item has reached `.readyToPlay` with a real duration.
@@ -45,6 +45,13 @@ final class TimelineReporter {
         self.identity = identity
         self.client = client
         self.player = player
+    }
+
+    /// Swap future timeline/scrobble sends to a fresh control-plane client after player
+    /// recovery (#33). Existing in-flight sends may still finish/fail on the old client, but
+    /// new heartbeats won't reuse a connection pool suspected to be poisoned.
+    func useClient(_ client: PlexClient) {
+        self.client = client
     }
 
     /// Send a timeline heartbeat. Skips when nothing meaningful changed (same state
