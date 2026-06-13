@@ -35,6 +35,10 @@ Secrets.swift
 .env
 # Live PMS integration-probe creds (real token + hostname) — see *.example
 scripts/plex-live.env
+# Local-only extra forbidden-string list for ci-hygiene.sh (holds the real host/IP) — never commit
+scripts/ci-hygiene.local
+# cloc scratch output
+cloc-ignored.txt
 
 # Per-developer signing (Apple Developer Team ID) — never commit
 Signing.local.xcconfig
