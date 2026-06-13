@@ -65,9 +65,10 @@ the self-signed cert accepted, which the app doesn't do by default.
 ## Secret hygiene (repo goes public)
 
 - `scripts/plex-live.env` is gitignored; the runner refuses to run if it's ever tracked.
-- `scripts/ci-hygiene.sh` fails the build if the literal `PLEX_TOKEN=` or the real host/IP
-  fingerprint appears in any tracked file — so name probe env vars `PLEX_LIVE_*` (the substring
-  `PLEX_TOKEN=` must not appear) and never paste the real host/token into committed files.
+- `scripts/ci-hygiene.sh` fails the build if the literal `PLEX_TOKEN` + `=` or the real host/IP
+  fingerprint appears in any tracked file — so name probe env vars `PLEX_LIVE_*` (that
+  `PLEX_TOKEN` + `=` substring must not appear) and never paste the real host/token into
+  committed files.
 - Probe output may contain media titles/library paths — read it, don't commit it.
 
 ## Hard limits — what this canNOT do
