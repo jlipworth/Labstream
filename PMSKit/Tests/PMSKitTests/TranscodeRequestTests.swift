@@ -431,3 +431,61 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(r.audioDecision == nil)
     #expect(r.savesVideoEncode == false)
 }
+
+// MARK: - Part-level / MDE direct-play verdict (issue #7, captured from LIVE PMS)
+//
+// A real directPlay=1 probe against live PMS expresses a direct-play verdict via
+// `mdeDecisionCode=1000` and the Part-level `decision="directplay"`, leaving
+// `generalDecisionCode` AND the per-stream decisions nil. The original
+// `savesVideoEncode` only read the per-stream video decision, so it never fired and
+// Direct Stream (#7) could not engage. These cases pin the structured signals (codes /
+// Part decision), NOT the fragile English `mdeDecisionText`.
+
+@Test func directPlayViaPartAndMdeCodeSavesVideoEncode() throws {
+    // Exact shape captured live for an HEVC title that direct-plays within the cap.
+    let json = """
+    {"MediaContainer":{"mdeDecisionCode":1000,"mdeDecisionText":"Direct play OK.",
+       "Metadata":[{"Media":[{"Part":[{"decision":"directplay","Stream":[
+         {"streamType":1},
+         {"streamType":2}
+       ]}]}]}]
+    }}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.generalDecisionCode == nil)
+    #expect(r.mdeDecisionCode == 1000)
+    #expect(r.partDecision == "directplay")
+    #expect(r.videoDecision == nil)          // per-stream left nil on a full direct play
+    #expect(r.savesVideoEncode == true)
+}
+
+@Test func partLevelCopySavesVideoEncodeEvenWithNilStreamDecisions() throws {
+    // Remux (copy all streams into a new container): Part decision "copy", no re-encode.
+    let json = """
+    {"MediaContainer":{"generalDecisionCode":1001,
+       "Metadata":[{"Media":[{"Part":[{"decision":"copy","Stream":[
+         {"streamType":1},{"streamType":2}
+       ]}]}]}]
+    }}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.partDecision == "copy")
+    #expect(r.savesVideoEncode == true)
+}
+
+@Test func fullTranscodeDecisionDoesNotSave() throws {
+    // Exact production-decision shape (directPlay=0): whole-file transcode, mde code absent.
+    let json = """
+    {"MediaContainer":{"generalDecisionCode":1001,
+       "generalDecisionText":"Direct play not available; Conversion OK.",
+       "Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[
+         {"streamType":1,"decision":"transcode"},
+         {"streamType":2,"decision":"transcode"}
+       ]}]}]}]
+    }}
+    """.data(using: .utf8)!
+    let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
+    #expect(r.mdeDecisionCode == nil)
+    #expect(r.partDecision == "transcode")
+    #expect(r.savesVideoEncode == false)
+}
