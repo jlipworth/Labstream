@@ -149,6 +149,11 @@ required**.
             instead of a 4th restart; Retry clears it and self-healing resumes.
       - [ ] **Auto-retry budget not refilled by seek restarts** — after a seek restart, a
             genuinely failing stream surfaces the overlay after at most one silent retry.
+- [ ] **Poisoned pooled connection recovery (GH #33)** — after reproducing a heavy-stream stall
+      (4K/high bitrate + rapid deep seeks), wait for the failure overlay, then tap Retry. Expected:
+      logs show `switched Retry control-plane requests to a fresh recovery URLSession`, control
+      requests fail fast or recover instead of hanging ~30s, and a healthy PMS can be reached on
+      the first Retry without waiting for the OS to evict the old pooled socket.
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality

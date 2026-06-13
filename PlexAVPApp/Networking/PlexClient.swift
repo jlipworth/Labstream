@@ -32,6 +32,15 @@ public actor PlexClient {
         self.decoder = JSONDecoder()
     }
 
+    /// Fresh, short-timeout control-plane client for player recovery (#33).
+    ///
+    /// Use this after a heavy-stream stall has likely poisoned the shared connection pool:
+    /// retry/rebuild control requests should not wait behind a half-open keep-alive socket.
+    public static func recovery(identity: ClientIdentity, timeout: TimeInterval = 5) -> PlexClient {
+        let session = URLSession(configuration: PlexSessionConfiguration.recoveryControlPlane(timeout: timeout))
+        return PlexClient(session: session, identity: identity)
+    }
+
     /// Run a request and decode the JSON body as `T`.
     public func send<T: Decodable>(_ r: PlexRequest, as type: T.Type) async throws -> T {
         let data = try await send(r)
