@@ -17,7 +17,7 @@
 	<array/>
 
 	<!-- Required-reason APIs actually used by the app. Confirmed against source:
-	     UserDefaults (PlaybackController/PlayerView), file timestamps + disk
+	     UserDefaults (PlaybackController/CustomPlayerView), file timestamps + disk
 	     space (DownloadManager). Reasons follow Apple's approved-reason codes. -->
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>

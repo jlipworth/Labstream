@@ -8,7 +8,7 @@ import PMSKit
 /// and its resolved base URL, and the shared `PlexClient` used for all API calls.
 ///
 /// Deliberately does NOT own the player or download controllers: the UI layer
-/// instantiates a single `DownloadManager` at the root and creates `PlayerView`s
+/// instantiates a single `DownloadManager` at the root and creates `CustomPlayerView`s
 /// on demand. Keeping those out of `AppModel` avoids reference cycles (the
 /// download/player controllers themselves reference back into `AppModel`).
 @MainActor
