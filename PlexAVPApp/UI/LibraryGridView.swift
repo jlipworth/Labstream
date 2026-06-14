@@ -9,6 +9,7 @@ struct LibrariesView: View {
     @State private var sections: [PlexSection] = []
     @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadedIdentity: String?
 
     var body: some View {
         Group {
@@ -53,8 +54,17 @@ struct LibrariesView: View {
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
-        .task { await load() }
+        .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private var loadIdentity: String {
+        switch appModel.activeBackend {
+        case .plex:
+            return "plex:\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+        case .jellyfin:
+            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+        }
     }
 
     private func icon(for type: String) -> String {
@@ -93,12 +103,13 @@ struct LibrariesView: View {
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back; the section list doesn't change mid-session,
         // so only first load and pull-to-refresh fetch.
-        if !force, case .loaded = loadState { return }
+        if !force, loadedIdentity == loadIdentity, case .loaded = loadState { return }
         loadState = .loading
 
         if appModel.activeBackend == .jellyfin {
             do {
                 jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                loadedIdentity = loadIdentity
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -118,6 +129,7 @@ struct LibrariesView: View {
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
             sections = resp.mediaContainer.directory.filter { !$0.isMusic }
+            loadedIdentity = loadIdentity
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))

@@ -56,6 +56,25 @@ struct JellyfinLibraryTests {
         #expect(query["fields"]?.contains("Genres") == true)
     }
 
+    @Test func itemsRequestCarriesSearchTerm() throws {
+        let request = try JellyfinLibrary.itemsRequest(server: server,
+                                                       token: "token-abc",
+                                                       identity: identity,
+                                                       userId: "user-1",
+                                                       recursive: true,
+                                                       limit: 50,
+                                                       searchTerm: "pilot")
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Items")
+        #expect(query["recursive"] == "true")
+        #expect(query["limit"] == "50")
+        #expect(query["searchTerm"] == "pilot")
+        #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode")
+    }
+
     @Test func itemRequestTargetsSingleItem() throws {
         let request = try JellyfinLibrary.itemRequest(server: server, token: "token-abc", identity: identity, userId: "user-1", itemId: "item-1")
         let url = try #require(request.url)
@@ -88,6 +107,42 @@ struct JellyfinLibraryTests {
         #expect(components.path == "/base/Videos/ActiveEncodings")
         #expect(query["deviceId"] == "device-123")
         #expect(query["playSessionId"] == "play-1")
+    }
+
+    @Test func markPlayedUsesUserDataEndpoint() throws {
+        let played = try JellyfinLibrary.markPlayedRequest(server: server,
+                                                           token: "token-abc",
+                                                           identity: identity,
+                                                           userId: "user-1",
+                                                           itemId: "item-1",
+                                                           played: true)
+        let unplayed = try JellyfinLibrary.markPlayedRequest(server: server,
+                                                             token: "token-abc",
+                                                             identity: identity,
+                                                             userId: "user-1",
+                                                             itemId: "item-1",
+                                                             played: false)
+
+        #expect(played.httpMethod == "POST")
+        #expect(unplayed.httpMethod == "DELETE")
+        #expect(played.url?.path == "/base/path/to/user/PlayedItems/item-1")
+        #expect(played.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+    }
+
+    @Test func downloadRequestUsesHeadersNotURLToken() throws {
+        let request = try JellyfinLibrary.downloadRequest(server: server,
+                                                          token: "token-abc",
+                                                          identity: identity,
+                                                          itemId: "item-1")
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query = components.queryItems ?? []
+
+        #expect(request.httpMethod == "GET")
+        #expect(components.path == "/base/Items/item-1/Download")
+        #expect(query.contains { $0.name == "api_key" } == false)
+        #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
 
     @Test func mapsMovieDtoToMediaItem() throws {

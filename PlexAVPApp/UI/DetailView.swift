@@ -306,9 +306,9 @@ struct DetailView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(isResolvingPlayback)
 
-                if appModel.activeBackend == .plex {
-                    downloadButton
+                downloadButton
 
+                if supportsWatchedToggle {
                     markWatchedButton
                 }
             }
@@ -485,30 +485,39 @@ struct DetailView: View {
 
     // MARK: - Watched toggle
 
-    /// Scrobble / unscrobble against PMS, updating the local watched state optimistically.
+    /// Scrobble / unscrobble against the active backend, updating the local watched state
+    /// optimistically.
     ///
     /// We flip `watchedOverride` first so the UI reacts immediately, then fire the
     /// request. On failure we roll the override back. NOTE: never logs the token — the
     /// builders carry it internally and we only ever inspect the `Bool` outcome here.
     private func toggleWatched() async {
-        guard appModel.activeBackend == .plex else { return }
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         let wasWatched = isWatched
         // Optimistic flip.
         watchedOverride = !wasWatched
 
-        let req = wasWatched
-            ? TimelineRequest.unscrobble(server: server, token: token,
-                                         identity: appModel.identity,
-                                         ratingKey: detailed.ratingKey)
-            : TimelineRequest.scrobble(server: server, token: token,
-                                       identity: appModel.identity,
-                                       ratingKey: detailed.ratingKey)
-
         do {
-            _ = try await appModel.client.send(req)
+            switch appModel.activeBackend {
+            case .plex:
+                guard let server = appModel.serverBaseURL,
+                      let token = appModel.serverToken else {
+                    watchedOverride = wasWatched
+                    return
+                }
+                let req = wasWatched
+                    ? TimelineRequest.unscrobble(server: server, token: token,
+                                                 identity: appModel.identity,
+                                                 ratingKey: detailed.ratingKey)
+                    : TimelineRequest.scrobble(server: server, token: token,
+                                               identity: appModel.identity,
+                                               ratingKey: detailed.ratingKey)
+                _ = try await appModel.client.send(req)
+            case .jellyfin:
+                try await JellyfinBrowseService(appModel: appModel)
+                    .setPlayed(itemId: detailed.ratingKey, played: !wasWatched)
+            }
         } catch {
-            // Roll back the optimistic flip; PMS rejected the change.
+            // Roll back the optimistic flip; the server rejected the change.
             watchedOverride = wasWatched
         }
     }
@@ -546,19 +555,16 @@ struct DetailView: View {
     // MARK: - Derived state
 
     private var localURL: URL? {
-        guard appModel.activeBackend == .plex else { return nil }
         return downloadManager.localURL(for: detailed.ratingKey)
     }
 
     private var isDownloading: Bool {
-        guard appModel.activeBackend == .plex else { return false }
         return downloadManager.records.contains {
             $0.ratingKey == detailed.ratingKey && ($0.status == .queued || $0.status == .downloading)
         }
     }
 
     private var downloadLabel: String {
-        guard appModel.activeBackend == .plex else { return "Download" }
         if let rec = downloadManager.records.first(where: { $0.ratingKey == detailed.ratingKey }) {
             if rec.status == .failed { return "Download Failed" }
             if rec.status == .complete { return "Downloaded" }
@@ -570,6 +576,13 @@ struct DetailView: View {
     private var isWatched: Bool {
         if let override = watchedOverride { return override }
         return (detailed.viewCount ?? 0) > 0
+    }
+
+    private var supportsWatchedToggle: Bool {
+        switch appModel.activeBackend {
+        case .plex, .jellyfin:
+            return true
+        }
     }
 
     private var resumeLabel: String {

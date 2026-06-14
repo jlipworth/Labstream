@@ -11,6 +11,7 @@ struct DownloadOptionsSheet: View {
     var mediaIndex: Int = 0
     var partIndex: Int = 0
 
+    @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
@@ -43,6 +44,8 @@ struct DownloadOptionsSheet: View {
             Form {
                 if let record = existingRecord {
                     existingSection(record)
+                } else if appModel.activeBackend == .jellyfin {
+                    jellyfinDownloadSection
                 } else {
                     switch probeState {
                     case .checking:
@@ -211,6 +214,25 @@ struct DownloadOptionsSheet: View {
         }
     }
 
+    private var jellyfinDownloadSection: some View {
+        SwiftUI.Section {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Original file")
+                    Text("Uses Jellyfin’s download endpoint with authentication headers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "arrow.down.circle")
+            }
+        } header: {
+            Text("Jellyfin Download")
+        } footer: {
+            Text("No Jellyfin token is placed in the URL. Quality-selectable Jellyfin offline transcodes are intentionally left separate from this first download path.")
+        }
+    }
+
     private var infoSection: some View {
         SwiftUI.Section {
             Label {
@@ -237,7 +259,7 @@ struct DownloadOptionsSheet: View {
                 Label("Download failed", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
                 Button {
-                    downloadManager.retry(ratingKey: item.ratingKey)
+                    retryDownload()
                     dismiss()
                 } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
             } else {
@@ -257,17 +279,33 @@ struct DownloadOptionsSheet: View {
 
     // MARK: - Action
 
-    private func startDownload() {
-        guard let selectedChoice else { return }
-        let choice: DownloadManager.DownloadChoice
-        switch selectedChoice {
-        case .original:
-            choice = .original
-        case .optimize(let preset):
-            choice = .optimize(targetName: preset)
+    private func retryDownload() {
+        if appModel.activeBackend == .jellyfin {
+            Task { await downloadManager.downloadJellyfinOriginal(item,
+                                                                  mediaIndex: mediaIndex,
+                                                                  partIndex: partIndex) }
+        } else {
+            downloadManager.retry(ratingKey: item.ratingKey)
         }
-        Task { await downloadManager.download(item, choice: choice,
-                                              mediaIndex: mediaIndex, partIndex: partIndex) }
+    }
+
+    private func startDownload() {
+        if appModel.activeBackend == .jellyfin {
+            Task { await downloadManager.downloadJellyfinOriginal(item,
+                                                                  mediaIndex: mediaIndex,
+                                                                  partIndex: partIndex) }
+        } else {
+            guard let selectedChoice else { return }
+            let choice: DownloadManager.DownloadChoice
+            switch selectedChoice {
+            case .original:
+                choice = .original
+            case .optimize(let preset):
+                choice = .optimize(targetName: preset)
+            }
+            Task { await downloadManager.download(item, choice: choice,
+                                                  mediaIndex: mediaIndex, partIndex: partIndex) }
+        }
         dismiss()
     }
 }
