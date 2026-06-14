@@ -30,27 +30,6 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("partIndex") == "0")
 }
 
-@Test func downloadURLUsesProgressiveHTTPAndDownloadFlag() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 4000,
-                               sessionID: "SESSION-DL",
-                               mediaIndex: 0, partIndex: 0)
-    let url = req.downloadURL()
-    let q = queryItems(url)
-    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
-    // Single-file progressive download, NOT segmented HLS.
-    #expect(url.path == "/video/:/transcode/universal/start")
-    #expect(v("protocol") == "http")
-    #expect(v("download") == "1")
-    // The chosen quality cap is honored exactly as for streaming.
-    #expect(v("maxVideoBitrate") == "4000")
-    #expect(v("path") == "/library/metadata/101")
-    #expect(v("X-Plex-Token") == "tok")
-    // Exactly one protocol param survives the hls->http override.
-    #expect(q.filter { $0.name == "protocol" }.count == 1)
-}
-
 @Test func decisionURLUsesDecisionPathAndHasMDE() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
                                metadataKey: "/library/metadata/101",
@@ -167,7 +146,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("partIndex") == "0")
 }
 
-@Test func resumeOffsetIsSentToPMSOnStreamButStrippedFromDownload() {
+@Test func resumeOffsetIsSentToPMSOnStream() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
                                metadataKey: "/library/metadata/101",
                                maxVideoBitrateKbps: 8000, sessionID: "S",
@@ -177,8 +156,6 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     // Streaming carries the resume offset (so PMS primes the transcoder + emits EXT-X-START).
     #expect(v(queryItems(req.startM3U8URL()), "offset") == "1860")
     #expect(v(queryItems(req.decisionURL()), "offset") == "1860")
-    // A download always grabs the whole file from the start — never an offset.
-    #expect(v(queryItems(req.downloadURL()), "offset") == nil)
     // Absent/zero offset must not emit the param at all.
     let noOffset = TranscodeRequest(server: server, token: "tok", identity: id,
                                     metadataKey: "/library/metadata/101",

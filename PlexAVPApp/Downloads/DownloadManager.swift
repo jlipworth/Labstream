@@ -283,21 +283,6 @@ public final class DownloadManager {
         records = fresh
     }
 
-    /// Estimated final byte size of a transcoded download, from the chosen quality cap
-    /// × runtime. Plex streams the transcode without a `Content-Length` (so the download
-    /// delegate's `totalBytesExpectedToWrite` is -1 and can't drive a %), so the UI uses
-    /// this estimate for the progress bar + ETA. Returns nil when we can't estimate —
-    /// Original has no fixed cap, or the runtime is unknown — and the UI then falls back
-    /// to an indeterminate bar + byte count. A `+192 kbps` allowance covers the audio
-    /// track PMS transcodes alongside the video.
-    public static func estimatedTranscodeBytes(quality: DownloadQuality?, durationMs: Int?) -> Int? {
-        guard let durationMs, durationMs > 0,
-              let quality, let videoKbps = quality.maxVideoBitrateKbps else { return nil }
-        let totalBitsPerSec = Double(videoKbps + 192) * 1000.0
-        let seconds = Double(durationMs) / 1000.0
-        return Int(totalBitsPerSec / 8.0 * seconds)
-    }
-
     // MARK: - D5: offline metadata + poster caching
 
     /// Build the persisted snapshot of a source `MediaItem` + a human resolution label.
