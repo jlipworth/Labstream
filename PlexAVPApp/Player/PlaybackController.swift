@@ -1080,7 +1080,7 @@ final class PlaybackController {
         let target = CMTime(value: CMTimeValue(clamped), timescale: 1000)
         let seconds = Double(clamped) / 1000
 
-        guard isStreaming, !playbackError.isFailed else {
+        guard supportsSeekReprime, !playbackError.isFailed else {
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
             return
         }
@@ -1809,8 +1809,7 @@ final class PlaybackController {
     /// marker is currently active.
     func skipCurrentMarker() {
         guard let active = skipMarker.active else { return }
-        let target = CMTime(seconds: active.seekTargetSeconds, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
+        seek(toMs: Int(active.seekTargetSeconds * 1000))
         skipMarker.clear()
     }
 
