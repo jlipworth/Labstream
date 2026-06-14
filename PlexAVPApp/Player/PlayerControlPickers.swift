@@ -123,8 +123,8 @@ struct ChapterCard: View {
     // Large enough for the custom-player Chapters popover to feel like the old AVP rail while
     // still fitting the system info-panel path. The custom popover is intentionally wide so
     // several chapters remain visible during horizontal scrolling.
-    private static let thumbWidth: CGFloat = 270
-    private static let thumbHeight: CGFloat = 152  // 16:9-ish, rounded for whole pixels
+    private static let thumbWidth: CGFloat = 286
+    private static let thumbHeight: CGFloat = 161  // 16:9-ish, rounded for whole pixels
 
     var body: some View {
         Button {
@@ -230,7 +230,12 @@ struct ChaptersTabView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: DS.Space.md) {
+                    // Use an eager stack instead of LazyHStack here. Chapter counts are small,
+                    // and the custom popover's horizontal rail otherwise only realizes the
+                    // initially visible cards; AsyncImage then starts/cancels later thumbnail
+                    // requests as the user scrolls, leaving film placeholders for offscreen
+                    // chapters that Plex can actually render.
+                    HStack(alignment: .top, spacing: DS.Space.md) {
                         ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                             ChapterCard(chapter: chapter,
                                         index: index,
@@ -249,7 +254,7 @@ struct ChaptersTabView: View {
                                 .id(index)
                         }
                     }
-                    .padding(.vertical, DS.Space.md)
+                    .padding(.vertical, DS.Space.sm)
                 }
                 // contentMargins, not .padding on the lazy content — see the hit-region
                 // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes).
@@ -257,8 +262,7 @@ struct ChaptersTabView: View {
                 .onAppear {
                     currentIndex = chapters.indexOfChapter(at: currentMs())
                     if let target = currentIndex {
-                        // Defer: scrollTo can no-op against a LazyHStack whose target
-                        // cell isn't realized yet on the same runloop tick as onAppear.
+                        // Defer until the rail has completed layout for the first frame.
                         DispatchQueue.main.async {
                             proxy.scrollTo(target, anchor: .center)
                         }
