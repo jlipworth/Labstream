@@ -253,7 +253,9 @@ struct CustomPlayerChrome: View {
     }
 
     @ViewBuilder private var cinemaButton: some View {
-        if cinemaSession.presentationState == .open {
+        if !CustomCinemaMode.isUserVisible {
+            EmptyView()
+        } else if cinemaSession.presentationState == .open {
             Button {
                 revealChrome(keepVisible: true)
                 Task { @MainActor in await toggleCinemaMode() }

@@ -286,8 +286,8 @@ required**.
 
 _Build-verified on branch `wave1/custom-player-sole-player` (not yet merged to `main`).
 These are the in-headset checks gating that merge: the custom player is now the ONLY
-player (all AVKit code deleted), and Cinema mode must replicate the full windowed control
-set. Run these before merging the branch._
+player (all AVKit code deleted). The custom Cinema ImmersiveSpace is hidden/deferred after
+device testing showed it is not equivalent to Apple's AVKit Cinema Environment._
 
 ### Streaming (windowed)
 - [ ] Play a movie from DetailView → custom player opens (no AVKit transport bar).
@@ -301,11 +301,10 @@ set. Run these before merging the branch._
 - [ ] Play a downloaded copy from DetailView (offline) → custom player opens and plays.
 - [ ] Scrubber + skip work on a local file (no network).
 
-### Cinema parity
-- [ ] From the windowed player, tap "Cinema" → immersive theater opens with the same video.
-- [ ] In Cinema: play/pause, scrubber, skip ±, and ALL menus (Quality/Subtitles/Audio/Chapters/Speed/Stats) work — matching windowed mode.
-- [ ] "Exit Cinema" returns to the windowed player; playback position is continuous.
-- [ ] Closing the windowed player while Cinema is open tears down cleanly (no orphaned immersive space).
+### Cinema / theater
+- [x] Custom Cinema button is hidden (`CustomCinemaMode.isUserVisible = false`) because the
+      custom ImmersiveSpace is not equivalent to Apple's AVKit Cinema Environment on device.
+- [ ] No visible Cinema affordance appears in the windowed player chrome.
 
 ### Settings
 - [ ] Settings → Playback no longer shows the "Custom player fallback" toggle.
@@ -337,6 +336,27 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks 
 - [ ] Maintenance ▸ "Clear image cache" shows "Cache cleared"; artwork re-downloads on next view.
 - [ ] About shows app version (build), visionOS, client (product on device — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
 - [ ] Sign Out now shows a confirmation dialog; Cancel keeps you signed in, Sign Out returns to login.
+
+### Device-only bugs found on Apple Vision Pro hardware (2026-06-14/15)
+
+These reproduced on the headset but NOT in the simulator, so sim verification is insufficient.
+(Repro details below avoid the real title name per the public-repo scrub rule.)
+
+- [x] **Chapter/scrub/resume reset to ~0:00 on capped transcodes — FIXED on device.** Repro:
+      on a **capped** quality rung (3 Mbps), start/resume a title at a non-zero position or pick a
+      chapter/deep scrub target. Actual before fix: the stream requested the correct offset, then
+      playback rebuilt back at ~0:00. Device console proof showed AVFoundation emits early
+      `timeJumpedNotification`s at/near 0 after loading a non-zero primed `start.m3u8`; the app
+      incorrectly treated those as user seek intent and rebuilt at 0. Fix: when the current item was
+      just primed at a non-zero offset, `PlaybackController.handleSeekJump()` ignores transient
+      near-zero jumps. Device retest: resume reached the primed offset; chapter/scrub no longer
+      bounced to 0:00.
+- [x] **Cinema mode botched when already in a full Environment — HIDDEN / DEFERRED.** With a full
+      Environment at 100% immersion, entering the custom Cinema ImmersiveSpace takes the viewer OUT
+      of that environment and does NOT provide expected system screen placement/scale. Since the
+      custom player cannot reuse AVKit's system Cinema Environment, the player chrome now hides the
+      custom Cinema button (`CustomCinemaMode.isUserVisible = false`). Future theater work should be
+      scoped as a RealityKit/immersive-player feature, not a Wave 2 merge blocker.
 
 ---
 

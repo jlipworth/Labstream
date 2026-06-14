@@ -10,6 +10,16 @@ import SwiftUI
 /// `AVPlayer` the custom player already owns.
 enum CustomCinemaMode {
     static let immersiveSpaceID = "custom-player-cinema"
+
+    /// The custom-player "Cinema" scene is intentionally hidden from the shipping chrome for now.
+    ///
+    /// On Apple Vision Pro hardware it does not behave like Apple's AVKit Cinema Environment:
+    /// entering it from a fully immersed Environment can pull the viewer out of that environment,
+    /// and it does not provide the expected system-managed screen placement/scale. Since the
+    /// custom player no longer uses `AVPlayerViewController`, it cannot reuse the system Cinema
+    /// Environment directly. Keep the scaffold in-tree for future RealityKit/immersive-player
+    /// work, but do not expose a net-negative button in the player UI.
+    static let isUserVisible = false
 }
 
 @Observable
