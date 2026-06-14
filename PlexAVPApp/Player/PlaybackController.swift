@@ -91,6 +91,8 @@ final class PlaybackController {
     /// returned URL (`api_key`), but `MediaSourceInfo.RequiredHttpHeaders` exists and should be
     /// threaded through when present.
     private let remoteHTTPHeaders: [String: String]
+    private let onStopRemoteSession: (() -> Void)?
+    private var didStopRemoteSession = false
 
     /// The server's machine identifier (== the Plex resource `clientIdentifier`), used to
     /// build a play queue for "Up Next" resolution (#15). `nil` when unavailable (offline
@@ -399,6 +401,7 @@ final class PlaybackController {
         self.localFile = nil
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
+        self.onStopRemoteSession = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
@@ -421,6 +424,7 @@ final class PlaybackController {
         self.token = nil
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
+        self.onStopRemoteSession = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         // A local file is already one concrete version on disk; no version selection.
         self.mediaIndex = 0
@@ -440,11 +444,13 @@ final class PlaybackController {
          identity: ClientIdentity,
          client: PlexClient,
          httpHeaders: [String: String] = [:],
+         onStopRemoteSession: (() -> Void)? = nil,
          maxVideoBitrateKbps: Int = 0) {
         self.item = item
         self.localFile = nil
         self.remoteStreamURL = remoteStreamURL
         self.remoteHTTPHeaders = httpHeaders
+        self.onStopRemoteSession = onStopRemoteSession
         self.identity = identity
         self.client = client
         self.server = nil
@@ -493,6 +499,7 @@ final class PlaybackController {
         playbackGeneration += 1
         timeline.report(state: .stopped, force: true)
         sendTranscodeStop()
+        stopRemoteSessionIfNeeded()
         cancelPendingFinalTargetRebuild()
         if let activeFinalTargetRebuildGeneration {
             finalTargetRebuildPolicy.cancelRebuild(generation: activeFinalTargetRebuildGeneration)
@@ -506,6 +513,12 @@ final class PlaybackController {
         // resume (#17).
         audioSession.removeObservers()
         audioSession.deactivate()
+    }
+
+    private func stopRemoteSessionIfNeeded() {
+        guard remoteStreamURL != nil, !didStopRemoteSession else { return }
+        didStopRemoteSession = true
+        onStopRemoteSession?()
     }
 
     /// Whether the final `/video/:/transcode/universal/stop` was already fired, so

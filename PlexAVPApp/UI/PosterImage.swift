@@ -45,7 +45,7 @@ struct PosterImage: View {
         // requests during a fast scroll left a whole grid page as permanent
         // placeholders (seen live). This loader retries transient errors with
         // backoff; a definitive 4xx (e.g. PMS's 404 for absent art) fails fast.
-        .task(id: transcodeURL) { await load() }
+        .task(id: loadKey) { await load() }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
@@ -56,7 +56,7 @@ struct PosterImage: View {
     }
 
     private func load() async {
-        guard let url = transcodeURL else { return }
+        guard let request = imageRequest else { return }
         loaded = nil
         failed = false
         for attempt in 0..<3 {
@@ -65,7 +65,7 @@ struct PosterImage: View {
             }
             guard !Task.isCancelled else { return }
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if (400..<500).contains(status) { break } // missing art — don't hammer
                 guard status == 200, let ui = UIImage(data: data) else { continue }
@@ -100,6 +100,16 @@ struct PosterImage: View {
     }
 
     /// Build the `/photo/:/transcode` URL for `path` at the requested size.
+    private var loadKey: String? {
+        imageRequest?.url?.absoluteString
+    }
+
+    private var imageRequest: URLRequest? {
+        if let jellyfin = jellyfinImageRequest { return jellyfin }
+        guard let url = transcodeURL else { return nil }
+        return URLRequest(url: url)
+    }
+
     private var transcodeURL: URL? {
         guard let base = appModel.serverBaseURL,
               let token = appModel.serverToken,
@@ -120,6 +130,39 @@ struct PosterImage: View {
             .init(name: "X-Plex-Token", value: token),
         ], in: &comps)
         return comps.url
+    }
+
+    private var jellyfinImageRequest: URLRequest? {
+        guard let parsed = parsedJellyfinImagePath,
+              let base = appModel.jellyfinServerBaseURL,
+              let token = appModel.jellyfinAccessToken else { return nil }
+        let scale = 2.0
+        guard let url = try? JellyfinLibrary.imageURL(server: base,
+                                                      itemId: parsed.itemId,
+                                                      imageType: parsed.type,
+                                                      tag: parsed.tag,
+                                                      width: Int(width * scale),
+                                                      height: Int(height * scale)) else { return nil }
+        let identity = JellyfinClientIdentity(client: appModel.identity.product,
+                                              device: appModel.identity.deviceName,
+                                              deviceId: appModel.identity.clientIdentifier,
+                                              version: appModel.identity.version)
+        return JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity)
+    }
+
+    private var parsedJellyfinImagePath: (itemId: String, type: JellyfinImageType, tag: String?)? {
+        guard let path,
+              let url = URL(string: path),
+              url.scheme == "jellyfin",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 2 else { return nil }
+        guard let type = JellyfinImageType(rawValue: parts[1]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return (parts[0], type, tag)
     }
 }
 

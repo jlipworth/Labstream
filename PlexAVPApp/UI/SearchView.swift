@@ -17,6 +17,12 @@ struct SearchView: View {
     @State private var loadedQuery: String?
 
     var body: some View {
+        if appModel.activeBackend == .jellyfin {
+            ContentUnavailableView("Jellyfin search is not in this slice",
+                                   systemImage: "magnifyingglass",
+                                   description: Text("Browse Jellyfin libraries from Home or Libraries for now."))
+                .navigationTitle("Search")
+        } else {
         ScrollView {
             switch loadState {
             case .idle:
@@ -73,6 +79,7 @@ struct SearchView: View {
         .searchable(text: $query, prompt: "Movies, shows, music…")
         .task(id: query) {
             await runSearch()
+        }
         }
     }
 

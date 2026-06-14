@@ -18,6 +18,12 @@ struct MusicLibraryView: View {
     @State private var loadedServer: URL?
 
     var body: some View {
+        if appModel.activeBackend == .jellyfin {
+            ContentUnavailableView("Jellyfin music is not in this slice",
+                                   systemImage: "music.note",
+                                   description: Text("This branch is focused on Jellyfin video login, browse, and playback."))
+                .navigationTitle("Music")
+        } else {
         Group {
             switch loadState {
             case .idle, .loading:
@@ -58,6 +64,7 @@ struct MusicLibraryView: View {
         }
         .task(id: appModel.serverBaseURL) { await load() }
         .refreshable { await load(force: true) }
+        }
     }
 
     /// The section to browse: the explicit selection, else the first music section.
