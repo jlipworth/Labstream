@@ -202,6 +202,25 @@ final class AuthManager {
         }
     }
 
+    /// One-shot reachability check of the CURRENTLY selected connection, for the Settings
+    /// connection-status row (#26). Same `<uri>/identity` probe as `firstReachable`, but
+    /// against the single resolved `serverBaseURL` — no re-discovery, no state changes.
+    func probeSelectedServer() async -> Bool {
+        guard let base = appModel.serverBaseURL, let token = appModel.serverToken else {
+            return false
+        }
+        var req = URLRequest(url: base.appendingPathComponent("identity"))
+        req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (_, resp) = try await Self.probeSession.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { return false }
+            return (200..<300).contains(http.statusCode)
+        } catch {
+            return false
+        }
+    }
+
     /// Clear all auth state and return to login. Call on sign-out or any 401.
     func signOut() {
         cancelPendingLogin()
