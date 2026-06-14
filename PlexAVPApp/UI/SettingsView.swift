@@ -29,13 +29,6 @@ struct SettingsView: View {
     /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
     @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
 
-    /// Direct Stream opt-in (#7 Step 3, default OFF). When on, playback first asks PMS
-    /// whether it can copy the video stream (remux) instead of re-encoding; the player only
-    /// commits to the direct-play request when PMS agrees. Same key `PlaybackController`
-    /// reads each (re)build, so flipping it mid-session affects the next stream rebuild —
-    /// the in-headset kill switch the research/15 rollout plan calls for.
-    @AppStorage(PlaybackController.directStreamEnabledKey) private var directStreamEnabled = false
-
     var body: some View {
         Form {
             serverSection
@@ -59,13 +52,10 @@ struct SettingsView: View {
             } label: {
                 Label("Streaming quality", systemImage: "slider.horizontal.3")
             }
-            Toggle(isOn: $directStreamEnabled) {
-                Label("Direct Stream (experimental)", systemImage: "arrow.triangle.branch")
-            }
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server — but only when a recent speed sample shows the connection can sustain the full source bitrate; otherwise it falls back to transcoding.")
+            Text("The quality new streams start at. Changing quality inside the player updates this too. \"Maximum / Original\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes.")
         }
     }
 

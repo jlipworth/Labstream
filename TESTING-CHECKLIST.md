@@ -120,18 +120,20 @@ required**.
             highlight reads bigger than the old inset one, "workable for now" on Home posters
             (user-accepted). Check it isn't unbearable on track/episode rows, where the old
             chip highlight sat inset inside the material card.
-- [ ] **Direct Stream opt-in (GH #7 Step 3, experimental, default OFF)** — Settings ▸ Playback ▸
-      "Direct Stream (experimental)". With it ON, play an in-cap HEVC/AC3-or-AAC title and read
-      the log (`[VP] decision:` lines): the probe reports `video=copy` (or `direct play`) and
-      commits the direct-play start.m3u8 — then verify on the server that NO software video
-      transcode is running (`ps` shows no `Plex Transcoder` re-encode / EAE for the session,
-      or Plex dashboard shows Direct Stream). Watch specifically for the HEVC-in-TS
-      "buffers forever" symptom (spinner never clears → toggle OFF, report). Then:
-      - [ ] Above-cap title still probes `video=transcode` and takes today's transcode path
-            (the `isRequired=true` bitrate cap is doing its job).
-      - [ ] Probe-declined and toggle-OFF playback is byte-identical to today (transcode).
-      - [ ] On a committed direct-stream play: resume offset lands, subtitles tab still
-            populates, seek/quality switch/audio switch still work (each rebuild re-probes).
+- [ ] **Direct play via "Maximum / Original" (GH #7 Step 3; quality-picker driven, replaces the
+      old Direct Stream toggle + #31 headroom gate)** — set Streaming quality (Settings or the
+      in-player Quality tab) to **"Maximum / Original"**, then play an HEVC/AC3-or-AAC title and
+      read the log: it logs `Maximum/Original — PMS will copy video; committing direct-play
+      start.m3u8` — then verify on the server that NO software video transcode is running
+      (`ps` shows no `Plex Transcoder` re-encode / EAE for the session, or Plex dashboard shows
+      Direct Stream). Watch specifically for the HEVC-in-TS "buffers forever" symptom (spinner
+      never clears → drop to a capped rung, report). Then:
+      - [ ] A source PMS can't copy logs `Maximum/Original — PMS cannot copy video; using maximum
+            transcode` and plays via the maximum transcode (no stall).
+      - [ ] Any capped rung (incl. "Maximum (transcoded)") never probes — it transcodes directly,
+            byte-identical to today.
+      - [ ] On a committed direct-play: resume offset lands, subtitles tab still populates,
+            seek/quality switch/audio switch still work (each rebuild re-probes).
       - [ ] EAC3-only audio sources: audio still transcodes to AAC (audio=transcode is fine);
             video must still be copy.
 - [ ] **Transcode session lifecycle / server-OOM guards (GH #27/#33 reset)** — fix shipped after
@@ -295,7 +297,7 @@ set. Run these before merging the branch._
 
 ### Settings
 - [ ] Settings → Playback no longer shows the "Custom player fallback" toggle.
-- [ ] Streaming quality picker and Direct Stream toggle still present and functional.
+- [ ] Streaming quality picker present and functional; it lists both "Maximum (transcoded)" and "Maximum / Original" at the top (no separate Direct Stream toggle).
 
 ### Regression
 - [ ] No reference to the old AVKit player anywhere in the UI.
@@ -314,10 +316,8 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks 
 - [ ] Trigger a transient reconnect: the "Reconnecting…" card is a **compact centered dialog** (≈260pt), not full-window-width. (Already satisfied by the custom rewrite — confirm and close #34.)
 - [ ] While "Reconnecting…" is shown, the "Buffering…" pill does **NOT** also appear — only one status at a time.
 
-### #31 — Direct Stream headroom gate (implicit; no separate toggle)
-- [ ] Settings ▸ Playback has ONLY the "Direct Stream (experimental)" toggle — the old "Require bandwidth headroom" toggle is gone.
-- [ ] With Direct Stream ON, play a copy-eligible title on a fast link (recent throughput sample well above source bitrate): log shows the direct-play commit (gate allowed).
-- [ ] With Direct Stream ON, on a constrained link (or no/low recent throughput sample): log shows `headroom gate blocked copy start (...)` and playback falls back to transcode — no stall.
+### #31 — superseded by quality-picker direct play
+- [ ] Settings ▸ Playback has NO "Direct Stream" or "Require bandwidth headroom" toggles — both are gone. Direct play is now driven entirely by picking "Maximum / Original" (verified under the #7 item above). The pre-flight bandwidth-headroom gate was removed (the throughput sample it relied on was measured during a capped transcode, so it could never clear the full-source bar).
 
 ### #26 — expanded Settings
 - [ ] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
@@ -330,11 +330,11 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks 
 
 ## D. Deferred / optional (tracked in issues)
 
-- **GH #7 — DeviceProfile + Direct Stream within cap:** PMSKit probe groundwork
-  (`directPlayProbeDecisionURL()`) shipped with unit coverage; the app-side half (actually loading
-  direct-play instead of `start.m3u8`) is deferred — it touches resume-priming, `subtitles=auto`,
-  and the **CRITICAL `Safari` client-profile constraint** (see docs/DEVELOPMENT.md), so it needs its
-  own branch + step-by-step headset testing.
+- **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
+  direct-play `start.m3u8` when Streaming quality is "Maximum / Original" and PMS can copy the
+  source (see the "Direct play via Maximum / Original" item in §A). Still subject to the
+  **CRITICAL `Safari` client-profile constraint** — needs the live headset pass to confirm no
+  regression in resume-priming / `subtitles=auto`.
 - **GH #4 — trick-play scrub thumbnails:** server-dependent (PMS I-frame playlist); held.
 - **GH #12 — RealityKit theater**, **GH #13 — multi-track offline (.movpkg):** optional / later.
 - **GH #18 — welcome screen branding**, **GH #19 — app icon alignment:** visual polish, untested.
