@@ -190,40 +190,6 @@ public struct TranscodeRequest: Sendable, Equatable {
         return items
     }
 
-    /// A **single-file** capped-bitrate transcode URL for OFFLINE DOWNLOAD.
-    ///
-    /// Streaming playback uses `start.m3u8` (segmented HLS), which a background
-    /// `URLSession.downloadTask` cannot fetch as one file — it would only retrieve
-    /// the playlist text, not the media segments. For a download we instead ask the
-    /// SAME universal transcoder for a single progressive **MP4** by overriding
-    /// `protocol=http` (instead of `hls`) and adding `download=1`. PMS streams the
-    /// transcoded body inline, so one `downloadTask` captures the whole file.
-    ///
-    /// This reuses the verified streaming contract (`X-Plex-Client-Profile-Name=Safari`,
-    /// the `maxVideoBitrate` cap, identity params, token-as-query) — the only
-    /// differences are the `protocol` value and the `download` flag. The chosen
-    /// `maxVideoBitrateKbps` is honored exactly as it is for streaming, so the
-    /// download quality matches what the player would produce at that cap.
-    ///
-    /// Server-dependence: the universal transcoder must allow `protocol=http`
-    /// (progressive) output for the source codec; PMS falls back to a remux/transcode
-    /// to a compatible MP4 in practice. If a given server/codec refuses progressive
-    /// output this returns a 4xx, which the caller surfaces as a transfer failure.
-    public func downloadURL() -> URL {
-        var items = sharedQueryItems()
-        // Override the streaming `protocol=hls` with progressive `http` so PMS emits
-        // a single seekable MP4 body rather than an HLS playlist + segments.
-        items.removeAll { $0.name == "protocol" }
-        items.append(.init(name: "protocol", value: "http"))
-        items.append(.init(name: "download", value: "1"))
-        // A download always captures the whole file from the start, never a resume point.
-        items.removeAll { $0.name == "offset" }
-        // `offline=1` hints PMS this is a sync/download session (best-effort; ignored
-        // by servers that don't recognize it).
-        items.append(.init(name: "offline", value: "1"))
-        return buildURL(path: "/video/:/transcode/universal/start", queryItems: items)
-    }
-
     /// `/video/:/transcode/universal/stop` — gracefully end the server-side transcode
     /// session. HLS playback gives PMS no signal that the client left (segments just
     /// stop being requested), so without this every player close/rebuild orphans a
