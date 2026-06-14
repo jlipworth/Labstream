@@ -322,6 +322,7 @@ public enum JellyfinLibrary {
                                     parentId: String? = nil,
                                     recursive: Bool = false,
                                     limit: Int? = nil,
+                                    searchTerm: String? = nil,
                                     sortBy: String = "SortName",
                                     sortOrder: String = "Ascending",
                                     filters: [String] = []) throws -> URLRequest {
@@ -329,6 +330,9 @@ public enum JellyfinLibrary {
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
         query.append(URLQueryItem(name: "recursive", value: recursive ? "true" : "false"))
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        if let searchTerm, !searchTerm.isEmpty {
+            query.append(URLQueryItem(name: "searchTerm", value: searchTerm))
+        }
         if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: filters.joined(separator: ","))) }
         replaceQueryItem(named: "sortBy", with: sortBy, in: &query)
         replaceQueryItem(named: "sortOrder", with: sortOrder, in: &query)
@@ -345,6 +349,32 @@ public enum JellyfinLibrary {
             URLQueryItem(name: "userId", value: userId),
         ])
         return get(url: url, token: token, identity: identity)
+    }
+
+    public static func markPlayedRequest(server: URL,
+                                         token: String,
+                                         identity: JellyfinClientIdentity,
+                                         userId: String,
+                                         itemId: String,
+                                         played: Bool) throws -> URLRequest {
+        let url = try url(server: server,
+                          path: "/Users/\(userId)/PlayedItems/\(itemId)",
+                          queryItems: [])
+        var req = authenticatedRequest(url: url, token: token, identity: identity)
+        req.httpMethod = played ? "POST" : "DELETE"
+        return req
+    }
+
+    public static func downloadRequest(server: URL,
+                                       token: String,
+                                       identity: JellyfinClientIdentity,
+                                       itemId: String) throws -> URLRequest {
+        let url = try url(server: server,
+                          path: "/Items/\(itemId)/Download",
+                          queryItems: [])
+        var req = get(url: url, token: token, identity: identity)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        return req
     }
 
     public static func imageURL(server: URL,

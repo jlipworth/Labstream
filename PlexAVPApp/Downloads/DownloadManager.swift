@@ -209,6 +209,59 @@ public final class DownloadManager {
         }
     }
 
+    /// Download a Jellyfin item through the official item download endpoint.
+    ///
+    /// Unlike the Plex path above, this deliberately uses authenticated request
+    /// headers instead of putting an `api_key` token in the URL. It currently saves
+    /// Jellyfin's original file/body; quality-selectable Jellyfin offline transcodes
+    /// should be added as a separate, explicit path once we know which Jellyfin
+    /// download/transcode contract is reliable on-device.
+    public func downloadJellyfinOriginal(_ item: MediaItem,
+                                         mediaIndex: Int = 0,
+                                         partIndex: Int = 0) async {
+        let ratingKey = item.ratingKey
+        guard appModel.jellyfinServerBaseURL != nil,
+              appModel.jellyfinAccessToken != nil,
+              appModel.jellyfinUserID != nil else {
+            lastError[ratingKey] = .notAuthenticated
+            return
+        }
+        guard !activeJobs.contains(ratingKey) else { return }
+        activeJobs.insert(ratingKey)
+        lastError[ratingKey] = nil
+        defer { activeJobs.remove(ratingKey) }
+
+        let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
+        let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
+        let ext = part?.container ?? media?.container ?? "mp4"
+        let destination = store.destinationURL(ratingKey: ratingKey,
+                                               ext: ext.isEmpty ? "mp4" : ext)
+        let metadata = Self.offlineMetadata(from: item, quality: nil,
+                                            mediaIndex: mediaIndex, partIndex: partIndex)
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: destination, bytes: 0, progress: 0,
+                                    metadata: metadata))
+        refreshRecords()
+
+        do {
+            let request = try JellyfinBrowseService(appModel: appModel)
+                .downloadRequest(itemId: ratingKey)
+            try session.start(ratingKey: ratingKey,
+                              with: request,
+                              to: destination,
+                              expectedBytes: part?.size)
+            refreshRecords()
+        } catch let error as DownloadError {
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        } catch {
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        }
+    }
+
     /// Whether a download already exists (completed or in-flight) for `ratingKey`.
     /// Lets the options sheet show "Downloaded" / disable re-download.
     public func hasDownload(for ratingKey: String) -> Bool {
@@ -869,6 +922,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// `nil` falls back to the bare 500 MB floor.
     func start(ratingKey: String, from url: URL, to destination: URL,
                expectedBytes: Int? = nil) throws {
+        try start(ratingKey: ratingKey,
+                  with: URLRequest(url: url),
+                  to: destination,
+                  expectedBytes: expectedBytes)
+    }
+
+    /// Begin (or resume) a background download with an explicit request.
+    ///
+    /// Jellyfin downloads need auth headers; keep this overload so callers do not
+    /// smuggle tokens into query strings just to satisfy `downloadTask(with: URL)`.
+    func start(ratingKey: String, with request: URLRequest, to destination: URL,
+               expectedBytes: Int? = nil) throws {
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
         // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
@@ -880,13 +945,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
            free < required {
             throw DownloadManager.DownloadError.storageFull
         }
-        let task = urlSession.downloadTask(with: url)
+        let task = urlSession.downloadTask(with: request)
         lock.lock()
         retryCounts[ratingKey] = 0
         lastProgressNotify[ratingKey] = nil
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
-        downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(url.path, privacy: .public)")
+        downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(request.url?.path ?? "nil", privacy: .public)")
         task.resume()
     }
 

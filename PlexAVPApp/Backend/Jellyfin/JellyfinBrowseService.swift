@@ -46,6 +46,7 @@ struct JellyfinBrowseService {
     func items(parentId: String?,
                recursive: Bool = false,
                limit: Int? = nil,
+               searchTerm: String? = nil,
                sortBy: String = "SortName",
                sortOrder: String = "Ascending",
                filters: [String] = []) async throws -> [MediaItem] {
@@ -57,6 +58,7 @@ struct JellyfinBrowseService {
                                                    parentId: parentId,
                                                    recursive: recursive,
                                                    limit: limit,
+                                                   searchTerm: searchTerm,
                                                    sortBy: sortBy,
                                                    sortOrder: sortOrder,
                                                    filters: filters)
@@ -111,6 +113,25 @@ struct JellyfinBrowseService {
                                                   identity: jellyfinIdentity,
                                                   token: context.token,
                                                   itemId: item.ratingKey)
+    }
+
+    func setPlayed(itemId: String, played: Bool) async throws {
+        let context = try context()
+        let req = try JellyfinLibrary.markPlayedRequest(server: context.server,
+                                                        token: context.token,
+                                                        identity: jellyfinIdentity,
+                                                        userId: context.userID,
+                                                        itemId: itemId,
+                                                        played: played)
+        _ = try await send(req)
+    }
+
+    func downloadRequest(itemId: String) throws -> URLRequest {
+        let context = try context()
+        return try JellyfinLibrary.downloadRequest(server: context.server,
+                                                   token: context.token,
+                                                   identity: jellyfinIdentity,
+                                                   itemId: itemId)
     }
 
     func stopActiveEncoding(playSessionId: String) async {
