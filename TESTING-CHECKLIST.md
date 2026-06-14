@@ -265,6 +265,41 @@ required**.
 
 ---
 
+## Wave 1 — Custom player is the sole player
+
+_Build-verified on branch `wave1/custom-player-sole-player` (not yet merged to `main`).
+These are the in-headset checks gating that merge: the custom player is now the ONLY
+player (all AVKit code deleted), and Cinema mode must replicate the full windowed control
+set. Run these before merging the branch._
+
+### Streaming (windowed)
+- [ ] Play a movie from DetailView → custom player opens (no AVKit transport bar).
+- [ ] Play/pause, scrubber drag-to-seek, and skip ±10/±30 all work.
+- [ ] Each menu opens and applies: Quality, Subtitles, Audio, Chapters, Speed, Stats.
+- [ ] Close (✕) dismisses back to DetailView.
+- [ ] Up Next autoplay advances to the next episode (controller rebuilds cleanly).
+
+### Offline / downloaded
+- [ ] Play a completed download from the Offline tab → custom player opens and plays the local file.
+- [ ] Play a downloaded copy from DetailView (offline) → custom player opens and plays.
+- [ ] Scrubber + skip work on a local file (no network).
+
+### Cinema parity
+- [ ] From the windowed player, tap "Cinema" → immersive theater opens with the same video.
+- [ ] In Cinema: play/pause, scrubber, skip ±, and ALL menus (Quality/Subtitles/Audio/Chapters/Speed/Stats) work — matching windowed mode.
+- [ ] "Exit Cinema" returns to the windowed player; playback position is continuous.
+- [ ] Closing the windowed player while Cinema is open tears down cleanly (no orphaned immersive space).
+
+### Settings
+- [ ] Settings → Playback no longer shows the "Custom player fallback" toggle.
+- [ ] Streaming quality picker and Direct Stream toggle still present and functional.
+
+### Regression
+- [ ] No reference to the old AVKit player anywhere in the UI.
+- [ ] Reconnect/failure: kill the server mid-stream → failure card with Retry appears in the windowed player.
+
+---
+
 ## D. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + Direct Stream within cap:** PMSKit probe groundwork
