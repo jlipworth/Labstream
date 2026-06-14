@@ -333,8 +333,11 @@ public final class DownloadManager {
         let fresh = store.records
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
         // Recompute a smoothed bytes/sec for each actively-downloading row by diffing
-        // its cumulative byte count against the previous sample. Only resample on a
-        // ≥0.5s interval so the readout doesn't jitter on the rapid progress callbacks.
+        // its cumulative byte count against the previous sample. Resample on a ≥1s
+        // interval (a longer window yields a less noisy instantaneous rate) and fold it
+        // into a heavily-weighted EMA (~4s memory) so the displayed speed — and the ETA
+        // derived from it — drift smoothly instead of bouncing on every burst of the
+        // rapid progress callbacks.
         for record in fresh where record.status == .downloading {
             guard let prev = speedSamples[record.ratingKey] else {
                 speedSamples[record.ratingKey] = (record.bytes, now)
@@ -342,9 +345,9 @@ public final class DownloadManager {
             }
             let dt = now.timeIntervalSince(prev.time)
             let db = record.bytes - prev.bytes
-            if dt >= 0.5 && db > 0 {
+            if dt >= 1.0 && db > 0 {
                 let instantaneous = Double(db) / dt
-                let smoothed = downloadSpeed[record.ratingKey].map { 0.5 * $0 + 0.5 * instantaneous }
+                let smoothed = downloadSpeed[record.ratingKey].map { 0.75 * $0 + 0.25 * instantaneous }
                     ?? instantaneous
                 downloadSpeed[record.ratingKey] = smoothed
                 speedSamples[record.ratingKey] = (record.bytes, now)
@@ -669,6 +672,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         task.resume()
     }
 
+    /// Path + query of a request URL with the `X-Plex-Token` value redacted and the
+    /// host omitted — safe to log for diagnosing a transcode/download rejection without
+    /// leaking the token or the server hostname.
+    static func sanitizedPathQuery(_ url: URL?) -> String {
+        guard let url, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return "nil"
+        }
+        comps.queryItems = comps.queryItems?.map {
+            $0.name == "X-Plex-Token" ? URLQueryItem(name: $0.name, value: "REDACTED") : $0
+        }
+        let query = comps.query.map { "?\($0)" } ?? ""
+        return comps.path + query
+    }
+
     /// Cancel any in-flight transfer for a ratingKey.
     func cancel(ratingKey: String) {
         urlSession.getAllTasks { tasks in
@@ -732,6 +749,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // 1. HTTP status — Plex returns 200 for a real file body.
         if let http = downloadTask.response as? HTTPURLResponse {
             guard (200...299).contains(http.statusCode) else {
+                // A download task writes the response body to `location` even on a 4xx,
+                // so capture PMS's error page + the sanitized request (token stripped,
+                // host omitted) at .error level — .info logs are memory-only and get
+                // evicted before we can read them. This makes a transcode rejection
+                // (e.g. an endpoint/param the universal transcoder refuses) diagnosable
+                // from the log instead of an opaque status code.
+                let body = (try? Data(contentsOf: location))
+                    .map { String(decoding: $0.prefix(800), as: UTF8.self) } ?? "<unreadable>"
+                let req = Self.sanitizedPathQuery(downloadTask.originalRequest?.url)
+                downloadLog.error("download-http-error ratingKey=\(entry.ratingKey, privacy: .public) http=\(http.statusCode, privacy: .public) req=\(req, privacy: .public) body=\(body, privacy: .public)")
                 fail("Server returned HTTP \(http.statusCode).")
                 return
             }
