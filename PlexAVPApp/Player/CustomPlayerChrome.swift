@@ -310,19 +310,24 @@ struct CustomPlayerChrome: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            HStack {
+            VStack(spacing: 8) {
                 Button(action: {
                     revealChrome()
                     onRetry()
                 }) {
                     Label("Retry", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 160)
                 }
                 .buttonStyle(.borderedProminent)
                 if let onClose {
-                    Button("Close", action: onClose)
-                        .buttonStyle(.bordered)
+                    Button(action: onClose) {
+                        Text("Close")
+                            .frame(minWidth: 160)
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
+            .padding(.top, 2)
         }
         .padding(22)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
