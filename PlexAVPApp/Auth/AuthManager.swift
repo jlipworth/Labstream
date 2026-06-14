@@ -50,6 +50,30 @@ final class AuthManager {
         state = .idle
     }
 
+    func switchBackend(_ backend: MediaBackendKind) async {
+        let resolution = MediaBackendSwitch.resolve(active: appModel.activeBackend.switchChoice,
+                                                    target: backend.switchChoice,
+                                                    credentials: keychain.mediaBackendCredentialSnapshot)
+        guard resolution != .alreadyActive else { return }
+
+        cancelPendingLogin()
+        appModel.activeBackend = backend
+        keychain.selectedBackend = backend
+
+        switch resolution {
+        case .alreadyActive:
+            break
+        case .restoreSavedSession:
+            appModel.isSwitchingBackend = true
+            defer { appModel.isSwitchingBackend = false }
+            _ = await restoreSession()
+        case .requireLogin:
+            clearRuntimeState(for: backend)
+            appModel.isSwitchingBackend = false
+            state = .idle
+        }
+    }
+
     /// Restore a previously-saved token (call on launch). Returns true if a token
     /// was found; the caller may then refresh discovery.
     @discardableResult
@@ -322,6 +346,7 @@ final class AuthManager {
     /// Clear all auth state and return to login. Call on sign-out or any 401.
     func signOut() {
         cancelPendingLogin()
+        appModel.isSwitchingBackend = false
         switch appModel.activeBackend {
         case .plex:
             signOutPlex()
@@ -333,10 +358,7 @@ final class AuthManager {
 
     private func signOutPlex() {
         keychain.token = nil
-        appModel.token = nil
-        appModel.serverToken = nil
-        appModel.selectedServer = nil
-        appModel.serverBaseURL = nil
+        clearRuntimeState(for: .plex)
     }
 
     private func signOutJellyfin() {
@@ -344,10 +366,22 @@ final class AuthManager {
         keychain.jellyfinAccessToken = nil
         keychain.jellyfinUserID = nil
         keychain.jellyfinServerID = nil
-        appModel.jellyfinServerBaseURL = nil
-        appModel.jellyfinAccessToken = nil
-        appModel.jellyfinUserID = nil
-        appModel.jellyfinServerID = nil
+        clearRuntimeState(for: .jellyfin)
+    }
+
+    private func clearRuntimeState(for backend: MediaBackendKind) {
+        switch backend {
+        case .plex:
+            appModel.token = nil
+            appModel.serverToken = nil
+            appModel.selectedServer = nil
+            appModel.serverBaseURL = nil
+        case .jellyfin:
+            appModel.jellyfinServerBaseURL = nil
+            appModel.jellyfinAccessToken = nil
+            appModel.jellyfinUserID = nil
+            appModel.jellyfinServerID = nil
+        }
     }
 
     func cancelPendingLogin() {
@@ -376,4 +410,22 @@ private enum JellyfinAuthError: Error {
     case unauthorized
     case http(Int)
     case missingCredentials
+}
+
+private extension MediaBackendKind {
+    var switchChoice: MediaBackendChoice {
+        switch self {
+        case .plex: return .plex
+        case .jellyfin: return .jellyfin
+        }
+    }
+}
+
+private extension KeychainStore {
+    var mediaBackendCredentialSnapshot: MediaBackendCredentialSnapshot {
+        MediaBackendCredentialSnapshot(plexToken: token,
+                                       jellyfinServerURLString: jellyfinServerURLString,
+                                       jellyfinAccessToken: jellyfinAccessToken,
+                                       jellyfinUserID: jellyfinUserID)
+    }
 }
