@@ -75,4 +75,19 @@ struct PlaybackScrubStateTests {
         state.beginDrag(livePositionMs: 79_000)
         #expect(state.displayedPositionMs == 79_000)
     }
+
+    @Test("programmatic commit is clamped and held like a scrub commit")
+    func programmaticCommitIsHeld() {
+        var state = PlaybackScrubState(durationMs: 120_000, livePositionMs: 80_000)
+
+        #expect(state.commit(toMs: 150_000) == 120_000)
+        #expect(!state.isDragging)
+        #expect(state.displayedPositionMs == 120_000)
+
+        state.updateLivePosition(81_000)
+        #expect(state.displayedPositionMs == 120_000)
+
+        state.updateLivePosition(119_000)
+        #expect(state.displayedPositionMs == 119_000)
+    }
 }

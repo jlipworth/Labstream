@@ -79,6 +79,19 @@ public struct PlaybackScrubState: Equatable, Sendable {
         return target
     }
 
+    /// Commit a programmatic seek target (for button-based ±10/±30 jumps) through the same
+    /// display path as a released scrubber drag. This keeps the scrubber pinned to the user's
+    /// requested target while an out-of-buffer stream rebuild/buffer catch-up is in flight.
+    @discardableResult
+    public mutating func commit(toMs targetMs: Int) -> Int? {
+        isDragging = false
+        draftPositionMs = nil
+        guard durationMs > 0 else { return nil }
+        let target = Self.clamp(targetMs, durationMs: durationMs)
+        committedTargetMs = target
+        return target
+    }
+
     public mutating func cancel() {
         isDragging = false
         draftPositionMs = nil

@@ -992,6 +992,37 @@ final class PlaybackController {
         }
     }
 
+    /// App-owned relative seek hook for fixed transport jumps (±10/±30). It deliberately
+    /// funnels into `performUserSeek(toMs:)` so button jumps get the same in-buffer native seek
+    /// vs. out-of-buffer final-target rebuild behavior as the custom scrubber.
+    @discardableResult
+    func performRelativeUserSeek(bySeconds deltaSeconds: Int,
+                                 from baseMs: Int? = nil,
+                                 durationMs: Int? = nil) -> Int {
+        let base = baseMs ?? currentResumeMs
+        let deltaMs = deltaSeconds * 1000
+        let upperBound = durationMs.flatMap { $0 > 0 ? $0 : nil } ?? knownDurationMs
+        let unclamped = base + deltaMs
+        let target = if let upperBound {
+            min(max(unclamped, 0), upperBound)
+        } else {
+            max(unclamped, 0)
+        }
+        performUserSeek(toMs: target)
+        return target
+    }
+
+    private var knownDurationMs: Int? {
+        let seconds = player.currentItem?.duration.seconds
+        if let seconds, seconds.isFinite, seconds > 0 {
+            return Int((seconds * 1000).rounded())
+        }
+        if let duration = item.duration, duration > 0 {
+            return duration
+        }
+        return nil
+    }
+
     /// Fresh control-plane client for a retry/rebuild after the stream wedged (#33).
     /// PlayerView uses this when it performs the full `.id()` rebuild, and in-place retry
     /// callers use `switchToRecoveryControlClient()` directly.
