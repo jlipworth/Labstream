@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Emby-style "Stats for Nerds" glass panel.
 ///
-/// Hosted as a tab in the `AVPlayerViewController` info panel (see `PlayerControlSurface`).
+/// Hosted as the Stats menu in the custom player chrome (see `CustomPlayerChrome`).
 /// It observes a `PlaybackDiagnostics` and re-renders as the numbers tick (~1s).
 /// Deliberately compact and legible; it never displays any token or URL query material.
 ///
