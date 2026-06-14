@@ -23,6 +23,7 @@ struct CustomPlayerView: View {
     @State private var controller: PlaybackController?
     @State private var scrubState: PlaybackScrubState
     @State private var clockTaskID = UUID()
+    @State private var isReconnecting = false
 
     init(item: MediaItem,
          server: URL,
@@ -59,7 +60,8 @@ struct CustomPlayerView: View {
                 CustomPlayerChrome(controller: controller,
                                    title: item.title,
                                    scrubState: $scrubState,
-                                   onRetry: { controller.retry() },
+                                   isReconnecting: isReconnecting,
+                                   onRetry: { retry(controller) },
                                    onClose: onClose)
             } else {
                 ProgressView()
@@ -69,6 +71,7 @@ struct CustomPlayerView: View {
             }
         }
         .task(id: clockTaskID) { await runPlayer() }
+        .task(id: isReconnecting) { await reconnectWatchdog() }
         .onDisappear { controller?.stop() }
     }
 
@@ -83,6 +86,7 @@ struct CustomPlayerView: View {
                                           mediaIndex: mediaIndex,
                                           machineIdentifier: machineIdentifier)
         playback.onAdvanceToNext = onRequestPlay
+        playback.onPlaybackActive = { isReconnecting = false }
         return playback
     }
 
@@ -92,6 +96,9 @@ struct CustomPlayerView: View {
             controller = playback
             refreshScrubberClock(from: playback)
             playback.start()
+            Task { @MainActor in
+                _ = await playback.loadChaptersIfNeeded()
+            }
         }
 
         while !Task.isCancelled {
@@ -120,6 +127,22 @@ struct CustomPlayerView: View {
             scrubState.updateLivePosition(controller.currentResumeMs)
         }
     }
+
+    @MainActor
+    private func retry(_ controller: PlaybackController) {
+        isReconnecting = true
+        controller.retry()
+    }
+
+    private func reconnectWatchdog() async {
+        guard isReconnecting else { return }
+        try? await Task.sleep(for: .seconds(20))
+        await MainActor.run {
+            guard isReconnecting, let controller else { return }
+            isReconnecting = false
+            controller.surfaceReconnectTimeout()
+        }
+    }
 }
 
 /// Minimal UIKit bridge whose backing layer is AVPlayerLayer.
@@ -146,26 +169,49 @@ private final class PlayerLayerHostView: UIView {
     }
 }
 
-/// Native-ish windowed controls for the fallback player. This is intentionally small: prove
-/// the app-owned primary scrubber first, then add menu parity after the path earns it.
+/// App-owned fullscreen chrome for the experimental player.
+///
+/// This deliberately mirrors the AVKit info-panel feature set: the custom route must not be a
+/// feature regression just because it owns its transport. The chrome behaves like player chrome,
+/// not permanent app UI: taps reveal it, playback auto-hides it, and modal menu/error/reconnect
+/// states keep it visible while the viewer is acting on them.
 private struct CustomPlayerChrome: View {
     let controller: PlaybackController
     let title: String
     @Binding var scrubState: PlaybackScrubState
+    let isReconnecting: Bool
     let onRetry: () -> Void
     let onClose: (() -> Void)?
 
+    @State private var chromeVisible = true
+    @State private var hideTask: Task<Void, Never>?
+    @State private var selectedMenu: CustomPlayerMenuKind?
+    @State private var menuState: PlayerMenuState
+
+    init(controller: PlaybackController,
+         title: String,
+         scrubState: Binding<PlaybackScrubState>,
+         isReconnecting: Bool,
+         onRetry: @escaping () -> Void,
+         onClose: (() -> Void)?) {
+        self.controller = controller
+        self.title = title
+        _scrubState = scrubState
+        self.isReconnecting = isReconnecting
+        self.onRetry = onRetry
+        self.onClose = onClose
+        _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
+    }
+
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            if let onClose {
-                Button(action: onClose) {
-                    Label("Close", systemImage: "xmark")
-                        .labelStyle(.iconOnly)
-                        .font(.title3.weight(.semibold))
-                        .frame(width: 52, height: 52)
-                }
-                .buttonStyle(.borderedProminent)
-                .padding(28)
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { revealChrome() }
+
+            if shouldShowChrome {
+                topChrome
+                    .transition(.opacity)
             }
 
             VStack {
@@ -174,18 +220,19 @@ private struct CustomPlayerChrome: View {
                 if controller.playbackError.isFailed {
                     failureCard
                         .padding(.bottom, 18)
+                } else if isReconnecting {
+                    CustomReconnectingOverlay(onClose: onClose)
+                        .padding(.bottom, 18)
                 } else if controller.buffering.isBuffering {
-                    ProgressView("Buffering…")
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .background(.ultraThinMaterial, in: Capsule())
+                    bufferingCard
                         .padding(.bottom, 18)
                 }
 
-                if let marker = controller.skipMarker.active {
+                if let marker = controller.skipMarker.active, shouldShowChrome {
                     HStack {
                         Spacer()
                         Button {
+                            revealChrome()
                             controller.skipCurrentMarker()
                         } label: {
                             Label(marker.kind.label, systemImage: marker.kind.systemImage)
@@ -194,6 +241,7 @@ private struct CustomPlayerChrome: View {
                     }
                     .padding(.horizontal, 34)
                     .padding(.bottom, 14)
+                    .transition(.opacity)
                 }
 
                 if controller.upNext.isShown, let next = controller.upNext.nextItem {
@@ -202,21 +250,93 @@ private struct CustomPlayerChrome: View {
                         .padding(.bottom, 14)
                 }
 
-                controls
-                    .padding(.horizontal, 34)
-                    .padding(.bottom, 28)
+                if shouldShowChrome {
+                    controls
+                        .padding(.horizontal, 34)
+                        .padding(.bottom, 28)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+
+            if let selectedMenu {
+                CustomPlayerMenuPanel(selection: Binding(
+                    get: { selectedMenu },
+                    set: { self.selectedMenu = $0 }
+                ),
+                controller: controller,
+                menuState: menuState,
+                onClose: { closeMenu() })
+                .padding(40)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
+        .animation(.easeInOut(duration: 0.18), value: selectedMenu)
+        .onAppear { revealChrome() }
+        .onDisappear { hideTask?.cancel() }
+        .onChange(of: controller.transport.isPaused) { _, _ in scheduleChromeHideIfNeeded() }
+        .onChange(of: controller.playbackError.isFailed) { _, _ in scheduleChromeHideIfNeeded() }
+        .onChange(of: isReconnecting) { _, _ in scheduleChromeHideIfNeeded() }
+    }
+
+    private var shouldShowChrome: Bool {
+        chromeVisible || controller.transport.isPaused || controller.playbackError.isFailed || isReconnecting || selectedMenu != nil
+    }
+
+    private var topChrome: some View {
+        VStack {
+            HStack(spacing: 14) {
+                if let onClose {
+                    Button(action: {
+                        revealChrome()
+                        onClose()
+                    }) {
+                        Label("Close", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 52, height: 52)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Spacer()
+
+                Button {
+                    openMenu(.quality)
+                } label: {
+                    Label("Player options", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                        .font(.title3.weight(.semibold))
+                        .frame(width: 52, height: 52)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(28)
+
+            Spacer()
         }
     }
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.headline)
-                .lineLimit(1)
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    openMenu(.stats)
+                } label: {
+                    Label("Stats", systemImage: "chart.bar.doc.horizontal")
+                }
+                .buttonStyle(.bordered)
+            }
 
             HStack(spacing: 16) {
-                Button(action: togglePlayback) {
+                Button(action: {
+                    revealChrome()
+                    togglePlayback()
+                }) {
                     Image(systemName: controller.transport.isPaused ? "play.fill" : "pause.fill")
                         .font(.title2.weight(.semibold))
                         .frame(width: 44, height: 44)
@@ -255,7 +375,10 @@ private struct CustomPlayerChrome: View {
                     .multilineTextAlignment(.center)
             }
             HStack {
-                Button(action: onRetry) {
+                Button(action: {
+                    revealChrome()
+                    onRetry()
+                }) {
                     Label("Retry", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
@@ -267,6 +390,14 @@ private struct CustomPlayerChrome: View {
         }
         .padding(22)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var bufferingCard: some View {
+        ProgressView("Buffering…")
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial, in: Capsule())
+            .allowsHitTesting(false)
     }
 
     private func upNextCard(_ next: MediaItem) -> some View {
@@ -283,10 +414,16 @@ private struct CustomPlayerChrome: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Cancel") { controller.cancelUpNext() }
-                .buttonStyle(.bordered)
-            Button("Play Now") { controller.playNextNow() }
-                .buttonStyle(.borderedProminent)
+            Button("Cancel") {
+                revealChrome()
+                controller.cancelUpNext()
+            }
+            .buttonStyle(.bordered)
+            Button("Play Now") {
+                revealChrome()
+                controller.playNextNow()
+            }
+            .buttonStyle(.borderedProminent)
         }
         .padding(18)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -297,6 +434,7 @@ private struct CustomPlayerChrome: View {
             guard scrubState.durationMs > 0 else { return 0 }
             return Double(scrubState.displayedPositionMs) / Double(scrubState.durationMs)
         } set: { fraction in
+            revealChrome(keepVisible: true)
             if !scrubState.isDragging {
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
@@ -306,9 +444,13 @@ private struct CustomPlayerChrome: View {
 
     private func handleScrubEditingChanged(_ editing: Bool) {
         if editing {
+            revealChrome(keepVisible: true)
             scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
         } else if let target = scrubState.commit() {
             controller.performUserSeek(toMs: target)
+            revealChrome()
+        } else {
+            revealChrome()
         }
     }
 
@@ -317,6 +459,42 @@ private struct CustomPlayerChrome: View {
             controller.player.play()
         } else {
             controller.player.pause()
+        }
+        scheduleChromeHideIfNeeded()
+    }
+
+    private func openMenu(_ menu: CustomPlayerMenuKind) {
+        revealChrome(keepVisible: true)
+        selectedMenu = menu
+    }
+
+    private func closeMenu() {
+        selectedMenu = nil
+        revealChrome()
+    }
+
+    private func revealChrome(keepVisible: Bool = false) {
+        chromeVisible = true
+        hideTask?.cancel()
+        if !keepVisible {
+            scheduleChromeHideIfNeeded()
+        }
+    }
+
+    private func scheduleChromeHideIfNeeded() {
+        hideTask?.cancel()
+        guard !controller.transport.isPaused,
+              !controller.playbackError.isFailed,
+              !isReconnecting,
+              selectedMenu == nil else { return }
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled,
+                  !controller.transport.isPaused,
+                  !controller.playbackError.isFailed,
+                  !isReconnecting,
+                  selectedMenu == nil else { return }
+            chromeVisible = false
         }
     }
 
@@ -329,5 +507,162 @@ private struct CustomPlayerChrome: View {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
+    case quality
+    case subtitles
+    case audio
+    case chapters
+    case speed
+    case stats
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .quality: "Quality"
+        case .subtitles: "Subtitles"
+        case .audio: "Audio"
+        case .chapters: "Chapters"
+        case .speed: "Speed"
+        case .stats: "Stats"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .quality: "slider.horizontal.3"
+        case .subtitles: "captions.bubble"
+        case .audio: "waveform"
+        case .chapters: "list.bullet"
+        case .speed: "speedometer"
+        case .stats: "chart.bar.doc.horizontal"
+        }
+    }
+}
+
+private struct CustomPlayerMenuPanel: View {
+    @Binding var selection: CustomPlayerMenuKind
+    let controller: PlaybackController
+    @Bindable var menuState: PlayerMenuState
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Label("Player options", systemImage: "info.circle")
+                    .font(.headline)
+                Spacer()
+                Button(action: onClose) {
+                    Label("Close menu", systemImage: "xmark")
+                        .labelStyle(.iconOnly)
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(CustomPlayerMenuKind.allCases) { item in
+                        if selection == item {
+                            menuButton(item)
+                                .buttonStyle(.borderedProminent)
+                        } else {
+                            menuButton(item)
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                .frame(width: 170)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(selection.title, systemImage: selection.systemImage)
+                        .font(.title3.weight(.semibold))
+                    menuContent
+                        .frame(minWidth: 560, maxWidth: 760, minHeight: 320, maxHeight: 420)
+                }
+            }
+        }
+        .padding(24)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(radius: 30)
+    }
+
+    private func menuButton(_ item: CustomPlayerMenuKind) -> some View {
+        Button {
+            selection = item
+        } label: {
+            Label(item.title, systemImage: item.systemImage)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder private var menuContent: some View {
+        switch selection {
+        case .quality:
+            QualityTabView(state: menuState) { kbps in
+                controller.reload(bitrateKbps: kbps)
+                menuState.selectedBitrateKbps = kbps
+                UserDefaults.standard.set(kbps, forKey: "maxVideoBitrateKbps")
+            }
+        case .subtitles:
+            SubtitlesTabView(
+                load: { await controller.loadSubtitleTracks() },
+                onSelect: { track in await controller.selectSubtitle(track) }
+            )
+        case .audio:
+            if controller.isStreaming {
+                AudioStreamsTabView(
+                    load: { controller.loadAudioStreamChoices() },
+                    onSelect: { choice in await controller.selectAudioStream(choice) }
+                )
+            } else {
+                AudioTabView(
+                    load: { await controller.loadAudioTracks() },
+                    onSelect: { track in await controller.selectAudio(track) }
+                )
+            }
+        case .chapters:
+            ChaptersTabView(
+                chapters: controller.chapters,
+                currentMs: { controller.currentResumeMs },
+                thumbnailURL: { controller.chapterThumbnailURL(for: $0) },
+                onJump: { startMs in
+                    controller.performUserSeek(toMs: startMs)
+                    onClose()
+                }
+            )
+        case .speed:
+            SpeedTabView(state: controller.speedState) { rate in
+                controller.setPlaybackSpeed(rate)
+            }
+        case .stats:
+            StatsTabView(diagnostics: controller.diagnostics)
+        }
+    }
+}
+
+private struct CustomReconnectingOverlay: View {
+    let onClose: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: DS.Space.lg) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Reconnecting…")
+                .font(.headline)
+            if let onClose {
+                Button(role: .cancel, action: onClose) {
+                    Text("Close").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(DS.Space.xl)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
     }
 }
