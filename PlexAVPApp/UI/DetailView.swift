@@ -416,6 +416,21 @@ struct DetailView: View {
                                                                 .stopActiveEncoding(playSessionId: remote.playSessionId)
                                                         }
                                                     },
+                                                    remoteStreamReopener: { offsetMs, bitrateKbps in
+                                                        let result = try await JellyfinBrowseService(appModel: appModel)
+                                                            .playbackOpen(item: playing,
+                                                                          maxVideoBitrateKbps: bitrateKbps,
+                                                                          resumeOffsetMs: offsetMs)
+                                                        return RemoteStreamOpenResult(
+                                                            url: result.url,
+                                                            headers: result.requiredHTTPHeaders,
+                                                            onStop: {
+                                                                Task {
+                                                                    await JellyfinBrowseService(appModel: appModel)
+                                                                        .stopActiveEncoding(playSessionId: result.playSessionId)
+                                                                }
+                                                            })
+                                                    },
                                                     maxVideoBitrateKbps: maxVideoBitrateKbps)
                              },
                              onClose: { presentingPlayer = false })
