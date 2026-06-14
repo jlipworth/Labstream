@@ -120,11 +120,11 @@ struct ChapterCard: View {
     let thumbnailURL: URL?
     var onTap: (Int) -> Void
 
-    // Sized for the info panel's fixed height (#10): the panel is the same size for every
-    // tab (system-controlled). 200×112 left a sea of empty space below the rail; 280×158
-    // crowded it — 240×135 is the verified middle.
-    private static let thumbWidth: CGFloat = 240
-    private static let thumbHeight: CGFloat = 135  // 16:9
+    // Large enough for the custom-player Chapters popover to feel like the old AVP rail while
+    // still fitting the system info-panel path. The custom popover is intentionally wide so
+    // several chapters remain visible during horizontal scrolling.
+    private static let thumbWidth: CGFloat = 270
+    private static let thumbHeight: CGFloat = 152  // 16:9-ish, rounded for whole pixels
 
     var body: some View {
         Button {
