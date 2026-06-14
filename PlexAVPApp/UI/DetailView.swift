@@ -358,8 +358,8 @@ struct DetailView: View {
         // episode on Up Next autoplay (#15). Fall back to `detailed` defensively.
         let playing = playingItem ?? detailed
         if let local = playLocalURL {
-            PlayerView(localFile: local, item: playing,
-                       onClose: { presentingPlayer = false })
+            CustomPlayerView(localFile: local, item: playing,
+                             onClose: { presentingPlayer = false })
                 .ignoresSafeArea()
         } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
             // AVPlayerViewController supplies NO system Close button inside a
