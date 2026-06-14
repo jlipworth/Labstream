@@ -296,7 +296,7 @@ set. Run these before merging the branch._
 
 ### Regression
 - [ ] No reference to the old AVKit player anywhere in the UI.
-- [ ] Reconnect/failure: kill the server mid-stream → failure card with Retry appears in the windowed player.
+- [x] Reconnect/failure: kill the server mid-stream → failure card with Retry appears in the windowed player. _(Previously verified during #8/#33 reset testing — failure card + Retry path unchanged by the sole-player switch.)_
 
 ---
 
