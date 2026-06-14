@@ -1,4 +1,5 @@
 import AVFoundation
+import PMSKit
 import SwiftUI
 
 /// Shared identifiers and active-session state for the custom-player Cinema Mode work.
@@ -49,10 +50,14 @@ struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
+    /// Cinema owns its own scrubber clock so the reused chrome has a live timeline; the
+    /// windowed player keeps its own. Both read the same shared `controller`.
+    @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
+
     var body: some View {
         ZStack {
-            if let player = session.player {
-                cinemaSurface(player: player)
+            if let controller = session.controller, let player = session.player {
+                cinemaSurface(controller: controller, player: player)
             } else {
                 inactiveState
             }
@@ -65,60 +70,48 @@ struct CustomCinemaScaffoldView: View {
         }
     }
 
-    private func cinemaSurface(player: AVPlayer) -> some View {
-        VStack(spacing: 18) {
-            Text(session.title ?? "Cinema Mode")
-                .font(.title2.weight(.semibold))
-                .lineLimit(1)
-
-            PlayerLayerView(player: player)
-                .frame(width: 1180, height: 664)
-                .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 34, style: .continuous)
-                        .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-                }
-                .background {
-                    RoundedRectangle(cornerRadius: 44, style: .continuous)
-                        .fill(.black.opacity(0.92))
-                        .shadow(color: .black.opacity(0.45), radius: 38, y: 18)
-                }
-
-            HStack(spacing: 10) {
-                cinemaSkipButton(seconds: -30)
-                cinemaSkipButton(seconds: -10)
-                Button {
-                    Task { @MainActor in
-                        session.presentationState = .inTransition
-                        await dismissImmersiveSpace()
-                    }
-                } label: {
-                    Label("Exit Cinema", systemImage: "rectangle.on.rectangle.slash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                cinemaSkipButton(seconds: 10)
-                cinemaSkipButton(seconds: 30)
+    private func cinemaSurface(controller: PlaybackController, player: AVPlayer) -> some View {
+        // Full normal-mode control parity: the Cinema scene hosts the SAME `CustomPlayerChrome`
+        // as the windowed player (play/pause, scrubber, skip, and the Quality/Subtitles/Audio/
+        // Chapters/Speed/Stats menu). The chrome's cinema button auto-flips to "Exit Cinema"
+        // because `presentationState == .open`; `onClose` is nil so no redundant window-close
+        // affordance appears inside the theater.
+        PlayerLayerView(player: player)
+            .frame(width: 1180, height: 664)
+            .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
             }
-        }
-        .padding(30)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 46, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: 44, style: .continuous)
+                    .fill(.black.opacity(0.92))
+                    .shadow(color: .black.opacity(0.45), radius: 38, y: 18)
+            }
+            .overlay {
+                CustomPlayerChrome(controller: controller,
+                                   title: session.title ?? "Cinema Mode",
+                                   scrubState: $scrubState,
+                                   isReconnecting: false,
+                                   onRetry: { session.controller?.retry() },
+                                   onClose: nil)
+            }
+            .padding(30)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 46, style: .continuous))
+            .task(id: session.controller != nil) { await runCinemaClock(controller) }
     }
 
-    private func cinemaSkipButton(seconds: Int) -> some View {
-        let isForward = seconds > 0
-        let amount = abs(seconds)
-        return Button {
-            session.controller?.performRelativeUserSeek(bySeconds: seconds)
-        } label: {
-            Label(isForward ? "Forward \(amount) seconds" : "Back \(amount) seconds",
-                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
-                .labelStyle(.iconOnly)
+    private func runCinemaClock(_ controller: PlaybackController) async {
+        await MainActor.run {
+            tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
-        .disabled(session.controller == nil)
-        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(500))
+            await MainActor.run {
+                guard let controller = session.controller else { return }
+                tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
+            }
+        }
     }
 
     private var inactiveState: some View {
