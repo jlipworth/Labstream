@@ -215,24 +215,33 @@ public final class DownloadManager {
     }
 
     /// Retry a previously `.failed` download (D3/D5). We rebuild the source `MediaItem`
-    /// from the persisted `OfflineMetadata` snapshot (real type + the originally chosen
-    /// quality) and re-run the verified universal-transcode path. Rows persisted before
-    /// D5 lack a snapshot, so we fall back to a minimal movie at the default quality.
+    /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
+    /// re-run the probe-driven download path — re-probing so a now-compatible file goes
+    /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
     public func retry(ratingKey: String) {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         lastError[ratingKey] = nil
         let metadata = record.metadata
-        // Drop the stale `.failed` row so `optimizeAndDownload` re-seeds it cleanly;
-        // this also removes any leftover invalid file from the failed attempt.
+        // Drop the stale `.failed` row so the re-run re-seeds it cleanly; this also
+        // removes any leftover invalid file from the failed attempt.
         store.remove(ratingKey: ratingKey)
         refreshRecords()
         let item = metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
-        let quality = metadata?.quality.flatMap(DownloadQuality.init(rawValue:)) ?? .default
         let mediaIndex = metadata?.mediaIndex ?? 0
         let partIndex = metadata?.partIndex ?? 0
-        Task { await optimizeAndDownload(item, quality: quality,
-                                         mediaIndex: mediaIndex, partIndex: partIndex) }
+        // Re-probe so the retry takes the correct path: a now-compatible file goes direct,
+        // otherwise re-render via the optimizer (default "Optimized for TV" preset).
+        Task { [weak self] in
+            guard let self,
+                  let token = self.appModel.serverToken,
+                  let server = self.appModel.serverBaseURL else { return }
+            let probe = await self.directPlayProbe(for: item, server: server, token: token,
+                                                   mediaIndex: mediaIndex, partIndex: partIndex)
+            let choice: DownloadChoice = probe.direct ? .original
+                : .optimize(targetName: "Optimized for TV")
+            await self.download(item, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
+        }
     }
 
     /// Delete a download and its backing file.
@@ -375,48 +384,124 @@ public final class DownloadManager {
         return comps?.url
     }
 
-    // MARK: - Optimize trigger (HIGH UNCERTAINTY — isolated)
+    // MARK: - Optimize path (HIGH UNCERTAINTY — isolated; Phase 0 confirms the contract)
 
-    /// Trigger the server-side optimized (capped-bitrate) version of `item`.
+    /// Render a compatible MP4 server-side, poll for the rendered Part, then download it.
     ///
-    /// // TODO(live): verify optimize endpoint + targetTagID against the live
-    /// server (research/11). PMSKit's `OptimizeRequest.create` encodes a
-    /// BEST-EFFORT contract: a flat `PUT /library/optimize` carrying
-    /// `title`/`target`/`targetTagID` plus python-plexapi's nested `Item[...]`
-    /// MediaSettings params. The REAL Plex optimize is NOT this static PUT — it
-    /// posts to `{backgroundProcessing.key}/items`, where `backgroundProcessing.key`
-    /// is fetched at runtime from `/playlists?type=42` (the background-processing
-    /// playlist), and `targetTagID` is a SERVER-SPECIFIC id resolved from the
-    /// server's `mediaProcessingTarget` tag list — NOT the conventional `2` we use
-    /// for the 8 Mbps/1080p "Optimized for TV" preset here.
+    /// Real contract (python-plexapi `Video.optimize`), implemented to the best-known shape:
+    ///   1. GET /playlists?type=42  → read `backgroundProcessing.key` (e.g. /playlists/9/items)
+    ///   2. GET /media/processing/targets → resolve the chosen preset NAME to its server
+    ///      `targetTagID` (NOT a hardcoded 2/1/3; those are version-specific)
+    ///   3. POST {key}  with the Item[...] grammar
+    ///   4. poll item metadata for the new Part, then download it (static file, real size).
     ///
-    /// This method is the ONLY place that path lives. To go live:
-    ///   1. GET `/playlists?type=42` -> read `backgroundProcessing.key`,
-    ///   2. resolve the real `targetTagID` from the server's target tags,
-    ///   3. PUT to `{key}/items` with the `Item[...]` grammar.
-    /// None of the rest of the pipeline changes.
-    ///
-    /// NOT VERIFIED against a live server. A non-2xx here is reported as
-    /// `.optimizeFailed`; the caller still polls metadata so that if optimize was
-    /// already triggered out-of-band the existing optimized part is picked up.
-    private func triggerOptimize(item: MediaItem,
-                                 server: URL,
-                                 token: String,
-                                 identity: ClientIdentity) async throws {
-        let request = OptimizeRequest.create(
-            server: server,
-            token: token,
-            identity: identity,
-            ratingKey: item.ratingKey,
-            title: item.title,
-            targetTagID: .tv1080p8Mbps      // 8 Mbps 1080p preset (tagID best-effort = 2)
-        )
+    /// // TODO(live, Phase 0): the background-processing key, the targets endpoint/shape, and
+    /// the accepted POST grammar are confirmed by `scripts/live-optimize-probe.sh`. Until then
+    /// this is the best-known contract and is NOT live-verified. Failures are recorded as
+    /// `.optimizeFailed`; we still poll metadata so an out-of-band optimized part is picked up.
+    private func triggerOptimizeAndDownload(item: MediaItem, targetName: String,
+                                            metadata: OfflineMetadata,
+                                            server: URL, token: String) async {
+        let ratingKey = item.ratingKey
+        let identity = appModel.identity
+        // Seed a 0% record so the UI shows the job immediately while we set up the optimize.
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                                    bytes: 0, progress: 0, metadata: metadata))
+        refreshRecords()
+
         do {
-            try await appModel.client.send(request)
-        } catch let error as PlexError {
-            // Don't hard-fail: the optimized part may already exist on the server.
-            // We log the optimize-trigger failure but proceed to poll metadata.
-            throw DownloadError.optimizeFailed(String(describing: error))
+            try await triggerOptimize(item: item, targetName: targetName,
+                                      server: server, token: token, identity: identity)
+            let part = try await pollForOptimizedPart(ratingKey: ratingKey, server: server,
+                                                      token: token, identity: identity)
+            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
+            let destination = store.destinationURL(ratingKey: ratingKey,
+                                                   ext: ext.isEmpty ? "mp4" : ext)
+            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                        localURL: destination, bytes: 0, progress: 0,
+                                        metadata: metadata))
+            refreshRecords()
+            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
+            try session.start(ratingKey: ratingKey, from: url, to: destination,
+                              expectedBytes: part.size)
+            refreshRecords()
+        } catch let error as DownloadError {
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        } catch {
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        }
+    }
+
+    /// Steps 1–3 of the optimize contract: fetch the background-processing key, resolve the
+    /// target tag id from the server's targets, POST the optimize job. Isolated so the live
+    /// (server-specific) path is the only thing Phase 0 needs to confirm.
+    private func triggerOptimize(item: MediaItem, targetName: String,
+                                 server: URL, token: String,
+                                 identity: ClientIdentity) async throws {
+        // 1. Background-processing playlist key.
+        let bgKey: String
+        do {
+            let pl = try await appModel.client.send(
+                OptimizeRequest.backgroundProcessingRequest(server: server, token: token, identity: identity),
+                as: BackgroundProcessingPlaylist.self)
+            guard let key = pl.key else {
+                throw DownloadError.optimizeFailed("No background-processing playlist key.")
+            }
+            bgKey = key
+        } catch let e as DownloadError {
+            throw e
+        } catch {
+            throw DownloadError.optimizeFailed("playlists?type=42: \(String(describing: error))")
+        }
+
+        // 2. Resolve the chosen preset NAME to the server's targetTagID. If the targets
+        //    endpoint isn't available, fall back to the conventional id so the POST still
+        //    has a value (Phase 0 will confirm whether that's accepted).
+        var targetTagID = Self.conventionalTagID(forName: targetName)
+        if let targets = try? await appModel.client.send(
+            OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token, identity: identity),
+            as: MediaProcessingTargets.self),
+           let resolved = targets.tagID(forName: targetName) {
+            targetTagID = resolved
+        }
+
+        // 3. POST the optimize job to the background-processing playlist.
+        let settings = Self.mediaSettings(forTargetName: targetName)
+        let create = OptimizeRequest.createOnPlaylist(
+            server: server, token: token, identity: identity,
+            backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
+            title: item.title, targetTagID: targetTagID, mediaSettings: settings)
+        do {
+            try await appModel.client.send(create)
+        } catch {
+            throw DownloadError.optimizeFailed("optimize POST: \(String(describing: error))")
+        }
+    }
+
+    /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
+    /// targets endpoint resolves them). Phase 0 confirms the real ids.
+    private static func conventionalTagID(forName name: String) -> Int {
+        switch name.lowercased() {
+        case "optimized for mobile": return 1
+        case "original quality":     return 3
+        default:                     return 2   // "Optimized for TV"
+        }
+    }
+
+    /// Best-known render settings per preset name (fallback caps; the server preset governs).
+    private static func mediaSettings(forTargetName name: String) -> OptimizeRequest.MediaSettings {
+        switch name.lowercased() {
+        case "optimized for mobile":
+            return .init(videoQuality: 100, maxVideoBitrateKbps: 2000, videoResolution: "1280x720")
+        case "original quality":
+            return .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil)
+        default:
+            return .init(videoQuality: 100, maxVideoBitrateKbps: 8000, videoResolution: "1920x1080")
         }
     }
 
