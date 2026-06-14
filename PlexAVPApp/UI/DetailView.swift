@@ -31,7 +31,7 @@ struct DetailView: View {
 
     /// The item currently being PLAYED in the cover. Starts as the detail item, but the
     /// Up Next autoplay (#15) swaps it to the next episode while keeping the cover up — the
-    /// `.id` keyed on its `ratingKey` makes `PlayerView` + its controller rebuild for the
+    /// `.id` keyed on its `ratingKey` makes `CustomPlayerView` + its controller rebuild for the
     /// new episode. `nil` until the player is first presented.
     @State private var playingItem: MediaItem?
 

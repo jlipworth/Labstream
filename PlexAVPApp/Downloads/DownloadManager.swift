@@ -16,7 +16,7 @@ let downloadLog = Logger(subsystem: "com.jlipworth.VisionPlex", category: "Downl
 ///   3. fetch that part over a **background** `URLSession` into Application Support,
 ///   4. record it in `DownloadStore` (ratingKey -> local file, size, progress).
 ///
-/// Offline playback reuses the Task 11 player via `PlayerView(localFile:item:)`.
+/// Offline playback reuses the custom player via `CustomPlayerView(localFile:item:)`.
 ///
 /// The optimize trigger is the highest-uncertainty area in the whole app — see
 /// `triggerOptimize(...)`. It is isolated behind that single method so the live
