@@ -215,6 +215,11 @@ metadata, and review-specific release automation can be handled in a later publi
   `.fullScreenCover`, like other native players.
 - **Server:** configured per-user at sign-in (a Cloudflare-fronted PMS over `:443`). The real
   hostname/LAN IP are intentionally kept out of the repo.
+- **No volume control in the MiniPlayerBar (deliberate, MUSIC-DESIGN scope fence):** visionOS
+  Digital Crown + system volume own loudness; an AVPlayer-level slider would diverge from the
+  system volume. The bar's 3-pt progress hairline is likewise **passive** — a 3-pt drag target
+  violates the 60-pt gaze rule; scrubbing lives in the Now Playing sheet (a hover-growing thin
+  scrubber is a possible v2 trial).
 
 ## Conventions
 

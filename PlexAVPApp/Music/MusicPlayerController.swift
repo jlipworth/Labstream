@@ -271,6 +271,109 @@ final class MusicPlayerController {
         startTrack(at: index)
     }
 
+    // MARK: - Queue mutation (#17 Phase 4)
+
+    // The index bookkeeping lives in PMSKit's pure `QueueMutation` helpers
+    // (unit-tested there); this section only snapshots state in, applies the
+    // result, and performs whatever playback side effect the math dictates.
+
+    /// "Play Next": insert `tracks` immediately after the current track in both
+    /// display and traversal order. With nothing loaded this just starts playing
+    /// them (matching the system-music expectation).
+    func playNext(_ tracks: [MediaItem]) {
+        guard !tracks.isEmpty else { return }
+        guard current != nil else {
+            play(tracks: tracks, startingAt: 0)
+            return
+        }
+        apply(QueueMutation.playNext(tracks, in: mutationState))
+    }
+
+    /// "Add to Queue": append `tracks` to the END of the queue and of the
+    /// traversal — even under shuffle, deliberately (dead-simple semantics,
+    /// MUSIC-DESIGN §4.3). Starts playback when nothing is loaded.
+    func addToQueue(_ tracks: [MediaItem]) {
+        guard !tracks.isEmpty else { return }
+        guard current != nil else {
+            play(tracks: tracks, startingAt: 0)
+            return
+        }
+        apply(QueueMutation.addToQueue(tracks, in: mutationState))
+    }
+
+    /// Remove the queue row at `queueIndex` (display order). Removing the
+    /// playing track advances to its traversal successor (no wrap — mirrors the
+    /// failure-advance rule); removing it with nothing upcoming stops playback
+    /// but keeps the remaining queue visible.
+    func remove(at queueIndex: Int) {
+        let (state, effect) = QueueMutation.remove(at: queueIndex, from: mutationState)
+        switch effect {
+        case .none:
+            apply(state)
+        case .playTrack(let nextIndex):
+            apply(state)
+            startTrack(at: nextIndex)
+        case .stopPlayback:
+            if state.queue.isEmpty {
+                stop()
+            } else {
+                haltPlaybackKeepingQueue()
+                apply(state)
+            }
+        }
+    }
+
+    /// Display-order reorder (`List.onMove` offset semantics — also what the
+    /// queue's Move Up/Down menu actions feed in). `currentIndex` follows its
+    /// track. Shuffle off → the traversal becomes the new display order; shuffle
+    /// on → the traversal is rebuilt (current first, rest reshuffled).
+    func move(fromOffsets source: IndexSet, toOffset destination: Int) {
+        let state = QueueMutation.move(fromOffsets: source, toOffset: destination,
+                                       in: mutationState)
+        if shuffleEnabled {
+            queue = state.queue
+            currentIndex = state.currentIndex
+            rebuildPlayOrder(currentFirst: state.currentIndex ?? 0)
+        } else {
+            apply(state)
+        }
+    }
+
+    /// "Clear queue": drop everything except the current track.
+    func clearUpcoming() {
+        guard !queue.isEmpty else { return }
+        apply(QueueMutation.clearUpcoming(in: mutationState))
+    }
+
+    /// Snapshot of the bookkeeping for the pure mutation helpers.
+    private var mutationState: QueueMutation.State<MediaItem> {
+        .init(queue: queue, playOrder: playOrder, currentIndex: currentIndex)
+    }
+
+    /// Write a mutated snapshot back into the observable state.
+    private func apply(_ state: QueueMutation.State<MediaItem>) {
+        queue = state.queue
+        playOrder = state.playOrder
+        currentIndex = state.currentIndex
+    }
+
+    /// Silence playback WITHOUT the full `stop()` teardown: used when the
+    /// playing track is removed and nothing follows it — the rest of the queue
+    /// stays visible so the user can tap another row (which goes through
+    /// `jump(to:)`/`startTrack` and re-stands everything up).
+    private func haltPlaybackKeepingQueue() {
+        reporter?.report(state: .stopped, force: true)
+        reporter = nil
+        removeTrackObservers()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        isPlaying = false
+        elapsedSeconds = 0
+        currentArtwork = nil
+        atQueueEnd = false
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
     /// Tear down playback entirely: final `.stopped` report, all observers and remote-
     /// command targets removed, the player emptied, the audio session released (notifying
     /// other audio apps), and the queue cleared.

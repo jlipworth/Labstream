@@ -162,6 +162,15 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// Aggregate rating count (PMS `ratingCount`) — the popularity signal behind
     /// an artist's Popular tracks.
     public let ratingCount: Int?
+    /// Playlist mosaic artwork path (PMS `composite`, e.g.
+    /// `/playlists/{rk}/composite/{ts}`). Playlists carry no `thumb` of their own.
+    public let composite: String?
+    /// Number of leaf items in a container (PMS `leafCount`) — on a playlist,
+    /// its track count ("N tracks" in the pivot rows).
+    public let leafCount: Int?
+    /// Playlist flavor (PMS `playlistType`: `audio` / `video` / `photo`). Routing
+    /// uses it to keep video playlists OUT of the music module.
+    public let playlistType: String?
 
     public var id: String { ratingKey }
 
@@ -196,6 +205,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case lastViewedAt
         case parentYear
         case ratingCount
+        case composite
+        case leafCount
+        case playlistType
     }
 
     public init(ratingKey: String,
@@ -227,7 +239,10 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 originalTitle: String? = nil,
                 lastViewedAt: Int? = nil,
                 parentYear: Int? = nil,
-                ratingCount: Int? = nil) {
+                ratingCount: Int? = nil,
+                composite: String? = nil,
+                leafCount: Int? = nil,
+                playlistType: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -258,6 +273,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.lastViewedAt = lastViewedAt
         self.parentYear = parentYear
         self.ratingCount = ratingCount
+        self.composite = composite
+        self.leafCount = leafCount
+        self.playlistType = playlistType
     }
 }
 
