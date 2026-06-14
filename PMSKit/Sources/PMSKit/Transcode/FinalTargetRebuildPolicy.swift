@@ -5,7 +5,9 @@ import Foundation
 /// VisionPlex records many seek targets while AVKit/user scrubbing is noisy, but PMS must only
 /// see an intentional rebuild for the latest settled target. This type owns that small piece of
 /// state and the restart budget so the app cannot accidentally start concurrent rebuild pipelines
-/// or silently hammer PMS after repeated failures.
+/// or silently hammer PMS after repeated failures. The default budget is slightly roomier than the
+/// lower-level restart helper because the custom scrubber emits committed release targets rather
+/// than every transient playhead tick; a normal double-scrub should not look like a server failure.
 public struct FinalTargetRebuildPolicy: Sendable, Equatable {
     public enum Decision: Sendable, Equatable {
         case start(generation: Int, offsetMs: Int)
@@ -20,7 +22,7 @@ public struct FinalTargetRebuildPolicy: Sendable, Equatable {
     private var nextGeneration = 1
 
     public init(budget: SeekRestartBudget = SeekRestartBudget(cooldownSeconds: 2,
-                                                              burstLimit: 3,
+                                                              burstLimit: 5,
                                                               burstWindowSeconds: 60)) {
         self.budget = budget
     }
