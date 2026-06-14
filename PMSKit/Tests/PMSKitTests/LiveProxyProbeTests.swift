@@ -114,20 +114,31 @@ struct LiveProxyProbeTests {
             print(">>> PROXY skipped: set PLEX_LIVE_SERVER / PLEX_LIVE_TOKEN / PLEX_LIVE_METADATA_KEY to run.")
             return
         }
-        let transcode = TranscodeRequest(
+        let sessionID = "live-proxy-\(UUID().uuidString)"
+        let mediaRequest = MediaSessionRequest(
             server: cfg.server, token: cfg.token, identity: cfg.identity,
             metadataKey: cfg.metadataKey, maxVideoBitrateKbps: cfg.maxVideoBitrateKbps,
-            sessionID: "live-proxy-\(UUID().uuidString)",
-            mediaIndex: cfg.mediaIndex, partIndex: cfg.partIndex,
-            startOffsetSeconds: cfg.offsetSeconds)
-        let startURL = transcode.startM3U8URL()
+            sessionID: sessionID, mediaIndex: cfg.mediaIndex, partIndex: cfg.partIndex,
+            burnSubtitleStreamID: nil, directStreamEnabled: false)
 
         print(String(format: ">>> PROXY probe: offset=%ds cap=%dkbps — fronting live PMS through the app-owned loopback origin.",
                      cfg.offsetSeconds, cfg.maxVideoBitrateKbps))
 
-        // The real proxy fronting the LIVE server (default trust works for *.plex.direct).
-        let proxy = MediaSessionProxy(timeout: 30)
-        let handle = try await proxy.open(origin: startURL)
+        // The real proxy fronting the LIVE server (default trust works for *.plex.direct). The
+        // control plane is a plain ephemeral session that folds PlexRequest.queryItems into the
+        // URL (exactly what PlexClient.send does in the app).
+        let controlSession = URLSession(configuration: .ephemeral)
+        let proxy = MediaSessionProxy(timeout: 30, controlSend: { req in
+            var comps = URLComponents(url: req.url, resolvingAgainstBaseURL: false)!
+            if !req.queryItems.isEmpty { comps.queryItems = (comps.queryItems ?? []) + req.queryItems }
+            var urlReq = URLRequest(url: comps.url!)
+            urlReq.httpMethod = req.method
+            for (k, v) in req.headers { urlReq.setValue(v, forHTTPHeaderField: k) }
+            urlReq.httpBody = req.body
+            let (data, _) = try await controlSession.data(for: urlReq)
+            return data
+        })
+        let handle = try await proxy.open(mediaRequest, offsetMs: cfg.offsetSeconds * 1000)
         print(String(format: ">>> PROXY open: loopback=%@", handle.localURL.absoluteString))
         let client = makeClientSession()
 
@@ -178,12 +189,36 @@ struct LiveProxyProbeTests {
         let seg = await fetch(client, "segment@\(Int(timed[startIdx].start))s", segURL)
         let realMedia = seg.map { (200...299).contains($0.status) && $0.data.first == 0x47 && $0.data.count > 2_000 } ?? false
 
+        // 4) Re-prime via the proxy's OWN seek to a deeper offset (#33 Stage 2). This drives the
+        //    coalescing re-prime against the LIVE server: stop previous transcode → fresh
+        //    decision at the new offset → new loopback URL. Then fetch start.m3u8 through the new
+        //    URL to prove the re-primed media plane forwards. A second offset 600s past the first
+        //    (clamped so we don't run past short items is the caller's concern via the env knob).
+        let secondOffsetSeconds = cfg.offsetSeconds + 600
+        let seekHandle: MediaSessionHandle
+        do {
+            seekHandle = try await proxy.seek(to: secondOffsetSeconds * 1000)
+            print(String(format: ">>> PROXY seek: re-primed to %ds, loopback=%@",
+                         secondOffsetSeconds, seekHandle.localURL.absoluteString))
+        } catch {
+            print(">>> PROXY VERDICT: seek re-prime threw — \(String(describing: error)).")
+            await proxy.stop(generation: handle.generation); return
+        }
+        let reprimedOK = (seekHandle.generation > handle.generation)
+            && seekHandle.localURL.absoluteString.contains("offset=\(secondOffsetSeconds)")
+        let seekStart = await fetch(client, "start.m3u8@reprime", seekHandle.localURL)
+        let seekForwarded = seekStart.map {
+            (200...299).contains($0.status) && (String(data: $0.data, encoding: .utf8)?.contains("#EXTM3U") ?? false)
+        } ?? false
+
         let status = await proxy.status()
-        if realMedia {
-            print(">>> PROXY VERDICT: PROXY OK — start.m3u8, the variant playlist, and the primed segment all forwarded through the loopback to the live server (rotateCount=\(status.rotateCount)). The app-owned media plane is a correct transparent forwarder.")
+        if realMedia && reprimedOK && seekForwarded {
+            print(">>> PROXY VERDICT: PROXY OK — initial forward + a proxy-owned re-prime seek (new offset, new loopback URL, start.m3u8 forwarded) both succeeded against the live server (rotateCount=\(status.rotateCount)). Stage-2 seek is a correct re-prime.")
+        } else if realMedia && !seekForwarded {
+            print(">>> PROXY VERDICT: initial forward OK but the re-primed start.m3u8 did NOT forward (reprimedOK=\(reprimedOK)) — Stage-2 seek re-prime is broken.")
         } else {
             print(">>> PROXY VERDICT: forwarding works but the offset segment was empty/stub (rotateCount=\(status.rotateCount)) — a PMS prime issue (see LiveSegmentProbe), not a proxy fault.")
         }
-        await proxy.stop(generation: handle.generation)
+        await proxy.stop(generation: seekHandle.generation)
     }
 }
