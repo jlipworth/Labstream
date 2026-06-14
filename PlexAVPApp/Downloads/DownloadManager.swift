@@ -551,6 +551,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var inflight: [Int: (ratingKey: String, destination: URL)] = [:]
     /// taskIdentifiers whose expected-size has already been logged once (diagnostics).
     private var loggedExpectation: Set<Int> = []
+    /// Retry count by ratingKey for transient URLSession drops that provide resume data.
+    private var retryCounts: [String: Int] = [:]
+    private let maxTransientRetries = 3
     private let lock = NSLock()
 
     /// Called on any progress/completion so the manager can refresh records.
@@ -668,6 +671,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         let task = urlSession.downloadTask(with: url)
         lock.lock()
+        retryCounts[ratingKey] = 0
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
         downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(url.path, privacy: .public)")
@@ -739,6 +743,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         func fail(_ reason: String) {
             downloadLog.error("invalid-download ratingKey=\(entry.ratingKey, privacy: .public) reason=\(reason, privacy: .public)")
             try? fileManager.removeItem(at: entry.destination)
+            lock.lock()
+            retryCounts.removeValue(forKey: entry.ratingKey)
+            lock.unlock()
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .invalidDownload(reason))
             onChange?()
@@ -812,10 +819,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if playable {
                 // Validated: mark explicitly complete (D2) so a relaunch trusts it.
                 downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
+                self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
                 downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=not-playable bytes=\(bytes, privacy: .public)")
                 try? self.fileManager.removeItem(at: destination)
+                self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.onError?(ratingKey, .invalidDownload("Downloaded file isn't a playable video container."))
             }
@@ -835,14 +844,68 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
         if nsError.code != NSURLErrorCancelled {
+            if retryTransientFailure(nsError, task: task, entry: entry) {
+                return
+            }
             downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+            lock.lock()
+            retryCounts.removeValue(forKey: entry.ratingKey)
+            lock.unlock()
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
         } else {
+            lock.lock()
+            retryCounts.removeValue(forKey: entry.ratingKey)
+            lock.unlock()
             downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
         }
         onChange?()
     }
+
+    private func clearRetryCount(ratingKey: String) {
+        lock.lock()
+        retryCounts.removeValue(forKey: ratingKey)
+        lock.unlock()
+    }
+
+    /// Resume transient transfer drops before surfacing a failed row. Plex/static-file
+    /// downloads can start successfully and then lose the TCP stream mid-body (`-1005`);
+    /// URLSession gives us resume data in that case, so failing immediately throws away
+    /// exactly the recovery mechanism the OS provides.
+    private func retryTransientFailure(_ error: NSError,
+                                       task: URLSessionTask,
+                                       entry: (ratingKey: String, destination: URL)) -> Bool {
+        guard error.domain == NSURLErrorDomain,
+              Self.transientDownloadErrorCodes.contains(error.code),
+              let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
+              !resumeData.isEmpty else { return false }
+
+        lock.lock()
+        let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1
+        guard nextAttempt <= maxTransientRetries else {
+            lock.unlock()
+            return false
+        }
+        retryCounts[entry.ratingKey] = nextAttempt
+        lock.unlock()
+
+        let retryTask = urlSession.downloadTask(withResumeData: resumeData)
+        lock.lock()
+        inflight[retryTask.taskIdentifier] = entry
+        lock.unlock()
+        downloadLog.error("transfer-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+        retryTask.resume()
+        onChange?()
+        return true
+    }
+
+    private static let transientDownloadErrorCodes: Set<Int> = [
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorTimedOut,
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorCannotFindHost,
+        NSURLErrorDNSLookupFailed
+    ]
 
     /// Called when the background session has delivered all events queued while the
     /// app was suspended/terminated (after a relaunch). We invoke the system-supplied
