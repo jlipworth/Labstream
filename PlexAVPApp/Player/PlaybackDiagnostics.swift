@@ -26,6 +26,8 @@ final class PlaybackDiagnostics {
     var audioCodec: String = "—"
     /// Source container (e.g. "mkv"), from the chosen `Media`.
     var container: String = "—"
+    /// Source media bitrate (kbps), when PMS exposes it on the chosen Media row.
+    var sourceBitrateKbps: Int = 0
     /// Whether PMS decided to transcode (vs direct play / direct stream).
     var isTranscoding: Bool = false
     /// Human-readable PMS decision text, when provided.
@@ -60,6 +62,26 @@ final class PlaybackDiagnostics {
         }
     }
 
+    /// Best estimate of the bitrate the network must sustain for the active stream.
+    /// For Original/Direct Play, the source bitrate is the useful comparison. For capped
+    /// transcodes, the requested cap is what PMS should be trying not to exceed. Fall back to
+    /// AVFoundation's indicated variant bitrate when Plex metadata has no bitrate.
+    var requiredBitrateKbps: Double {
+        if targetBitrateKbps > 0 { return Double(targetBitrateKbps) }
+        if sourceBitrateKbps > 0 { return Double(sourceBitrateKbps) }
+        return indicatedBitrateKbps
+    }
+
+    /// Message for the #32 presentation-only bandwidth toast. The chrome still decides when to
+    /// display/debounce it; diagnostics only answers whether the latest AccessLog sample is
+    /// materially below the bitrate the selected quality needs.
+    var bandwidthMismatchMessage: String? {
+        let required = requiredBitrateKbps
+        guard observedBitrateKbps > 0, required > 0 else { return nil }
+        guard observedBitrateKbps < required * 0.80 else { return nil }
+        return "Observed bandwidth ~\(Self.mbps(observedBitrateKbps)) may not sustain this quality (~\(Self.mbps(required))). Consider lowering quality."
+    }
+
     // MARK: Updates
 
     /// Seed the static facts from the Plex item + transcode decision. Token is never read.
@@ -68,11 +90,13 @@ final class PlaybackDiagnostics {
                      decision: DecisionResponse?,
                      server: URL?,
                      targetBitrateKbps: Int) {
+        sourceBitrateKbps = 0
         if let mediaItems = item.media,
            let media = mediaItems.indices.contains(mediaIndex) ? mediaItems[mediaIndex] : mediaItems.first {
             if let w = media.width, let h = media.height {
                 sourceResolution = "\(w)×\(h)"
             }
+            sourceBitrateKbps = media.bitrate ?? 0
             videoCodec = media.videoCodec ?? "—"
             audioCodec = media.audioCodec ?? "—"
             container = media.container ?? "—"
@@ -100,6 +124,14 @@ final class PlaybackDiagnostics {
     /// to each stream — copy (remux) vs transcode (re-encode) — which the decision
     /// response carries per stream. Prefer that; fall back to the part decision, then the
     /// raw English text, then "—".
+    private static func mbps(_ kbps: Double) -> String {
+        let mbps = kbps / 1000
+        if mbps >= 10 {
+            return String(format: "%.0f Mbps", mbps)
+        }
+        return String(format: "%.1f Mbps", mbps)
+    }
+
     private static func composeDecisionText(_ decision: DecisionResponse) -> String {
         func friendly(_ s: String?) -> String? {
             guard let s = s?.lowercased(), !s.isEmpty else { return nil }
