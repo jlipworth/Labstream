@@ -87,9 +87,8 @@ final class PlaybackController {
     /// owns its proxy/transcode resolver, while other backends can hand us a concrete stream URL.
     private let remoteStreamURL: URL?
 
-    /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin typically puts auth in the
-    /// returned URL (`api_key`), but `MediaSourceInfo.RequiredHttpHeaders` exists and should be
-    /// threaded through when present.
+    /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin playback tokens must stay in
+    /// headers rather than URL query parameters so client logs/history never capture URL tokens.
     private let remoteHTTPHeaders: [String: String]
     private let onStopRemoteSession: (() -> Void)?
     private var didStopRemoteSession = false
