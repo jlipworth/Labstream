@@ -18,6 +18,7 @@ struct SettingsView: View {
 
     @State private var rediscovering = false
     @State private var confirmingSignOut = false
+    @State private var confirmingReset = false
     @State private var connectionStatus: ConnectionStatus = .unknown
     /// Transient "done" feedback for the one-shot maintenance/About actions.
     @State private var clearedImageCache = false
@@ -69,27 +70,10 @@ struct SettingsView: View {
                 Label("Require bandwidth headroom", systemImage: "speedometer")
             }
             .disabled(!directStreamEnabled)
-            Button {
-                // Clears speed + subtitle/audio-language keys (single source of truth in
-                // PlaybackController). Deliberately leaves `maxVideoBitrateKbps` alone —
-                // the picker above owns it.
-                let defaults = UserDefaults.standard
-                for key in PlaybackController.persistedPreferenceKeys {
-                    defaults.removeObject(forKey: key)
-                }
-                resetPlaybackPrefs = true
-            } label: {
-                if resetPlaybackPrefs {
-                    Label("Preferences reset", systemImage: "checkmark")
-                } else {
-                    Label("Reset playback preferences", systemImage: "arrow.counterclockwise")
-                }
-            }
-            .disabled(resetPlaybackPrefs)
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server. The headroom gate is stricter: when enabled, Direct Stream only starts after a recent throughput sample exceeds the source bitrate by 25%. Reset clears the remembered playback speed and subtitle/audio language; streaming quality is unaffected.")
+            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server. The headroom gate is stricter: when enabled, Direct Stream only starts after a recent throughput sample exceeds the source bitrate by 25%.")
         }
     }
 
@@ -268,6 +252,39 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         SwiftUI.Section {
+            // Reset lives down here next to Sign Out: both are rarely-used, destructive-ish
+            // account actions, so they're grouped away from the everyday playback toggles.
+            Button(role: .destructive) {
+                confirmingReset = true
+            } label: {
+                if resetPlaybackPrefs {
+                    Label("Preferences reset", systemImage: "checkmark")
+                } else {
+                    Label("Reset playback preferences", systemImage: "arrow.counterclockwise")
+                }
+            }
+            .disabled(resetPlaybackPrefs)
+            // Reset silently throws away remembered choices, so confirm first.
+            .confirmationDialog(
+                "Reset playback preferences?",
+                isPresented: $confirmingReset,
+                titleVisibility: .visible
+            ) {
+                Button("Reset", role: .destructive) {
+                    // Clears speed + subtitle/audio-language keys (single source of truth in
+                    // PlaybackController). Deliberately leaves `maxVideoBitrateKbps` alone —
+                    // the Streaming quality picker owns it.
+                    let defaults = UserDefaults.standard
+                    for key in PlaybackController.persistedPreferenceKeys {
+                        defaults.removeObject(forKey: key)
+                    }
+                    resetPlaybackPrefs = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Clears the remembered playback speed and subtitle/audio language. Streaming quality is unaffected.")
+            }
+
             Button(role: .destructive) {
                 confirmingSignOut = true
             } label: {
