@@ -20,7 +20,7 @@ import PMSKit
 @MainActor
 final class PlaybackController {
 
-    /// The player the `AVPlayerViewController` is bound to.
+    /// The `AVPlayer` the custom player (its `AVPlayerLayer`) is bound to.
     let player = AVPlayer()
 
     /// Live diagnostics for the "Stats for Nerds" overlay. Always present; the panel
