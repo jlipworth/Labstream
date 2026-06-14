@@ -1,7 +1,7 @@
 # VisionPlex player reset: final-target rebuild, no retry storms
 
 Date: 2026-06-14
-Status: approved direction, pending implementation plan
+Status: implemented in app path
 Scope: replace the failed Stage-3 proxy-owned segment seek design with a simpler, server-safe player model.
 
 ## Background
@@ -60,7 +60,14 @@ Use a visible but reliable final-target reload model:
 
 The intelligent Stage-3 proxy is removed from seek recovery.
 
-Acceptable proxy options during implementation, in order of preference:
+Chosen proxy option:
+
+- **Remove proxy from the default seek/playback path.** `PlaybackController` resolves PMS
+  decision/start URLs directly and loads those URLs into AVKit. The remaining `MediaSessionProxy`
+  code is reduced to package-level forwarding/socket-rotation coverage only; it does not own seek
+  recovery and no app code references it.
+
+Acceptable future proxy options, in order of preference:
 
 1. **Remove proxy from the default seek path.** Use direct PMS start URLs for rebuilt player items.
 2. **Keep a minimal proxy only behind a debug/experiment flag.** It may forward bytes or test socket rotation, but it must not own seek recovery or trigger PMS re-primes from segment requests.

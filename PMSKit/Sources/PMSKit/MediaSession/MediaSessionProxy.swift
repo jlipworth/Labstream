@@ -1,13 +1,10 @@
 import Foundation
 
-/// Player-agnostic media session service (#33). Interposes an app-owned loopback HTTP origin
-/// between the renderer and PMS so the media plane becomes recoverable (transparent upstream
-/// rotate). The renderer consumes `localURL` and reports events; no AVFoundation types cross
-/// this boundary.
-///
-/// Stage 1 scope: `open` fronts an already-resolved PMS `start.m3u8` URL; `seek` is a
-/// pass-through (AVKit still seeks natively); `stop` tears down the loopback. Owning the
-/// decision/probe build and re-priming seeks is Stage 2.
+/// Player-agnostic loopback media forwarder (#33 experiment). It can interpose an app-owned
+/// HTTP origin between a renderer and PMS so the media plane can rotate a wedged upstream socket.
+/// The production player no longer uses this for seek recovery; deep seeks rebuild direct PMS
+/// player items instead, so this proxy must stay a minimal forwarding experiment and must not
+/// trigger PMS re-primes from segment requests.
 public actor MediaSessionProxy {
     private let origin = LoopbackOrigin()
     private let upstreamFetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
@@ -15,31 +12,17 @@ public actor MediaSessionProxy {
     private var connection: UpstreamConnection?
     private var current: MediaSessionHandle?
 
-    // --- Stage 2: control plane + Plex-aware open/seek ---
-    /// App-injected control-plane transport. The proxy builds PMSKit `PlexRequest`s
-    /// (decision/probe/stop) and sends them through this; the app wires it to `PlexClient`
-    /// (which is app-layer and must not be imported here).
+    /// App-injected control-plane transport. The proxy builds PMSKit `PlexRequest`s for the
+    /// optional open-time decision/probe and sends them through this; the app wires it to
+    /// `PlexClient` (which is app-layer and must not be imported here).
     private let controlSend: @Sendable (PlexRequest) async throws -> Data
-    /// Monotonic clock for the reprime budget (injected for deterministic tests).
-    private let now: @Sendable () -> TimeInterval
     private let decoder = JSONDecoder()
-    /// The active Plex-aware request, retained so a re-prime can rebuild the stream URL.
-    private var request: MediaSessionRequest?
     /// The most recent PMS decision (for the player's Stats overlay via `currentDecision()`).
     private var lastDecision: DecisionResponse?
-    /// The loopback base (`http://127.0.0.1:<port>`), persisted across re-primes: the listener,
-    /// mapper and rewriter are keyed on the (unchanged) upstream PMS host, so a re-prime only
-    /// recomputes `localURL` for the new `start.m3u8` offset query against this base.
+    /// The loopback base (`http://127.0.0.1:<port>`) for the current forwarding session.
     private var loopbackBase: URL?
-    /// Strictly increasing handle generation across `open` AND every re-prime.
+    /// Strictly increasing handle generation across `open` calls.
     private var generationCounter = 0
-    /// Rate-limit policy for re-primes (#27). Lean params: re-prime itself takes ~2s (the
-    /// stop+decision), so the short cooldown rarely defers a legitimate second drag; only a
-    /// genuine burst escalates. Reset on each `open` (a fresh session re-earns self-healing).
-    private var reprimeBudget = SeekRestartBudget(cooldownSeconds: 2, burstLimit: 5, burstWindowSeconds: 60)
-    /// Single-flight re-prime task + the latest pending target (latest-wins coalescing).
-    private var reprimeTask: Task<MediaSessionHandle, Error>?
-    private var pendingLatestOffsetMs: Int?
 
     /// Production initializer: build the upstream `URLSession` from `mediaUpstream`, mirroring
     /// the app's trust posture (default trust works for `*.plex.direct`; pass a host-scoped
@@ -55,36 +38,25 @@ public actor MediaSessionProxy {
         self.upstreamFetch = { req in try await box.fetch(req) }
         self.rebuildUpstream = { box.rebuild() }
         self.controlSend = controlSend
-        self.now = now
+        _ = now
     }
 
     /// Test initializer: inject the upstream fetcher directly (no live session). `controlSend`
-    /// defaults to a no-op (transport tests don't exercise the decision path); `now` defaults
-    /// to real uptime but is overridable for deterministic budget tests. `rebuild` is a no-op
-    /// because there is no real socket to rotate; the rotate *count* still increments.
+    /// defaults to a no-op (transport tests don't exercise the decision path). `rebuild` is a
+    /// no-op because there is no real socket to rotate; the rotate *count* still increments.
     init(upstreamFetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse),
          controlSend: @escaping @Sendable (PlexRequest) async throws -> Data = { _ in Data() },
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.upstreamFetch = upstreamFetch
         self.rebuildUpstream = {}
         self.controlSend = controlSend
-        self.now = now
+        _ = now
     }
 
-    /// Plex-aware open (#33 Stage 2): resolve the stream URL (decision/probe owned HERE) at
-    /// `offsetMs`, then stand up the loopback fronting it. Cancels any in-flight re-prime and
-    /// resets coalescing/budget state first so a re-open is a clean slate. Throws
-    /// `MediaSessionError.loopbackUnavailable(directURL:)` if the loopback can't bind — the
-    /// caller loads the direct URL (Stage-1 fallback).
+    /// Plex-aware open: resolve the stream URL (decision/probe owned here) at `offsetMs`, then
+    /// stand up the loopback fronting it. Throws `MediaSessionError.loopbackUnavailable` if the
+    /// loopback can't bind; callers should load the direct URL rather than retrying.
     public func open(_ request: MediaSessionRequest, offsetMs: Int) async throws -> MediaSessionHandle {
-        if let task = reprimeTask {
-            task.cancel()
-            _ = try? await task.value
-            reprimeTask = nil
-        }
-        pendingLatestOffsetMs = nil
-        self.request = request
-        reprimeBudget.reset()
         let (streamURL, decision) = await resolveStreamURL(request, offsetMs: offsetMs)
         self.lastDecision = decision
         do {
@@ -137,10 +109,7 @@ public actor MediaSessionProxy {
     }
 
     /// Bind the app-owned loopback origin in front of `streamURL`'s PMS host and return a
-    /// handle whose `localURL` mirrors `streamURL`'s path+query onto the loopback. Persists
-    /// `loopbackBase` so re-primes can recompute `localURL` without rebinding (the upstream
-    /// host is unchanged across a re-prime — only the offset query differs). This is the
-    /// former Stage-1 `open(origin:)` body, made reusable.
+    /// handle whose `localURL` mirrors `streamURL`'s path+query onto the loopback.
     func standUpLoopback(forStream streamURL: URL) async throws -> MediaSessionHandle {
         // Re-open reuses this proxy: tear down any prior listener before binding a fresh one.
         if current != nil {
@@ -186,7 +155,7 @@ public actor MediaSessionProxy {
 
     /// Map a PMS stream URL's path+query onto the loopback base (scheme/host/port from `base`).
     /// AVKit resolves the playlist's relative URIs against this, routing every hop back through
-    /// the proxy; a re-prime changes only `streamURL`'s `offset` query, so the listener stands.
+    /// the proxy.
     static func loopbackURL(forStream streamURL: URL, base loopbackBase: URL) -> URL? {
         guard let streamComps = URLComponents(url: streamURL, resolvingAgainstBaseURL: false),
               var baseComps = URLComponents(url: loopbackBase, resolvingAgainstBaseURL: false)
@@ -195,80 +164,6 @@ public actor MediaSessionProxy {
         baseComps.percentEncodedQuery = streamComps.percentEncodedQuery
         return baseComps.url
     }
-
-    /// Coalescing, latest-wins re-prime (#33 Stage 2). Concurrent scrubs collapse onto one
-    /// in-flight re-prime: each call records the latest target and joins the single re-prime
-    /// task, which drains to the newest target. Returns the handle of the re-prime that served
-    /// the latest target. Throws `budgetEscalated` when scrubbing outpaces what PMS can sustain.
-    public func seek(to offsetMs: Int) async throws -> MediaSessionHandle {
-        guard request != nil, loopbackBase != nil else { throw MediaSessionError.notOpen }
-        pendingLatestOffsetMs = offsetMs
-        if reprimeTask == nil {
-            reprimeTask = Task { try await self.runReprimeLoop() }
-        }
-        return try await reprimeTask!.value
-    }
-
-    /// Drain the latest pending target until none remains. CRITICAL: `reprimeTask = nil` is set
-    /// in the SAME atomic actor step as the failing `pendingLatestOffsetMs == nil` check (no
-    /// await between), so a late `seek` either enqueues before this step (loop continues) or
-    /// after the task returns (spawns a fresh task) — never strands a target on a dead task.
-    private func runReprimeLoop() async throws -> MediaSessionHandle {
-        var last: MediaSessionHandle?
-        while true {
-            guard let target = pendingLatestOffsetMs else {
-                reprimeTask = nil                       // atomic with the guard — no await above
-                if let last { return last }
-                throw MediaSessionError.notOpen         // unreachable: seek always sets pending first
-            }
-            pendingLatestOffsetMs = nil
-            switch reprimeBudget.requestRestart(now: now()) {
-            case .allow:
-                last = try await reprimeOnce(toOffsetMs: target)
-            case .deferred(let remaining):
-                pendingLatestOffsetMs = target          // keep the latest; wait out the cooldown
-                try await Task.sleep(for: .seconds(remaining))
-            case .escalate(let recentCount):
-                reprimeTask = nil                       // atomic with the throw — no await below
-                throw MediaSessionError.budgetEscalated(recentCount: recentCount)
-            }
-        }
-    }
-
-    /// One re-prime: stop the previous transcode, re-run the decision at `offsetMs`, recompute
-    /// `localURL` against the persisted loopback base (listener untouched), bump generation.
-    private func reprimeOnce(toOffsetMs offsetMs: Int) async throws -> MediaSessionHandle {
-        guard let request, let loopbackBase else { throw MediaSessionError.notOpen }
-        await stopPreviousTranscode(request)
-        let (streamURL, decision) = await resolveStreamURL(request, offsetMs: offsetMs)
-        self.lastDecision = decision
-        guard let localURL = Self.loopbackURL(forStream: streamURL, base: loopbackBase) else {
-            throw URLError(.badURL)
-        }
-        generationCounter += 1
-        let handle = MediaSessionHandle(localURL: localURL, generation: generationCounter)
-        current = handle
-        return handle
-    }
-
-    /// Tell PMS to kill this session's current transcoder before the re-prime requests a new
-    /// start.m3u8 for the same `sessionID`. Awaited (so the stop can't race past the new start
-    /// and whack the replacement) but bounded to 2s so a dead network can't stall the re-prime.
-    private func stopPreviousTranscode(_ request: MediaSessionRequest) async {
-        let req = TranscodeRequest.stop(server: request.server, token: request.token,
-                                        identity: request.identity, sessionID: request.sessionID)
-        let send = controlSend
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { _ = try? await send(req) }
-            group.addTask { try? await Task.sleep(for: .seconds(2)) }
-            _ = await group.next()
-            group.cancelAll()
-        }
-    }
-
-    /// Test-only: the latest pending re-prime target (lets a coalescing test wait for the
-    /// queue to settle before releasing a gate).
-    func pendingOffsetMsForTest() -> Int? { pendingLatestOffsetMs }
 
     public func stop(generation: Int) async {
         guard current?.generation == generation else { return }   // ignore stale teardown
