@@ -299,8 +299,10 @@ struct LoginView: View {
 
     private func startJellyfinLogin() async {
         errorMessage = nil
-        let trimmedServer = jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let server = URL(string: trimmedServer), server.scheme != nil, server.host != nil else {
+        let server: URL
+        do {
+            server = try JellyfinServerURL.normalized(jellyfinServer)
+        } catch {
             errorMessage = "Enter a valid Jellyfin server URL."
             return
         }
