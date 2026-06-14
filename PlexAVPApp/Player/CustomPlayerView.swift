@@ -621,7 +621,7 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .quality: CGSize(width: 340, height: 315)
         case .speed: CGSize(width: 300, height: 245)
         case .subtitles, .audio: CGSize(width: 390, height: 275)
-        case .chapters: CGSize(width: 1_030, height: 265)
+        case .chapters: CGSize(width: 1_120, height: 228)
         case .stats: CGSize(width: 470, height: 330)
         }
     }
