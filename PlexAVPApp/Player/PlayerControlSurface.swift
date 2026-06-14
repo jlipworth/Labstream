@@ -448,7 +448,7 @@ final class PlayerMenuState {
 }
 
 /// Quality info-panel tab: a granular ladder of bitrate caps with a checkmark on the active one.
-private struct QualityTabView: View {
+struct QualityTabView: View {
     @Bindable var state: PlayerMenuState
     var onPick: (Int) -> Void
 
@@ -496,7 +496,7 @@ private struct QualityTabView: View {
 /// Mirrors `QualityTabView`. Selecting a rate sets the AVPlayer rate (and persists it); the
 /// checkmark binds to the controller's `PlaybackSpeedState` so it stays correct after a
 /// programmatic reapply (e.g. when a Quality reload re-pushes the saved speed).
-private struct SpeedTabView: View {
+struct SpeedTabView: View {
     @Bindable var state: PlaybackSpeedState
     var onPick: (Float) -> Void
 
@@ -541,7 +541,7 @@ private struct SpeedTabView: View {
 /// title and start timecode stacked below. The current chapter is ringed in the
 /// accent color; non-current cards are slightly dimmed. Tapping seeks the
 /// playhead to the chapter start. Disabled when the chapter has no start offset.
-private struct ChapterCard: View {
+struct ChapterCard: View {
     let chapter: Chapter
     let index: Int
     let isCurrent: Bool
@@ -640,7 +640,7 @@ private struct ChapterCard: View {
 /// playhead once (`currentMs`), highlight the chapter it sits in, and auto-scroll
 /// that card to center. The panel is transient, so a one-shot read is enough — we
 /// deliberately do not observe the playhead continuously.
-private struct ChaptersTabView: View {
+struct ChaptersTabView: View {
     let chapters: [Chapter]
     /// Reads the live playhead in milliseconds at appear time.
     var currentMs: () -> Int
@@ -714,7 +714,7 @@ private struct ChaptersTabView: View {
 /// become known once AVFoundation parses the HLS master playlist — and the list can change
 /// after a Quality reload swaps the underlying `AVPlayerItem`. When the legible group is
 /// empty we show a graceful "No subtitle tracks" state.
-private struct SubtitlesTabView: View {
+struct SubtitlesTabView: View {
     /// Returns the available tracks and the id of the active one, or `nil` when the HLS
     /// carries no legible group at all.
     ///
@@ -804,7 +804,7 @@ private struct SubtitlesTabView: View {
 /// always plays some soundtrack) so the active id defaults to the first track, not -1. When the
 /// HLS carries fewer than two audible renditions there's nothing to choose, so we show a
 /// graceful "No alternate audio tracks" state.
-private struct AudioTabView: View {
+struct AudioTabView: View {
     /// Returns the available tracks and the id of the active one, or `nil` when the HLS carries
     /// fewer than two audible renditions.
     ///
@@ -891,7 +891,7 @@ private struct AudioTabView: View {
 /// Always lists at least the active track (checkmarked), so a single-track title shows "English ✓"
 /// instead of a confusing empty state. Selecting a different track persists it server-side and
 /// rebuilds the transcode at the live playhead (a brief rebuffer, like a Quality switch).
-private struct AudioStreamsTabView: View {
+struct AudioStreamsTabView: View {
     /// Reads the current track list from the item metadata (synchronous, pure).
     let load: @MainActor () -> [PlaybackController.AudioStreamChoice]
     /// Applies a pick: PUTs the selection on the part + reloads the transcode.
@@ -955,7 +955,7 @@ private struct AudioStreamsTabView: View {
 /// (floated SwiftUI sibling: windowed-only; `contentOverlayView`: never composited on
 /// visionOS, verified live; `customOverlayViewController`: tvOS-only). No header row —
 /// the system panel already titles the tab.
-private struct StatsTabView: View {
+struct StatsTabView: View {
     let diagnostics: PlaybackDiagnostics
 
     var body: some View {
