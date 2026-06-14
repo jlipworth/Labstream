@@ -120,16 +120,22 @@ required**.
             highlight reads bigger than the old inset one, "workable for now" on Home posters
             (user-accepted). Check it isn't unbearable on track/episode rows, where the old
             chip highlight sat inset inside the material card.
-- [ ] **Direct play via "Maximum / Original" (GH #7 Step 3; quality-picker driven, replaces the
+- [ ] **Direct play via "Direct Play / Maximum" (GH #7 Step 3; quality-picker driven, replaces the
       old Direct Stream toggle + #31 headroom gate)** — set Streaming quality (Settings or the
-      in-player Quality tab) to **"Maximum / Original"**, then play an HEVC/AC3-or-AAC title and
-      read the log: it logs `Maximum/Original — PMS will copy video; committing direct-play
+      in-player Quality tab) to **"Direct Play / Maximum"**, then play an HEVC/AC3-or-AAC title and
+      read the log: it logs `Direct Play / Maximum — PMS will copy video; committing direct-play
       start.m3u8` — then verify on the server that NO software video transcode is running
       (`ps` shows no `Plex Transcoder` re-encode / EAE for the session, or Plex dashboard shows
-      Direct Stream). Watch specifically for the HEVC-in-TS "buffers forever" symptom (spinner
-      never clears → drop to a capped rung, report). Then:
-      - [ ] A source PMS can't copy logs `Maximum/Original — PMS cannot copy video; using maximum
-            transcode` and plays via the maximum transcode (no stall).
+      Direct Stream). Then:
+      - [ ] A source PMS can't copy logs `Direct Play / Maximum — PMS cannot copy video; using
+            maximum transcode` and plays via the maximum transcode (no stall).
+      - [ ] **Playback-time fallback** — a source PMS *agrees* to copy (`PMS will copy video`) but
+            whose direct-play HLS rendition AVFoundation can't load (the HEVC-in-TS "resource
+            unavailable" / "buffers forever" symptom) must NOT surface the Retry/Close failure card.
+            It logs `direct-play stream failed to load (...); falling back to maximum transcode`,
+            silently rebuilds on the maximum transcode at the same playhead, and plays. Exactly
+            ONE fallback per pick: if the transcode rebuild itself fails, the failure card DOES
+            surface (no silent loop).
       - [ ] Any capped rung (incl. "Maximum (transcoded)") never probes — it transcodes directly,
             byte-identical to today.
       - [ ] On a committed direct-play: resume offset lands, subtitles tab still populates,
@@ -297,7 +303,7 @@ set. Run these before merging the branch._
 
 ### Settings
 - [ ] Settings → Playback no longer shows the "Custom player fallback" toggle.
-- [ ] Streaming quality picker present and functional; it lists both "Maximum (transcoded)" and "Maximum / Original" at the top (no separate Direct Stream toggle).
+- [ ] Streaming quality picker present and functional; it lists both "Maximum (transcoded)" and "Direct Play / Maximum" at the top (no separate Direct Stream toggle).
 
 ### Regression
 - [ ] No reference to the old AVKit player anywhere in the UI.
@@ -317,7 +323,7 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks 
 - [ ] While "Reconnecting…" is shown, the "Buffering…" pill does **NOT** also appear — only one status at a time.
 
 ### #31 — superseded by quality-picker direct play
-- [ ] Settings ▸ Playback has NO "Direct Stream" or "Require bandwidth headroom" toggles — both are gone. Direct play is now driven entirely by picking "Maximum / Original" (verified under the #7 item above). The pre-flight bandwidth-headroom gate was removed (the throughput sample it relied on was measured during a capped transcode, so it could never clear the full-source bar).
+- [ ] Settings ▸ Playback has NO "Direct Stream" or "Require bandwidth headroom" toggles — both are gone. Direct play is now driven entirely by picking "Direct Play / Maximum" (verified under the #7 item above). The pre-flight bandwidth-headroom gate was removed (the throughput sample it relied on was measured during a capped transcode, so it could never clear the full-source bar).
 
 ### #26 — expanded Settings
 - [ ] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
@@ -331,8 +337,8 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks 
 ## D. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
-  direct-play `start.m3u8` when Streaming quality is "Maximum / Original" and PMS can copy the
-  source (see the "Direct play via Maximum / Original" item in §A). Still subject to the
+  direct-play `start.m3u8` when Streaming quality is "Direct Play / Maximum" and PMS can copy the
+  source (see the "Direct play via Direct Play / Maximum" item in §A). Still subject to the
   **CRITICAL `Safari` client-profile constraint** — needs the live headset pass to confirm no
   regression in resume-priming / `subtitles=auto`.
 - **GH #4 — trick-play scrub thumbnails:** server-dependent (PMS I-frame playlist); held.
