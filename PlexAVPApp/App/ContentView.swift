@@ -49,7 +49,7 @@ struct ContentView: View {
                          authManager: authManager,
                          downloadManager: downloadManager,
                          musicPlayer: musicPlayer)
-            } else if isRestoring {
+            } else if isRestoring || appModel.isSwitchingBackend {
                 RestoringSessionView()
             } else {
                 LoginView(authManager: authManager)

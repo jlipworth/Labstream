@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var clearedImageCache = false
     @State private var resetPlaybackPrefs = false
     @State private var copiedDiagnostics = false
+    @State private var switchingBackend: MediaBackendKind?
 
     /// Default bitrate cap for NEW playback sessions — the same key the custom player seeds each
     /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
@@ -31,6 +32,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            backendSection
             serverSection
             playbackSection
             storageSection
@@ -59,6 +61,41 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: Backend
+
+    private var backendSection: some View {
+        SwiftUI.Section {
+            Picker("Media Backend", selection: Binding(
+                get: { appModel.activeBackend },
+                set: { backend in
+                    guard backend != appModel.activeBackend else { return }
+                    switchingBackend = backend
+                    Task {
+                        await authManager.switchBackend(backend)
+                        switchingBackend = nil
+                    }
+                })) {
+                    ForEach(MediaBackendKind.allCases) { backend in
+                        Text(backend.displayName).tag(backend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(switchingBackend != nil)
+
+            if let switchingBackend {
+                HStack {
+                    ProgressView()
+                    Text("Switching to \(switchingBackend.displayName)…")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Backend")
+        } footer: {
+            Text("Switching keeps Plex and Jellyfin credentials separate. If the selected backend has a saved session, VisionPlex reconnects automatically; otherwise it opens that backend’s sign-in flow.")
+        }
+    }
+
     // MARK: Server
 
     /// Result of the last manual reachability check. No background polling — the probe runs
@@ -72,7 +109,6 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         SwiftUI.Section("Server") {
-            LabeledContent("Backend", value: appModel.activeBackend.displayName)
             switch appModel.activeBackend {
             case .plex:
                 if let server = appModel.selectedServer {

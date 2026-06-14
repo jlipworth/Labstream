@@ -32,6 +32,9 @@ final class AppModel {
     /// carries separate credentials/session state so the two modes do not overwrite each other.
     var activeBackend: MediaBackendKind
 
+    /// True while Settings is restoring a saved session for a different backend.
+    var isSwitchingBackend = false
+
     /// Stable client identity (clientIdentifier from Keychain, fixed product/version).
     var identity: ClientIdentity
 
