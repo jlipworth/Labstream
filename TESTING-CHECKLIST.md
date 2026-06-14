@@ -178,6 +178,33 @@ required**.
             while it's stalled/reconnecting, close the player. Expected: clean return to detail with
             NO lingering black screen and no audio bleed; the loopback listener is torn down
             (`stop(generation:)`), and reopening a title starts a fresh session normally.
+- [ ] **Proxy-owned seek / re-prime — MEDIA plane (GH #33, Stage 2)** — seek-restart orchestration
+      now lives in the proxy (`seek(to:)` re-primes the transcode and hands back a fresh loopback
+      URL; the player just swaps in a new `AVPlayerItem`). These exercise the bug this stage fixes
+      ("drag once = slow but works; drag twice = sticky + reconnect hell"). Claude self-serves
+      screenshots/logs (`xcrun simctl io booted screenshot`,
+      `log show --predicate 'process == "PlexAVPApp"'`).
+      - [ ] **Single deep drag still works.** Start a transcoded item, let it play, drag the
+            scrubber far ahead (minutes). Playback resumes at the new spot within a few seconds.
+            Log shows a single `[VP] seek: proxy re-prime to <ms>` and no failure overlay.
+      - [ ] **Drag twice in quick succession — the original bug.** Drag deep, then immediately
+            drag somewhere else before the first re-prime lands. Playback ends up at the SECOND
+            target (not stuck at the first or snapped back to the start), with no
+            "Reconnecting…"/Retry overlay and no reconnect loop. Log shows the intermediate target
+            coalesced away (latest-wins).
+      - [ ] **Small in-buffer scrub is instant.** Drag a few seconds within already-buffered
+            content. It seeks natively (no `proxy re-prime` log line, no transcode restart).
+      - [ ] **Resume doesn't self-trigger a re-prime.** Open an item with a saved deep resume
+            point. It resumes once and keeps playing — no spurious `proxy re-prime` line from the
+            resume seek (echo suppression).
+      - [ ] **Scrub-spam escalates gracefully.** Rapidly drag many times. After the burst budget
+            is spent the failure overlay appears (not an endless rebuild). Tapping Retry restores
+            playback and re-earns the budget.
+      - [ ] **Quality reload / audio switch still resume at the playhead** (regression — these
+            share the rebuild path; the proxy re-opens and resets its budget).
+      - [ ] **Forced upstream wedge still self-heals** (manual: kill/restore the server mid-play;
+            the loopback rotate recovers without a Retry tap). rotateCount > 0 in `proxy.status()`
+            logging.
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
