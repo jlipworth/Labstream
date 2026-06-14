@@ -92,7 +92,9 @@ struct CustomPlayerChrome: View {
                 if controller.playbackError.isFailed {
                     failureCard
                         .padding(.bottom, 18)
-                } else if controller.buffering.isBuffering {
+                } else if controller.buffering.isBuffering, !isReconnecting {
+                    // One status at a time: the reconnecting overlay already owns the screen
+                    // while a reconnect is in flight, so don't stack a buffering card under it.
                     bufferingCard
                         .padding(.bottom, 18)
                 }
@@ -330,6 +332,9 @@ struct CustomPlayerChrome: View {
             .padding(.top, 2)
         }
         .padding(22)
+        // Cap the width so a long server message wraps onto multiple centered lines
+        // instead of stretching the card across the screen.
+        .frame(maxWidth: 360)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
