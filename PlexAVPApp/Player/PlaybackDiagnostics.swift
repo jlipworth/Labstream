@@ -16,13 +16,6 @@ import PMSKit
 @Observable
 @MainActor
 final class PlaybackDiagnostics {
-    /// Last observed AVFoundation throughput sample, persisted so the next Direct Stream
-    /// startup can conservatively decide whether a single source rendition is likely to fit
-    /// the current link (#31). Direct Stream always consults this — with no sample yet (or
-    /// not enough headroom over the source bitrate) it falls back to transcoding. This is
-    /// intentionally just a heuristic.
-    static let observedThroughputEstimateKey = "directStreamObservedThroughputKbps"
-
     // MARK: Static session facts
 
     /// Source resolution string, e.g. "1920×1080" (from the chosen `Media`).
@@ -57,9 +50,14 @@ final class PlaybackDiagnostics {
     /// Seconds of media buffered ahead of the playhead (loaded time range).
     var bufferedAheadSeconds: Double = 0
 
-    /// A friendly label for the active bitrate cap.
+    /// A friendly label for the active bitrate cap. The two ladder maxima get named
+    /// choices; numeric caps render as "<N> Mbps".
     var targetBitrateLabel: String {
-        targetBitrateKbps <= 0 ? "Maximum" : "\(targetBitrateKbps / 1000) Mbps"
+        switch targetBitrateKbps {
+        case ...0: "Maximum / Original"
+        case StreamingQuality.maxTranscodedKbps: "Maximum (transcoded)"
+        default: "\(targetBitrateKbps / 1000) Mbps"
+        }
     }
 
     // MARK: Updates
@@ -141,7 +139,6 @@ final class PlaybackDiagnostics {
         // AVFoundation reports bits/sec; show kbps. -1 means "not available".
         if event.observedBitrate > 0 {
             observedBitrateKbps = event.observedBitrate / 1000
-            UserDefaults.standard.set(observedBitrateKbps, forKey: Self.observedThroughputEstimateKey)
         }
         if event.indicatedBitrate > 0 { indicatedBitrateKbps = event.indicatedBitrate / 1000 }
         if event.numberOfDroppedVideoFrames >= 0 { droppedFrames = event.numberOfDroppedVideoFrames }

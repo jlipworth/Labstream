@@ -101,12 +101,6 @@ final class PlaybackController {
     /// Per-playback transcode session id (also reused as the timeline session).
     private let sessionID = "plex-avp-" + UUID().uuidString
 
-    /// `@AppStorage`-style key for the Direct Stream opt-in (#7 Step 3) — shared with
-    /// SettingsView's toggle, default OFF. Read fresh from UserDefaults on every
-    /// (re)build (`startStreaming`), so flipping the toggle mid-session takes effect on
-    /// the next stream rebuild: the in-headset kill switch from the research/15 plan.
-    static let directStreamEnabledKey = "directStreamEnabled"
-
     // MARK: - Playback speed (R5)
 
     /// `@AppStorage`-style key for the persisted playback rate (UserDefaults-backed so the
@@ -1121,9 +1115,11 @@ final class PlaybackController {
         }
         let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
 
-        // 0 (Maximum/Original) maps to a very high ceiling so PMS still emits a
-        // playable HLS rendition rather than rejecting an absent cap.
-        let requestedCap = maxVideoBitrateKbps <= 0 ? 200_000 : maxVideoBitrateKbps
+        // "Maximum / Original" (the no-cap sentinel) maps to a very high ceiling so PMS still
+        // emits a playable HLS rendition rather than rejecting an absent cap — the same
+        // ceiling "Maximum (transcoded)" uses, and the transcode fallback when an Original
+        // pick can't be copied.
+        let requestedCap = maxVideoBitrateKbps <= 0 ? StreamingQuality.maxTranscodedKbps : maxVideoBitrateKbps
 
         // Resume position. Tell PMS to PRIME the transcode here (seconds) so it emits
         // `#EXT-X-START:TIME-OFFSET` and the first segment at the playhead is produced
@@ -1146,30 +1142,25 @@ final class PlaybackController {
 
         var decision: DecisionResponse?
         var streamURL = transcode.startM3U8URL()
-        if UserDefaults.standard.bool(forKey: Self.directStreamEnabledKey) {
+        // "Maximum / Original" asks PMS to direct-play the source bits when it can copy the
+        // video; if it can't (or the probe fails) we fall through to the maximum transcode
+        // below. Every capped rung — including "Maximum (transcoded)" — skips the probe and
+        // transcodes. The user picks the path by picking the quality; there is no separate
+        // toggle or pre-flight bandwidth gate (#31 superseded).
+        if maxVideoBitrateKbps <= 0 {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
-                // The copy path has no ABR rendition to fall back to, so commit to it only
-                // when a recent throughput sample shows headroom over the source bitrate;
-                // otherwise drop to the (ABR-capable) transcode path below.
-                let headroomGate = DirectStreamHeadroomGate(
-                    observedThroughputKbps: UserDefaults.standard.object(forKey: PlaybackDiagnostics.observedThroughputEstimateKey) as? Double
-                )
-                let headroomVerdict = headroomGate.verdict(
-                    sourceBitrateKbps: DirectStreamHeadroomGate.sourceBitrateKbps(for: item, mediaIndex: mediaIndex)
-                )
-                if probe.savesVideoEncode, headroomVerdict.allowsDirectStream {
-                    NSLog("PlaybackController: Direct Stream — PMS will copy video; committing direct-play start.m3u8")
+                if probe.savesVideoEncode {
+                    NSLog("PlaybackController: Maximum/Original — PMS will copy video; committing direct-play start.m3u8")
                     decision = probe
                     streamURL = transcode.directPlayStartM3U8URL()
-                } else if probe.savesVideoEncode {
-                    NSLog("PlaybackController: Direct Stream headroom gate blocked copy start (%@); using transcode path",
-                          String(describing: headroomVerdict))
+                } else {
+                    NSLog("PlaybackController: Maximum/Original — PMS cannot copy video; using maximum transcode")
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
-                NSLog("PlaybackController: direct-play probe failed (%@); using transcode path", String(describing: error))
+                NSLog("PlaybackController: direct-play probe failed (%@); using maximum transcode", String(describing: error))
             }
         }
 
