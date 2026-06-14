@@ -16,6 +16,11 @@ import PMSKit
 @Observable
 @MainActor
 final class PlaybackDiagnostics {
+    /// Last observed AVFoundation throughput sample, persisted so the next Direct Stream
+    /// startup can conservatively decide whether a single source rendition is likely to fit
+    /// the current link (#31). This is intentionally just a heuristic; the experimental
+    /// headroom toggle stays default-off.
+    static let observedThroughputEstimateKey = "directStreamObservedThroughputKbps"
 
     // MARK: Static session facts
 
@@ -133,7 +138,10 @@ final class PlaybackDiagnostics {
 
         guard let access = item.accessLog(), let event = access.events.last else { return }
         // AVFoundation reports bits/sec; show kbps. -1 means "not available".
-        if event.observedBitrate > 0 { observedBitrateKbps = event.observedBitrate / 1000 }
+        if event.observedBitrate > 0 {
+            observedBitrateKbps = event.observedBitrate / 1000
+            UserDefaults.standard.set(observedBitrateKbps, forKey: Self.observedThroughputEstimateKey)
+        }
         if event.indicatedBitrate > 0 { indicatedBitrateKbps = event.indicatedBitrate / 1000 }
         if event.numberOfDroppedVideoFrames >= 0 { droppedFrames = event.numberOfDroppedVideoFrames }
         if event.numberOfStalls >= 0 { stalls = event.numberOfStalls }
