@@ -37,6 +37,10 @@ struct JellyfinBrowseService {
         return response.items
     }
 
+    func userViewLinks() async throws -> [JellyfinLibraryLink] {
+        try await userViews().map { JellyfinLibraryLink(id: $0.id, title: $0.name) }
+    }
+
     func items(parentId: String?, recursive: Bool = false) async throws -> [MediaItem] {
         let context = try context()
         let req = try JellyfinLibrary.itemsRequest(server: context.server,
@@ -111,4 +115,9 @@ struct JellyfinBrowseService {
         }
         return data
     }
+}
+
+struct JellyfinLibraryLink: Identifiable, Hashable {
+    let id: String
+    let title: String
 }

@@ -7,6 +7,7 @@ struct LibrariesView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var sections: [PlexSection] = []
+    @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var loadState: HomeView.LoadState = .idle
 
     var body: some View {
@@ -21,7 +22,9 @@ struct LibrariesView: View {
                                        systemImage: "exclamationmark.triangle",
                                        description: Text(message))
             case .loaded:
-                if sections.isEmpty {
+                if appModel.activeBackend == .jellyfin {
+                    jellyfinLibrariesList
+                } else if sections.isEmpty {
                     ContentUnavailableView("No libraries",
                                            systemImage: "rectangle.stack",
                                            description: Text("This server has no libraries."))
@@ -44,6 +47,9 @@ struct LibrariesView: View {
         .navigationDestination(for: PlexSection.self) { section in
             LibraryGridView(section: section)
         }
+        .navigationDestination(for: JellyfinLibraryLink.self) { view in
+            LibraryGridView(jellyfin: view)
+        }
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
@@ -61,15 +67,47 @@ struct LibrariesView: View {
         }
     }
 
+    @ViewBuilder
+    private var jellyfinLibrariesList: some View {
+        if jellyfinViews.isEmpty {
+            ContentUnavailableView("No Jellyfin libraries",
+                                   systemImage: "rectangle.stack",
+                                   description: Text("This Jellyfin user has no visible libraries."))
+        } else {
+            List(jellyfinViews) { view in
+                NavigationLink(value: view) {
+                    Label {
+                        Text(view.title).font(.title3)
+                    } icon: {
+                        Image(systemName: "rectangle.stack")
+                            .foregroundStyle(.tint)
+                    }
+                    .padding(.vertical, DS.Space.xs)
+                }
+            }
+        }
+    }
+
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back; the section list doesn't change mid-session,
         // so only first load and pull-to-refresh fetch.
         if !force, case .loaded = loadState { return }
+        loadState = .loading
+
+        if appModel.activeBackend == .jellyfin {
+            do {
+                jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                loadState = .loaded
+            } catch {
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
-        loadState = .loading
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
@@ -85,6 +123,18 @@ struct LibrariesView: View {
     }
 }
 
+enum LibraryGridSource: Hashable {
+    case plex(PlexSection)
+    case jellyfin(JellyfinLibraryLink)
+
+    var title: String {
+        switch self {
+        case .plex(let section): return section.title
+        case .jellyfin(let view): return view.title
+        }
+    }
+}
+
 extension PlexSection: @retroactive Hashable {
     public static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
     public func hash(into hasher: inout Hasher) { hasher.combine(key) }
@@ -92,7 +142,7 @@ extension PlexSection: @retroactive Hashable {
 
 /// Poster grid for a single library section (`GET /library/sections/<key>/all`).
 struct LibraryGridView: View {
-    let section: PlexSection
+    let source: LibraryGridSource
 
     @Environment(AppModel.self) private var appModel
 
@@ -105,6 +155,14 @@ struct LibraryGridView: View {
                                     spacing: DS.Space.xl)]
     private let pageSize = 200
 
+    init(section: PlexSection) {
+        self.source = .plex(section)
+    }
+
+    init(jellyfin view: JellyfinLibraryLink) {
+        self.source = .jellyfin(view)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -112,16 +170,16 @@ struct LibraryGridView: View {
                 case .idle, .loading:
                     SkeletonGrid()
                 case .failed(let message):
-                    ContentUnavailableView("Couldn’t load \(section.title)",
+                    ContentUnavailableView("Couldn’t load \(source.title)",
                                            systemImage: "exclamationmark.triangle",
                                            description: Text(message))
-                    .frame(maxWidth: .infinity, minHeight: 360)
+                        .frame(maxWidth: .infinity, minHeight: 360)
                 case .loaded:
                     if slots.isEmpty {
                         ContentUnavailableView("Empty library",
                                                systemImage: "rectangle.stack",
-                                               description: Text("No items in \(section.title)."))
-                        .frame(maxWidth: .infinity, minHeight: 360)
+                                               description: Text("No items in \(source.title)."))
+                            .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
                         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
                             ForEach(slots.indices, id: \.self) { index in
@@ -160,7 +218,7 @@ struct LibraryGridView: View {
                 }
             }
         }
-        .navigationTitle(section.title)
+        .navigationTitle(source.title)
         .task { await load() }
         .refreshable { await load(force: true) }
     }
@@ -169,12 +227,23 @@ struct LibraryGridView: View {
         // `.task` re-fires on pop-back from an item; reloading the whole grid then
         // would dump the scroll position the user is returning to. Load once.
         if !force, case .loaded = loadState { return }
+        loadState = .loading
+        loadingPages = []
+        firstCharacters = []
+
+        switch source {
+        case .plex(let section):
+            await loadPlex(section: section)
+        case .jellyfin(let view):
+            await loadJellyfin(view: view)
+        }
+    }
+
+    private func loadPlex(section: PlexSection) async {
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
-        loadState = .loading
-        loadingPages = []
         let req = BrowseAPI.sectionItems(server: server, token: token,
                                          identity: appModel.identity, sectionKey: section.key,
                                          containerStart: 0, containerSize: pageSize,
@@ -182,7 +251,8 @@ struct LibraryGridView: View {
         do {
             async let itemsResponse = appModel.client.send(req, as: MetadataResponse.self)
             async let initialsResponse: FirstCharacterResponse? = loadFirstCharacters(server: server,
-                                                                                      token: token)
+                                                                                      token: token,
+                                                                                      section: section)
 
             let resp = try await itemsResponse
             let page = resp.mediaContainer.metadata
@@ -199,14 +269,26 @@ struct LibraryGridView: View {
         }
     }
 
-    private func loadFirstCharacters(server: URL, token: String) async -> FirstCharacterResponse? {
+    private func loadJellyfin(view: JellyfinLibraryLink) async {
+        do {
+            let items = try await JellyfinBrowseService(appModel: appModel).items(parentId: view.id, recursive: false)
+            slots = items.map(Optional.some)
+            loadState = .loaded
+        } catch {
+            loadState = .failed(friendlyMessage(error))
+        }
+    }
+
+    private func loadFirstCharacters(server: URL, token: String,
+                                     section: PlexSection) async -> FirstCharacterResponse? {
         let req = BrowseAPI.firstCharacters(server: server, token: token,
                                             identity: appModel.identity, sectionKey: section.key)
         return try? await appModel.client.send(req, as: FirstCharacterResponse.self)
     }
 
     private func loadPage(containing index: Int) async {
-        guard slots.indices.contains(index),
+        guard case .plex(let section) = source,
+              slots.indices.contains(index),
               let server = appModel.serverBaseURL,
               let token = appModel.serverToken
         else { return }

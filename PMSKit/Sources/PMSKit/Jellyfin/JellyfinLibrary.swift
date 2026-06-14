@@ -220,7 +220,7 @@ public enum JellyfinLibrary {
         return req
     }
 
-    static func authenticatedRequest(url: URL, token: String, identity: JellyfinClientIdentity) -> URLRequest {
+    public static func authenticatedRequest(url: URL, token: String, identity: JellyfinClientIdentity) -> URLRequest {
         var req = URLRequest(url: url)
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token), forHTTPHeaderField: "Authorization")

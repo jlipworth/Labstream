@@ -7,6 +7,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var hubs: [Hub] = []
+    @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var loadState: LoadState = .idle
     /// The server the current hubs were loaded from (pop-back no-op guard).
     @State private var loadedServer: URL?
@@ -28,7 +29,9 @@ struct HomeView: View {
                                        description: Text(message))
                 .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
-                if hubs.isEmpty {
+                if appModel.activeBackend == .jellyfin {
+                    jellyfinHome
+                } else if hubs.isEmpty {
                     ContentUnavailableView("Nothing here yet",
                                            systemImage: "house",
                                            description: Text("No hubs returned by the server."))
@@ -47,6 +50,9 @@ struct HomeView: View {
             }
         }
         .navigationTitle("Home")
+        .navigationDestination(for: JellyfinLibraryLink.self) { view in
+            LibraryGridView(jellyfin: view)
+        }
         .navigationDestination(for: MediaItem.self) { item in
             // Music items route into the music module, never the video detail/player
             // (#17 Phase 7). Home hubs are cross-section, so no music sectionKey —
@@ -63,11 +69,51 @@ struct HomeView: View {
         .refreshable { await load(force: true) }
     }
 
+    @ViewBuilder
+    private var jellyfinHome: some View {
+        if jellyfinViews.isEmpty {
+            ContentUnavailableView("No Jellyfin libraries",
+                                   systemImage: "rectangle.stack",
+                                   description: Text("This Jellyfin user has no visible libraries."))
+            .frame(maxWidth: .infinity, minHeight: 360)
+        } else {
+            LazyVStack(alignment: .leading, spacing: DS.Space.md) {
+                Text("Jellyfin Libraries")
+                    .font(.title2.bold())
+                    .padding(.horizontal, DS.Space.xxl)
+                ForEach(jellyfinViews) { view in
+                    NavigationLink(value: view) {
+                        Label(view.title, systemImage: "rectangle.stack")
+                            .font(.title3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(DS.Space.lg)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+                    }
+                    .cardLink(cornerRadius: DS.Radius.card)
+                    .padding(.horizontal, DS.Space.xxl)
+                }
+            }
+            .padding(.vertical, DS.Space.xl)
+        }
+    }
+
     private func load(force: Bool = false) async {
         // `.task` also re-fires every time the stack pops back to Home; without this
         // guard the rails reload and dump the scroll position the user returned to.
         // A real server change (different URL) still reloads.
         if !force, loadedServer == appModel.serverBaseURL, case .loaded = loadState { return }
+        if appModel.activeBackend == .jellyfin {
+            loadState = .loading
+            do {
+                jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                loadedServer = appModel.jellyfinServerBaseURL
+                loadState = .loaded
+            } catch {
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No reachable Plex server selected.")
             return
