@@ -138,7 +138,9 @@ required**.
       the Plex pod OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md); needs a live pass against real PMS
       while watching the pod (`kubectl -n media exec <pod> -- ps … | grep "Plex Transcoder"`):
       - [ ] **Stop-before-restart** — quality switch, audio switch, in-player Retry, and a
-            final-target deep-seek rebuild each log `[VP] transcode: stopping previous job…` and
+            final-target deep-seek rebuild each log `transcode: stopping previous job before
+            in-place restart` (Playback category — `xcrun simctl spawn booted log show --last 5m
+            --predicate 'subsystem == "com.jlipworth.VisionPlex" AND category == "Playback"'`) and
             the server never shows more than ONE `Plex Transcoder` for the session.
       - [ ] **Final-target coalescing** — scrub repeatedly into unbuffered territory on a heavy
             (4K HEVC/EAC3 MKV) title. During one drag, PMS sees only the settled final target, not
@@ -165,7 +167,8 @@ required**.
             `proxy re-prime` log appears. Playback starts normally and Stats still show the PMS
             decision/probe data.
       - [ ] **Small in-buffer scrub is instant.** Drag a few seconds within already-buffered
-            content. It seeks natively (no `[VP] seek: rebuilding stream…`, no transcode restart).
+            content. It seeks natively — no transcode restart (no `transcode: stopping previous
+            job` entry in the Playback log; the `[VP] seek:` debug probes were removed in Wave 2).
       - [x] **Single deep drag rebuilds once.** Manual user test after `9ed4569`: single drag is OK.
       - [ ] **Drag twice in quick succession — the original bug.** Manual user test after `9ed4569`:
             still behaves very similarly to before. Treat this as the remaining blocker if/when
