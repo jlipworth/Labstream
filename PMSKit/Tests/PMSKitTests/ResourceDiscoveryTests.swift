@@ -48,3 +48,23 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex", 
     let best = ResourceDiscovery.bestConnection(resp.devices[0].connections)
     #expect(best?.local == true)
 }
+
+@Test func decodesProductVersion() throws {
+    let json = """
+    [
+      {"name":"Home Server","clientIdentifier":"SRV-1","provides":"server",
+       "productVersion":"1.40.2.8395-c67dce28e",
+       "connections":[{"uri":"https://192.0.2.10:32400","local":true,"relay":false}]}
+    ]
+    """.data(using: .utf8)!
+    let resp = try JSONDecoder().decode(ResourcesResponse.self, from: json)
+    #expect(resp.devices[0].productVersion == "1.40.2.8395-c67dce28e")
+}
+
+@Test func productVersionAbsentIsNil() throws {
+    let json = """
+    [{"name":"Old","clientIdentifier":"SRV-2","connections":[]}]
+    """.data(using: .utf8)!
+    let resp = try JSONDecoder().decode(ResourcesResponse.self, from: json)
+    #expect(resp.devices[0].productVersion == nil)
+}
