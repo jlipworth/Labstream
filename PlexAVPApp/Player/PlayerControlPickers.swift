@@ -43,6 +43,7 @@ struct QualityTabView: View {
                                     .foregroundStyle(.tint)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .padding(.vertical, DS.Space.sm)
                     }
@@ -50,6 +51,7 @@ struct QualityTabView: View {
                 }
             }
             .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -85,6 +87,7 @@ struct SpeedTabView: View {
                                     .foregroundStyle(.tint)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .padding(.vertical, DS.Space.sm)
                     }
@@ -92,6 +95,7 @@ struct SpeedTabView: View {
                 }
             }
             .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -340,6 +344,7 @@ struct SubtitlesTabView: View {
                 }
             }
             .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task {
             // Load once on appear. `.task` is cancelled/re-run if the view identity
@@ -428,6 +433,7 @@ struct AudioTabView: View {
                 }
             }
             .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task {
             // Load once on appear. `.task` is cancelled/re-run if the view identity changes,
@@ -505,6 +511,7 @@ struct AudioStreamsTabView: View {
                 }
             }
             .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear {
             choices = load()

@@ -9,6 +9,9 @@ import UIKit
 /// only by the default-off Settings toggle so we can test whether deterministic scrubber intent
 /// and an AVPlayerLayer presenter avoid native AVKit control/chrome seek weirdness.
 struct CustomPlayerView: View {
+    @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+
     private let item: MediaItem
     private let controllerFactory: @MainActor () -> PlaybackController
     private let onClose: (() -> Void)?
@@ -54,7 +57,11 @@ struct CustomPlayerView: View {
         }
         .task(id: clockTaskID) { await runPlayer() }
         .task(id: isReconnecting) { await reconnectWatchdog() }
-        .onDisappear { controller?.stop() }
+        .onDisappear {
+            controller?.stop()
+            cinemaSession.clear()
+            Task { @MainActor in await dismissImmersiveSpace() }
+        }
     }
 
     @MainActor
@@ -69,6 +76,7 @@ struct CustomPlayerView: View {
         await MainActor.run {
             let playback = makeController()
             controller = playback
+            cinemaSession.activate(title: item.title, player: playback.player)
             refreshScrubberClock(from: playback)
             playback.start()
             Task { @MainActor in
@@ -121,18 +129,19 @@ struct CustomPlayerView: View {
 }
 
 /// Minimal UIKit bridge whose backing layer is AVPlayerLayer.
-private struct PlayerLayerView: UIViewRepresentable {
+struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer?
 
-    func makeUIView(context: Context) -> PlayerLayerHostView {
+    func makeUIView(context: Context) -> UIView {
         let view = PlayerLayerHostView()
         view.playerLayer.videoGravity = .resizeAspect
         view.playerLayer.player = player
         return view
     }
 
-    func updateUIView(_ uiView: PlayerLayerHostView, context: Context) {
-        uiView.playerLayer.player = player
+    func updateUIView(_ uiView: UIView, context: Context) {
+        guard let hostView = uiView as? PlayerLayerHostView else { return }
+        hostView.playerLayer.player = player
     }
 }
 
@@ -151,6 +160,10 @@ private final class PlayerLayerHostView: UIView {
 /// not permanent app UI: taps reveal it, playback auto-hides it, and modal menu/error/reconnect
 /// states keep it visible while the viewer is acting on them.
 private struct CustomPlayerChrome: View {
+    @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+
     let controller: PlaybackController
     let title: String
     @Binding var scrubState: PlaybackScrubState
@@ -250,7 +263,8 @@ private struct CustomPlayerChrome: View {
                                             controller: controller,
                                             menuState: menuState,
                                             onClose: { closeMenu() })
-                        .padding(.horizontal, 34)
+                        .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
+                        .padding(.horizontal, 54)
                         .padding(.bottom, 176)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -300,6 +314,7 @@ private struct CustomPlayerChrome: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
+                cinemaButton
                 menuStrip
             }
 
@@ -333,6 +348,38 @@ private struct CustomPlayerChrome: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    @ViewBuilder private var cinemaButton: some View {
+        if cinemaSession.presentationState == .open {
+            Button {
+                revealChrome(keepVisible: true)
+                Task { @MainActor in await toggleCinemaMode() }
+            } label: {
+                Label("Exit Cinema", systemImage: "rectangle.on.rectangle.slash")
+                    .labelStyle(.titleAndIcon)
+                    .font(.headline.weight(.semibold))
+                    .frame(minWidth: 128)
+                    .padding(.horizontal, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
+        } else {
+            Button {
+                revealChrome(keepVisible: true)
+                Task { @MainActor in await toggleCinemaMode() }
+            } label: {
+                Label("Cinema", systemImage: "theatermasks")
+                    .labelStyle(.titleAndIcon)
+                    .font(.headline.weight(.semibold))
+                    .frame(minWidth: 94)
+                    .padding(.horizontal, 8)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
+        }
     }
 
     private var menuStrip: some View {
@@ -452,6 +499,26 @@ private struct CustomPlayerChrome: View {
         scheduleChromeHideIfNeeded()
     }
 
+    private func toggleCinemaMode() async {
+        switch cinemaSession.presentationState {
+        case .closed:
+            cinemaSession.presentationState = .inTransition
+            switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
+            case .opened:
+                break
+            case .userCancelled, .error:
+                fallthrough
+            @unknown default:
+                cinemaSession.presentationState = .closed
+            }
+        case .open:
+            cinemaSession.presentationState = .inTransition
+            await dismissImmersiveSpace()
+        case .inTransition:
+            break
+        }
+    }
+
     private func openMenu(_ menu: CustomPlayerMenuKind) {
         revealChrome(keepVisible: true)
         selectedMenu = menu
@@ -551,10 +618,18 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var popoverSize: CGSize {
         switch self {
-        case .quality, .speed: CGSize(width: 400, height: 260)
-        case .subtitles, .audio: CGSize(width: 460, height: 280)
-        case .chapters: CGSize(width: 820, height: 235)
-        case .stats: CGSize(width: 560, height: 340)
+        case .quality: CGSize(width: 340, height: 315)
+        case .speed: CGSize(width: 300, height: 245)
+        case .subtitles, .audio: CGSize(width: 390, height: 275)
+        case .chapters: CGSize(width: 710, height: 230)
+        case .stats: CGSize(width: 470, height: 330)
+        }
+    }
+
+    var popoverAlignment: Alignment {
+        switch self {
+        case .quality, .subtitles, .audio: .center
+        case .chapters, .speed, .stats: .trailing
         }
     }
 }
@@ -566,6 +641,7 @@ private struct CustomPlayerMenuPopover: View {
     let onClose: () -> Void
 
     var body: some View {
+        let size = menu.popoverSize
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Label(menu.title, systemImage: menu.systemImage)
@@ -578,13 +654,17 @@ private struct CustomPlayerMenuPopover: View {
                 }
                 .buttonStyle(.bordered)
             }
+            .frame(width: size.width)
 
-            Divider().opacity(0.35)
+            Divider()
+                .opacity(0.35)
+                .frame(width: size.width)
 
             menuContent
-                .frame(width: menu.popoverSize.width, height: menu.popoverSize.height, alignment: .topLeading)
+                .frame(width: size.width, height: size.height, alignment: .topLeading)
         }
         .padding(22)
+        .frame(width: size.width + 44, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(radius: 24)
     }

@@ -52,10 +52,10 @@ struct StatsForNerdsView: View {
                 row("Buffer ahead", String(format: "%.1f s", diagnostics.bufferedAheadSeconds))
                 row("Keep up", diagnostics.likelyToKeepUp ? "Yes" : "No")
             }
-            .font(.system(.caption, design: .monospaced))
+            .font(.system(showsHeader ? .caption : .callout, design: .monospaced))
         }
         .padding(showsHeader ? 16 : 0)
-        .frame(width: 340, alignment: .leading)
+        .frame(width: showsHeader ? 340 : 430, alignment: .leading)
         .background {
             if showsHeader {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
