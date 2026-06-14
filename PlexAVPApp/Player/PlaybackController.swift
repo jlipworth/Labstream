@@ -101,6 +101,11 @@ final class PlaybackController {
     /// the next stream rebuild: the in-headset kill switch from the research/15 plan.
     static let directStreamEnabledKey = "directStreamEnabled"
 
+    /// `@AppStorage`-style key for #31's experimental Direct Stream headroom gate.
+    /// Default OFF: existing Direct Stream behavior is unchanged unless the user explicitly
+    /// asks for the additional conservative throughput check.
+    static let directStreamHeadroomEnabledKey = "directStreamHeadroomEnabled"
+
     // MARK: - Playback speed (R5)
 
     /// `@AppStorage`-style key for the persisted playback rate (UserDefaults-backed so the
@@ -1133,10 +1138,20 @@ final class PlaybackController {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
-                if probe.savesVideoEncode {
+                let headroomGate = DirectStreamHeadroomGate(
+                    isEnabled: UserDefaults.standard.bool(forKey: Self.directStreamHeadroomEnabledKey),
+                    observedThroughputKbps: UserDefaults.standard.object(forKey: PlaybackDiagnostics.observedThroughputEstimateKey) as? Double
+                )
+                let headroomVerdict = headroomGate.verdict(
+                    sourceBitrateKbps: DirectStreamHeadroomGate.sourceBitrateKbps(for: item, mediaIndex: mediaIndex)
+                )
+                if probe.savesVideoEncode, headroomVerdict.allowsDirectStream {
                     NSLog("PlaybackController: Direct Stream — PMS will copy video; committing direct-play start.m3u8")
                     decision = probe
                     streamURL = transcode.directPlayStartM3U8URL()
+                } else if probe.savesVideoEncode {
+                    NSLog("PlaybackController: Direct Stream headroom gate blocked copy start (%@); using transcode path",
+                          String(describing: headroomVerdict))
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
