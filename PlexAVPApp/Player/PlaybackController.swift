@@ -2,7 +2,13 @@ import Foundation
 import AVKit
 import AVFAudio
 import UIKit
+import os
 import PMSKit
+
+/// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
+/// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
+/// before an in-place restart (#27), which guards against the server-OOM job pile-up.
+let playbackLog = Logger(subsystem: "com.jlipworth.VisionPlex", category: "Playback")
 
 /// Owns the `AVPlayer` for one playback session and drives Plex playback state.
 ///
@@ -999,10 +1005,8 @@ final class PlaybackController {
 
         if isWithinLoadedRanges(seconds: seconds) {
             cancelPendingFinalTargetRebuild()
-            NSLog("%@", String(format: "[VP] custom-player: native seek within loaded range target=%dms", clamped))
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         } else {
-            NSLog("%@", String(format: "[VP] custom-player: final-target rebuild requested target=%dms", clamped))
             scheduleFinalTargetRebuild(toMs: clamped)
         }
     }
@@ -1113,7 +1117,10 @@ final class PlaybackController {
         guard let server, let token else { return }
         guard !Task.isCancelled, generation == playbackGeneration else { return }
         if stoppingPreviousTranscode {
-            NSLog("[VP] transcode: stopping previous job for session before restart")
+            // #27: kill the old transcoder before requesting a new start.m3u8 for the same
+            // session, so superseded jobs can't pile up and OOM the server. Persisted so a
+            // restart storm is diagnosable from the log after the fact.
+            playbackLog.notice("transcode: stopping previous job before in-place restart")
             await stopPreviousTranscode(server: server, token: token)
             guard !Task.isCancelled, generation == playbackGeneration else { return }
         }
@@ -1835,12 +1842,6 @@ final class PlaybackController {
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
         guard stallWatchdog == nil, !playbackError.isFailed else { return }
-        // #25 instrumentation: snapshot the seekable ranges at stall onset. If they collapse
-        // during a stall, that's the suspected mechanic behind the pinned system scrubber
-        // (AVKit clamps drags to the seekable span). Strip after live verification.
-        let stallMsg = String(format: "[VP] seek: stall began at %.1fs (seekable=%@)",
-                              player.currentTime().seconds, seekableRangesDescription())
-        NSLog("%@", stallMsg)
         let timer = Timer(timeInterval: stallTimeoutSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleStallTimeout()
@@ -1943,7 +1944,6 @@ final class PlaybackController {
                                                      now: ProcessInfo.processInfo.systemUptime) {
         case .start(let generation, let offsetMs):
             lastPrimedOffsetMs = offsetMs
-            NSLog("%@", String(format: "[VP] seek: rebuilding stream at final target %dms", offsetMs))
             removeObservers()
             beginStreaming(resumeOffsetMsOverride: offsetMs,
                            finalTargetRebuildGeneration: generation)
@@ -1958,8 +1958,7 @@ final class PlaybackController {
                 self.finalTargetSettleTask = nil
                 self.beginFinalTargetRebuild(toMs: target)
             }
-        case .escalate(let recentCount):
-            NSLog("%@", String(format: "[VP] seek: rebuild budget escalated (%d) — surfacing failure", recentCount))
+        case .escalate:
             surfaceFailure(NSError(
                 domain: "PlexAVPApp.Playback", code: -1002,
                 userInfo: [NSLocalizedDescriptionKey:
@@ -1972,26 +1971,6 @@ final class PlaybackController {
         finalTargetSettleTask = nil
     }
 
-    /// Compact "start-end,start-end" (seconds) rendering of the current item's seekable ranges
-    /// for the #25 instrumentation; "EMPTY" when they collapsed (the suspected pin mechanic).
-    private func seekableRangesDescription() -> String {
-        guard let current = player.currentItem else { return "no-item" }
-        let ranges = current.seekableTimeRanges.map(\.timeRangeValue)
-        guard !ranges.isEmpty else { return "EMPTY" }
-        return ranges.map { range in
-            String(format: "%.1f-%.1f", range.start.seconds, range.end.seconds)
-        }.joined(separator: ",")
-    }
-
-    /// Companion to `seekableRangesDescription()`: the buffered (loaded) ranges.
-    private func loadedRangesDescription() -> String {
-        guard let current = player.currentItem else { return "no-item" }
-        let ranges = current.loadedTimeRanges.map(\.timeRangeValue)
-        guard !ranges.isEmpty else { return "EMPTY" }
-        return ranges.map { range in
-            String(format: "%.1f-%.1f", range.start.seconds, (range.start + range.duration).seconds)
-        }.joined(separator: ",")
-    }
 }
 
 /// Observable failure surface for a `PlaybackController`. Modeled as its own object
