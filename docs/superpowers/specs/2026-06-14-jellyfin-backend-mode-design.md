@@ -153,7 +153,7 @@ Do the smallest UI routing needed:
 
 - `HomeView`: for Jellyfin, show a vertical “Jellyfin Libraries” list from `GET /UserViews`; each row navigates into that view’s items.
 - `LibrariesView`: for Jellyfin, show the same user views list and item grids under a selected view, reusing existing poster cells where possible.
-- `SearchView`: show a clear disabled placeholder: “Jellyfin search is not in this slice.”
+- `SearchView`: query Jellyfin `/Items` with `searchTerm`, recursive video item filtering, and render the same poster rail/result detail flow as Plex search.
 - `MusicLibraryView`: show a clear disabled placeholder: “Jellyfin music is not in this slice.”
 
 Avoid large visual rewrites. Put Jellyfin network calls and model mapping behind `JellyfinBrowseService`; views should only branch enough to choose Plex or Jellyfin data sources.
@@ -212,7 +212,10 @@ PMSKit tests:
 - Jellyfin auth response decoding from `AuthenticateByName`.
 - UserViews request URL/header shape.
 - Items request URL/header/query shape.
+- Items search URL/query shape.
 - Item detail request URL/header/query shape.
+- Mark played/unplayed request method/header shape.
+- Original-file download request header shape; do not put `api_key` in Jellyfin download URLs.
 - BaseItemDto → MediaItem mapping for movie, series, season, episode.
 - Image URL helper/header behavior.
 
@@ -239,6 +242,19 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
 
 1. Jellyfin playback progress: `/Sessions/Playing`, `/Progress`, `/Stopped`.
 2. Seek behavior validation: native AVPlayer seek vs Android-style re-POST PlaybackInfo with `StartTimeTicks`.
-3. Jellyfin downloads: `/Items/{id}/Download` original-file path first.
-4. Jellyfin search and music.
+3. Jellyfin download validation: first-pass original-file downloads use `/Items/{id}/Download` with MediaBrowser auth headers, but this still needs live testing on representative media and a later quality/transcoded offline path decision.
+4. Jellyfin music.
 5. Optional Quick Connect login UX.
+
+## Branch close-out status
+
+As of the local Jellyfin worktree close-out, this branch has moved beyond the initial slice:
+
+- UI parity work from `ui/35-jellyfin-parity` is merged into `backend/35-jellyfin-support`; the local UI parity worktree/branch was removed.
+- Home now shows a library icon rail plus Plex-style media rails instead of only a folder listing.
+- Detail actions now include Jellyfin playback, watched/unwatched, and first-pass downloads.
+- Search now works for Jellyfin video items instead of showing the original placeholder.
+- Settings no longer exposes the manual Jellyfin stream-test form; the real backend switch/login path is the primary surface.
+- Jellyfin downloads intentionally use authenticated request headers, not `api_key` URL tokens.
+
+Before merging this branch to main, run the verification commands above once no other agent is using the shared Xcode/simulator build state, then repeat real-server smoke tests for login, browse, search, play, seek/reopen, watched toggle, and download.
