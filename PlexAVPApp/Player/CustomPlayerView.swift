@@ -34,6 +34,30 @@ struct CustomPlayerView: View {
                                                             livePositionMs: item.viewOffset ?? 0))
     }
 
+    /// Offline initializer: plays a downloaded file through the custom player.
+    ///
+    /// Mirrors the contract of the retired `PlayerView.init(localFile:item:onClose:)`. A pure
+    /// offline file needs no server session, but `PlaybackController` still wants an identity +
+    /// client for type symmetry, so we synthesize a throwaway pair here. Callers that already
+    /// hold an `AppModel` can use `init(item:controllerFactory:…)` with a local-file factory if
+    /// they prefer their real identity/client.
+    init(localFile: URL, item: MediaItem, onClose: (() -> Void)? = nil) {
+        let identity = ClientIdentity(clientIdentifier: "offline",
+                                      product: "VisionPlex",
+                                      version: "0.1.0",
+                                      deviceName: "Apple Vision Pro")
+        let client = PlexClient(identity: identity)
+        self.init(item: item,
+                  controllerFactory: {
+                      PlaybackController(localFile: localFile,
+                                         item: item,
+                                         identity: identity,
+                                         client: client)
+                  },
+                  onClose: onClose,
+                  onRequestPlay: nil)
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
