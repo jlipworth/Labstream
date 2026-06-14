@@ -46,6 +46,9 @@ struct CustomPlayerChrome: View {
     @State private var hideTask: Task<Void, Never>?
     @State private var selectedMenu: CustomPlayerMenuKind?
     @State private var menuState: PlayerMenuState
+    @State private var bandwidthToast: BandwidthMismatchToastModel?
+    @State private var bandwidthToastTask: Task<Void, Never>?
+    @State private var lastBandwidthToastDate: Date?
 
     init(controller: PlaybackController,
          title: String,
@@ -88,6 +91,12 @@ struct CustomPlayerChrome: View {
 
             VStack {
                 Spacer()
+
+                if let bandwidthToast {
+                    BandwidthMismatchToast(message: bandwidthToast.message)
+                        .padding(.bottom, 10)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
 
                 if controller.playbackError.isFailed {
                     failureCard
@@ -146,10 +155,22 @@ struct CustomPlayerChrome: View {
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
         .onAppear { revealChrome() }
-        .onDisappear { hideTask?.cancel() }
+        .onDisappear {
+            hideTask?.cancel()
+            bandwidthToastTask?.cancel()
+        }
         .onChange(of: controller.transport.isPaused) { _, _ in scheduleChromeHideIfNeeded() }
-        .onChange(of: controller.playbackError.isFailed) { _, _ in scheduleChromeHideIfNeeded() }
-        .onChange(of: isReconnecting) { _, _ in scheduleChromeHideIfNeeded() }
+        .onChange(of: controller.playbackError.isFailed) { _, _ in
+            scheduleChromeHideIfNeeded()
+            considerBandwidthToast()
+        }
+        .onChange(of: controller.buffering.isBuffering) { _, _ in considerBandwidthToast() }
+        .onChange(of: controller.diagnostics.observedBitrateKbps) { _, _ in considerBandwidthToast() }
+        .onChange(of: controller.diagnostics.requiredBitrateKbps) { _, _ in considerBandwidthToast() }
+        .onChange(of: isReconnecting) { _, _ in
+            scheduleChromeHideIfNeeded()
+            considerBandwidthToast()
+        }
     }
 
     private var shouldShowChrome: Bool {
@@ -348,6 +369,27 @@ struct CustomPlayerChrome: View {
             .allowsHitTesting(false)
     }
 
+    private func considerBandwidthToast() {
+        guard controller.buffering.isBuffering,
+              !controller.playbackError.isFailed,
+              !isReconnecting,
+              let message = controller.diagnostics.bandwidthMismatchMessage
+        else { return }
+
+        let now = Date()
+        if let lastBandwidthToastDate, now.timeIntervalSince(lastBandwidthToastDate) < 30 {
+            return
+        }
+        lastBandwidthToastDate = now
+        bandwidthToast = .init(message: message)
+        bandwidthToastTask?.cancel()
+        bandwidthToastTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            bandwidthToast = nil
+        }
+    }
+
     private func upNextCard(_ next: MediaItem) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
@@ -484,6 +526,37 @@ struct CustomPlayerChrome: View {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+private struct BandwidthMismatchToastModel: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+}
+
+private struct BandwidthMismatchToast: View {
+    let message: String
+
+    var body: some View {
+        Label {
+            Text(message)
+                .font(.callout.weight(.medium))
+                .multilineTextAlignment(.leading)
+        } icon: {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.title3.weight(.semibold))
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(.orange.opacity(0.45), lineWidth: 1)
+        }
+        .shadow(radius: 18)
+        .allowsHitTesting(false)
+        .accessibilityLabel("Network quality warning")
     }
 }
 
