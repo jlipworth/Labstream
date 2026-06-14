@@ -1,5 +1,13 @@
 # Direct Stream Headroom Gate (#31) Design
 
+> **SUPERSEDED (2026-06-14).** This gate shipped, then was removed. In live testing the
+> throughput sample it relied on was always measured during a capped transcode, so it could
+> never clear the full-source-bitrate bar and effectively disabled direct play. The whole
+> Direct Stream toggle + headroom concept was replaced by quality-picker semantics:
+> "Maximum / Original" attempts direct play (falling back to a maximum transcode when PMS
+> can't copy), and every capped rung — including "Maximum (transcoded)" — transcodes. Kept
+> for historical context only; the `DirectStreamHeadroomGate` type no longer exists.
+
 ## Goal
 
 Add a second experimental, default-off playback setting that makes Direct Stream more conservative on constrained links. Existing `Direct Stream (experimental)` remains the master opt-in. The new gate only changes behavior when the user explicitly enables it too.
