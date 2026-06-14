@@ -57,7 +57,16 @@ struct SettingsView: View {
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes.")
+            Text(playbackFooter)
+        }
+    }
+
+    private var playbackFooter: String {
+        switch appModel.activeBackend {
+        case .plex:
+            return "The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes."
+        case .jellyfin:
+            return "The quality new Jellyfin streams start at. Changing quality inside the player reopens the Jellyfin stream with the same cap."
         }
     }
 
@@ -148,6 +157,11 @@ struct SettingsView: View {
                     LabeledContent("User ID", value: userID)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                }
+                Button {
+                    authManager.signOut()
+                } label: {
+                    Label("Sign in to a different Jellyfin server", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
         }

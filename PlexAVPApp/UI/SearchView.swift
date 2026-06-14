@@ -17,12 +17,6 @@ struct SearchView: View {
     @State private var loadedQuery: String?
 
     var body: some View {
-        if appModel.activeBackend == .jellyfin {
-            ContentUnavailableView("Jellyfin search is not in this slice",
-                                   systemImage: "magnifyingglass",
-                                   description: Text("Browse Jellyfin libraries from Home or Libraries for now."))
-                .navigationTitle("Search")
-        } else {
         ScrollView {
             switch loadState {
             case .idle:
@@ -77,10 +71,13 @@ struct SearchView: View {
             }
         }
         .searchable(text: $query, prompt: "Movies, shows, music…")
-        .task(id: query) {
+        .task(id: searchTaskID) {
             await runSearch()
         }
-        }
+    }
+
+    private var searchTaskID: String {
+        "\(appModel.activeBackend.rawValue):\(query)"
     }
 
     // MARK: - Faceting
@@ -120,10 +117,36 @@ struct SearchView: View {
         }
         // `.task(id:)` re-fires on pop-back from a result with the query unchanged;
         // re-running then would flash the spinner and dump the scroll position.
-        if trimmed == loadedQuery, case .loaded = loadState { return }
+        let searchKey = "\(appModel.activeBackend.rawValue):\(trimmed)"
+        if searchKey == loadedQuery, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
         if Task.isCancelled { return }
+
+        if appModel.activeBackend == .jellyfin {
+            loadState = .loading
+            do {
+                let items = try await JellyfinBrowseService(appModel: appModel)
+                    .items(parentId: nil,
+                           recursive: true,
+                           limit: 50,
+                           searchTerm: trimmed,
+                           sortBy: "SortName",
+                           sortOrder: "Ascending")
+                if Task.isCancelled { return }
+                hubs = items.isEmpty ? [] : [
+                    Hub(title: "Jellyfin Results",
+                        hubIdentifier: "jellyfin-search-\(trimmed)",
+                        metadata: items),
+                ]
+                loadedQuery = searchKey
+                loadState = .loaded
+            } catch {
+                if Task.isCancelled { return }
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
 
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
@@ -136,7 +159,7 @@ struct SearchView: View {
             let resp = try await appModel.client.send(req, as: HubsResponse.self)
             if Task.isCancelled { return }
             hubs = resp.mediaContainer.hub
-            loadedQuery = trimmed
+            loadedQuery = searchKey
             loadState = .loaded
         } catch {
             if Task.isCancelled { return }

@@ -66,8 +66,17 @@ struct HomeView: View {
             }
         }
         // Re-run whenever the server URL resolves after discovery/rediscovery.
-        .task(id: appModel.serverBaseURL) { await load() }
+        .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private var loadIdentity: String {
+        switch appModel.activeBackend {
+        case .plex:
+            return "plex:\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+        case .jellyfin:
+            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+        }
     }
 
     @ViewBuilder
