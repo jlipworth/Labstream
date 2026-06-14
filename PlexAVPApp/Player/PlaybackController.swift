@@ -5,6 +5,14 @@ import UIKit
 import os
 import PMSKit
 
+struct RemoteStreamOpenResult {
+    let url: URL
+    let headers: [String: String]
+    let onStop: (() -> Void)?
+}
+
+typealias RemoteStreamReopener = (_ offsetMs: Int, _ bitrateKbps: Int) async throws -> RemoteStreamOpenResult
+
 /// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
 /// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
 /// before an in-place restart (#27), which guards against the server-OOM job pile-up.
@@ -89,8 +97,9 @@ final class PlaybackController {
 
     /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin playback tokens must stay in
     /// headers rather than URL query parameters so client logs/history never capture URL tokens.
-    private let remoteHTTPHeaders: [String: String]
-    private let onStopRemoteSession: (() -> Void)?
+    private var remoteHTTPHeaders: [String: String]
+    private var onStopRemoteSession: (() -> Void)?
+    private let remoteStreamReopener: RemoteStreamReopener?
     private var didStopRemoteSession = false
 
     /// The server's machine identifier (== the Plex resource `clientIdentifier`), used to
@@ -286,6 +295,13 @@ final class PlaybackController {
     /// player surface offers (quality reload only makes sense for streaming).
     var isStreaming: Bool { localFile == nil && server != nil && token != nil }
 
+    /// Whether this session can reopen its media stream at a new offset/quality.
+    /// Plex uses the media-session proxy; backend-resolved playback (Jellyfin) can
+    /// provide a reopener closure without pretending to be a Plex timeline session.
+    var supportsQualityReload: Bool { isStreaming || remoteStreamReopener != nil }
+
+    private var supportsSeekReprime: Bool { isStreaming || remoteStreamReopener != nil }
+
     /// Chapter markers for the current item, if Plex provided any. Empty when none —
     /// the player hides the Chapters info-panel tab in that case.
     ///
@@ -401,6 +417,7 @@ final class PlaybackController {
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
         self.onStopRemoteSession = nil
+        self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
@@ -424,6 +441,7 @@ final class PlaybackController {
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
         self.onStopRemoteSession = nil
+        self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         // A local file is already one concrete version on disk; no version selection.
         self.mediaIndex = 0
@@ -444,12 +462,14 @@ final class PlaybackController {
          client: PlexClient,
          httpHeaders: [String: String] = [:],
          onStopRemoteSession: (() -> Void)? = nil,
+         remoteStreamReopener: RemoteStreamReopener? = nil,
          maxVideoBitrateKbps: Int = 0) {
         self.item = item
         self.localFile = nil
         self.remoteStreamURL = remoteStreamURL
         self.remoteHTTPHeaders = httpHeaders
         self.onStopRemoteSession = onStopRemoteSession
+        self.remoteStreamReopener = remoteStreamReopener
         self.identity = identity
         self.client = client
         self.server = nil
@@ -1013,9 +1033,9 @@ final class PlaybackController {
     /// that position before playing. `0` requests "Maximum / Original" (no cap — we pass
     /// a very high ceiling so PMS still produces a compatible HLS rendition).
     ///
-    /// Only valid for streaming sessions; a no-op for local files.
+    /// Only valid for reopenable sessions; a no-op for local files/static streams.
     func reload(bitrateKbps: Int) {
-        guard isStreaming else { return }
+        guard supportsQualityReload else { return }
         guard bitrateKbps != maxVideoBitrateKbps else { return }
         maxVideoBitrateKbps = bitrateKbps
         // Snapshot position so we can resume where the viewer was.
@@ -1024,7 +1044,11 @@ final class PlaybackController {
         // (didScrobble is intentionally NOT reset — the same content shouldn't re-scrobble.)
         finalTargetRebuildPolicy.reset()
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: bitrateKbps)
+        } else {
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
     }
 
     // MARK: - Failure / retry
@@ -1328,7 +1352,7 @@ final class PlaybackController {
         load(playerItem, resumeOffsetMs: item.viewOffset)
     }
 
-    private func loadRemoteStream(_ url: URL, headers: [String: String]) {
+    private func loadRemoteStream(_ url: URL, headers: [String: String], resumeOffsetMs: Int? = nil) {
         // Seed static facts for the Stats overlay. The stream has already been resolved by the
         // backend, so there is no Plex decision/proxy state to report here.
         diagnostics.applyStatic(item: item,
@@ -1341,7 +1365,7 @@ final class PlaybackController {
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
         let asset = AVURLAsset(url: url, options: options)
         let playerItem = AVPlayerItem(asset: asset)
-        load(playerItem, resumeOffsetMs: item.viewOffset)
+        load(playerItem, resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
     }
 
     // MARK: - Now Playing / cinema chrome metadata (R5)
@@ -2044,7 +2068,7 @@ final class PlaybackController {
     /// buffered, AVKit owns the seek natively. If it is outside the loaded range, record the target
     /// and debounce so a drag collapses to one final-target rebuild.
     private func handleSeekJump() {
-        guard isStreaming, !playbackError.isFailed else { return }
+        guard supportsSeekReprime, !playbackError.isFailed else { return }
         let now = player.currentTime().seconds
         guard now.isFinite, now >= 0 else { return }
         let targetMs = Int(now * 1000)
@@ -2088,17 +2112,47 @@ final class PlaybackController {
     }
 
     /// Arm (or re-arm) the debounced final-target rebuild. Each out-of-buffer jump during a drag
-    /// records the latest target; only the settled target gets a PMS stop/decision/start.
+    /// records the latest target; only the settled target gets a PMS restart or backend re-open.
     private func scheduleFinalTargetRebuild(toMs targetMs: Int) {
         finalTargetRebuildPolicy.recordFinalTarget(offsetMs: targetMs)
         finalTargetSettleTask?.cancel()
         finalTargetSettleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.finalTargetSettleNanos)
             guard let self, !Task.isCancelled else { return }
-            guard self.isStreaming, !self.playbackError.isFailed else { return }
+            guard self.supportsSeekReprime, !self.playbackError.isFailed else { return }
             guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else { return }
             self.finalTargetSettleTask = nil
-            self.beginFinalTargetRebuild(toMs: target)
+            if self.remoteStreamReopener != nil {
+                self.reopenRemoteStream(offsetMs: target, bitrateKbps: self.maxVideoBitrateKbps)
+            } else {
+                guard self.isStreaming else { return }
+                self.beginFinalTargetRebuild(toMs: target)
+            }
+        }
+    }
+
+    private func reopenRemoteStream(offsetMs: Int, bitrateKbps: Int) {
+        guard let remoteStreamReopener else { return }
+        lastPrimedOffsetMs = offsetMs
+        let priorStop = onStopRemoteSession
+        didStopRemoteSession = true
+        priorStop?()
+        playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let reopened = try await remoteStreamReopener(offsetMs, bitrateKbps)
+                self.remoteHTTPHeaders = reopened.headers
+                self.onStopRemoteSession = reopened.onStop
+                self.didStopRemoteSession = false
+                self.loadRemoteStream(reopened.url, headers: reopened.headers, resumeOffsetMs: offsetMs)
+            } catch {
+                NSLog("PlaybackController: remote stream reopen failed (%@)", String(describing: error))
+                self.surfaceFailure(NSError(
+                    domain: "PlexAVPApp.Playback", code: -1004,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Couldn't reopen the stream at that position. Tap Retry or try a lower quality setting."]))
+            }
         }
     }
 
