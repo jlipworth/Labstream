@@ -160,30 +160,6 @@ final class PlaybackController {
     /// (`willResumePlaybackAfterUserNavigatedFromTime:toTime:`) are `API_UNAVAILABLE(visionos)`,
     /// checked in the XROS 26.5 AVPlayerViewController.h.
     private var timeJumpedObserver: NSObjectProtocol?
-    /// Debounce/confirmation timer for a seek that lands the player in starved territory (#25).
-    /// Re-armed on every jump so a user scrubbing around coalesces onto the last target.
-    private var seekRestartTimer: Timer?
-    /// True once the CURRENT item has genuinely played (reached `.playing`). Gates the
-    /// seek-during-stall restart (#25): the start path repositions the playhead itself (offset
-    /// priming / the client-side resume fallback), and a slow initial prime must not be misread
-    /// as a dead seek — the stall watchdog owns start-time recovery. Reset per item in `load(_:)`.
-    private var hasPlayedThisItem = false
-    /// Continuously-tracked playhead (seconds) while the item is genuinely `.playing`, used to
-    /// measure the SIZE of a subsequent time jump. A real user seek moves the playhead far; a
-    /// transcode restart's re-prime jump and HLS-discontinuity jumps move it only a few to tens
-    /// of seconds. `handleTimeJump` gates the seek-restart on this delta to break the
-    /// restart→re-prime-jump→restart livelock (#27): self-induced small jumps were being read as
-    /// seeks and triggering another restart, creeping the playhead and pinning the scrubber so a
-    /// genuine deep seek never took. Seeded to the (re)start offset in `load(_:)`.
-    private var lastSettledPlayheadSeconds: Double = 0
-    /// The playhead (ms) the most recent qualifying jump landed on — i.e. the user's seek
-    /// TARGET, captured the instant `handleTimeJump` sees it. The seek-restart confirmation
-    /// fires `seekStallConfirmSeconds` later, by which point a seek that couldn't land (empty
-    /// seekable range while the session primes) has snapped `player.currentTime()` BACK to the
-    /// stale pre-seek offset — so restarting at the live playhead reverts the viewer to roughly
-    /// where they started (the "second drag goes back" bug). We restart at this captured target
-    /// instead. Cleared when a jump recovers without a restart or the item resumes `.playing`.
-    private var pendingSeekTargetMs: Int?
     private var started = false
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
@@ -193,8 +169,31 @@ final class PlaybackController {
     /// makes the media plane recoverable (transparent upstream-socket rotate). `AVURLAsset`
     /// points at the proxy's `localURL`; `mediaProxyGeneration` tracks the live stream so a
     /// late teardown can't kill a newer session. Player-agnostic — see `MediaSessionProxy`.
-    private let mediaProxy = MediaSessionProxy()
+    private lazy var mediaProxy = MediaSessionProxy(controlSend: { [weak self] req in
+        guard let self else { throw URLError(.cancelled) }
+        return try await self.sendControl(req)
+    })
     private var mediaProxyGeneration: Int?
+    /// The offset (ms) we last primed the proxy at (initial resume or a proxy seek). The
+    /// player's own resume seek fires a `timeJumpedNotification` landing here; suppressing
+    /// jumps within `proxySeekEchoEpsilonMs` of it (by VALUE) keeps a re-prime from echoing
+    /// into another re-prime. Replaces the old `hasPlayedThisItem`/`pendingSeekTargetMs` dance.
+    private var lastProxySeekTargetMs = 0
+    /// The proxy handle generation already loaded into the player, so coalesced `seek` callers
+    /// (which all return the same final handle) don't each trigger a redundant `replaceItem`.
+    private var lastLoadedProxyGeneration: Int?
+    private static let proxySeekEchoEpsilonMs = 2000
+
+    /// Debounce for the proxy re-prime (#33 Stage 2 backward-seek fix). A single drag/scrub emits a
+    /// STREAM of `timeJumpedNotification`s as the thumb sweeps; the first one that crosses below the
+    /// loaded buffer used to swap the `AVPlayerItem` mid-gesture, aborting the drag at the buffer
+    /// edge (user drags back → playback resumes forward). Instead, an out-of-buffer jump records its
+    /// target and arms a short timer that RESETS on each new jump, so the whole gesture collapses
+    /// into ONE re-prime at the release position. Player-side complement to the proxy's server-side
+    /// latest-wins coalescing.
+    private var pendingReprimeTargetMs: Int?
+    private var reprimeDebounce: Task<Void, Never>?
+    private static let reprimeDebounceNanos: UInt64 = 500_000_000
 
     // MARK: - Extracted collaborators
 
@@ -964,11 +963,10 @@ final class PlaybackController {
         maxVideoBitrateKbps = bitrateKbps
         // Snapshot position so we can resume where the viewer was.
         let resumeMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
-        // A reload is a fresh session: restore the auto-retry budget and the seek-restart
-        // burst budget (#27) — explicit user intent re-earns self-healing. (didScrobble is
-        // intentionally NOT reset — the same content shouldn't re-scrobble mid-watch.)
+        // A reload is a fresh session: restore the auto-retry budget — explicit user intent
+        // re-earns self-healing. The proxy's re-prime budget is reset inside `mediaProxy.open`.
+        // (didScrobble is intentionally NOT reset — the same content shouldn't re-scrobble.)
         didAutoRetry = false
-        seekRestartBudget.reset()
         removeObservers()
         beginStreaming(resumeOffsetMsOverride: resumeMs)
     }
@@ -985,8 +983,6 @@ final class PlaybackController {
         let resumeMs = currentResumeMs
         didAutoRetry = false
         switchToRecoveryControlClient()
-        // Explicit user intent re-earns the seek-restart burst budget (#27).
-        seekRestartBudget.reset()
         playbackError.clear()
         removeObservers()
         beginStreaming(resumeOffsetMsOverride: resumeMs)
@@ -1065,102 +1061,49 @@ final class PlaybackController {
         // immediately. Without this PMS transcodes from 0 and a deep client seek stalls
         // waiting on a segment the transcoder hasn't reached yet.
         let resumeMs = resumeOffsetMsOverride ?? item.viewOffset
-        let offsetSeconds: Int? = if let resumeMs, resumeMs > 0 { resumeMs / 1000 } else { nil }
 
-        let transcode = TranscodeRequest(server: server,
-                                         token: token,
-                                         identity: identity,
-                                         metadataKey: metadataKey,
-                                         maxVideoBitrateKbps: requestedCap,
-                                         sessionID: sessionID,
-                                         mediaIndex: mediaIndex,
-                                         partIndex: 0,
-                                         startOffsetSeconds: offsetSeconds)
+        // The proxy now owns the PMS decision/probe and the re-prime. Build the player-agnostic
+        // request and let it resolve the stream URL + stand up the loopback (#33 Stage 2). On a
+        // loopback bind failure it hands back the resolved direct URL so playback never depends
+        // on the proxy being up (the Stage-1 fallback).
+        let req = MediaSessionRequest(
+            server: server, token: token, identity: identity,
+            metadataKey: metadataKey, maxVideoBitrateKbps: requestedCap,
+            sessionID: sessionID, mediaIndex: mediaIndex, partIndex: 0,
+            burnSubtitleStreamID: nil,
+            directStreamEnabled: UserDefaults.standard.bool(forKey: Self.directStreamEnabledKey))
 
-        // Direct Stream opt-in (#7 Step 3, default OFF): probe the MDE FIRST with
-        // directPlay=1 + the direct-play-capable profile. Commit to the matching
-        // direct-play start.m3u8 ONLY when PMS confirms it will copy the video stream
-        // (`savesVideoEncode`) — the expensive software re-encode is saved and the server
-        // load drops to a remux. Any other answer, a failed probe, or the toggle being
-        // off falls through to today's exact transcode path, byte-identical.
-        var decision: DecisionResponse?
-        var streamURL = transcode.startM3U8URL()
-        if UserDefaults.standard.bool(forKey: Self.directStreamEnabledKey) {
-            do {
-                let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
-                guard !Task.isCancelled, generation == playbackGeneration else { return }
-                // PMS signals a direct-play/copy verdict via mdeDecisionCode=1000 or the
-                // Part-level decision (NOT the per-stream decisions, which come back nil) —
-                // see DecisionResponse.savesVideoEncode. Commit to the direct-play start only
-                // when it confirms the video won't be re-encoded.
-                if probe.savesVideoEncode {
-                    NSLog("PlaybackController: Direct Stream — PMS will copy video; committing direct-play start.m3u8")
-                    decision = probe
-                    streamURL = transcode.directPlayStartM3U8URL()
-                }
-            } catch {
-                guard !Task.isCancelled, generation == playbackGeneration else { return }
-                NSLog("PlaybackController: direct-play probe failed (%@); using transcode path", String(describing: error))
+        var assetURL: URL
+        do {
+            let handle = try await mediaProxy.open(req, offsetMs: resumeMs ?? 0)
+            guard !Task.isCancelled, generation == playbackGeneration else {
+                await teardownMediaProxy(); return
             }
+            mediaProxyGeneration = handle.generation
+            lastLoadedProxyGeneration = handle.generation
+            assetURL = handle.localURL
+            NSLog("PlaybackController: media proxy open ok, loopback=%@", handle.localURL.absoluteString)
+        } catch let MediaSessionError.loopbackUnavailable(directURL) {
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
+            assetURL = directURL
+            NSLog("PlaybackController: media proxy loopback unavailable; using direct stream URL")
+        } catch {
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
+            NSLog("PlaybackController: media proxy open failed (%@); surfacing failure", String(describing: error))
+            surfaceFailure(error)
+            return
         }
 
-        // Ask PMS for a transcode decision (skipped when the probe above already committed —
-        // its decision/start pair must stay consistent, research/15 risk #8). We proceed for
-        // both directPlay and transcode; only a hard `.unsupported` aborts. A failed decision
-        // call is non-fatal — fall through and try start.m3u8 anyway.
-        if decision == nil {
-            do {
-                let response = try await client.send(transcode.decisionRequest(), as: DecisionResponse.self)
-                guard !Task.isCancelled, generation == playbackGeneration else { return }
-                decision = response
-                if case .unsupported = response.decision {
-                    // Best-effort: still attempt playback; PMS often plays despite an
-                    // odd decision code. Logged for the integration pass.
-                    NSLog("PlaybackController: transcode decision unsupported: %@", String(describing: response.generalDecisionText))
-                }
-            } catch {
-                guard !Task.isCancelled, generation == playbackGeneration else { return }
-                NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", String(describing: error))
-            }
-        }
-
-        // Seed the Stats-for-Nerds static facts (no token is ever read here).
+        // Seed Stats-for-Nerds from the proxy's decision (it owns decision/probe now).
+        let decision = await mediaProxy.currentDecision()
         diagnostics.applyStatic(item: item,
                                 mediaIndex: mediaIndex,
                                 decision: decision,
                                 server: server,
                                 targetBitrateKbps: maxVideoBitrateKbps)
 
-        // #4 probe (since removed) answered NO: this PMS's master playlist carries
-        // only EXT-X-STREAM-INF — no I-frame variant, so AVKit gets no free scrub
-        // thumbnails here. Recorded on the issue; a custom BIF scrubber is the only
-        // remaining route and is parked.
-        // Front the PMS stream with the app-owned media-session proxy (#33) so the media
-        // plane is recoverable (transparent upstream-socket rotate; no manual Retry). Falls
-        // back to the direct PMS URL if the loopback origin can't start — playback must never
-        // depend on the proxy being up.
-        var assetURL = streamURL
-        do {
-            let handle = try await mediaProxy.open(origin: streamURL)
-            mediaProxyGeneration = handle.generation
-            assetURL = handle.localURL
-            NSLog("PlaybackController: media proxy open ok, loopback=%@", handle.localURL.absoluteString)
-        } catch {
-            NSLog("PlaybackController: media proxy open failed (%@); using direct stream URL",
-                  String(describing: error))
-        }
-        guard !Task.isCancelled, generation == playbackGeneration else {
-            await teardownMediaProxy()
-            return
-        }
         let asset = AVURLAsset(url: assetURL)
         let playerItem = AVPlayerItem(asset: asset)
-        // Offset priming (the `offset` param + `#EXT-X-START`) is the FAST path: PMS
-        // positions the session so AVPlayer begins at the resume point with a primed
-        // segment, avoiding a cold deep-seek stall. But we now also pass `resumeMs`
-        // through as a CLIENT-SIDE FALLBACK (P2 #9): if the player still lands at ~0
-        // (PMS didn't honor `#EXT-X-START`), the status observer seeks once we're ready.
-        // Previously this was `nil`, so a non-honoring PMS dropped the playhead to 0.
         guard !Task.isCancelled, generation == playbackGeneration else {
             await teardownMediaProxy()
             return
@@ -1174,6 +1117,13 @@ final class PlaybackController {
         guard let gen = mediaProxyGeneration else { return }
         mediaProxyGeneration = nil
         await mediaProxy.stop(generation: gen)
+    }
+
+    /// Control-plane bridge for the media-session proxy (#33 Stage 2): the proxy builds PMSKit
+    /// `PlexRequest`s for its decision/probe/stop calls and sends them through here. `client` is
+    /// a recovery-swappable `var`, so reading it at call time picks up a post-`retry()` client.
+    private func sendControl(_ req: PlexRequest) async throws -> Data {
+        try await client.send(req)
     }
 
     // MARK: - Local-file path
@@ -1347,15 +1297,14 @@ final class PlaybackController {
         // Reset per-item state for the new player item: a fresh load is a fresh resume
         // (didSeek), a fresh readiness gate, and a clean error surface (P2/P3/P8).
         didSeek = false
-        hasPlayedThisItem = false
         timeline.isReadyForReporting = false
         didApplySavedSubtitle = false
         didApplyAudioPreference = false
         pendingResumeMs = resumeOffsetMs
-        // Seed the jump-delta baseline to the (re)start offset so the restarted stream's own
-        // re-prime / HLS-discontinuity jumps register as SMALL deltas and don't re-trigger a
-        // restart (#27 livelock). Updated continuously while `.playing` by the marker observer.
-        lastSettledPlayheadSeconds = Double(resumeOffsetMs ?? 0) / 1000.0
+        // Echo baseline (#33 Stage 2): the resume seek's own `timeJumpedNotification` lands at
+        // this offset; `handleSeekJump` suppresses jumps within an epsilon of it so a re-prime
+        // (or the initial resume) can't echo into another re-prime.
+        lastProxySeekTargetMs = resumeOffsetMs ?? 0
         playbackError.clear()
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
         // unchanged across a Quality reload (same `item`), so we only reset the live UI
@@ -1481,7 +1430,7 @@ final class PlaybackController {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.handleTimeJump()
+                self?.handleSeekJump()
             }
         }
 
@@ -1509,11 +1458,6 @@ final class PlaybackController {
                 self.updateSkipMarker(at: time.seconds)
                 // Drive the Up Next card (#15) off the same fine-grained observer.
                 self.updateUpNext(at: time.seconds)
-                // Track the settled playhead while genuinely playing, so `handleTimeJump` can
-                // measure how far a subsequent jump moved (#27 livelock guard).
-                if self.player.timeControlStatus == .playing, time.seconds.isFinite {
-                    self.lastSettledPlayheadSeconds = time.seconds
-                }
             }
         }
 
@@ -1547,12 +1491,6 @@ final class PlaybackController {
                     self.armStallWatchdog()
                 } else if status == .playing {
                     self.cancelStallWatchdog()
-                    // The item has genuinely played: from here on, a time jump that strands the
-                    // player starved is a dead seek (#25), not a slow initial prime.
-                    self.hasPlayedThisItem = true
-                    // Playback is advancing again — any pending seek target has been honored (or
-                    // is moot). Don't carry it into a later, unrelated jump.
-                    self.pendingSeekTargetMs = nil
                     // Real playback = the failure is over. Clear any surfaced error so its
                     // Retry/Close affordance can't linger over playing video: a stall we
                     // surfaced (handleStallTimeout pauses + sets the error) sometimes recovers
@@ -1605,10 +1543,9 @@ final class PlaybackController {
             NotificationCenter.default.removeObserver(timeJumpedObserver)
             self.timeJumpedObserver = nil
         }
-        // Cancel a pending seek-stall confirmation so it can't fire across a reload/teardown
-        // and restart a freshly-loaded session at a stale offset (#25).
-        seekRestartTimer?.invalidate()
-        seekRestartTimer = nil
+        // Drop any armed re-prime so a debounced timer can't fire against a freshly-loaded item
+        // after this reload/teardown (#33 Stage 2 backward-seek debounce).
+        cancelPendingReprime()
         // Clear any lingering spinner state across a reload/teardown so it can't get stuck on.
         buffering.set(false)
         diagnosticsTimer?.invalidate()
@@ -1901,167 +1838,142 @@ final class PlaybackController {
         }
     }
 
-    // MARK: - Seek-during-stall recovery (#25)
+    // MARK: - Seek (proxy-owned re-prime, #33 Stage 2)
 
-    /// How long after a time jump we wait before checking whether the player is starved at the
-    /// new position. This MUST exceed PMS's deep-seek transcode PRIME time: a seek lands on a
-    /// segment the current session hasn't produced, so PMS must re-prime there, and the headless
-    /// segment probe measured the first primed segment at a deep offset taking ~7–9s to arrive
-    /// (`scripts/live-segment-probe.sh`). At the old 2s the player was ALWAYS still starved when
-    /// this fired, so we restarted the transcode into a prime that was about to succeed — which
-    /// re-incurs another ~8s prime, fires again, and fork-bombs: each restart makes PMS reap the
-    /// previous session, so in-flight segment fetches start 404ing (the `-16849`/`-1008` cascade
-    /// seen live). 10s waits the prime out: a seek that was going to recover reports `.playing`
-    /// and is left alone; only a genuinely dead seek (no segment after the prime window) restarts.
-    /// Stays below `stallTimeoutSeconds` (15s) so the seek path owns recovery, with the stall
-    /// watchdog as the backstop. Repeat jumps re-arm it, so scrubbing coalesces onto the final target.
-    private let seekStallConfirmSeconds: TimeInterval = 10.0
-
-    /// Minimum jump distance (seconds) for a `timeJumpedNotification` to count as a user SEEK
-    /// rather than playback progression / an HLS discontinuity / a transcode restart's re-prime
-    /// repositioning. Below this we never arm a restart — small self-induced jumps being read as
-    /// seeks were the source of the #27 self-sustaining restart livelock (each restart's re-prime
-    /// jump triggered the next restart, creeping the playhead and pinning the scrubber so a real
-    /// deep seek never took). A genuine deep seek (the #25 case: 14:12 → 26:56) is minutes away,
-    /// far above this floor.
-    private let seekJumpMinDeltaSeconds: Double = 90
-
-    /// Rate-limit policy for seek-triggered transcode restarts (#27): 5s cooldown between
-    /// restarts, escalate to the failure overlay past 3 restarts in a rolling 60s window.
-    /// The cooldown alone still allows 12 restarts/min indefinitely, and the
-    /// play→starve→restart cycle can self-sustain with NO user input (HLS discontinuities fire
-    /// `timeJumpedNotification` too) — a budget is what turns "runaway" into "ask the viewer."
-    /// Policy + rationale live in `SeekRestartBudget` (PMSKit), where the spam scenarios are
-    /// unit-tested; reset on user-intent rebuilds (`retry()` / `reload(bitrateKbps:)`).
-    private var seekRestartBudget = SeekRestartBudget(
-        cooldownSeconds: 5.0, burstLimit: 3, burstWindowSeconds: 60)
-
-    /// Handle a playhead jump (seek) on the current item. Streaming only: a seek into territory
-    /// the transcoder hasn't produced can never make progress on its own — PMS only transcodes
-    /// forward from the session's offset, so the player sits starved at the target forever and
-    /// the scrubber reads as pinned (#25, seen live while stalled mid-buffer). Arm the
-    /// confirmation window; `confirmSeekStallRestart` does the actual starvation check.
+    /// Handle a playhead jump on the current item. Streaming only. The proxy now owns the
+    /// re-prime, so the player's job is narrow: ignore the jump if it's the echo of an offset
+    /// we just primed, or if the target is already buffered (AVKit seeks there natively);
+    /// otherwise ask the proxy to re-prime the transcode at the new offset.
     ///
-    /// Deliberately fires for OUR programmatic seeks too (chapter jump, Skip Intro/Credits):
-    /// they share the same failure mode when they land beyond the transcoder's progress.
-    private func handleTimeJump() {
+    /// `timeJumpedNotification` is the only in-process seek signal on visionOS (the AVKit
+    /// user-navigation delegate callbacks are `API_UNAVAILABLE(visionos)`), and it fires for
+    /// our own programmatic seeks too — hence the echo guard runs FIRST, by VALUE, so a
+    /// re-prime's own resume seek can't trigger another re-prime.
+    private func handleSeekJump() {
         guard isStreaming, !playbackError.isFailed else { return }
-        // Ignore jumps before this item first plays — see `hasPlayedThisItem`. This also
-        // prevents a restart loop: a restarted session re-primes (starved for a while) and
-        // must not re-trigger off its own positioning jumps.
-        guard hasPlayedThisItem else { return }
-
-        // #25 instrumentation (strip after live verification): record every jump with the
-        // player state so the live test shows whether stalled drags reach the app at all —
-        // if AVKit swallows the drag entirely, no line appears and the fix can't engage.
-        let item = player.currentItem
         let now = player.currentTime().seconds
-        let jumpDelta = abs(now - lastSettledPlayheadSeconds)
-        let jumpMsg = String(format: "[VP] seek: time jumped to %.1fs (from %.1fs Δ%.1fs status=%d bufferEmpty=%d keepUp=%d seekable=%@)",
-                             now, lastSettledPlayheadSeconds, jumpDelta,
-                             player.timeControlStatus.rawValue,
-                             (item?.isPlaybackBufferEmpty ?? false) ? 1 : 0,
-                             (item?.isPlaybackLikelyToKeepUp ?? false) ? 1 : 0,
-                             seekableRangesDescription())
-        NSLog("%@", jumpMsg)
+        guard now.isFinite, now >= 0 else { return }
+        let targetMs = Int(now * 1000)
 
-        // Only a LARGE jump is a user seek worth a transcode relocate. Small jumps are playback
-        // progression, HLS discontinuities, or a restart's own re-prime repositioning — arming a
-        // restart on those is the #27 self-sustaining livelock that pinned the scrubber. The
-        // delta is measured against the last settled playhead, seeded to the restart offset.
-        guard jumpDelta >= seekJumpMinDeltaSeconds else {
-            NSLog("%@", String(format: "[VP] seek: ignoring %.1fs jump (below %.0fs seek threshold — progression/discontinuity)",
-                               jumpDelta, seekJumpMinDeltaSeconds))
+        // TEMP DIAGNOSTICS (#33 Stage 2 backward-seek investigation — strip after diagnosis):
+        // capture what AVKit reports AT JUMP TIME so we can tell whether a backward drag is being
+        // clamped (currentTime never reaches the user's target) vs. correctly captured.
+        let rate = player.rate
+        let tcs: String
+        switch player.timeControlStatus {
+        case .paused: tcs = "paused"
+        case .waitingToPlayAtSpecifiedRate: tcs = "waiting"
+        case .playing: tcs = "playing"
+        @unknown default: tcs = "unknown"
+        }
+        NSLog("%@", String(format: "[VP] seekjump: now=%.1fs target=%dms lastPrime=%dms rate=%.2f tcs=%@ seekable=[%@] loaded=[%@]",
+                           now, targetMs, lastProxySeekTargetMs, rate, tcs,
+                           seekableRangesDescription(), loadedRangesDescription()))
+
+        // Echo of an offset we just primed (initial resume or a prior proxy seek): not a user seek.
+        if abs(targetMs - lastProxySeekTargetMs) <= Self.proxySeekEchoEpsilonMs {
+            NSLog("%@", String(format: "[VP] seekjump: suppressed as echo (|%d-%d|<=%d)",
+                               targetMs, lastProxySeekTargetMs, Self.proxySeekEchoEpsilonMs))
             return
         }
 
-        // Capture the seek TARGET now, while `now` still holds it. By the time the confirmation
-        // fires, a seek that couldn't land (empty seekable range during a prime) has reverted
-        // the live playhead to the stale pre-seek offset; restarting there is the "second drag
-        // snaps back" bug. The latest qualifying jump wins (scrubbing coalesces onto it).
-        if now.isFinite, now > 0 { pendingSeekTargetMs = Int(now * 1000) }
-
-        seekRestartTimer?.invalidate()
-        let timer = Timer(timeInterval: seekStallConfirmSeconds, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.confirmSeekStallRestart()
-            }
+        // Already buffered → AVKit can seek there natively; no re-prime needed. Drop any pending
+        // re-prime: the latest jump determines the action, and this one says "native".
+        if isWithinLoadedRanges(seconds: now) {
+            NSLog("[VP] seekjump: within loaded ranges — native seek, no re-prime")
+            cancelPendingReprime()
+            return
         }
-        RunLoop.main.add(timer, forMode: .common)
-        seekRestartTimer = timer
+
+        // Genuine deep seek outside the transcoder's produced range. Debounce: a drag emits a
+        // stream of these as the thumb sweeps — collapse them into ONE re-prime at the release
+        // position instead of swapping the item mid-gesture (which aborts the drag at the buffer
+        // edge → "dragged back, resumed forward").
+        scheduleReprime(toMs: targetMs)
     }
 
-    /// Fired `seekStallConfirmSeconds` after the most recent jump. If the player is genuinely
-    /// starved at the jumped-to position (waiting on data with an empty buffer it can't
-    /// refill), the current transcode session will never deliver — restart the transcode at
-    /// that offset (in-place `beginStreaming`, mirroring `reload(bitrateKbps:)`; this is a
-    /// stall, not a surfaced failure, so no AVKit wedge and no `.id()` view rebuild needed).
-    /// A jump that recovered on its own — buffered content, or the transcoder caught up — is
-    /// a logged no-op. (A paused player with a HEALTHY buffer is also left alone; only
-    /// paused-AND-starved restarts, see the buffer-flags note below.)
-    private func confirmSeekStallRestart() {
-        seekRestartTimer?.invalidate()
-        seekRestartTimer = nil
-        guard isStreaming, !playbackError.isFailed, let current = player.currentItem else { return }
-        // Starvation is judged by the BUFFER FLAGS, not `timeControlStatus`: AVKit leaves the
-        // player `.paused` (not `.waitingToPlayAtSpecifiedRate`) after an interactive scrub
-        // that lands starved — proven live, status=0 bufferEmpty=1 in the #25 logs — and a
-        // paused-but-starved session can never refill at the target either. Only an actively
-        // `.playing` player is left alone.
-        guard player.timeControlStatus != .playing,
-              current.isPlaybackBufferEmpty,
-              !current.isPlaybackLikelyToKeepUp else {
-            let okMsg = String(format: "[VP] seek: jump recovered without restart (status=%d bufferEmpty=%d keepUp=%d)",
-                               player.timeControlStatus.rawValue,
-                               current.isPlaybackBufferEmpty ? 1 : 0,
-                               current.isPlaybackLikelyToKeepUp ? 1 : 0)
-            NSLog("%@", okMsg)
-            pendingSeekTargetMs = nil   // the seek landed; don't carry a stale target forward
-            return
+    /// True if `seconds` falls within (a small slack around) any of the item's loaded time
+    /// ranges — i.e. AVKit already has data there and can seek natively. Retires the old
+    /// fixed `seekJumpMinDeltaSeconds` heuristic in favor of the player's real buffer state.
+    private func isWithinLoadedRanges(seconds: Double) -> Bool {
+        guard let item = player.currentItem else { return false }
+        for value in item.loadedTimeRanges {
+            let r = value.timeRangeValue
+            let start = r.start.seconds
+            let end = (r.start + r.duration).seconds
+            guard start.isFinite, end.isFinite else { continue }
+            if seconds >= start - 1, seconds <= end + 1 { return true }
         }
-        // Rate-limit (#27): policy lives in SeekRestartBudget (PMSKit, unit-tested).
-        // Deferred → re-arm the confirmation for the cooldown remainder instead of restarting
-        // now; the user's latest target isn't lost — when the re-armed check fires,
-        // `currentResumeMs` reads the live playhead. Escalate → restarts clustering inside
-        // the window mean the stream can't sustain playback; stop silently rebuilding and
-        // put the viewer in charge (Retry / quality reload reset the budget).
-        switch seekRestartBudget.requestRestart(now: ProcessInfo.processInfo.systemUptime) {
-        case .deferred(let remaining):
-            NSLog("%@", String(format: "[VP] seek: starved but in restart cooldown; re-arming in %.1fs", remaining))
-            let timer = Timer(timeInterval: remaining, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.confirmSeekStallRestart()
-                }
+        return false
+    }
+
+    /// Re-prime the transcode at `targetMs` through the proxy (coalescing/latest-wins/budget all
+    /// live in `MediaSessionProxy`), then swap the player to the new loopback URL. Budget
+    /// escalation surfaces the failure overlay (Retry / lower quality resets it via `open`).
+    private func repositionViaProxy(toMs targetMs: Int) {
+        // Mark the target as primed up front so the reload's own resume seek is suppressed as an
+        // echo, not read as a fresh user seek.
+        lastProxySeekTargetMs = targetMs
+        NSLog("%@", String(format: "[VP] seek: proxy re-prime to %dms", targetMs))
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let handle = try await self.mediaProxy.seek(to: targetMs)
+                self.loadProxyHandle(handle, resumeMs: targetMs)
+            } catch let MediaSessionError.budgetEscalated(recentCount) {
+                NSLog("%@", String(format: "[VP] seek: proxy reprime budget escalated (%d) — surfacing failure", recentCount))
+                self.surfaceFailure(NSError(
+                    domain: "PlexAVPApp.Playback", code: -1002,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Playback keeps falling behind the server. Tap Retry to rebuild the stream, or lower the quality setting."]))
+            } catch {
+                NSLog("PlaybackController: proxy reprime failed (%@)", String(describing: error))
+                self.surfaceFailure(NSError(
+                    domain: "PlexAVPApp.Playback", code: -1003,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Couldn't seek to that position. Tap Retry to rebuild the stream."]))
             }
-            RunLoop.main.add(timer, forMode: .common)
-            seekRestartTimer = timer
-            return
-        case .escalate(let recentCount):
-            NSLog("%@", String(format: "[VP] seek: %d restarts within 60s — escalating to failure overlay", recentCount))
-            surfaceFailure(NSError(
-                domain: "PlexAVPApp.Playback", code: -1002,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "Playback keeps falling behind the server. Tap Retry to rebuild the stream, or lower the quality setting."]))
-            return
-        case .allow:
-            break
         }
-        // Restart at the captured seek TARGET, not the live playhead: a seek that couldn't land
-        // (empty seekable range while priming) has by now reverted `player.currentTime()` to the
-        // stale pre-seek offset, so `currentResumeMs` would send us back to roughly where the
-        // viewer started (#25 "second drag snaps back"). Fall back to the live playhead only if
-        // no target was captured (shouldn't happen on this path, but stays safe).
-        let resumeMs = pendingSeekTargetMs ?? currentResumeMs
-        pendingSeekTargetMs = nil
-        let restartMsg = String(format: "[VP] seek: starved %.0fs after jump; restarting transcode at %dms",
-                                seekStallConfirmSeconds, resumeMs)
-        NSLog("%@", restartMsg)
-        // Restart the transcode where the viewer wants to be — mirror `reload(bitrateKbps:)`,
-        // but deliberately do NOT reset `didAutoRetry`: a seek restart is not user intent, and
-        // refilling the silent auto-retry budget here would let a flapping stream rebuild
-        // forever without ever surfacing (#27).
+    }
+
+    /// Arm (or re-arm) the debounced re-prime. Each out-of-buffer jump during a drag calls this,
+    /// resetting the timer, so only the gesture's settle point survives to `repositionViaProxy`.
+    /// `cancelPendingReprime()` (wired into `removeObservers`) guarantees a stale timer can't fire
+    /// against a freshly-loaded item after a reload/teardown.
+    private func scheduleReprime(toMs targetMs: Int) {
+        pendingReprimeTargetMs = targetMs
+        reprimeDebounce?.cancel()
+        reprimeDebounce = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.reprimeDebounceNanos)
+            guard let self, !Task.isCancelled else { return }
+            guard self.isStreaming, !self.playbackError.isFailed else { return }
+            guard let target = self.pendingReprimeTargetMs else { return }
+            self.pendingReprimeTargetMs = nil
+            self.reprimeDebounce = nil
+            NSLog("%@", String(format: "[VP] seekjump: debounce settled — re-prime to %dms", target))
+            self.repositionViaProxy(toMs: target)
+        }
+    }
+
+    /// Drop any armed re-prime. Called when the latest jump lands in-buffer (native seek wins) and
+    /// from `removeObservers` so a pending timer can't fire across a reload / teardown.
+    private func cancelPendingReprime() {
+        reprimeDebounce?.cancel()
+        reprimeDebounce = nil
+        pendingReprimeTargetMs = nil
+    }
+
+    /// Swap the player to a re-primed proxy handle's loopback URL (the "new localURL +
+    /// replaceItem" reload). Coalesced `seek` callers all return the same final handle, so the
+    /// generation guard makes the redundant ones no-ops.
+    private func loadProxyHandle(_ handle: MediaSessionHandle, resumeMs: Int) {
+        guard handle.generation != lastLoadedProxyGeneration else { return }
+        lastLoadedProxyGeneration = handle.generation
+        mediaProxyGeneration = handle.generation
+        let asset = AVURLAsset(url: handle.localURL)
+        let playerItem = AVPlayerItem(asset: asset)
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        load(playerItem, resumeOffsetMs: resumeMs)
     }
 
     /// Compact "start-end,start-end" (seconds) rendering of the current item's seekable ranges
@@ -2072,6 +1984,18 @@ final class PlaybackController {
         guard !ranges.isEmpty else { return "EMPTY" }
         return ranges.map { range in
             String(format: "%.1f-%.1f", range.start.seconds, range.end.seconds)
+        }.joined(separator: ",")
+    }
+
+    /// Companion to `seekableRangesDescription()` for the #33 Stage 2 backward-seek diagnostics:
+    /// the buffered (loaded) ranges, used to tell whether a jump target is already in-buffer.
+    /// TEMP — strip with the `handleSeekJump` diagnostics once the backward-seek path is understood.
+    private func loadedRangesDescription() -> String {
+        guard let current = player.currentItem else { return "no-item" }
+        let ranges = current.loadedTimeRanges.map(\.timeRangeValue)
+        guard !ranges.isEmpty else { return "EMPTY" }
+        return ranges.map { range in
+            String(format: "%.1f-%.1f", range.start.seconds, (range.start + range.duration).seconds)
         }.joined(separator: ",")
     }
 }
