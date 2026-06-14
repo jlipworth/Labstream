@@ -32,7 +32,7 @@ struct ContentView: View {
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
             deviceName: "Apple Vision Pro"
         )
-        let model = AppModel(identity: identity)
+        let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         let auth = AuthManager(appModel: model, keychain: keychain)
         _appModel = State(initialValue: model)
         _authManager = State(initialValue: auth)
