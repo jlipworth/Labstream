@@ -726,8 +726,9 @@ struct EpisodeRow: View {
 }
 
 /// Safe-index helper used by the version picker / media-info summary so a stale index
-/// (after a metadata refresh swaps the versions) can never trap.
-private extension Array {
+/// (after a metadata refresh swaps the versions) can never trap. Module-internal so the
+/// download pipeline can also index media/parts defensively (offline-download redesign).
+extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
     }

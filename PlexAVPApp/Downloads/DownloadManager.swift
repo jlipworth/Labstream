@@ -41,66 +41,12 @@ public final class DownloadManager {
         case invalidDownload(String)
     }
 
-    /// A user-selectable download quality.
-    ///
-    /// Each case maps to a video-bitrate cap (kbps) handed to the SAME universal
-    /// transcoder the player uses, via `TranscodeRequest.downloadURL()`. We download
-    /// a single progressive MP4 at the chosen cap rather than going through the
-    /// fragile server-side optimize queue (see `optimizeAndDownload(_:quality:)` for
-    /// the rationale). `.original` requests "no cap" — we pass a very high ceiling so
-    /// PMS still emits a compatible MP4 rather than rejecting an absent cap (mirrors
-    /// the player's `0`-means-maximum convention in `PlaybackController`).
-    public enum DownloadQuality: String, Sendable, Equatable, CaseIterable, Identifiable {
-        case p480
-        case p720
-        case p1080
+    /// What the user chose in the download sheet, resolved from the direct-play probe.
+    public enum DownloadChoice: Sendable, Equatable {
+        /// Direct-download the original file (probe said whole-file direct play).
         case original
-
-        public var id: String { rawValue }
-
-        /// Human label for the picker.
-        public var label: String {
-            switch self {
-            case .p480:     return "480p · 2 Mbps"
-            case .p720:     return "720p · 4 Mbps"
-            case .p1080:    return "1080p · 8 Mbps"
-            case .original: return "Original / Maximum"
-            }
-        }
-
-        /// Short caption for secondary text / accessibility.
-        public var caption: String {
-            switch self {
-            case .p480:     return "Smallest file, lowest quality"
-            case .p720:     return "Balanced size and quality"
-            case .p1080:    return "Best quality for the headset"
-            case .original: return "Largest file, source quality"
-            }
-        }
-
-        /// Compact resolution marker for tight UI (the download progress caption).
-        public var shortLabel: String {
-            switch self {
-            case .p480:     return "480p"
-            case .p720:     return "720p"
-            case .p1080:    return "1080p"
-            case .original: return "Original"
-            }
-        }
-
-        /// Video-bitrate cap in kbps handed to the transcoder. `nil` == no cap
-        /// (original); the manager translates that to the transcoder's high ceiling.
-        public var maxVideoBitrateKbps: Int? {
-            switch self {
-            case .p480:     return 2000
-            case .p720:     return 4000
-            case .p1080:    return 8000
-            case .original: return nil
-            }
-        }
-
-        /// The default offered to the user: the app-wide 1080p/8 Mbps cap.
-        public static var `default`: DownloadQuality { .p1080 }
+        /// Server-side optimize to a named preset (the server's real target name).
+        case optimize(targetName: String)
     }
 
     /// Live records (in-progress + completed), backed by `DownloadStore`.
@@ -162,79 +108,51 @@ public final class DownloadManager {
         store.localURL(for: ratingKey)
     }
 
-    /// Full pipeline: optimize -> poll -> background-download -> record.
-    /// Records the resulting state (including any error) rather than throwing.
-    public func optimizeAndDownload(_ item: MediaItem) async {
-        let ratingKey = item.ratingKey
-        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
-            lastError[ratingKey] = .notAuthenticated
-            return
-        }
-        guard !activeJobs.contains(ratingKey) else { return }
-        activeJobs.insert(ratingKey)
-        lastError[ratingKey] = nil
-        defer { activeJobs.remove(ratingKey) }
-
-        // D5: snapshot metadata (no explicit quality on this legacy optimize path).
-        let metadata = Self.offlineMetadata(from: item, quality: nil,
-                                            mediaIndex: 0, partIndex: 0)
-        // Seed a 0% record so the UI shows the job immediately.
-        let seed = DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                  localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                  bytes: 0, progress: 0, metadata: metadata)
-        store.upsert(seed)
-        refreshRecords()
-        cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
-                    server: server, token: token)
-
+    /// Run the download-time direct-play probe for `item` at the given media/part. Advertises
+    /// the `.original` 200_000 kbps ceiling so a high-bitrate-but-compatible file still
+    /// qualifies for a direct download — a cap must NEVER force a transcode verdict for
+    /// downloads. Returns `(playsWholeFileDirectly, originalPart)`; on any probe failure
+    /// returns `(false, part?)` so the caller falls back to the optimizer.
+    public func directPlayProbe(for item: MediaItem, server: URL, token: String,
+                                mediaIndex: Int, partIndex: Int)
+        async -> (direct: Bool, part: Part?) {
+        let part = item.media?[safe: mediaIndex]?.part[safe: partIndex]
+        let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
+        let transcode = TranscodeRequest(server: server, token: token,
+                                         identity: appModel.identity,
+                                         metadataKey: metadataKey,
+                                         maxVideoBitrateKbps: 200_000,
+                                         sessionID: "plex-avp-dl-probe-" + UUID().uuidString,
+                                         mediaIndex: mediaIndex, partIndex: partIndex)
         do {
-            try await triggerOptimize(item: item, server: server, token: token,
-                                      identity: appModel.identity)
-            let part = try await pollForOptimizedPart(ratingKey: ratingKey, server: server,
-                                                      token: token, identity: appModel.identity)
-            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
-            let destination = store.destinationURL(ratingKey: ratingKey, ext: ext.isEmpty ? "mp4" : ext)
-            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                        localURL: destination, bytes: 0, progress: 0,
-                                        metadata: metadata))
-            refreshRecords()
-
-            let downloadURL = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            try session.start(ratingKey: ratingKey, from: downloadURL, to: destination,
-                              expectedBytes: part.size)
-            refreshRecords()
-        } catch let error as DownloadError {
-            // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
-            // so the UI can explain the failure and offer a retry.
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+            let decision = try await appModel.client.send(transcode.directPlayProbeRequest(),
+                                                          as: DecisionResponse.self)
+            return (decision.playsWholeFileDirectly, part)
         } catch {
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+            downloadLog.error("download-probe-failed ratingKey=\(item.ratingKey, privacy: .public) err=\(String(describing: error), privacy: .public)")
+            return (false, part)
         }
     }
 
-    /// Download `item` at a user-chosen `quality` via the universal-transcode path.
-    ///
-    /// **Why this, not the optimize queue:** the legacy `optimizeAndDownload(_:)`
-    /// above triggers a server-side OPTIMIZE (a `targetTagID` preset) and then polls
-    /// for the resulting part. That path is the highest-uncertainty area in the app —
-    /// the live `backgroundProcessing.key` + server-specific `targetTagID` are
-    /// UNVERIFIED (see the big `TODO(live)` on `triggerOptimize`). This method instead
-    /// reuses the SAME universal transcoder the player streams from
-    /// (`TranscodeRequest.downloadURL()` with the `Safari` profile + `maxVideoBitrate`
-    /// cap), asking for a single progressive MP4 we can fetch with one background
-    /// `downloadTask`. That contract is verified end-to-end for streaming, so it's the
-    /// reliable way to honor a chosen quality offline. No optimize queue, no polling.
-    ///
-    /// Records state (including any error) rather than throwing. Keeps the existing
-    /// background `URLSession` transfer machinery, so it survives suspension/relaunch.
-    public func optimizeAndDownload(_ item: MediaItem,
-                                    quality: DownloadQuality,
-                                    mediaIndex: Int = 0,
-                                    partIndex: Int = 0) async {
+    /// The server's real optimize preset names (`/media/processing/targets`), for the sheet.
+    /// Returns [] on any failure so the sheet falls back to the built-in preset names.
+    /// SERVER-SPECIFIC — confirmed by Phase 0.
+    public func optimizePresetNames(server: URL, token: String) async -> [String] {
+        guard let targets = try? await appModel.client.send(
+            OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token,
+                                                          identity: appModel.identity),
+            as: MediaProcessingTargets.self)
+        else { return [] }
+        return targets.targets.map(\.name).filter { !$0.isEmpty }
+    }
+
+    /// Probe-driven download entry point (offline-download redesign). `choice` comes from the
+    /// sheet, which already ran the direct-play probe: `.original` direct-downloads the source
+    /// file; `.optimize` renders a compatible MP4 server-side then downloads it. Both converge
+    /// on the same background-`URLSession` + validation pipeline. Records state rather than
+    /// throwing.
+    public func download(_ item: MediaItem, choice: DownloadChoice,
+                         mediaIndex: Int = 0, partIndex: Int = 0) async {
         let ratingKey = item.ratingKey
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             lastError[ratingKey] = .notAuthenticated
@@ -245,51 +163,48 @@ public final class DownloadManager {
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
 
-        // The transcoded download always lands as an MP4 (we ask `protocol=http`).
-        let destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-        // D5: snapshot the source item + chosen quality so the offline library renders
-        // richly without the server and `retry()` can rebuild a faithful MediaItem.
-        let metadata = Self.offlineMetadata(from: item, quality: quality,
+        let chosenMedia = item.media?[safe: mediaIndex]
+        let resolutionLabel = Self.resolutionLabel(for: chosenMedia)
+        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex)
-        // Seed a 0% record so the UI shows the job immediately.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
-        refreshRecords()
         // D5: cache the poster locally (best-effort) so artwork shows offline. A fetch
         // failure is not a download failure — it just leaves the row without a poster.
         cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
                     server: server, token: token)
 
-        // `nil` cap (Original) maps to a very high ceiling so PMS still emits a
-        // playable MP4 rather than rejecting an absent cap (mirrors PlaybackController).
-        let cap = quality.maxVideoBitrateKbps ?? 200_000
-        let metadataKey = item.key ?? "/library/metadata/\(ratingKey)"
-        let transcode = TranscodeRequest(server: server,
-                                         token: token,
-                                         identity: appModel.identity,
-                                         metadataKey: metadataKey,
-                                         maxVideoBitrateKbps: cap,
-                                         sessionID: "plex-avp-dl-" + UUID().uuidString,
-                                         mediaIndex: mediaIndex,
-                                         partIndex: partIndex)
-        do {
-            try session.start(ratingKey: ratingKey,
-                              from: transcode.downloadURL(),
-                              to: destination,
-                              expectedBytes: Self.estimatedTranscodeBytes(
-                                  quality: quality, durationMs: item.duration))
+        switch choice {
+        case .original:
+            guard let part = chosenMedia?.part[safe: partIndex] else {
+                lastError[ratingKey] = .transferFailed("No media part to download.")
+                return
+            }
+            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
+            let destination = store.destinationURL(ratingKey: ratingKey,
+                                                   ext: ext.isEmpty ? "mp4" : ext)
+            // Seed a 0% record so the UI shows the job immediately.
+            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                        localURL: destination, bytes: 0, progress: 0,
+                                        metadata: metadata))
             refreshRecords()
-        } catch let error as DownloadError {
-            // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
-            // so the UI can explain the failure and offer a retry.
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
-        } catch {
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+            // The original file is a STATIC GET with a real Content-Length + valid moov atom.
+            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
+            do {
+                try session.start(ratingKey: ratingKey, from: url, to: destination,
+                                  expectedBytes: part.size)
+                refreshRecords()
+            } catch let error as DownloadError {
+                lastError[ratingKey] = error
+                store.setStatus(ratingKey: ratingKey, .failed)
+                refreshRecords()
+            } catch {
+                lastError[ratingKey] = .transferFailed(String(describing: error))
+                store.setStatus(ratingKey: ratingKey, .failed)
+                refreshRecords()
+            }
+
+        case .optimize(let targetName):
+            await triggerOptimizeAndDownload(item: item, targetName: targetName,
+                                             metadata: metadata, server: server, token: token)
         }
     }
 
@@ -376,10 +291,12 @@ public final class DownloadManager {
 
     // MARK: - D5: offline metadata + poster caching
 
-    /// Build the persisted snapshot of a source `MediaItem` + the chosen quality.
-    /// Captures only the fields the offline UI/player/retry actually read.
+    /// Build the persisted snapshot of a source `MediaItem` + a human resolution label.
+    /// Captures only the fields the offline UI/player/retry actually read. `resolutionLabel`
+    /// is descriptive ("1080p"/"4K") for the offline-library caption — it is NOT a transcode
+    /// cap (the redesign downloads either the original file or a server-rendered MP4).
     private static func offlineMetadata(from item: MediaItem,
-                                        quality: DownloadQuality?,
+                                        resolutionLabel: String?,
                                         mediaIndex: Int,
                                         partIndex: Int) -> OfflineMetadata {
         OfflineMetadata(ratingKey: item.ratingKey,
@@ -395,10 +312,25 @@ public final class DownloadManager {
                         tagline: item.tagline,
                         thumb: item.thumb,
                         art: item.art,
-                        quality: quality?.rawValue,
+                        resolutionLabel: resolutionLabel,
                         mediaIndex: mediaIndex,
                         partIndex: partIndex,
                         posterRelativePath: nil)
+    }
+
+    /// Human-readable resolution label for the chosen media version, for the offline-library
+    /// caption only (descriptive, never a transcode cap). Derived from the media's pixel
+    /// height with the common consumer-resolution buckets; falls back to "W×H" then nil.
+    static func resolutionLabel(for media: Media?) -> String? {
+        guard let media else { return nil }
+        switch (media.width, media.height) {
+        case let (_, h?) where h >= 2160: return "4K"
+        case let (_, h?) where h >= 1080: return "1080p"
+        case let (_, h?) where h >= 720:  return "720p"
+        case let (_, h?) where h >= 480:  return "480p"
+        case let (w?, h?):                return "\(w)×\(h)"
+        default:                          return nil
+        }
     }
 
     /// Download + cache the item's poster locally so the offline library shows artwork
