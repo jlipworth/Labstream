@@ -11,5 +11,10 @@ struct PlexAVPApp: App {
             ContentView()
         }
         .windowStyle(.plain)
+
+        ImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
+            CustomCinemaScaffoldView()
+        }
+        .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }
 }
