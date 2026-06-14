@@ -182,10 +182,10 @@ struct PlayerView: View {
                 .id(playerGeneration)
                 .ignoresSafeArea()
 
-            // Failure overlay (#8 / P3+P4): when the controller surfaces a playback error
-            // (after its one silent auto-retry is spent), cover the black AVKit canvas with
-            // a legible message + a Retry that re-runs the streaming start from the last
-            // playhead, plus a way out. Observes the @Observable `playbackError` directly.
+            // Failure overlay (#8 / #33 reset): when the controller surfaces a playback error,
+            // cover the black AVKit canvas with a legible message + an explicit Retry that
+            // re-runs the streaming start from the last playhead, plus a way out. Observes the
+            // @Observable `playbackError` directly.
             if let controller {
                 PlaybackErrorOverlay(error: controller.playbackError,
                                      onRetry: { rebuildPlayer(from: controller) },

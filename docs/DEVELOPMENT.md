@@ -139,9 +139,9 @@ metadata, and review-specific release automation can be handled in a later publi
   (`TranscodeRequest.stop`) from `PlaybackController.stop()`. We originally assumed
   same-session reloads didn't need it ("PMS replaces the job in place") — **disproven by
   the server OOM** (next bullet): under rapid re-requests the whack-and-replace loses
-  races and jobs stack. Every in-place restart (quality/audio reload, retry, seek-restart)
-  now AWAITS a stop (bounded to 2s) before requesting the new start.m3u8. Progressive
-  downloads still just end with the HTTP connection.
+  races and jobs stack. Every intentional in-place restart (quality/audio reload, explicit Retry,
+  final-target deep-seek rebuild) now AWAITS a stop (bounded to 2s) before requesting the new
+  start.m3u8. Progressive downloads still just end with the HTTP connection.
 - **A transcode restart is a server-side fork bomb if unthrottled** (#27,
   docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md). Each start.m3u8 for a non-direct-playable file
   forks a full software HEVC→H.264 encode (no HW decode in the pod); during starved
@@ -151,13 +151,14 @@ metadata, and review-specific release automation can be handled in a later publi
   ffmpeg** when AVPlayer requests a segment outside the produced window — AVPlayer fetches
   HLS segments autonomously during a scrub (seen: 536 404s, 140 concurrent GETs), so client
   restraint alone is insufficient; the fix for (b) is not seeking into far-unproduced
-  territory on a session that can't keep up. Guard rails: `SeekRestartBudget` (PMSKit,
-  unit-tested spam scenarios) enforces a 5s cooldown between seek-restarts (deferred, not
-  dropped — the confirmation re-arms) and a rolling 3-per-60s burst limit, past which the
-  player stops self-healing and surfaces the failure overlay; explicit user intent
-  (Retry / quality reload) resets the budget, and seek-restarts never refill the silent
-  auto-retry budget. Direct Stream (#7) shrinks the whole cost class: `video_decision=copy`
-  makes a stacked job a ~50MB remux instead of a ~400MB encode.
+  territory on a session that can't keep up. Guard rails: `FinalTargetRebuildPolicy` +
+  `SeekRestartBudget` (PMSKit, unit-tested spam scenarios) debounce noisy seek jumps to the
+  final target, allow only one rebuild pipeline at a time, and enforce a rolling 3-per-60s burst
+  limit. Past that, the player stops background recovery and surfaces the failure overlay;
+  explicit user intent (Retry / quality/audio reload) resets the budget. Silent auto-retry has
+  been removed so a failing PMS stream cannot become a hidden retry loop. Direct Stream (#7)
+  shrinks the whole cost class: `video_decision=copy` makes a stacked job a ~50MB remux instead
+  of a ~400MB encode.
 - **PMS transcode is NOT just-in-time one-segment-at-a-time — it races AHEAD then
   throttles.** Earlier code comments assumed PMS produces segments at ~real-time and a deep
   client buffer is impossible; that is wrong. The universal transcoder runs flat-out (HW
@@ -189,20 +190,18 @@ metadata, and review-specific release automation can be handled in a later publi
   during a scrub each triggered a fresh encode. Hence: do not seek into far-unproduced territory on
   a session that can't keep up (see `SeekRestartBudget`), and a deeper client buffer does NOT help
   here — it cannot pre-fetch segments the server hasn't produced.
-- **PMS HLS is a FULL-TIMELINE playlist with ABSOLUTE-TIME segment URIs and ABSOLUTE PTS**
-  (verified live, `LiveSegmentProbe` + `LivePTSProbe`). The universal-transcoder media playlist
-  lists EVERY segment from t=0 to the end (e.g. **10548 one-second segments** for a ~2.9h film;
-  master is a tiny one-variant `#EXT-X-STREAM-INF`), each named **`0NNNNN.ts` where NNNNN is the
-  absolute second offset** — `02600.ts` is t=2600s in *every* session regardless of prime offset.
-  A session primed at offset X serves real MPEG-TS only from X forward (within the ~60s throttle
-  window); every segment before X is a **188-byte PAT-only stub** (the deep-seek stall). Crucially,
-  **segment PTS is absolute**: `0NNNNN.ts` carries PTS ≈ N + a **constant ~10.0s base** in every
-  session — two sessions primed 600s apart yielded PTS exactly 600s apart (3310.0s vs 3910.0s), the
-  base cancelling. So a segment fetched from a session **re-primed at the seek target splices into
-  AVPlayer's existing timeline with NO reload and NO `#EXT-X-DISCONTINUITY`** — the foundation of
-  the #33 Stage-3 proxy-owned-playlist seek (the proxy intercepts a stub-segment request, re-primes
-  PMS at that segment's time, polls until real, and serves it under one stable playlist). First real
-  segment after a fresh prime costs **~6.5–7s** (the re-prime latency a seek must tolerate).
+- **PMS HLS is a FULL-TIMELINE playlist with ABSOLUTE-TIME segment URIs and ABSOLUTE PTS, but
+  VisionPlex no longer relies on no-reload segment splicing.** The universal-transcoder media
+  playlist lists EVERY segment from t=0 to the end (e.g. **10548 one-second segments** for a ~2.9h
+  film; master is a tiny one-variant `#EXT-X-STREAM-INF`), each named **`0NNNNN.ts` where NNNNN is
+  the absolute second offset** — `02600.ts` is t=2600s in *every* session regardless of prime
+  offset. A session primed at offset X serves real MPEG-TS only from X forward (within the ~60s
+  throttle window); every segment before X is a **188-byte PAT-only stub** (the deep-seek stall).
+  Earlier Stage-3 work proved segment PTS is absolute, but manual double-drag testing showed the
+  proxy-owned no-reload splice design can still drive AVKit/local HTTP retry storms and PMS
+  pressure. That design is removed from the app path. Deep out-of-buffer seeks now use a visible,
+  bounded final-target player-item rebuild: one stop/decision/start at the settled target, or a
+  surfaced failure overlay.
 - **HLS network loss is a stall, not a failure** — `timeControlStatus == .waitingToPlayAtSpecifiedRate`
   with an empty buffer; `AVPlayerItem.status` never flips to `.failed`. Hence the 15s stall watchdog.
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)

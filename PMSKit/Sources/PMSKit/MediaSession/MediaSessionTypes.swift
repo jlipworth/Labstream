@@ -1,7 +1,7 @@
 import Foundation
 
-/// What `MediaSessionProxy.open`/`seek` hand back to the renderer. No AVFoundation types
-/// cross this boundary — the player just consumes `localURL`.
+/// What `MediaSessionProxy.open` hands back to the renderer. No AVFoundation types cross this
+/// boundary — the player just consumes `localURL`.
 public struct MediaSessionHandle: Sendable, Equatable {
     /// The loopback URL to hand to `AVURLAsset`. e.g. `http://127.0.0.1:51234/video/:/...`.
     public let localURL: URL
@@ -29,10 +29,10 @@ public struct MediaSessionStatus: Sendable, Equatable {
     }
 }
 
-/// The Plex-aware input to `MediaSessionProxy.open` (#33 Stage 2). The proxy builds the
-/// `TranscodeRequest` and runs the decision/probe itself from these fields — only the
-/// control-plane TRANSPORT is injected (see `MediaSessionProxy.init`), never the app's
-/// `PlexClient` (which is app-layer and must not cross into PMSKit).
+/// The Plex-aware input to `MediaSessionProxy.open`. The proxy can build the `TranscodeRequest`
+/// and run an open-time decision/probe from these fields — only the control-plane TRANSPORT is
+/// injected (see `MediaSessionProxy.init`), never the app's `PlexClient` (which is app-layer and
+/// must not cross into PMSKit).
 public struct MediaSessionRequest: Sendable, Equatable {
     public let server: URL
     public let token: String
@@ -66,14 +66,10 @@ public struct MediaSessionRequest: Sendable, Equatable {
     }
 }
 
-/// Errors surfaced across the media-session boundary (#33 Stage 2).
+/// Errors surfaced across the media-session boundary.
 public enum MediaSessionError: Error, Sendable, Equatable {
-    /// `seek`/`status` before a successful `open`.
+    /// A session-dependent operation before a successful `open`.
     case notOpen
-    /// The re-prime burst budget was exhausted — abusive scrubbing the stream can't sustain.
-    /// The caller (PlaybackController) maps this to the failure overlay. `recentCount` is the
-    /// number of restarts in the rolling window (for logging).
-    case budgetEscalated(recentCount: Int)
     /// The loopback origin could not be stood up; the caller should load `directURL` directly
     /// (the Stage-1 fallback — playback must never depend on the proxy being up).
     case loopbackUnavailable(directURL: URL)
