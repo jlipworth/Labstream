@@ -38,7 +38,7 @@ struct StatsForNerdsView: View {
                 row("Connection", diagnostics.connectionHost)
                 row("Mode", diagnostics.isTranscoding ? "Transcoding" : "Direct")
                 if diagnostics.decisionText != "—" {
-                    row("Decision", diagnostics.decisionText)
+                    row("Decision", diagnostics.decisionText, wraps: true)
                 }
                 row("Source", "\(diagnostics.sourceResolution) · \(diagnostics.container)")
                 row("Video", diagnostics.videoCodec)
@@ -70,14 +70,15 @@ struct StatsForNerdsView: View {
     }
 
     @ViewBuilder
-    private func row(_ label: String, _ value: String) -> some View {
+    private func row(_ label: String, _ value: String, wraps: Bool = false) -> some View {
         GridRow {
             Text(label)
                 .foregroundStyle(.secondary)
             Text(value)
                 .foregroundStyle(.primary)
-                .lineLimit(1)
+                .lineLimit(wraps ? nil : 1)
                 .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: wraps)
         }
     }
 
