@@ -12,6 +12,11 @@ import Security
 final class KeychainStore {
     static let tokenKey = "token"
     static let clientIdentifierKey = "clientIdentifier"
+    static let selectedBackendKey = "selectedBackend"
+    static let jellyfinServerURLKey = "jellyfinServerURL"
+    static let jellyfinAccessTokenKey = "jellyfinAccessToken"
+    static let jellyfinUserIDKey = "jellyfinUserID"
+    static let jellyfinServerIDKey = "jellyfinServerID"
 
     private let service: String
 
@@ -125,6 +130,36 @@ final class KeychainStore {
     @discardableResult
     func saveToken(_ token: String) -> Bool {
         save(token, for: Self.tokenKey)
+    }
+
+    var selectedBackend: MediaBackendKind {
+        get { read(Self.selectedBackendKey).flatMap(MediaBackendKind.init(rawValue:)) ?? .plex }
+        set { save(newValue.rawValue, for: Self.selectedBackendKey) }
+    }
+
+    var jellyfinServerURLString: String? {
+        get { read(Self.jellyfinServerURLKey) }
+        set { setOptional(newValue, for: Self.jellyfinServerURLKey) }
+    }
+
+    var jellyfinAccessToken: String? {
+        get { read(Self.jellyfinAccessTokenKey) }
+        set { setOptional(newValue, for: Self.jellyfinAccessTokenKey) }
+    }
+
+    var jellyfinUserID: String? {
+        get { read(Self.jellyfinUserIDKey) }
+        set { setOptional(newValue, for: Self.jellyfinUserIDKey) }
+    }
+
+    var jellyfinServerID: String? {
+        get { read(Self.jellyfinServerIDKey) }
+        set { setOptional(newValue, for: Self.jellyfinServerIDKey) }
+    }
+
+    private func setOptional(_ value: String?, for key: String) {
+        if let value, !value.isEmpty { save(value, for: key) }
+        else { delete(key) }
     }
 
     /// Returns the persisted client identifier, generating + storing one on first
