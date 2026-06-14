@@ -234,6 +234,16 @@ final class PlaybackController {
         static let language = "preferredAudioLanguage"
     }
 
+    /// Every UserDefaults key this controller persists across sessions, for the Settings
+    /// "Reset playback preferences" row (#26). Deliberately EXCLUDES `maxVideoBitrateKbps`,
+    /// which has its own Streaming-quality picker. Keep in sync with the key enums above.
+    static let persistedPreferenceKeys: [String] = [
+        playbackSpeedKey,
+        SubtitlePrefKey.language,
+        SubtitlePrefKey.off,
+        AudioPrefKey.language,
+    ]
+
     /// Resume target (ms) for the current item, retained so the status observer can do a
     /// client-side seek fallback if PMS's `#EXT-X-START` priming didn't land (P2 #9).
     private var pendingResumeMs: Int?
