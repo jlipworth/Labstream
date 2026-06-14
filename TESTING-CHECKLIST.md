@@ -535,6 +535,16 @@ These reproduced on the headset but NOT in the simulator, so sim verification is
       custom Cinema button (`CustomCinemaMode.isUserVisible = false`). Future theater work should be
       scoped as a RealityKit/immersive-player feature, not a Wave 2 merge blocker.
 
+### #12 — hidden RealityKit theater prototype
+
+- [ ] No visible player-chrome theater affordance appears by default; `CustomCinemaMode.isUserVisible`
+      remains false and the new `RealityTheaterFeature.isShippingEntryPointVisible` gate is false.
+- [ ] Device-only once a developer entry point exists: open the RealityKit theater prototype from
+      Windowed, Mixed, and 100% full Environment states; verify it does not unexpectedly pull the
+      viewer out of their chosen Environment or strand an immersive space on dismissal.
+- [ ] Device-only once video is wired: verify screen scale/distance, front/center/back seat presets,
+      controls reachability, playback continuity, scrub/retry/Close, and long-play comfort.
+
 ---
 
 ## D. System integration (GH #24 — App Intents + Spotlight slice)
@@ -572,5 +582,6 @@ shows the stamped Build ID, and normal in-app browsing still works.
   **CRITICAL `Safari` client-profile constraint** — needs the live headset pass to confirm no
   regression in resume-priming / `subtitles=auto`.
 - **GH #4 — trick-play scrub thumbnails:** server-dependent (PMS I-frame playlist); held.
-- **GH #12 — RealityKit theater**, **GH #13 — multi-track offline (.movpkg):** optional / later.
+- **GH #12 — RealityKit theater:** hidden prototype scaffold only; no visible entry point until
+  the device-only checks above pass. **GH #13 — multi-track offline (.movpkg):** optional / later.
 - **GH #18 — welcome screen branding**, **GH #19 — app icon alignment:** visual polish, untested.
