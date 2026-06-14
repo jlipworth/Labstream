@@ -21,14 +21,14 @@ Use as many Apple parts as possible while keeping the playback backend neutral:
 
 ## UI worklist from simulator feedback
 
-- [ ] Rework custom player menus as true small popover/submenu surfaces instead of one giant player-options panel.
-- [ ] Make Chapters a horizontally scrollable tile submenu, closer to the previous Apple-sized submenu behavior.
-- [ ] Keep Quality/Subtitles/Audio/Speed/Stats similarly compact; they should not require the giant box.
-- [ ] Extract reusable menu/picker views out of `PlayerControlSurface.swift` into separate shared control files before expanding reuse further.
-- [ ] Continue tuning bottom menu pill sizing; the current width tweak is subtle and may still be too small in-headset.
+- [x] Rework custom player menus as true small popover/submenu surfaces instead of one giant player-options panel.
+- [x] Make Chapters a horizontally scrollable tile submenu, closer to the previous Apple-sized submenu behavior.
+- [x] Keep Quality/Subtitles/Audio/Speed/Stats similarly compact; they should not require the giant box.
+- [x] Extract reusable menu/picker views out of `PlayerControlSurface.swift` into separate shared control files before expanding reuse further.
+- [x] Continue tuning bottom menu pill sizing; menu buttons now use regular control sizing and larger labels/min widths.
 
 ## Reconnect/retry worklist
 
-- [ ] Keep the reconnecting overlay compact and centered, not stretched across the screen.
-- [ ] Revisit the final-target rebuild budget after the custom scrubber stabilizes; rapid repeated releases currently trip the safety guardrail rather than a server exception.
+- [x] Keep the reconnecting overlay compact and centered, not stretched across the screen.
+- [x] Revisit the final-target rebuild budget after the custom scrubber stabilizes; default final-target policy now allows five committed rebuilds per minute before escalating.
 - [ ] Surface retry failures explicitly without hiding repeated reopen attempts in a silent loop.
