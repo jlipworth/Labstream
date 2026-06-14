@@ -8,6 +8,7 @@ struct HomeView: View {
 
     @State private var hubs: [Hub] = []
     @State private var jellyfinViews: [JellyfinLibraryLink] = []
+    @State private var jellyfinRails: [JellyfinHomeRail] = []
     @State private var loadState: LoadState = .idle
     /// The server the current hubs were loaded from (pop-back no-op guard).
     @State private var loadedServer: URL?
@@ -77,20 +78,20 @@ struct HomeView: View {
                                    description: Text("This Jellyfin user has no visible libraries."))
             .frame(maxWidth: .infinity, minHeight: 360)
         } else {
-            LazyVStack(alignment: .leading, spacing: DS.Space.md) {
-                Text("Jellyfin Libraries")
-                    .font(.title2.bold())
-                    .padding(.horizontal, DS.Space.xxl)
-                ForEach(jellyfinViews) { view in
-                    NavigationLink(value: view) {
-                        Label(view.title, systemImage: "rectangle.stack")
-                            .font(.title3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(DS.Space.lg)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
+                JellyfinLibrariesRail(views: jellyfinViews)
+
+                if jellyfinRails.isEmpty {
+                    ContentUnavailableView("Open a library to browse",
+                                           systemImage: "rectangle.stack",
+                                           description: Text("Jellyfin did not return preview items for these libraries."))
+                    .frame(maxWidth: .infinity, minHeight: 260)
+                } else {
+                    ForEach(jellyfinRails) { rail in
+                        HubRail(hub: Hub(title: rail.title,
+                                         hubIdentifier: "jellyfin-\(rail.id)",
+                                         metadata: rail.items))
                     }
-                    .cardLink(cornerRadius: DS.Radius.card)
-                    .padding(.horizontal, DS.Space.xxl)
                 }
             }
             .padding(.vertical, DS.Space.xl)
@@ -101,12 +102,16 @@ struct HomeView: View {
         // `.task` also re-fires every time the stack pops back to Home; without this
         // guard the rails reload and dump the scroll position the user returned to.
         // A real server change (different URL) still reloads.
-        if !force, loadedServer == appModel.serverBaseURL, case .loaded = loadState { return }
+        let activeServer = appModel.activeBackend == .jellyfin ? appModel.jellyfinServerBaseURL : appModel.serverBaseURL
+        if !force, loadedServer == activeServer, case .loaded = loadState { return }
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
-                loadedServer = appModel.jellyfinServerBaseURL
+                let service = JellyfinBrowseService(appModel: appModel)
+                let views = try await service.userViewLinks()
+                jellyfinViews = views
+                jellyfinRails = try await service.homeRails(for: views)
+                loadedServer = activeServer
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -127,6 +132,34 @@ struct HomeView: View {
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+/// Icon-card row for Jellyfin user views. This replaces the old full-screen folder
+/// list with a compact launch rail, leaving the rest of Home for Plex-style media rails.
+struct JellyfinLibrariesRail: View {
+    let views: [JellyfinLibraryLink]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            Text("Libraries")
+                .font(.title2.bold())
+                .padding(.horizontal, DS.Space.xxl)
+
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: DS.Space.lg) {
+                    ForEach(views) { view in
+                        NavigationLink(value: view) {
+                            JellyfinLibraryCard(view: view)
+                        }
+                        .cardLink(cornerRadius: DS.Radius.card)
+                    }
+                }
+                .padding(.vertical, DS.Space.sm)
+            }
+            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
+            .scrollClipDisabled()
         }
     }
 }

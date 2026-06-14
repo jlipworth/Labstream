@@ -116,6 +116,33 @@ final class PlaybackDiagnostics {
         self.targetBitrateKbps = targetBitrateKbps
     }
 
+    /// Overlay backend-resolved source facts, used by Jellyfin PlaybackInfo results when
+    /// the browse/detail item did not carry enough `MediaSources` data for `applyStatic`.
+    func applyJellyfinSource(_ source: JellyfinPlaybackSourceMetadata,
+                             playMethod: JellyfinPlayMethod) {
+        if let width = source.width, let height = source.height {
+            sourceResolution = "\(width)×\(height)"
+        }
+        if let videoCodec = source.videoCodec, !videoCodec.isEmpty {
+            self.videoCodec = videoCodec
+        }
+        if let audioCodec = source.audioCodec, !audioCodec.isEmpty {
+            self.audioCodec = audioCodec
+        }
+        if let container = source.container, !container.isEmpty {
+            self.container = container
+        }
+        if let bitrate = source.bitrate, bitrate > 0 {
+            sourceBitrateKbps = bitrate
+        }
+        isTranscoding = playMethod == .transcode
+        decisionText = switch playMethod {
+        case .directPlay: "direct play"
+        case .directStream: "direct stream"
+        case .transcode: "transcode"
+        }
+    }
+
     /// A concise, human-readable decision string for the Stats panel.
     ///
     /// PMS's `generalDecisionText` ("Direct play not available. Conversion OK.") just
@@ -152,6 +179,7 @@ final class PlaybackDiagnostics {
             return part
         }
         return decision.generalDecisionText ?? "—"
+    }
     }
 
     /// Scrape the dynamic numbers from the current player item (call ~1s).

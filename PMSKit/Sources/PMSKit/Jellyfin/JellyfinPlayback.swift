@@ -12,17 +12,46 @@ public struct JellyfinPlaybackOpenResult: Sendable, Equatable {
     public let mediaSourceId: String
     public let playMethod: JellyfinPlayMethod
     public let requiredHTTPHeaders: [String: String]
+    public let sourceMetadata: JellyfinPlaybackSourceMetadata
 
     public init(url: URL,
                 playSessionId: String,
                 mediaSourceId: String,
                 playMethod: JellyfinPlayMethod,
-                requiredHTTPHeaders: [String: String] = [:]) {
+                requiredHTTPHeaders: [String: String] = [:],
+                sourceMetadata: JellyfinPlaybackSourceMetadata = .empty) {
         self.url = url
         self.playSessionId = playSessionId
         self.mediaSourceId = mediaSourceId
         self.playMethod = playMethod
         self.requiredHTTPHeaders = requiredHTTPHeaders
+        self.sourceMetadata = sourceMetadata
+    }
+}
+
+public struct JellyfinPlaybackSourceMetadata: Sendable, Equatable {
+    public static let empty = JellyfinPlaybackSourceMetadata()
+
+    public let container: String?
+    public let width: Int?
+    public let height: Int?
+    /// Kbps, matching Plex `Media.bitrate` units used by the diagnostics UI.
+    public let bitrate: Int?
+    public let videoCodec: String?
+    public let audioCodec: String?
+
+    public init(container: String? = nil,
+                width: Int? = nil,
+                height: Int? = nil,
+                bitrate: Int? = nil,
+                videoCodec: String? = nil,
+                audioCodec: String? = nil) {
+        self.container = container
+        self.width = width
+        self.height = height
+        self.bitrate = bitrate
+        self.videoCodec = videoCodec
+        self.audioCodec = audioCodec
     }
 }
 
@@ -52,6 +81,12 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
     public let transcodingSubProtocol: String?
     public let transcodingContainer: String?
     public let requiredHTTPHeaders: [String: String]?
+    public let bitrate: Int?
+    public let width: Int?
+    public let height: Int?
+    public let videoCodec: String?
+    public let audioCodec: String?
+    public let mediaStreams: [JellyfinItemMediaStreamDto]
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
@@ -65,6 +100,12 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
         case transcodingSubProtocol = "TranscodingSubProtocol"
         case transcodingContainer = "TranscodingContainer"
         case requiredHTTPHeaders = "RequiredHttpHeaders"
+        case bitrate = "Bitrate"
+        case width = "Width"
+        case height = "Height"
+        case videoCodec = "VideoCodec"
+        case audioCodec = "AudioCodec"
+        case mediaStreams = "MediaStreams"
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +121,24 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
         transcodingSubProtocol = try c.decodeIfPresent(String.self, forKey: .transcodingSubProtocol)
         transcodingContainer = try c.decodeIfPresent(String.self, forKey: .transcodingContainer)
         requiredHTTPHeaders = try c.decodeIfPresent([String: String].self, forKey: .requiredHTTPHeaders)
+        bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
+        width = try c.decodeIfPresent(Int.self, forKey: .width)
+        height = try c.decodeIfPresent(Int.self, forKey: .height)
+        videoCodec = try c.decodeIfPresent(String.self, forKey: .videoCodec)
+        audioCodec = try c.decodeIfPresent(String.self, forKey: .audioCodec)
+        mediaStreams = try c.decodeIfPresent([JellyfinItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
+    }
+
+    var playbackSourceMetadata: JellyfinPlaybackSourceMetadata {
+        let video = mediaStreams.first { $0.type == "Video" }
+        let audio = mediaStreams.first { $0.type == "Audio" }
+        return JellyfinPlaybackSourceMetadata(
+            container: container?.split(separator: ",").first.map(String.init),
+            width: width ?? video?.width,
+            height: height ?? video?.height,
+            bitrate: bitrate.map { $0 / 1_000 },
+            videoCodec: videoCodec ?? video?.codec,
+            audioCodec: audioCodec ?? audio?.codec)
     }
 }
 
@@ -154,7 +213,8 @@ public enum JellyfinPlayback {
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
                 playMethod: method,
-                requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity))
+                requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
+                sourceMetadata: source.playbackSourceMetadata)
         }
 
         guard source.supportsDirectPlay || source.supportsDirectStream else {
@@ -179,7 +239,8 @@ public enum JellyfinPlayback {
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
             playMethod: source.supportsDirectPlay ? .directPlay : .directStream,
-            requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity))
+            requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
+            sourceMetadata: source.playbackSourceMetadata)
     }
 
     private static func streamHeaders(for source: JellyfinMediaSourceInfo,
