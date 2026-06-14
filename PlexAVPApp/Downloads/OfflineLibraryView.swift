@@ -2,7 +2,7 @@ import SwiftUI
 import PMSKit
 
 /// Lists offline downloads with live progress + delete, and plays a completed
-/// file through the shared Task 11 player (`PlayerView(localFile:item:)`).
+/// file through the custom player (`CustomPlayerView(localFile:item:)`).
 ///
 /// Surfaces the offline-transfer reality (research/10): background transfers on
 /// visionOS pause while the headset is off and resume when it's worn again, so an
@@ -47,7 +47,7 @@ public struct OfflineLibraryView: View {
             .navigationTitle("Offline")
         }
         .fullScreenCover(item: $playing) { record in
-            PlayerView(localFile: record.localURL, item: offlineItem(from: record))
+            CustomPlayerView(localFile: record.localURL, item: offlineItem(from: record))
         }
     }
 
@@ -194,7 +194,7 @@ public struct OfflineLibraryView: View {
     }
 
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the
-    /// offline file flows through the same `PlayerView` path with real title/metadata.
+    /// offline file flows through the same `CustomPlayerView` path with real title/metadata.
     /// Rows persisted before D5 fall back to a minimal movie.
     private func offlineItem(from record: DownloadRecord) -> MediaItem {
         record.metadata?.makeMediaItem()
