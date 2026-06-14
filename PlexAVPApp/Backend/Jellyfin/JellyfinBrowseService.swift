@@ -79,6 +79,7 @@ struct JellyfinBrowseService {
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
         return try JellyfinPlayback.resolveStream(response: info,
                                                   server: context.server,
+                                                  identity: jellyfinIdentity,
                                                   token: context.token,
                                                   itemId: item.ratingKey)
     }
