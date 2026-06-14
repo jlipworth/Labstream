@@ -72,33 +72,48 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         SwiftUI.Section("Server") {
-            if let server = appModel.selectedServer {
-                LabeledContent("Name", value: server.name)
-                if let version = server.productVersion, !version.isEmpty {
-                    LabeledContent("Version", value: version)
+            LabeledContent("Backend", value: appModel.activeBackend.displayName)
+            switch appModel.activeBackend {
+            case .plex:
+                if let server = appModel.selectedServer {
+                    LabeledContent("Name", value: server.name)
+                    if let version = server.productVersion, !version.isEmpty {
+                        LabeledContent("Version", value: version)
+                    }
+                }
+                if let url = appModel.serverBaseURL {
+                    LabeledContent("Connection", value: url.absoluteString)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    connectionStatusRow
+                }
+                Button {
+                    Task {
+                        rediscovering = true
+                        try? await authManager.refreshServers()
+                        rediscovering = false
+                        connectionStatus = .unknown
+                    }
+                } label: {
+                    if rediscovering {
+                        ProgressView()
+                    } else {
+                        Label("Re-discover servers", systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(rediscovering)
+            case .jellyfin:
+                if let url = appModel.jellyfinServerBaseURL {
+                    LabeledContent("Connection", value: url.absoluteString)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let userID = appModel.jellyfinUserID {
+                    LabeledContent("User ID", value: userID)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
-            if let url = appModel.serverBaseURL {
-                LabeledContent("Connection", value: url.absoluteString)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                connectionStatusRow
-            }
-            Button {
-                Task {
-                    rediscovering = true
-                    try? await authManager.refreshServers()
-                    rediscovering = false
-                    connectionStatus = .unknown
-                }
-            } label: {
-                if rediscovering {
-                    ProgressView()
-                } else {
-                    Label("Re-discover servers", systemImage: "arrow.clockwise")
-                }
-            }
-            .disabled(rediscovering)
         }
     }
 
@@ -270,7 +285,7 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 confirmingSignOut = true
             } label: {
-                Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                Label("Sign Out of \(appModel.activeBackend.displayName)", systemImage: "rectangle.portrait.and.arrow.right")
             }
             // Sign-out is genuinely disruptive — re-login is the plex.tv PIN dance —
             // so the destructive action gets a confirmation (#26).

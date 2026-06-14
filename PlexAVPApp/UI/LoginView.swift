@@ -20,10 +20,15 @@ import PMSKit
 struct LoginView: View {
     let authManager: AuthManager
 
+    @Environment(AppModel.self) private var appModel
+
     @State private var webAuth = WebAuthSession()
 
     @State private var working = false
     @State private var errorMessage: String?
+    @State private var jellyfinServer = ""
+    @State private var jellyfinUsername = ""
+    @State private var jellyfinPassword = ""
 
     /// Brand accents sampled from the VisionPlex artwork (mark stripe blue
     /// ≈ #00A3FF, wordmark amber ≈ #FFB833).
@@ -33,6 +38,8 @@ struct LoginView: View {
     var body: some View {
         VStack(spacing: DS.Space.xl) {
             header
+
+            backendPicker
 
             content
                 .padding(.top, DS.Space.sm)
@@ -97,7 +104,9 @@ struct LoginView: View {
                 Text("Vision\(Text("Plex").foregroundStyle(Self.brandAmber))")
                     .font(.extraLargeTitle.bold())
 
-                Text("Your whole Plex library, in your space.")
+                Text(appModel.activeBackend == .plex
+                     ? "Your whole Plex library, in your space."
+                     : "Your Jellyfin library, in your space.")
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -110,10 +119,36 @@ struct LoginView: View {
         RoundedRectangle(cornerRadius: DS.Radius.card + 8, style: .continuous)
     }
 
+    private var backendPicker: some View {
+        Picker("Media Server", selection: Binding(
+            get: { appModel.activeBackend },
+            set: { backend in
+                errorMessage = nil
+                working = false
+                webAuth.cancel()
+                authManager.selectBackend(backend)
+            })) {
+                ForEach(MediaBackendKind.allCases) { backend in
+                    Text(backend.displayName).tag(backend)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 360)
+    }
+
     // MARK: - Flow states
 
     @ViewBuilder
     private var content: some View {
+        if appModel.activeBackend == .jellyfin {
+            jellyfinLoginForm
+        } else {
+            plexLoginFlow
+        }
+    }
+
+    @ViewBuilder
+    private var plexLoginFlow: some View {
         switch authManager.state {
         case .awaitingAuthorization(let code, let url):
             // Linking-code-first (#16): the code is the primary state so the user
@@ -176,6 +211,51 @@ struct LoginView: View {
         }
     }
 
+    private var jellyfinLoginForm: some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Sign in to Jellyfin")
+                    .font(.title3.weight(.semibold))
+                Text("Enter your server URL and Jellyfin account credentials.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            TextField("https://jellyfin.example.com", text: $jellyfinServer)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.URL)
+                .keyboardType(.URL)
+                .frame(maxWidth: 420)
+
+            TextField("Username", text: $jellyfinUsername)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.username)
+                .frame(maxWidth: 420)
+
+            SecureField("Password", text: $jellyfinPassword)
+                .textContentType(.password)
+                .frame(maxWidth: 420)
+
+            Button {
+                Task { await startJellyfinLogin() }
+            } label: {
+                if working {
+                    ProgressView()
+                } else {
+                    Label("Sign in with Jellyfin", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(working)
+        }
+    }
+
     private var codeCellShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
     }
@@ -215,5 +295,24 @@ struct LoginView: View {
             errorMessage = friendlyMessage(error)
             working = false
         }
+    }
+
+    private func startJellyfinLogin() async {
+        errorMessage = nil
+        let trimmedServer = jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let server = URL(string: trimmedServer), server.scheme != nil, server.host != nil else {
+            errorMessage = "Enter a valid Jellyfin server URL."
+            return
+        }
+        let username = jellyfinUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty, !jellyfinPassword.isEmpty else {
+            errorMessage = "Enter your Jellyfin username and password."
+            return
+        }
+        working = true
+        await authManager.loginToJellyfin(server: server,
+                                          username: username,
+                                          password: jellyfinPassword)
+        working = false
     }
 }
