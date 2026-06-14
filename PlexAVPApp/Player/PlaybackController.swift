@@ -81,6 +81,17 @@ final class PlaybackController {
     /// The local file URL, when playing offline content.
     private let localFile: URL?
 
+    /// Already-resolved remote media URL, when an experimental non-Plex backend (currently the
+    /// Jellyfin spike in Settings) has performed its own playback negotiation and only needs the
+    /// system player to open the resulting stream. This keeps the player surface agnostic: Plex
+    /// owns its proxy/transcode resolver, while other backends can hand us a concrete stream URL.
+    private let remoteStreamURL: URL?
+
+    /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin typically puts auth in the
+    /// returned URL (`api_key`), but `MediaSourceInfo.RequiredHttpHeaders` exists and should be
+    /// threaded through when present.
+    private let remoteHTTPHeaders: [String: String]
+
     /// The server's machine identifier (== the Plex resource `clientIdentifier`), used to
     /// build a play queue for "Up Next" resolution (#15). `nil` when unavailable (offline
     /// playback, or a caller that didn't thread it), in which case Up Next never resolves.
@@ -386,6 +397,8 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
+        self.remoteStreamURL = nil
+        self.remoteHTTPHeaders = [:]
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
@@ -406,12 +419,42 @@ final class PlaybackController {
         self.client = client
         self.server = nil
         self.token = nil
+        self.remoteStreamURL = nil
+        self.remoteHTTPHeaders = [:]
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         // A local file is already one concrete version on disk; no version selection.
         self.mediaIndex = 0
         // Offline playback has no server session to build a play queue against.
         self.machineIdentifier = nil
         // Local files resume from the item's saved offset; no rebuild override.
+        self.initialResumeMsOverride = nil
+        self.chapters = item.chapters ?? []
+        self.speedState.speed = self.playbackSpeed
+    }
+
+    /// Resolved remote-stream initializer for experimental non-Plex backends. The caller owns
+    /// backend-specific auth/playback negotiation; this controller only loads the supplied stream
+    /// into AVKit and reuses the same player UI, observers, buffering, diagnostics and metadata.
+    init(remoteStreamURL: URL,
+         item: MediaItem,
+         identity: ClientIdentity,
+         client: PlexClient,
+         httpHeaders: [String: String] = [:],
+         maxVideoBitrateKbps: Int = 0) {
+        self.item = item
+        self.localFile = nil
+        self.remoteStreamURL = remoteStreamURL
+        self.remoteHTTPHeaders = httpHeaders
+        self.identity = identity
+        self.client = client
+        self.server = nil
+        self.token = nil
+        self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        // A backend-resolved URL is already one concrete stream.
+        self.mediaIndex = 0
+        // Non-Plex playback has no Plex play queue to resolve against.
+        self.machineIdentifier = nil
+        // The backend spike starts at the server-selected offset for now.
         self.initialResumeMsOverride = nil
         self.chapters = item.chapters ?? []
         self.speedState.speed = self.playbackSpeed
@@ -425,6 +468,8 @@ final class PlaybackController {
         started = true
         if let localFile {
             loadLocalFile(localFile)
+        } else if let remoteStreamURL {
+            loadRemoteStream(remoteStreamURL, headers: remoteHTTPHeaders)
         } else {
             // Use the rebuild resume override on first start when present (recovering from a
             // wedged player); otherwise startStreaming falls back to the item's saved offset.
@@ -1268,6 +1313,22 @@ final class PlaybackController {
         let asset = AVURLAsset(url: url)
         let playerItem = AVPlayerItem(asset: asset)
         // Offline content resumes from the same `viewOffset` if present.
+        load(playerItem, resumeOffsetMs: item.viewOffset)
+    }
+
+    private func loadRemoteStream(_ url: URL, headers: [String: String]) {
+        // Seed static facts for the Stats overlay. The stream has already been resolved by the
+        // backend, so there is no Plex decision/proxy state to report here.
+        diagnostics.applyStatic(item: item,
+                                mediaIndex: mediaIndex,
+                                decision: nil,
+                                server: url,
+                                targetBitrateKbps: maxVideoBitrateKbps)
+        diagnostics.connectionHost = url.host ?? "Remote stream"
+
+        let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
+        let asset = AVURLAsset(url: url, options: options)
+        let playerItem = AVPlayerItem(asset: asset)
         load(playerItem, resumeOffsetMs: item.viewOffset)
     }
 
