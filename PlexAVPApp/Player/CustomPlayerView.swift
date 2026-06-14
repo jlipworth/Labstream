@@ -258,9 +258,9 @@ private struct CustomPlayerChrome: View {
                 }
             }
 
-            if let selectedMenu {
+            if selectedMenu != nil {
                 CustomPlayerMenuPanel(selection: Binding(
-                    get: { selectedMenu },
+                    get: { self.selectedMenu ?? .quality },
                     set: { self.selectedMenu = $0 }
                 ),
                 controller: controller,
@@ -300,16 +300,6 @@ private struct CustomPlayerChrome: View {
                 }
 
                 Spacer()
-
-                Button {
-                    openMenu(.quality)
-                } label: {
-                    Label("Player options", systemImage: "ellipsis.circle")
-                        .labelStyle(.iconOnly)
-                        .font(.title3.weight(.semibold))
-                        .frame(width: 52, height: 52)
-                }
-                .buttonStyle(.borderedProminent)
             }
             .padding(28)
 
@@ -318,18 +308,13 @@ private struct CustomPlayerChrome: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 14) {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
-                Button {
-                    openMenu(.stats)
-                } label: {
-                    Label("Stats", systemImage: "chart.bar.doc.horizontal")
-                }
-                .buttonStyle(.bordered)
+                menuStrip
             }
 
             HStack(spacing: 16) {
@@ -360,8 +345,23 @@ private struct CustomPlayerChrome: View {
             }
         }
         .padding(.horizontal, 22)
-        .padding(.vertical, 18)
+        .padding(.vertical, 20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    private var menuStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(CustomPlayerMenuKind.allCases) { menu in
+                Button {
+                    openMenu(menu)
+                } label: {
+                    Label(menu.shortTitle, systemImage: menu.systemImage)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
     }
 
     private var failureCard: some View {
@@ -524,6 +524,17 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         switch self {
         case .quality: "Quality"
         case .subtitles: "Subtitles"
+        case .audio: "Audio"
+        case .chapters: "Chapters"
+        case .speed: "Speed"
+        case .stats: "Stats"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .quality: "Quality"
+        case .subtitles: "Subs"
         case .audio: "Audio"
         case .chapters: "Chapters"
         case .speed: "Speed"
