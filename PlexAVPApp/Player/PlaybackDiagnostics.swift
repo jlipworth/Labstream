@@ -1,5 +1,5 @@
 import Foundation
-import AVKit
+import AVFoundation
 import PMSKit
 
 /// Live, observable diagnostics for the "Stats for Nerds" overlay (Emby-style).
@@ -79,13 +79,43 @@ final class PlaybackDiagnostics {
             case .directPlay: isTranscoding = false
             case .unsupported: isTranscoding = true
             }
-            decisionText = decision.generalDecisionText ?? "—"
+            decisionText = Self.composeDecisionText(decision)
         }
         // host:port only — deliberately omit any query/token material.
         if let host = server?.host {
             connectionHost = server?.port.map { "\(host):\($0)" } ?? host
         }
         self.targetBitrateKbps = targetBitrateKbps
+    }
+
+    /// A concise, human-readable decision string for the Stats panel.
+    ///
+    /// PMS's `generalDecisionText` ("Direct play not available. Conversion OK.") just
+    /// restates the Mode row and reads as two jammed-together clauses — confusing, and
+    /// long enough to get middle-truncated. The genuinely useful detail is what PMS does
+    /// to each stream — copy (remux) vs transcode (re-encode) — which the decision
+    /// response carries per stream. Prefer that; fall back to the part decision, then the
+    /// raw English text, then "—".
+    private static func composeDecisionText(_ decision: DecisionResponse) -> String {
+        func friendly(_ s: String?) -> String? {
+            guard let s = s?.lowercased(), !s.isEmpty else { return nil }
+            switch s {
+            case "copy": return "copy"
+            case "transcode": return "transcode"
+            case "directplay", "direct play", "direct": return "direct play"
+            default: return s
+            }
+        }
+        if let video = friendly(decision.videoDecision) {
+            if let audio = friendly(decision.audioDecision) {
+                return "video \(video) · audio \(audio)"
+            }
+            return "video \(video)"
+        }
+        if let part = friendly(decision.partDecision) {
+            return part
+        }
+        return decision.generalDecisionText ?? "—"
     }
 
     /// Scrape the dynamic numbers from the current player item (call ~1s).
