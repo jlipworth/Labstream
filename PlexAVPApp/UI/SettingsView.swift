@@ -1,8 +1,9 @@
 import SwiftUI
+import UIKit
 import PMSKit
 
-/// Settings tab: current server + re-discover, default streaming quality, download storage
-/// usage, and sign out.
+/// Settings tab (#26): server info + reachability, default streaming quality, playback-pref
+/// reset, download storage usage, maintenance, About/diagnostics, and sign out.
 ///
 /// The "Streaming quality" picker (#21) and the in-player Quality tab are two views of the
 /// SAME persisted `@AppStorage("maxVideoBitrateKbps")` key and share one ladder
@@ -16,6 +17,12 @@ struct SettingsView: View {
     @Environment(DownloadManager.self) private var downloadManager
 
     @State private var rediscovering = false
+    @State private var confirmingSignOut = false
+    @State private var connectionStatus: ConnectionStatus = .unknown
+    /// Transient "done" feedback for the one-shot maintenance/About actions.
+    @State private var clearedImageCache = false
+    @State private var resetPlaybackPrefs = false
+    @State private var copiedDiagnostics = false
 
     /// Default bitrate cap for NEW playback sessions — the same key the custom player seeds each
     /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
@@ -37,6 +44,8 @@ struct SettingsView: View {
             serverSection
             playbackSection
             storageSection
+            maintenanceSection
+            aboutSection
             accountSection
         }
         .navigationTitle("Settings")
@@ -60,30 +69,61 @@ struct SettingsView: View {
                 Label("Require bandwidth headroom", systemImage: "speedometer")
             }
             .disabled(!directStreamEnabled)
+            Button {
+                // Clears speed + subtitle/audio-language keys (single source of truth in
+                // PlaybackController). Deliberately leaves `maxVideoBitrateKbps` alone —
+                // the picker above owns it.
+                let defaults = UserDefaults.standard
+                for key in PlaybackController.persistedPreferenceKeys {
+                    defaults.removeObject(forKey: key)
+                }
+                resetPlaybackPrefs = true
+            } label: {
+                if resetPlaybackPrefs {
+                    Label("Preferences reset", systemImage: "checkmark")
+                } else {
+                    Label("Reset playback preferences", systemImage: "arrow.counterclockwise")
+                }
+            }
+            .disabled(resetPlaybackPrefs)
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server. The headroom gate is stricter: when enabled, Direct Stream only starts after a recent throughput sample exceeds the source bitrate by 25%.")
+            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server. The headroom gate is stricter: when enabled, Direct Stream only starts after a recent throughput sample exceeds the source bitrate by 25%. Reset clears the remembered playback speed and subtitle/audio language; streaming quality is unaffected.")
         }
     }
 
     // MARK: Server
 
+    /// Result of the last manual reachability check. No background polling — the probe runs
+    /// only on tap (and re-arms after re-discovery, which replaces the connection anyway).
+    private enum ConnectionStatus: Equatable {
+        case unknown
+        case checking
+        case reachable(Date)
+        case unreachable(Date)
+    }
+
     private var serverSection: some View {
         SwiftUI.Section("Server") {
             if let server = appModel.selectedServer {
                 LabeledContent("Name", value: server.name)
+                if let version = server.productVersion, !version.isEmpty {
+                    LabeledContent("Version", value: version)
+                }
             }
             if let url = appModel.serverBaseURL {
                 LabeledContent("Connection", value: url.absoluteString)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                connectionStatusRow
             }
             Button {
                 Task {
                     rediscovering = true
                     try? await authManager.refreshServers()
                     rediscovering = false
+                    connectionStatus = .unknown
                 }
             } label: {
                 if rediscovering {
@@ -94,6 +134,40 @@ struct SettingsView: View {
             }
             .disabled(rediscovering)
         }
+    }
+
+    /// Status dot + last-checked time, with the whole row acting as "check now".
+    private var connectionStatusRow: some View {
+        Button {
+            Task {
+                connectionStatus = .checking
+                let ok = await authManager.probeSelectedServer()
+                connectionStatus = ok ? .reachable(.now) : .unreachable(.now)
+            }
+        } label: {
+            LabeledContent {
+                switch connectionStatus {
+                case .unknown:
+                    Text("Tap to check")
+                case .checking:
+                    ProgressView()
+                case .reachable(let date):
+                    Label(checkedAt(date), systemImage: "circle.fill")
+                        .foregroundStyle(.green)
+                case .unreachable(let date):
+                    Label(checkedAt(date), systemImage: "circle.fill")
+                        .foregroundStyle(.red)
+                }
+            } label: {
+                Label("Status", systemImage: "dot.radiowaves.left.and.right")
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(connectionStatus == .checking)
+    }
+
+    private func checkedAt(_ date: Date) -> String {
+        "Checked \(date.formatted(date: .omitted, time: .shortened))"
     }
 
     // MARK: Storage
@@ -118,14 +192,100 @@ struct SettingsView: View {
         return ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
     }
 
+    // MARK: Maintenance
+
+    private var maintenanceSection: some View {
+        SwiftUI.Section {
+            Button {
+                // PosterImage rides URLSession.shared's default cache — there is no
+                // bespoke image cache, so this is the whole story.
+                URLCache.shared.removeAllCachedResponses()
+                clearedImageCache = true
+            } label: {
+                if clearedImageCache {
+                    Label("Cache cleared", systemImage: "checkmark")
+                } else {
+                    Label("Clear image cache", systemImage: "photo.on.rectangle.angled")
+                }
+            }
+            .disabled(clearedImageCache)
+        } header: {
+            Text("Maintenance")
+        } footer: {
+            Text("Artwork re-downloads on next view.")
+        }
+    }
+
+    // MARK: About
+
+    private var aboutSection: some View {
+        SwiftUI.Section("About") {
+            LabeledContent("Version", value: "\(Self.appVersion) (\(Self.appBuild))")
+            LabeledContent("visionOS", value: ProcessInfo.processInfo.operatingSystemVersionString)
+            // Product/device name exactly as sent to Plex. NEVER the client identifier —
+            // it's treated as a secret in this repo.
+            LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")
+            Button {
+                UIPasteboard.general.string = diagnosticsText
+                copiedDiagnostics = true
+            } label: {
+                if copiedDiagnostics {
+                    Label("Copied", systemImage: "checkmark")
+                } else {
+                    Label("Copy diagnostics", systemImage: "doc.on.doc")
+                }
+            }
+        }
+    }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
+
+    private static var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    }
+
+    /// Bug-report blob. Includes versions, server name/version, and the connection SCHEME
+    /// only — never the token, client identifier, or full connection URL/hostname.
+    private var diagnosticsText: String {
+        var lines = [
+            "\(appModel.identity.product) \(Self.appVersion) (\(Self.appBuild))",
+            "visionOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
+            "Device: \(appModel.identity.deviceName)",
+        ]
+        if let server = appModel.selectedServer {
+            let version = server.productVersion.map { " \($0)" } ?? ""
+            lines.append("Server: \(server.name)\(version)")
+        }
+        if let scheme = appModel.serverBaseURL?.scheme {
+            lines.append("Connection scheme: \(scheme)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: Account
 
     private var accountSection: some View {
         SwiftUI.Section {
             Button(role: .destructive) {
-                authManager.signOut()
+                confirmingSignOut = true
             } label: {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+            }
+            // Sign-out is genuinely disruptive — re-login is the plex.tv PIN dance —
+            // so the destructive action gets a confirmation (#26).
+            .confirmationDialog(
+                "Sign out of Plex?",
+                isPresented: $confirmingSignOut,
+                titleVisibility: .visible
+            ) {
+                Button("Sign Out", role: .destructive) {
+                    authManager.signOut()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Signing back in requires authorizing this device with plex.tv again.")
             }
         }
     }
