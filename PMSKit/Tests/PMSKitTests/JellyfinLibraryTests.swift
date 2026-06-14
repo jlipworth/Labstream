@@ -51,6 +51,9 @@ struct JellyfinLibraryTests {
         #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode")
         #expect(query["enableUserData"] == "true")
         #expect(query["fields"]?.contains("MediaSources") == true)
+        #expect(query["fields"]?.contains("OfficialRating") == true)
+        #expect(query["fields"]?.contains("CommunityRating") == true)
+        #expect(query["fields"]?.contains("Genres") == true)
     }
 
     @Test func itemRequestTargetsSingleItem() throws {
@@ -97,8 +100,26 @@ struct JellyfinLibraryTests {
             "Overview": "Movie summary",
             "ProductionYear": 2020,
             "RunTimeTicks": 72000000000,
+            "CommunityRating": 7.8,
+            "OfficialRating": "PG-13",
+            "Taglines": ["One dream can change everything"],
+            "Genres": ["Adventure", "Drama"],
             "ImageTags": { "Primary": "poster-tag" },
             "BackdropImageTags": ["backdrop-tag"],
+            "MediaSources": [{
+              "Id": "source-1",
+              "Container": "mkv",
+              "Bitrate": 8200000,
+              "Width": 1920,
+              "Height": 1080,
+              "VideoCodec": "hevc",
+              "AudioCodec": "aac",
+              "MediaStreams": [
+                { "Index": 0, "Type": "Video", "Codec": "hevc", "Width": 1920, "Height": 1080 },
+                { "Index": 1, "Type": "Audio", "Codec": "aac", "Language": "English", "DisplayTitle": "English AAC Stereo", "IsDefault": true, "Channels": 2 },
+                { "Index": 2, "Type": "Subtitle", "Codec": "srt", "Language": "English", "DisplayTitle": "English", "IsForced": false }
+              ]
+            }],
             "UserData": { "PlaybackPositionTicks": 1200000000, "Played": true }
           }],
           "TotalRecordCount": 1
@@ -116,6 +137,22 @@ struct JellyfinLibraryTests {
         #expect(item.viewCount == 1)
         #expect(item.thumb == "jellyfin://item/movie-1/Primary?tag=poster-tag")
         #expect(item.art == "jellyfin://item/movie-1/Backdrop?tag=backdrop-tag")
+        #expect(item.rating == 7.8)
+        #expect(item.contentRating == "PG-13")
+        #expect(item.tagline == "One dream can change everything")
+        #expect(item.genres?.map(\.tag) == ["Adventure", "Drama"])
+        let media = try #require(item.media?.first)
+        #expect(media.container == "mkv")
+        #expect(media.bitrate == 8200)
+        #expect(media.width == 1920)
+        #expect(media.height == 1080)
+        #expect(media.videoCodec == "hevc")
+        #expect(media.audioCodec == "aac")
+        let part = try #require(media.part.first)
+        #expect(part.container == "mkv")
+        #expect(part.videoStreams.first?.codec == "hevc")
+        #expect(part.audioStreams.first?.displayTitle == "English AAC Stereo")
+        #expect(part.subtitleStreams.first?.displayTitle == "English")
     }
 
     @Test func mapsEpisodeHierarchyToMediaItem() throws {

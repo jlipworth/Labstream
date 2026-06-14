@@ -74,16 +74,18 @@ struct LibrariesView: View {
                                    systemImage: "rectangle.stack",
                                    description: Text("This Jellyfin user has no visible libraries."))
         } else {
-            List(jellyfinViews) { view in
-                NavigationLink(value: view) {
-                    Label {
-                        Text(view.title).font(.title3)
-                    } icon: {
-                        Image(systemName: "rectangle.stack")
-                            .foregroundStyle(.tint)
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260, maximum: 340),
+                                    spacing: DS.Space.xl)],
+                          spacing: DS.Space.xl) {
+                    ForEach(jellyfinViews) { view in
+                        NavigationLink(value: view) {
+                            JellyfinLibraryCard(view: view)
+                        }
+                        .cardLink(cornerRadius: DS.Radius.card)
                     }
-                    .padding(.vertical, DS.Space.xs)
                 }
+                .padding(DS.Space.xl)
             }
         }
     }
@@ -415,6 +417,70 @@ private extension KeyedDecodingContainer {
         if let int = try decodeIfPresent(Int.self, forKey: key) { return int }
         if let string = try decodeIfPresent(String.self, forKey: key) { return Int(string) }
         return nil
+    }
+}
+
+struct JellyfinLibraryCard: View {
+    let view: JellyfinLibraryLink
+
+    var body: some View {
+        HStack(spacing: DS.Space.lg) {
+            ZStack {
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .fill(.tint.opacity(0.18))
+                Image(systemName: jellyfinLibraryIcon(collectionType: view.collectionType))
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+            .frame(width: 76, height: 76)
+
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text(view.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text(jellyfinLibrarySubtitle(collectionType: view.collectionType))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Space.lg)
+        .frame(width: 300, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .posterHover()
+    }
+}
+
+func jellyfinLibraryIcon(collectionType: String?) -> String {
+    switch collectionType?.lowercased() {
+    case "movies": return "film"
+    case "tvshows": return "tv"
+    case "music": return "music.note"
+    case "boxsets": return "square.stack.3d.up"
+    case "homevideos", "livetv": return "play.rectangle"
+    case "photos": return "photo"
+    case "folders": return "folder"
+    default: return "rectangle.stack"
+    }
+}
+
+func jellyfinLibrarySubtitle(collectionType: String?) -> String {
+    switch collectionType?.lowercased() {
+    case "movies": return "Movies"
+    case "tvshows": return "TV shows"
+    case "music": return "Music"
+    case "boxsets": return "Collections"
+    case "homevideos": return "Home videos"
+    case "livetv": return "Live TV"
+    case "photos": return "Photos"
+    case "folders": return "Folder"
+    default: return "Library"
     }
 }
 
