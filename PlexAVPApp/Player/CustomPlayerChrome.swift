@@ -343,6 +343,9 @@ struct CustomPlayerChrome: View {
     }
 
     @ViewBuilder private var cinemaButton: some View {
+        // This is only the hidden Wave-2/Wave-3 AVPlayerLayer-in-ImmersiveSpace scaffold.
+        // Issue #12's RealityKit theater has a separate feature/session boundary and must not
+        // become visible here until device-ready behavior is proven.
         if !CustomCinemaMode.isUserVisible {
             EmptyView()
         } else if cinemaSession.presentationState == .open {
