@@ -85,8 +85,28 @@ enum BrowseAPI {
 
     /// `GET /library/sections/<key>/all` — every item in a section.
     static func sectionItems(server: URL, token: String, identity: ClientIdentity,
-                             sectionKey: String) -> PlexRequest {
-        PlexRequest(url: server.appendingPathComponent("/library/sections/\(sectionKey)/all"),
+                             sectionKey: String,
+                             containerStart: Int? = nil,
+                             containerSize: Int? = nil,
+                             sort: String? = nil,
+                             firstCharacter: String? = nil) -> PlexRequest {
+        var queryItems: [URLQueryItem] = []
+        if let sort { queryItems.append(.init(name: "sort", value: sort)) }
+        if let firstCharacter { queryItems.append(.init(name: "firstCharacter", value: firstCharacter)) }
+        if let containerStart, let containerSize {
+            queryItems.append(.init(name: "X-Plex-Container-Start", value: String(containerStart)))
+            queryItems.append(.init(name: "X-Plex-Container-Size", value: String(containerSize)))
+        }
+        return PlexRequest(url: server.appendingPathComponent("/library/sections/\(sectionKey)/all"),
+                           method: "GET",
+                           queryItems: queryItems,
+                           headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `GET /library/sections/<key>/firstCharacter` — available initials + counts for fast jumps.
+    static func firstCharacters(server: URL, token: String, identity: ClientIdentity,
+                                sectionKey: String) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/library/sections/\(sectionKey)/firstCharacter"),
                     method: "GET",
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
