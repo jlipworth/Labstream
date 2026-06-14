@@ -1178,6 +1178,12 @@ final class PlaybackController {
                     // rendition may still fail to load (e.g. HEVC-in-TS AVFoundation won't play).
                     // If it does, degrade once to the maximum transcode rather than dead-ending.
                     directPlayFallbackArmed = true
+                    #if DEBUG
+                    // Log what PMS decided for this title (probe vs production), so a Debug build
+                    // can tell whole-file direct play (mde=1000) from Direct Stream (video=copy)
+                    // at a glance. DEBUG-only; never compiled into Release.
+                    logDirectPlayDecision(transcode: transcode, probe: probe)
+                    #endif
                 } else {
                     NSLog("PlaybackController: Direct Play / Maximum — PMS cannot copy video; using maximum transcode")
                 }
@@ -1212,6 +1218,41 @@ final class PlaybackController {
         guard !Task.isCancelled, generation == playbackGeneration else { return }
         load(playerItem, resumeOffsetMs: resumeMs)
     }
+
+    #if DEBUG
+    /// DEBUG-only per-title decision logger for the "Direct Play / Maximum" path. When PMS agrees
+    /// to direct-play a title we commit `directPlayStartM3U8URL()`; this records WHY, so a Debug
+    /// build can distinguish whole-file direct play (`mde=1000`) from Direct Stream (`video=copy`,
+    /// copy video / transcode audio) at a glance, alongside the production verdict we would
+    /// otherwise have transcoded on. Logged as `gen= mde= part= video= audio= saves=`. Only the
+    /// probe-commit branch reaches here, so it fires solely for titles PMS agreed to direct-play.
+    /// No token, host, or URL is ever logged — only decision codes and the decision enums.
+    ///
+    /// History: this began as a one-shot probe to chase a phantom "start.m3u8 → HTTP 400" (round 2
+    /// proved start.m3u8 returns 200 for every profile-extra variant and direct play works); the
+    /// decision fields stayed useful, so the URL-status dissection was removed and this kept.
+    private func logDirectPlayDecision(transcode: TranscodeRequest, probe: DecisionResponse) {
+        let client = self.client
+        Task {
+            func fields(_ d: DecisionResponse) -> String {
+                "gen=\(d.generalDecisionCode.map(String.init) ?? "-")"
+                    + " mde=\(d.mdeDecisionCode.map(String.init) ?? "-")"
+                    + " part=\(d.partDecision ?? "-")"
+                    + " video=\(d.videoDecision ?? "-")"
+                    + " audio=\(d.audioDecision ?? "-")"
+                    + " saves=\(d.savesVideoEncode)"
+            }
+            // probe is in hand; the production verdict we fetch fresh (its own params).
+            NSLog("PlaybackController[dp-diag]: probe-decision %@", fields(probe))
+            do {
+                let prod = try await client.send(transcode.decisionRequest(), as: DecisionResponse.self)
+                NSLog("PlaybackController[dp-diag]: prod-decision  %@", fields(prod))
+            } catch {
+                NSLog("PlaybackController[dp-diag]: prod-decision  failed %@", String(describing: error))
+            }
+        }
+    }
+    #endif
 
     // MARK: - Local-file path
 
@@ -1402,17 +1443,21 @@ final class PlaybackController {
         // active and `installObservers()` no-ops on its second call.
         audioSession.activate()
         audioSession.installObservers()
-        // Forward-buffer tuning (#21). Ask AVPlayer to keep ~30s of media buffered AHEAD of
-        // the playhead. Default (0) lets AVPlayer pick automatically, which on a capped HLS
-        // transcode can run lean and rebuffer on a network blip. A modest explicit buffer
-        // smooths over those blips. We deliberately do NOT over-buffer: too large a window
-        // wastes the PMS transcoder's lead segments and grows memory, and on a live transcode
-        // AVPlayer can only buffer as fast as the transcoder produces anyway — ~30s is a
-        // balance. Applied uniformly (streaming + local): a local file fills it instantly so
-        // it's harmless there, and keeping one code path is simpler. `automaticallyWaitsTo-
-        // MinimizeStalling` stays at its default `true` (set below) so the player still waits
-        // for enough buffer before starting rather than starting and immediately stalling.
-        playerItem.preferredForwardBufferDuration = 30
+        // Forward-buffer tuning (#21). Ask AVPlayer to keep a DEEP buffer ahead of the
+        // playhead (~600s) so playback can ride out long network interruptions without
+        // rebuffering. This is a HINT, not a guarantee: AVPlayer fills toward it only as
+        // fast as bytes arrive and bounds the actual window against system resources, so it
+        // routinely under- or over-shoots. On a live capped HLS transcode the transcoder is
+        // the limiter — AVPlayer can't buffer faster than PMS produces segments — so the deep
+        // window mostly benefits DIRECT PLAY, where the source is a static file AVPlayer can
+        // pull as fast as the link allows. Memory caveat: a large window on a high-bitrate 4K
+        // direct play can hold a lot of media in memory; we accept that tradeoff for smoother
+        // playback and rely on AVPlayer's own resource bounding (watch #27 OOM). Applied
+        // uniformly (streaming + local): a local file fills it instantly so it's harmless
+        // there, and keeping one code path is simpler. `automaticallyWaitsToMinimizeStalling`
+        // stays at its default `true` (set below) so the player still waits for enough buffer
+        // before starting rather than starting and immediately stalling.
+        playerItem.preferredForwardBufferDuration = 600
         player.automaticallyWaitsToMinimizeStalling = true
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.

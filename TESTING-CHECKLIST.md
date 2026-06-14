@@ -77,6 +77,12 @@ required**.
 - [x] **Playback speed + Now Playing metadata** ✅ verified — Speed tab changes rate and survives
       a Quality reload. (Control Center metadata not separately re-checked.)
 - [ ] **Buffering indicator** — centered spinner on a real stall, NOT on manual pause.
+- [~] **Forward buffer depth** — on a direct-play title, Stats ▸ buffered-ahead climbs well past
+      ~60s (deep 600s `preferredForwardBufferDuration` hint) and memory stays bounded — AVPlayer
+      self-limits the actual window against resources (observed ~540 MB footprint, flat, no jetsam
+      on a 4K H.264 direct play). On a capped transcode the buffer fills only as fast as PMS
+      produces segments, so the deep hint mostly benefits direct play. _(Sim-verified 2026-06-14;
+      device pass still wanted — sim doesn't enforce device jetsam limits.)_
 - [ ] **Audio soundtrack picker (GH #3)** — 🔁 RETEST (fix shipped): the Audio tab on streaming
       sessions is now metadata-driven (Plex `Stream` streamType=2, not the HLS group — PMS only
       muxes the active track, which caused the old "No alternate audio tracks"). Verify: tab
