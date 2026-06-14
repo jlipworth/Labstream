@@ -33,6 +33,9 @@ struct ArtistDetailView: View {
     @State private var appearsOn: [MediaItem] = []
     @State private var similar: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
+    /// Play/Shuffle Artist in flight (the allLeaves fetch) — disables both buttons.
+    @State private var isStartingPlayback = false
+    @State private var playError: String?
 
     /// Header portrait size — larger than a grid cell, smaller than an album hero.
     private let portraitSize: CGFloat = 160
@@ -87,10 +90,68 @@ struct ArtistDetailView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                 }
+
+                // Play/Shuffle the whole discography via `allLeaves` (MUSIC-DESIGN
+                // §3.5) — same button treatment as the album header. Radio is v2
+                // (Pass-gated, probe-only — §6).
+                HStack(spacing: DS.Space.lg) {
+                    Button {
+                        Task { await playDiscography(shuffled: false) }
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                            .font(.title3.weight(.semibold))
+                            .padding(.horizontal, DS.Space.md)
+                            .padding(.vertical, DS.Space.xs)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        Task { await playDiscography(shuffled: true) }
+                    } label: {
+                        Label("Shuffle", systemImage: "shuffle")
+                            .font(.title3)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .disabled(isStartingPlayback)
+                .padding(.top, DS.Space.md)
+
+                if let playError {
+                    Label(playError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.yellow)
+                }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, DS.Space.xxl)
+    }
+
+    /// Fetch every track under the artist in one flat list and play it (in album
+    /// order, or shuffled). One request, zero controller changes.
+    private func playDiscography(shuffled: Bool) async {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
+        isStartingPlayback = true
+        playError = nil
+        defer { isStartingPlayback = false }
+        let req = MusicRequest.allLeaves(server: server, token: token,
+                                         identity: appModel.identity,
+                                         ratingKey: artist.ratingKey)
+        do {
+            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            let tracks = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            guard !tracks.isEmpty else {
+                playError = "No tracks to play."
+                return
+            }
+            if shuffled {
+                player.playAlbumShuffled(tracks: tracks)
+            } else {
+                player.play(tracks: tracks, startingAt: 0)
+            }
+        } catch {
+            playError = friendlyMessage(error)
+        }
     }
 
     @ViewBuilder
@@ -119,6 +180,8 @@ struct ArtistDetailView: View {
                                         isCurrent: player.current?.ratingKey == track.ratingKey)
                     }
                     .cardLink(cornerRadius: DS.Radius.chip)
+                    // Queue actions (#17 Phase 4); §3.6 contextMenu-on-row-chrome caveat.
+                    .contextMenu { TrackQueueMenu(track: track, player: player) }
 
                     if index < popular.count - 1 {
                         Divider().padding(.leading, DS.Space.xxl + DS.Space.lg)

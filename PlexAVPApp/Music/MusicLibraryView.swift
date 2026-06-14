@@ -103,7 +103,7 @@ func musicDestination(for item: MediaItem, sectionKey: String?) -> some View {
     switch item.kind {
     case .artist: ArtistDetailView(artist: item, sectionKey: sectionKey)
     case .album: AlbumDetailView(album: item)
-    // .playlist arrives with PlaylistDetailView in Phase 5.
+    case .playlist: PlaylistDetailView(playlist: item)
     default: EmptyView()
     }
 }
@@ -117,7 +117,7 @@ private enum MusicPivot: String, CaseIterable, Identifiable {
     case home = "Home"
     case artists = "Artists"
     case albums = "Albums"
-    // case playlists — Phase 5.
+    case playlists = "Playlists"
 
     var id: String { rawValue }
 }
@@ -147,6 +147,7 @@ private struct MusicHomeView: View {
             case .home: MusicHomePivot(section: section)
             case .artists: MusicArtistsPivot(section: section)
             case .albums: MusicAlbumsPivot(section: section)
+            case .playlists: MusicPlaylistsPivot()
             }
         }
     }
@@ -544,6 +545,120 @@ private struct MusicAlbumsPivot: View {
     }
 }
 
+// MARK: - Playlists pivot (read-only v1, MUSIC-DESIGN §3.4)
+
+/// Audio playlists as card rows — 56-pt composite art, title, "N tracks". Playlists
+/// live OUTSIDE the section tree (`GET /playlists?playlistType=audio` is server-wide),
+/// so unlike the other pivots this takes no section; the toolbar library Picker does
+/// not scope it. Rows push `PlaylistDetailView` via the shared `musicDestination`.
+private struct MusicPlaylistsPivot: View {
+    @Environment(AppModel.self) private var appModel
+
+    @State private var playlists: [MediaItem] = []
+    @State private var loadState: HomeView.LoadState = .idle
+
+    var body: some View {
+        ScrollView {
+            switch loadState {
+            case .idle, .loading:
+                MusicSkeleton()
+            case .failed(let message):
+                ContentUnavailableView("Couldn’t load Playlists",
+                                       systemImage: "exclamationmark.triangle",
+                                       description: Text(message))
+                    .frame(maxWidth: .infinity, minHeight: 360)
+            case .loaded:
+                if playlists.isEmpty {
+                    ContentUnavailableView("No Playlists",
+                                           systemImage: "music.note.list",
+                                           description: Text("This server has no audio playlists."))
+                        .frame(maxWidth: .infinity, minHeight: 360)
+                } else {
+                    playlistList
+                        .padding(.horizontal, DS.Space.xxl)
+                        .padding(.vertical, DS.Space.xl)
+                }
+            }
+        }
+        .task { await load() }
+        .refreshable { await load() }
+    }
+
+    /// One material card of playlist rows, hairline-separated — the same card-of-rows
+    /// treatment as the album track list, at list (not track) density.
+    private var playlistList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(playlists.enumerated()), id: \.element.id) { index, playlist in
+                NavigationLink(value: playlist) {
+                    PlaylistRow(playlist: playlist)
+                }
+                .cardLink(cornerRadius: DS.Radius.chip)
+
+                if index < playlists.count - 1 {
+                    Divider().padding(.leading, DS.Space.xxl + DS.Space.lg)
+                }
+            }
+        }
+        .padding(.vertical, DS.Space.sm)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+    }
+
+    private func load() async {
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            loadState = .failed("No server selected.")
+            return
+        }
+        loadState = .loading
+        let req = PlaylistRequest.audioPlaylists(server: server, token: token,
+                                                 identity: appModel.identity)
+        do {
+            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            playlists = resp.mediaContainer.metadata.filter { $0.kind == .playlist }
+            loadState = .loaded
+        } catch {
+            loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+/// One playlist row: 56-pt composite art, title, "N tracks". Row height clears the
+/// 60-pt gaze target with the card paddings.
+private struct PlaylistRow: View {
+    let playlist: MediaItem
+
+    var body: some View {
+        HStack(spacing: DS.Space.lg) {
+            PosterImage(path: playlist.musicArtPath, width: 56, height: 56,
+                        cornerRadius: DS.Radius.chip)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(playlist.title)
+                    .font(.body)
+                    .lineLimit(1)
+                if let count = playlist.leafCount {
+                    Text("^[\(count) track](inflect: true)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: DS.Space.md)
+
+            Image(systemName: "chevron.right")
+                .font(.subheadline)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.vertical, DS.Space.sm)
+        .contentShape(Rectangle())
+        // Highlight comes from the wrapping button's `.cardLink(cornerRadius: .chip)` —
+        // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
+        // The outer inset keeps the row highlight clear of the card's corner curve.
+        .padding(.horizontal, DS.Space.sm)
+    }
+}
+
 // MARK: - Shared paged grid
 
 /// Adaptive grid over a paged section listing, pre-sized to the section's FULL
@@ -740,9 +855,13 @@ extension MediaItem {
     /// the server's "no art" sentinel (also a 404). So tracks prefer the album cover
     /// (`parentThumb`), then artist art; everything skips `/-1` paths.
     var musicArtPath: String? {
-        let candidates = kind == .track
-            ? [parentThumb, grandparentThumb, thumb, art]
-            : [thumb, parentThumb, art]
+        let candidates: [String?]
+        switch kind {
+        case .track: candidates = [parentThumb, grandparentThumb, thumb, art]
+        // A playlist's art is its server-built mosaic (`composite`); no `thumb`.
+        case .playlist: candidates = [composite, thumb, art]
+        default: candidates = [thumb, parentThumb, art]
+        }
         return candidates.compactMap { $0 }.first { !$0.hasSuffix("/-1") }
     }
 }

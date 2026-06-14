@@ -35,8 +35,10 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                        // Hide music: drop music items from each hub and any hub left empty (#15).
-                        ForEach(hubs.hidingMusic) { hub in
+                        // Music un-hidden (#17 Phase 7): artists/albums stay in the
+                        // hubs; only TRACK items drop (rail cells have no play
+                        // affordance — v2, MUSIC-DESIGN §3.1).
+                        ForEach(hubs.hidingMusicTracks) { hub in
                             HubRail(hub: hub)
                         }
                     }
@@ -46,7 +48,15 @@ struct HomeView: View {
         }
         .navigationTitle("Home")
         .navigationDestination(for: MediaItem.self) { item in
-            DetailView(item: item)
+            // Music items route into the music module, never the video detail/player
+            // (#17 Phase 7). Home hubs are cross-section, so no music sectionKey —
+            // the artist view falls back to its children endpoint. Video/photo
+            // playlists are NOT music and keep the DetailView path.
+            if item.isMusicContainer || item.isAudioPlaylist {
+                musicDestination(for: item, sectionKey: nil)
+            } else {
+                DetailView(item: item)
+            }
         }
         // Re-run whenever the server URL resolves after discovery/rediscovery.
         .task(id: appModel.serverBaseURL) { await load() }
@@ -230,16 +240,17 @@ func friendlyMessage(_ error: Error) -> String {
     return error.localizedDescription
 }
 
-// MARK: - Music hiding (#15)
+// MARK: - Music track filtering (#17 Phase 7 — replaces the #15 full hide)
 
 extension Array where Element == Hub {
-    /// Hides music until a dedicated Plexamp-style experience exists (#15): drops music
-    /// items (artist/album/track) from each hub and removes any hub left empty (which also
-    /// elides wholly-music hubs). Detection comes from `MediaItem.isMusic` so there's a
-    /// single source of truth. Easy to remove later to re-enable music.
-    var hidingMusic: [Hub] {
+    /// Drops TRACK items from each hub (and any hub left empty). The #15-era
+    /// `hidingMusic` full strip is gone — artists/albums now render and route via
+    /// `musicDestination` — but track cells in a generic poster rail would navigate
+    /// instead of play, so they stay out until rails grow a play affordance
+    /// (MUSIC-DESIGN §3.1, v2).
+    var hidingMusicTracks: [Hub] {
         compactMap { hub in
-            let kept = hub.metadata.filter { !$0.isMusic }
+            let kept = hub.metadata.filter { $0.kind != .track }
             guard !kept.isEmpty else { return nil }
             return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title, type: hub.type,
                        hubIdentifier: hub.hubIdentifier, size: hub.size, metadata: kept)

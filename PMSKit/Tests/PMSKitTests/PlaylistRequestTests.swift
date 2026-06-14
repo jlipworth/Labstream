@@ -27,6 +27,61 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
+@Test func decodesPlaylistRowFields() throws {
+    // A /playlists row: type "playlist", mosaic art under `composite` (no thumb),
+    // track count under `leafCount`, total duration in ms.
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"555","key":"/playlists/555/items","title":"Road Trip",
+       "type":"playlist","playlistType":"audio","smart":false,
+       "composite":"/playlists/555/composite/1749500000",
+       "leafCount":42,"duration":9876000}]}}
+    """.data(using: .utf8)!
+    let item = try JSONDecoder().decode(MetadataResponse.self, from: json)
+        .mediaContainer.metadata[0]
+    #expect(item.kind == .playlist)
+    #expect(item.composite == "/playlists/555/composite/1749500000")
+    #expect(item.leafCount == 42)
+    #expect(item.duration == 9_876_000)
+    #expect(item.thumb == nil)
+    #expect(item.playlistType == "audio")
+    #expect(item.isAudioPlaylist)
+}
+
+@Test func videoPlaylistIsNotAudio() throws {
+    // A VIDEO playlist must never route into the music module.
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"777","title":"Movie Night","type":"playlist",
+       "playlistType":"video","leafCount":3}]}}
+    """.data(using: .utf8)!
+    let item = try JSONDecoder().decode(MetadataResponse.self, from: json)
+        .mediaContainer.metadata[0]
+    #expect(item.playlistType == "video")
+    #expect(!item.isAudioPlaylist)
+}
+
+@Test func unlabeledPlaylistDefaultsToAudio() {
+    // Lenient default: an absent playlistType counts as audio (music surfaces
+    // always fetch with playlistType=audio, so they're labeled anyway).
+    let item = MediaItem(ratingKey: "1", title: "Mystery", type: "playlist")
+    #expect(item.isAudioPlaylist)
+    let movie = MediaItem(ratingKey: "2", title: "Film", type: "movie",
+                          playlistType: "audio")
+    #expect(!movie.isAudioPlaylist)
+}
+
+@Test func compositeAndLeafCountDecodeNilWhenAbsent() throws {
+    let json = """
+    {"MediaContainer":{"Metadata":[
+      {"ratingKey":"101","title":"Blade Runner","type":"movie"}]}}
+    """.data(using: .utf8)!
+    let item = try JSONDecoder().decode(MetadataResponse.self, from: json)
+        .mediaContainer.metadata[0]
+    #expect(item.composite == nil)
+    #expect(item.leafCount == nil)
+}
+
 // MARK: - Music MediaItem decodes (MUSIC-DESIGN §6 additive fields)
 
 @Test func decodesMusicFieldsOnTrack() throws {

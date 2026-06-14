@@ -9,6 +9,9 @@ struct MiniPlayerBar: View {
     @Environment(MusicPlayerController.self) private var player
 
     @State private var presentNowPlaying = false
+    /// When true, the next NowPlaying presentation pre-scrolls to Up Next (the ☰
+    /// queue button's behavior); reset on dismiss so a plain tap opens at the top.
+    @State private var scrollToQueue = false
 
     /// Artwork size inside the ~64-pt bar.
     private let artSize: CGFloat = 44
@@ -22,8 +25,8 @@ struct MiniPlayerBar: View {
                 bar(for: current)
             }
         }
-        .sheet(isPresented: $presentNowPlaying) {
-            NowPlayingView()
+        .sheet(isPresented: $presentNowPlaying, onDismiss: { scrollToQueue = false }) {
+            NowPlayingView(scrollToQueue: scrollToQueue)
                 // Fixed content size + .fitted: the default sheet (and .form —
                 // live-tested, no effect on visionOS) tracks the wide window and
                 // leaves acres of glass either side of the 300pt art column.
@@ -90,6 +93,14 @@ struct MiniPlayerBar: View {
                 Spacer(minLength: DS.Space.lg)
 
                 Button {
+                    player.previous()
+                } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+
+                Button {
                     player.togglePlayPause()
                 } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
@@ -104,6 +115,17 @@ struct MiniPlayerBar: View {
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
+
+                // Queue shortcut: same sheet as a bar tap, pre-scrolled to Up Next.
+                Button {
+                    scrollToQueue = true
+                    presentNowPlaying = true
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Queue")
 
                 // "Turn the music off": full teardown — clears the queue, so the bar
                 // (current == nil) removes itself.
@@ -120,7 +142,12 @@ struct MiniPlayerBar: View {
             }
             .padding(.horizontal, DS.Space.lg)
             .frame(height: 64)
-            .frame(maxWidth: 480)
+            .frame(maxWidth: 560)
+            // Passive progress hairline along the bottom edge — explicitly NOT a
+            // scrub target (a 3-pt drag violates the 60-pt rule; scrubbing lives in
+            // the sheet — MUSIC-DESIGN §4.1). Inset past the glass corner radius so
+            // it never pokes outside the platter shape.
+            .overlay(alignment: .bottom) { progressHairline }
             // Ornament content gets its platter look from glassBackgroundEffect —
             // material backgrounds render flat and z-fight the window edge here.
             .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: DS.Radius.card,
@@ -129,5 +156,24 @@ struct MiniPlayerBar: View {
             .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
             .onTapGesture { presentNowPlaying = true }
             .hoverEffect(.highlight)
+    }
+
+    /// 3-pt elapsed-time sliver pinned to the bar's bottom edge. Purely decorative:
+    /// never hit-testable, no thumb, no drag.
+    private var progressHairline: some View {
+        GeometryReader { geo in
+            let duration = player.durationSeconds
+            let fraction = duration > 0
+                ? min(1, max(0, player.elapsedSeconds / duration))
+                : 0
+            ZStack(alignment: .leading) {
+                Capsule().fill(.white.opacity(0.12))
+                Capsule().fill(.tint)
+                    .frame(width: geo.size.width * fraction)
+            }
+        }
+        .frame(height: 3)
+        .padding(.horizontal, DS.Radius.card)
+        .allowsHitTesting(false)
     }
 }

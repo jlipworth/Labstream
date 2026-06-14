@@ -67,6 +67,14 @@ extension MediaItem {
     /// `DetailView` is video-only and stays untouched.
     public var isMusicContainer: Bool { type == "artist" || type == "album" }
 
+    /// True for a playlist that belongs to the MUSIC module. PMS labels playlists
+    /// `playlistType` audio/video/photo; an absent label is treated as audio
+    /// (the lenient default — every music surface fetches with `playlistType=audio`
+    /// already, so only an unlabeled row from a generic surface ever hits this).
+    public var isAudioPlaylist: Bool {
+        kind == .playlist && (playlistType ?? "audio") == "audio"
+    }
+
     /// An episode-style label, Plex/Emby-style:
     /// `"{grandparentTitle} · S{parentIndex}E{index} · {title}"`, gracefully dropping any
     /// missing component (and falling back to just `title` when none are present).
