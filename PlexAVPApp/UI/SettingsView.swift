@@ -36,10 +36,6 @@ struct SettingsView: View {
     /// the in-headset kill switch the research/15 rollout plan calls for.
     @AppStorage(PlaybackController.directStreamEnabledKey) private var directStreamEnabled = false
 
-    /// Optional #31 guard for Direct Stream. Default OFF so the original #7 experimental
-    /// behavior stays available for testing unless the user asks for the safer heuristic.
-    @AppStorage(PlaybackController.directStreamHeadroomEnabledKey) private var directStreamHeadroomEnabled = false
-
     var body: some View {
         Form {
             serverSection
@@ -66,14 +62,10 @@ struct SettingsView: View {
             Toggle(isOn: $directStreamEnabled) {
                 Label("Direct Stream (experimental)", systemImage: "arrow.triangle.branch")
             }
-            Toggle(isOn: $directStreamHeadroomEnabled) {
-                Label("Require bandwidth headroom", systemImage: "speedometer")
-            }
-            .disabled(!directStreamEnabled)
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server. The headroom gate is stricter: when enabled, Direct Stream only starts after a recent throughput sample exceeds the source bitrate by 25%.")
+            Text("The quality new streams start at. Changing quality inside the player updates this too. Direct Stream plays compatible video without re-encoding on the server — but only when a recent speed sample shows the connection can sustain the full source bitrate; otherwise it falls back to transcoding.")
         }
     }
 
