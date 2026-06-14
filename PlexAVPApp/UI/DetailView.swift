@@ -5,7 +5,7 @@ import PMSKit
 /// submenu modeled on the official Plex / Emby item pages.
 ///
 /// Action area:
-///   • Play / Resume — presents the AVKit `PlayerView` (streams the chosen version).
+///   • Play / Resume — presents the custom `CustomPlayerView` (streams the chosen version).
 ///   • Download — opens `DownloadOptionsSheet` so the viewer picks a quality before the
 ///     optimize → background-download pipeline runs; when a local copy already exists it
 ///     becomes a "Play Offline" shortcut, and a live progress label shows mid-transfer.
@@ -40,14 +40,8 @@ struct DetailView: View {
     /// underlying item out from under us so we never index past the array.
     @State private var selectedMediaIndex = 0
 
-    /// Experimental fallback player path, default OFF. When enabled, streaming playback uses
-    /// an app-owned AVPlayerLayer presenter with a deterministic scrubber; local downloads
-    /// intentionally stay on the system AVKit player for this first fallback spike.
-    @AppStorage("experimentalCustomPlayerEnabled") private var experimentalCustomPlayerEnabled = false
-
-    /// Same persisted default cap that Settings and PlayerView use. The custom fallback path
-    /// passes it into its `PlaybackController` so the experimental route starts from the same
-    /// quality choice as the stock AVKit route.
+    /// Same persisted default cap that Settings uses. The custom player passes it into its
+    /// `PlaybackController` so playback starts from the saved quality choice.
     @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
 
     /// Optimistic local override of the server's watched state. `nil` means "use the
@@ -362,11 +356,9 @@ struct DetailView: View {
                              onClose: { presentingPlayer = false })
                 .ignoresSafeArea()
         } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
-            // AVPlayerViewController supplies NO system Close button inside a
-            // `.fullScreenCover` on visionOS, so the cover was previously inescapable.
-            // We thread a `dismiss` closure into PlayerView, which renders its own
-            // top-leading close affordance (clear of the AVKit transport bar / "…" menu).
-            // This works in both the inline and expanded player states.
+            // The custom player owns its own chrome, including a top-leading Close affordance,
+            // so a `.fullScreenCover` is always escapable (the old AVKit path had no system
+            // Close button inside a cover on visionOS).
             Group {
                 let mediaIndex = playing.ratingKey == detailed.ratingKey ? selectedMediaIndex : 0
                 let machineIdentifier = appModel.selectedServer?.clientIdentifier
@@ -378,36 +370,23 @@ struct DetailView: View {
                     playingItem = next
                 }
 
-                if experimentalCustomPlayerEnabled {
-                    CustomPlayerView(item: playing,
-                                     controllerFactory: {
-                                         PlaybackController(item: playing,
-                                                            server: server,
-                                                            token: token,
-                                                            identity: appModel.identity,
-                                                            client: appModel.client,
-                                                            maxVideoBitrateKbps: maxVideoBitrateKbps,
-                                                            mediaIndex: mediaIndex,
-                                                            machineIdentifier: machineIdentifier)
-                                     },
-                                     onClose: { presentingPlayer = false },
-                                     onRequestPlay: playNext)
-                } else {
-                    PlayerView(item: playing,
-                               server: server,
-                               token: token,
-                               identity: appModel.identity,
-                               client: appModel.client,
-                               // The Plex resource clientIdentifier IS the server's machine
-                               // identifier; the play-queue API needs it to resolve the next
-                               // episode for the Up Next card.
-                               mediaIndex: mediaIndex,
-                               machineIdentifier: machineIdentifier,
-                               onClose: { presentingPlayer = false },
-                               onRequestPlay: playNext)
-                }
+                // The Plex resource clientIdentifier IS the server's machine identifier; the
+                // play-queue API needs it to resolve the next episode for the Up Next card.
+                CustomPlayerView(item: playing,
+                                 controllerFactory: {
+                                     PlaybackController(item: playing,
+                                                        server: server,
+                                                        token: token,
+                                                        identity: appModel.identity,
+                                                        client: appModel.client,
+                                                        maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                                        mediaIndex: mediaIndex,
+                                                        machineIdentifier: machineIdentifier)
+                                 },
+                                 onClose: { presentingPlayer = false },
+                                 onRequestPlay: playNext)
             }
-            // Rebuild PlayerView + its PlaybackController cleanly whenever the playing
+            // Rebuild the player + its PlaybackController cleanly whenever the playing
             // item changes (Up Next advance), so the outgoing controller is dismantled
             // (its `stop()` flushes a final timeline) and a fresh one starts the next.
             .id(playing.ratingKey)
