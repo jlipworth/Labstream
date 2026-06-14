@@ -1,8 +1,22 @@
 # VisionPlex player reset: final-target rebuild, no retry storms
 
 Date: 2026-06-14
-Status: implemented in app path
+Status: implemented in app path; manual double-drag still failing
 Scope: replace the failed Stage-3 proxy-owned segment seek design with a simpler, server-safe player model.
+
+
+## Wrap-up result (2026-06-14)
+
+Implementation commit `9ed4569` removed the proxy seek/re-prime path from the app, restored direct
+PMS URL loading, removed silent auto-retry, and added a generation-fenced final-target rebuild
+policy. Manual testing immediately after that commit found:
+
+- single deep drag: OK;
+- double drag / rapid second drag: still very similar to the earlier failure behavior.
+
+Conclusion: this reset is a safer app path and leaves the tree clean, but it does **not** close the
+double-drag playback problem. Future work should start from a fresh diagnosis rather than assuming
+proxy Stage 3 or final-target rebuild is sufficient.
 
 ## Background
 
