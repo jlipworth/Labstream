@@ -46,7 +46,12 @@ struct JellyfinPlaybackTests {
             "Id": "source-1",
             "Name": "Main",
             "Container": "mkv",
+            "Bitrate": 8200000,
             "ETag": "tag-1",
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2160 },
+              { "Index": 1, "Type": "Audio", "Codec": "eac3", "DisplayTitle": "English EAC3 5.1", "Channels": 6 }
+            ],
             "SupportsDirectPlay": false,
             "SupportsDirectStream": false,
             "SupportsTranscoding": true,
@@ -69,6 +74,12 @@ struct JellyfinPlaybackTests {
         #expect(result.mediaSourceId == "source-1")
         #expect(result.playMethod == .transcode)
         #expect(result.requiredHTTPHeaders["Authorization"]?.contains("Token=\"token-abc\"") == true)
+        #expect(result.sourceMetadata.container == "mkv")
+        #expect(result.sourceMetadata.width == 3840)
+        #expect(result.sourceMetadata.height == 2160)
+        #expect(result.sourceMetadata.videoCodec == "hevc")
+        #expect(result.sourceMetadata.audioCodec == "eac3")
+        #expect(result.sourceMetadata.bitrate == 8200)
     }
 
     @Test func buildsStaticVideoStreamURLWhenNoTranscodingURLIsNeeded() throws {

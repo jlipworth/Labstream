@@ -63,9 +63,15 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
     public let id: String
     public let name: String
     public let type: String?
+    public let collectionType: String?
     public let overview: String?
     public let productionYear: Int?
     public let runTimeTicks: Int?
+    public let officialRating: String?
+    public let communityRating: Double?
+    public let taglines: [String]
+    public let genres: [String]
+    public let mediaSources: [JellyfinItemMediaSourceDto]
     public let userData: JellyfinUserDataDto?
     public let imageTags: [String: String]
     public let backdropImageTags: [String]
@@ -79,9 +85,15 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
         case id = "Id"
         case name = "Name"
         case type = "Type"
+        case collectionType = "CollectionType"
         case overview = "Overview"
         case productionYear = "ProductionYear"
         case runTimeTicks = "RunTimeTicks"
+        case officialRating = "OfficialRating"
+        case communityRating = "CommunityRating"
+        case taglines = "Taglines"
+        case genres = "Genres"
+        case mediaSources = "MediaSources"
         case userData = "UserData"
         case imageTags = "ImageTags"
         case backdropImageTags = "BackdropImageTags"
@@ -97,9 +109,15 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Untitled"
         type = try c.decodeIfPresent(String.self, forKey: .type)
+        collectionType = try c.decodeIfPresent(String.self, forKey: .collectionType)
         overview = try c.decodeIfPresent(String.self, forKey: .overview)
         productionYear = try c.decodeIfPresent(Int.self, forKey: .productionYear)
         runTimeTicks = try c.decodeIfPresent(Int.self, forKey: .runTimeTicks)
+        officialRating = try c.decodeIfPresent(String.self, forKey: .officialRating)
+        communityRating = try c.decodeIfPresent(Double.self, forKey: .communityRating)
+        taglines = try c.decodeIfPresent([String].self, forKey: .taglines) ?? []
+        genres = try c.decodeIfPresent([String].self, forKey: .genres) ?? []
+        mediaSources = try c.decodeIfPresent([JellyfinItemMediaSourceDto].self, forKey: .mediaSources) ?? []
         userData = try c.decodeIfPresent(JellyfinUserDataDto.self, forKey: .userData)
         imageTags = try c.decodeIfPresent([String: String].self, forKey: .imageTags) ?? [:]
         backdropImageTags = try c.decodeIfPresent([String].self, forKey: .backdropImageTags) ?? []
@@ -123,6 +141,11 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
             summary: overview,
             thumb: syntheticImagePath(type: .primary, tag: imageTags[JellyfinImageType.primary.rawValue]),
             art: syntheticImagePath(type: .backdrop, tag: backdropImageTags.first),
+            media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
+            rating: communityRating,
+            contentRating: officialRating,
+            tagline: taglines.first,
+            genres: genres.isEmpty ? nil : genres.map(Tag.init(tag:)),
             grandparentTitle: mappedType == "episode" ? seriesName : nil,
             grandparentRatingKey: mappedType == "episode" ? seriesId : nil,
             parentTitle: mappedType == "season" ? seriesName : nil,
@@ -144,6 +167,129 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
     private func syntheticImagePath(type: JellyfinImageType, tag: String?) -> String? {
         guard let tag, !tag.isEmpty else { return nil }
         return "jellyfin://item/\(id)/\(type.rawValue)?tag=\(tag)"
+    }
+}
+
+public struct JellyfinItemMediaSourceDto: Decodable, Sendable, Equatable {
+    public let id: String?
+    public let container: String?
+    public let bitrate: Int?
+    public let width: Int?
+    public let height: Int?
+    public let videoCodec: String?
+    public let audioCodec: String?
+    public let mediaStreams: [JellyfinItemMediaStreamDto]
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id"
+        case container = "Container"
+        case bitrate = "Bitrate"
+        case width = "Width"
+        case height = "Height"
+        case videoCodec = "VideoCodec"
+        case audioCodec = "AudioCodec"
+        case mediaStreams = "MediaStreams"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id)
+        container = try c.decodeIfPresent(String.self, forKey: .container)
+        bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
+        width = try c.decodeIfPresent(Int.self, forKey: .width)
+        height = try c.decodeIfPresent(Int.self, forKey: .height)
+        videoCodec = try c.decodeIfPresent(String.self, forKey: .videoCodec)
+        audioCodec = try c.decodeIfPresent(String.self, forKey: .audioCodec)
+        mediaStreams = try c.decodeIfPresent([JellyfinItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
+    }
+
+    func toPlexMedia(index: Int, itemId: String) -> Media {
+        let part = Part(id: index + 1,
+                        key: "jellyfin://item/\(itemId)/media/\(id ?? String(index))",
+                        duration: nil,
+                        file: nil,
+                        size: nil,
+                        container: container,
+                        streams: mediaStreams.enumerated().compactMap { $0.element.toPlexStream(fallbackID: $0.offset + 1) })
+        return Media(id: index + 1,
+                     duration: nil,
+                     bitrate: bitrate.map { $0 / 1_000 },
+                     width: width,
+                     height: height,
+                     videoCodec: videoCodec,
+                     audioCodec: audioCodec,
+                     container: container,
+                     part: [part])
+    }
+}
+
+public struct JellyfinItemMediaStreamDto: Decodable, Sendable, Equatable {
+    public let index: Int?
+    public let type: String?
+    public let codec: String?
+    public let language: String?
+    public let displayTitle: String?
+    public let isDefault: Bool?
+    public let isForced: Bool?
+    public let channels: Int?
+    public let title: String?
+    public let width: Int?
+    public let height: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case index = "Index"
+        case type = "Type"
+        case codec = "Codec"
+        case language = "Language"
+        case displayTitle = "DisplayTitle"
+        case isDefault = "IsDefault"
+        case isForced = "IsForced"
+        case channels = "Channels"
+        case title = "Title"
+        case width = "Width"
+        case height = "Height"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        index = try c.decodeIfPresent(Int.self, forKey: .index)
+        type = try c.decodeIfPresent(String.self, forKey: .type)
+        codec = try c.decodeIfPresent(String.self, forKey: .codec)
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+        displayTitle = try c.decodeIfPresent(String.self, forKey: .displayTitle)
+        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault)
+        isForced = try c.decodeIfPresent(Bool.self, forKey: .isForced)
+        channels = try c.decodeIfPresent(Int.self, forKey: .channels)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        width = try c.decodeIfPresent(Int.self, forKey: .width)
+        height = try c.decodeIfPresent(Int.self, forKey: .height)
+    }
+
+    func toPlexStream(fallbackID: Int) -> Stream? {
+        guard let streamType else { return nil }
+        return Stream(id: index ?? fallbackID,
+                      streamType: streamType.rawValue,
+                      index: index,
+                      codec: codec,
+                      language: language,
+                      languageTag: nil,
+                      languageCode: nil,
+                      displayTitle: displayTitle,
+                      extendedDisplayTitle: displayTitle,
+                      selected: nil,
+                      isDefault: isDefault,
+                      forced: isForced,
+                      channels: channels,
+                      title: title)
+    }
+
+    private var streamType: StreamType? {
+        switch type {
+        case "Video": return .video
+        case "Audio": return .audio
+        case "Subtitle": return .subtitle
+        default: return nil
+        }
     }
 }
 
@@ -174,10 +320,18 @@ public enum JellyfinLibrary {
                                     identity: JellyfinClientIdentity,
                                     userId: String,
                                     parentId: String? = nil,
-                                    recursive: Bool = false) throws -> URLRequest {
+                                    recursive: Bool = false,
+                                    limit: Int? = nil,
+                                    sortBy: String = "SortName",
+                                    sortOrder: String = "Ascending",
+                                    filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(userId: userId)
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
         query.append(URLQueryItem(name: "recursive", value: recursive ? "true" : "false"))
+        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: filters.joined(separator: ","))) }
+        replaceQueryItem(named: "sortBy", with: sortBy, in: &query)
+        replaceQueryItem(named: "sortOrder", with: sortOrder, in: &query)
         let url = try url(server: server, path: "/Items", queryItems: query)
         return get(url: url, token: token, identity: identity)
     }
@@ -237,11 +391,16 @@ public enum JellyfinLibrary {
         [
             URLQueryItem(name: "userId", value: userId),
             URLQueryItem(name: "includeItemTypes", value: "Movie,Series,Season,Episode"),
-            URLQueryItem(name: "fields", value: "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData"),
+            URLQueryItem(name: "fields", value: "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines"),
             URLQueryItem(name: "enableUserData", value: "true"),
             URLQueryItem(name: "sortBy", value: "SortName"),
             URLQueryItem(name: "sortOrder", value: "Ascending"),
         ]
+    }
+
+    private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
+        query.removeAll { $0.name == name }
+        query.append(URLQueryItem(name: name, value: value))
     }
 
     private static func url(server: URL, path: String, queryItems: [URLQueryItem]) throws -> URL {

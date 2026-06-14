@@ -410,6 +410,8 @@ struct DetailView: View {
                                                     identity: appModel.identity,
                                                     client: appModel.client,
                                                     httpHeaders: remote.headers,
+                                                    sourceMetadata: remote.sourceMetadata,
+                                                    playMethod: remote.playMethod,
                                                     onStopRemoteSession: {
                                                         Task {
                                                             await JellyfinBrowseService(appModel: appModel)
@@ -424,6 +426,8 @@ struct DetailView: View {
                                                         return RemoteStreamOpenResult(
                                                             url: result.url,
                                                             headers: result.requiredHTTPHeaders,
+                                                            sourceMetadata: result.sourceMetadata,
+                                                            playMethod: result.playMethod,
                                                             onStop: {
                                                                 Task {
                                                                     await JellyfinBrowseService(appModel: appModel)
@@ -528,7 +532,9 @@ struct DetailView: View {
                     .playbackOpen(item: detailed, maxVideoBitrateKbps: maxVideoBitrateKbps)
                 remotePlayback = JellyfinRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
-                                                        playSessionId: result.playSessionId)
+                                                        playSessionId: result.playSessionId,
+                                                        sourceMetadata: result.sourceMetadata,
+                                                        playMethod: result.playMethod)
                 presentingPlayer = true
             } catch {
                 playbackErrorMessage = friendlyMessage(error)
@@ -649,6 +655,8 @@ private struct JellyfinRemotePlayback: Identifiable, Equatable {
     let url: URL
     let headers: [String: String]
     let playSessionId: String
+    let sourceMetadata: JellyfinPlaybackSourceMetadata
+    let playMethod: JellyfinPlayMethod
 }
 
 /// Browser for a TV CONTAINER (a `show` or a `season`).
