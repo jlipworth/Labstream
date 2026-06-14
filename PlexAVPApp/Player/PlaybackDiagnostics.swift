@@ -18,8 +18,9 @@ import PMSKit
 final class PlaybackDiagnostics {
     /// Last observed AVFoundation throughput sample, persisted so the next Direct Stream
     /// startup can conservatively decide whether a single source rendition is likely to fit
-    /// the current link (#31). This is intentionally just a heuristic; the experimental
-    /// headroom toggle stays default-off.
+    /// the current link (#31). Direct Stream always consults this — with no sample yet (or
+    /// not enough headroom over the source bitrate) it falls back to transcoding. This is
+    /// intentionally just a heuristic.
     static let observedThroughputEstimateKey = "directStreamObservedThroughputKbps"
 
     // MARK: Static session facts

@@ -1,24 +1,22 @@
 import Foundation
 
 /// Conservative gate for Direct Stream (#31): only commit to a single-rendition direct
-/// stream when the link has measured headroom over the source bitrate.
+/// stream when the link has measured headroom over the source bitrate. Always evaluated
+/// whenever Direct Stream is on — the no-ABR copy path has no rendition to fall back to,
+/// so without measured headroom we use the (ABR-capable) transcode path instead.
 public struct DirectStreamHeadroomGate: Sendable, Equatable {
     public static let defaultHeadroomMultiplier = 1.25
 
-    public let isEnabled: Bool
     public let observedThroughputKbps: Double?
     public let headroomMultiplier: Double
 
-    public init(isEnabled: Bool,
-                observedThroughputKbps: Double?,
+    public init(observedThroughputKbps: Double?,
                 headroomMultiplier: Double = Self.defaultHeadroomMultiplier) {
-        self.isEnabled = isEnabled
         self.observedThroughputKbps = observedThroughputKbps
         self.headroomMultiplier = headroomMultiplier
     }
 
     public func verdict(sourceBitrateKbps: Int?) -> DirectStreamHeadroomVerdict {
-        guard isEnabled else { return .notRequired }
         guard let sourceBitrateKbps, sourceBitrateKbps > 0 else {
             return .blocked(.missingSourceBitrate)
         }
@@ -49,13 +47,12 @@ public struct DirectStreamHeadroomGate: Sendable, Equatable {
 }
 
 public enum DirectStreamHeadroomVerdict: Sendable, Equatable {
-    case notRequired
     case allowed(sourceKbps: Int, requiredKbps: Int, observedKbps: Int)
     case blocked(DirectStreamHeadroomBlockReason)
 
     public var allowsDirectStream: Bool {
         switch self {
-        case .notRequired, .allowed: true
+        case .allowed: true
         case .blocked: false
         }
     }
