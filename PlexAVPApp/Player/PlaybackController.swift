@@ -8,7 +8,21 @@ import PMSKit
 struct RemoteStreamOpenResult {
     let url: URL
     let headers: [String: String]
+    let sourceMetadata: JellyfinPlaybackSourceMetadata?
+    let playMethod: JellyfinPlayMethod?
     let onStop: (() -> Void)?
+
+    init(url: URL,
+         headers: [String: String],
+         sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
+         playMethod: JellyfinPlayMethod? = nil,
+         onStop: (() -> Void)? = nil) {
+        self.url = url
+        self.headers = headers
+        self.sourceMetadata = sourceMetadata
+        self.playMethod = playMethod
+        self.onStop = onStop
+    }
 }
 
 typealias RemoteStreamReopener = (_ offsetMs: Int, _ bitrateKbps: Int) async throws -> RemoteStreamOpenResult
@@ -98,6 +112,8 @@ final class PlaybackController {
     /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin playback tokens must stay in
     /// headers rather than URL query parameters so client logs/history never capture URL tokens.
     private var remoteHTTPHeaders: [String: String]
+    private var remoteSourceMetadata: JellyfinPlaybackSourceMetadata?
+    private var remotePlayMethod: JellyfinPlayMethod?
     private var onStopRemoteSession: (() -> Void)?
     private let remoteStreamReopener: RemoteStreamReopener?
     private var didStopRemoteSession = false
@@ -416,6 +432,8 @@ final class PlaybackController {
         self.localFile = nil
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
+        self.remoteSourceMetadata = nil
+        self.remotePlayMethod = nil
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
@@ -440,6 +458,8 @@ final class PlaybackController {
         self.token = nil
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
+        self.remoteSourceMetadata = nil
+        self.remotePlayMethod = nil
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
@@ -461,6 +481,8 @@ final class PlaybackController {
          identity: ClientIdentity,
          client: PlexClient,
          httpHeaders: [String: String] = [:],
+         sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
+         playMethod: JellyfinPlayMethod? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
          remoteStreamReopener: RemoteStreamReopener? = nil,
          maxVideoBitrateKbps: Int = 0) {
@@ -468,6 +490,8 @@ final class PlaybackController {
         self.localFile = nil
         self.remoteStreamURL = remoteStreamURL
         self.remoteHTTPHeaders = httpHeaders
+        self.remoteSourceMetadata = sourceMetadata
+        self.remotePlayMethod = playMethod
         self.onStopRemoteSession = onStopRemoteSession
         self.remoteStreamReopener = remoteStreamReopener
         self.identity = identity
@@ -1360,6 +1384,10 @@ final class PlaybackController {
                                 decision: nil,
                                 server: url,
                                 targetBitrateKbps: maxVideoBitrateKbps)
+        if let remoteSourceMetadata, let remotePlayMethod {
+            diagnostics.applyJellyfinSource(remoteSourceMetadata,
+                                            playMethod: remotePlayMethod)
+        }
         diagnostics.connectionHost = url.host ?? "Remote stream"
 
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
@@ -2142,6 +2170,12 @@ final class PlaybackController {
             do {
                 let reopened = try await remoteStreamReopener(offsetMs, bitrateKbps)
                 self.remoteHTTPHeaders = reopened.headers
+                if let sourceMetadata = reopened.sourceMetadata {
+                    self.remoteSourceMetadata = sourceMetadata
+                }
+                if let playMethod = reopened.playMethod {
+                    self.remotePlayMethod = playMethod
+                }
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false
                 self.loadRemoteStream(reopened.url, headers: reopened.headers, resumeOffsetMs: offsetMs)

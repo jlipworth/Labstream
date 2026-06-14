@@ -38,19 +38,46 @@ struct JellyfinBrowseService {
     }
 
     func userViewLinks() async throws -> [JellyfinLibraryLink] {
-        try await userViews().map { JellyfinLibraryLink(id: $0.id, title: $0.name) }
+        try await userViews().map {
+            JellyfinLibraryLink(id: $0.id, title: $0.name, collectionType: $0.collectionType)
+        }
     }
 
-    func items(parentId: String?, recursive: Bool = false) async throws -> [MediaItem] {
+    func items(parentId: String?,
+               recursive: Bool = false,
+               limit: Int? = nil,
+               sortBy: String = "SortName",
+               sortOrder: String = "Ascending",
+               filters: [String] = []) async throws -> [MediaItem] {
         let context = try context()
         let req = try JellyfinLibrary.itemsRequest(server: context.server,
                                                    token: context.token,
                                                    identity: jellyfinIdentity,
                                                    userId: context.userID,
                                                    parentId: parentId,
-                                                   recursive: recursive)
+                                                   recursive: recursive,
+                                                   limit: limit,
+                                                   sortBy: sortBy,
+                                                   sortOrder: sortOrder,
+                                                   filters: filters)
         let response = try await send(req, as: JellyfinItemsResponse.self)
         return response.items.compactMap { $0.toMediaItem() }
+    }
+
+    func homeRails(for views: [JellyfinLibraryLink]) async throws -> [JellyfinHomeRail] {
+        _ = try context()
+        var rails: [JellyfinHomeRail] = []
+        for view in views.prefix(8) {
+            let items = (try? await items(parentId: view.id,
+                                          recursive: false,
+                                          limit: 20,
+                                          sortBy: "DateCreated",
+                                          sortOrder: "Descending")) ?? []
+            if !items.isEmpty {
+                rails.append(JellyfinHomeRail(id: view.id, title: view.title, items: items))
+            }
+        }
+        return rails
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
@@ -123,4 +150,11 @@ struct JellyfinBrowseService {
 struct JellyfinLibraryLink: Identifiable, Hashable {
     let id: String
     let title: String
+    let collectionType: String?
+}
+
+struct JellyfinHomeRail: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let items: [MediaItem]
 }
