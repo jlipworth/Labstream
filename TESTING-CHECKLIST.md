@@ -44,13 +44,12 @@ required**.
 - [x] **Quality-reload keeps playhead** ✅ verified in sim — switching the Mbps cap mid-playback
       rebuffers briefly then resumes at the same playhead; a normal Resume lands at the right offset
       with no double-seek.
-- [x] **Failed-playback error UI + retry (GH #8)** — ✅ VERIFIED live (expanded state, network
-      kill): stall watchdog → silent auto-retry → Retry pill in the contextualActions (the only
-      surface that renders in expanded; the central dialog is the windowed counterpart). Retry
-      collapses to windowed first, rebuilds, re-expands, and resumes at the playhead — including
-      retry-while-still-offline twice (failure re-surfaces cleanly) then a third retry that
-      recovered. The windowed dialog no longer flashes during the collapse (failure flag is
-      cleared when the pill kicks off the retry).
+- [ ] **Failed-playback error UI + explicit retry (GH #8/#33 reset)** — RETEST after the retry-loop
+      removal: a real network/PMS failure should surface the Retry pill/dialog after the stall
+      watchdog, with **no silent auto-retry** and no repeated hidden `start.m3u8` requests. Tapping
+      Retry is the only rebuild; if the server is still down, the overlay reappears rather than
+      entering retry/restart hell. The windowed dialog should still avoid flashing during the
+      expanded-state collapse.
 - [~] **Progress scrobble / mark-watched** — watch past ~90% → marked watched and leaves/refreshes
       Continue Watching; stop mid-way → reopening offers Resume at that offset.
 - [~] **Download integrity + progress** — ⏸️ awaiting final human check. Fresh download progresses
@@ -135,76 +134,51 @@ required**.
             populates, seek/quality switch/audio switch still work (each rebuild re-probes).
       - [ ] EAC3-only audio sources: audio still transcodes to AAC (audio=transcode is fine);
             video must still be copy.
-- [ ] **Transcode session lifecycle / server-OOM guards (GH #27)** — fix shipped after the
-      Plex pod OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md); needs a live pass against real PMS
+- [ ] **Transcode session lifecycle / server-OOM guards (GH #27/#33 reset)** — fix shipped after
+      the Plex pod OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md); needs a live pass against real PMS
       while watching the pod (`kubectl -n media exec <pod> -- ps … | grep "Plex Transcoder"`):
       - [ ] **Stop-before-restart** — quality switch, audio switch, in-player Retry, and a
-            starved-seek restart each log `[VP] transcode: stopping previous job…` and the
-            server never shows more than ONE `Plex Transcoder` for the session.
-      - [ ] **Seek-restart cooldown** — scrub repeatedly into unbuffered territory on a
-            heavy (4K HEVC/EAC3 MKV) title: restarts space ≥5s apart (`re-arming in …`
-            lines), never a burst.
-      - [ ] **Burst budget escalation** — keep forcing starved seeks: after 3 restarts
-            within 60s the error overlay appears ("Playback keeps falling behind…")
-            instead of a 4th restart; Retry clears it and self-healing resumes.
-      - [ ] **Auto-retry budget not refilled by seek restarts** — after a seek restart, a
-            genuinely failing stream surfaces the overlay after at most one silent retry.
+            final-target deep-seek rebuild each log `[VP] transcode: stopping previous job…` and
+            the server never shows more than ONE `Plex Transcoder` for the session.
+      - [ ] **Final-target coalescing** — scrub repeatedly into unbuffered territory on a heavy
+            (4K HEVC/EAC3 MKV) title. During one drag, PMS sees only the settled final target, not
+            a burst of intermediate targets.
+      - [ ] **Burst budget escalation** — keep forcing deep out-of-buffer rebuilds: after 3 starts
+            within 60s the error overlay appears ("Playback keeps falling behind…") instead of
+            another restart. Retry clears it only because it is explicit user intent.
+      - [ ] **No silent retry budget** — after a failing stream, the overlay appears without an
+            automatic retry; only a user tap on Retry starts a new generation.
 - [ ] **Poisoned pooled connection recovery — CONTROL plane (GH #33)** — after reproducing a
       heavy-stream stall (4K/high bitrate + rapid deep seeks), wait for the failure overlay, then
       tap Retry. Expected: logs show `switched Retry control-plane requests to a fresh recovery
       URLSession`, control requests fail fast or recover instead of hanging ~30s, and a healthy PMS
-      can be reached on the first Retry without waiting for the OS to evict the old pooled socket.
-- [ ] **MediaSessionProxy — MEDIA plane (GH #33, Stage 1)** — the media plane now rides an
-      app-owned loopback origin (`127.0.0.1:<port>`) instead of AVFoundation's unreachable pool, so
-      a poisoned media socket is recoverable without a manual Retry. Headless forwarding correctness
-      first: `./scripts/live-proxy-probe.sh` → expect `>>> PROXY VERDICT: PROXY OK` (start.m3u8 +
-      variant + primed segment all forwarded through the loopback). Then in the sim, reading
-      `xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'`:
-      - [ ] **Normal play through the proxy** — open any title; the log shows
-            `media proxy open ok, loopback=http://127.0.0.1:…`; playback starts and looks identical
-            to before (no regression in time-to-first-frame, subtitles, audio, ⓘ panel). The proxy
-            is in the path, not bypassed (no `media proxy open failed … using direct stream URL`).
-      - [ ] **Deep-seek prime** — resume/seek to a deep offset (~55min): the player primes and
-            plays at the offset through the loopback exactly as the direct path did (the 7–9s deep
-            prime ceiling is unchanged; the proxy must not add latency or a double-seek).
-      - [ ] **Forced-wedge transparent recovery** — mid-playback, briefly kill the network (or use
-            Network Link Conditioner) long enough to wedge the media socket, then restore it.
-            Expected: playback self-resumes within a couple seconds **without** the Retry overlay
-            appearing — the proxy rotated the upstream socket transparently (contrast the OLD
-            behavior: ~30s frozen waiting for the OS to evict the pooled socket). If the network is
-            held down past the burst budget (3 rotates / 60s), the failure surfaces through the
-            existing overlay instead of reconnect-storming.
-      - [ ] **Close mid-stall — no black screen (the original #33 symptom)** — force a stall, and
-            while it's stalled/reconnecting, close the player. Expected: clean return to detail with
-            NO lingering black screen and no audio bleed; the loopback listener is torn down
-            (`stop(generation:)`), and reopening a title starts a fresh session normally.
-- [ ] **Proxy-owned seek / re-prime — MEDIA plane (GH #33, Stage 2)** — seek-restart orchestration
-      now lives in the proxy (`seek(to:)` re-primes the transcode and hands back a fresh loopback
-      URL; the player just swaps in a new `AVPlayerItem`). These exercise the bug this stage fixes
-      ("drag once = slow but works; drag twice = sticky + reconnect hell"). Claude self-serves
-      screenshots/logs (`xcrun simctl io booted screenshot`,
+      can be reached on the first explicit Retry without waiting for the OS to evict the old pooled
+      socket.
+- [ ] **Final-target deep seek rebuild (GH #33 reset)** — Stage-3 proxy-owned segment splicing is
+      abandoned/removed from the app path. The player loads direct PMS `start.m3u8` URLs; out-of-
+      buffer seeks debounce for the final target and rebuild one `AVPlayerItem` there. Claude
+      self-serves screenshots/logs (`xcrun simctl io booted screenshot`,
       `log show --predicate 'process == "PlexAVPApp"'`).
-      - [ ] **Single deep drag still works.** Start a transcoded item, let it play, drag the
-            scrubber far ahead (minutes). Playback resumes at the new spot within a few seconds.
-            Log shows a single `[VP] seek: proxy re-prime to <ms>` and no failure overlay.
-      - [ ] **Drag twice in quick succession — the original bug.** Drag deep, then immediately
-            drag somewhere else before the first re-prime lands. Playback ends up at the SECOND
-            target (not stuck at the first or snapped back to the start), with no
-            "Reconnecting…"/Retry overlay and no reconnect loop. Log shows the intermediate target
-            coalesced away (latest-wins).
+      - [ ] **Normal playback uses direct PMS URL.** Open any title; no `media proxy open ok` or
+            `proxy re-prime` log appears. Playback starts normally and Stats still show the PMS
+            decision/probe data.
       - [ ] **Small in-buffer scrub is instant.** Drag a few seconds within already-buffered
-            content. It seeks natively (no `proxy re-prime` log line, no transcode restart).
-      - [ ] **Resume doesn't self-trigger a re-prime.** Open an item with a saved deep resume
-            point. It resumes once and keeps playing — no spurious `proxy re-prime` line from the
-            resume seek (echo suppression).
-      - [ ] **Scrub-spam escalates gracefully.** Rapidly drag many times. After the burst budget
-            is spent the failure overlay appears (not an endless rebuild). Tapping Retry restores
-            playback and re-earns the budget.
+            content. It seeks natively (no `[VP] seek: rebuilding stream…`, no transcode restart).
+      - [ ] **Single deep drag rebuilds once.** Start a transcoded item, let it play, drag far
+            ahead/back (minutes), and release. Playback visibly reloads/buffers and resumes at the
+            final target. Log shows a single `[VP] seek: rebuilding stream at final target <ms>`.
+      - [ ] **Drag twice in quick succession — the original bug.** Drag deep, then immediately drag
+            somewhere else before the first rebuild lands. Playback ends up at the SECOND target,
+            with no reconnect loop and no storm of 503s/start requests.
+      - [ ] **Resume doesn't self-trigger a rebuild.** Open an item with a saved deep resume point.
+            It resumes once and keeps playing — no spurious final-target rebuild from the resume
+            seek echo.
+      - [ ] **Repeated PMS failures surface once.** Force PMS/network failures during rebuilds; the
+            overlay appears and pending background rebuild work stops.
+      - [ ] **Close during rebuild.** Start a deep rebuild and close the player before it finishes:
+            returns cleanly to detail, no black screen/audio bleed, no continued rebuild loop.
       - [ ] **Quality reload / audio switch still resume at the playhead** (regression — these
-            share the rebuild path; the proxy re-opens and resets its budget).
-      - [ ] **Forced upstream wedge still self-heals** (manual: kill/restore the server mid-play;
-            the loopback rotate recovers without a Retry tap). rotateCount > 0 in `proxy.status()`
-            logging.
+            share the same direct rebuild path and reset the rebuild budget).
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
