@@ -112,4 +112,22 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
         }
         return isCopyOrDirect(partDecision) || isCopyOrDirect(videoDecision)
     }
+
+    /// True ONLY when PMS will play the WHOLE file as-is (container + every stream), so the
+    /// original file can be downloaded byte-for-byte for offline use (offline-download
+    /// redesign). STRICTER than `savesVideoEncode`, which is also true for Direct Stream
+    /// (copy video / transcode audio) and remux (part "copy") — neither of which yields a
+    /// downloadable original file; those route to the Media Optimizer instead. Structured
+    /// signals only, never the English `mdeDecisionText`:
+    ///   1. `mdeDecisionCode == 1000` — MDE whole-file direct play, OR
+    ///   2. `decision == .directPlay` (generalDecisionCode 1000), OR
+    ///   3. Part-level `decision` (lowercased, spaces removed) == "directplay".
+    /// A part/stream "copy" is deliberately NOT sufficient. Conservative: false without
+    /// one of these signals.
+    public var playsWholeFileDirectly: Bool {
+        if mdeDecisionCode == 1000 { return true }
+        if decision == .directPlay { return true }
+        let normalizedPart = partDecision?.lowercased().replacingOccurrences(of: " ", with: "")
+        return normalizedPart == "directplay"
+    }
 }
