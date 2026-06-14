@@ -380,13 +380,16 @@ struct DetailView: View {
 
                 if experimentalCustomPlayerEnabled {
                     CustomPlayerView(item: playing,
-                                     server: server,
-                                     token: token,
-                                     identity: appModel.identity,
-                                     client: appModel.client,
-                                     maxVideoBitrateKbps: maxVideoBitrateKbps,
-                                     mediaIndex: mediaIndex,
-                                     machineIdentifier: machineIdentifier,
+                                     controllerFactory: {
+                                         PlaybackController(item: playing,
+                                                            server: server,
+                                                            token: token,
+                                                            identity: appModel.identity,
+                                                            client: appModel.client,
+                                                            maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                                            mediaIndex: mediaIndex,
+                                                            machineIdentifier: machineIdentifier)
+                                     },
                                      onClose: { presentingPlayer = false },
                                      onRequestPlay: playNext)
                 } else {
