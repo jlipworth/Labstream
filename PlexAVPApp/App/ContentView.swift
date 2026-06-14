@@ -23,11 +23,13 @@ struct ContentView: View {
 
     init() {
         // Build a stable identity from the persisted client identifier.
+        // Version comes from the bundle (#26) so the X-Plex-Version header can't
+        // silently drift from the real marketing version.
         let keychain = KeychainStore()
         let identity = ClientIdentity(
             clientIdentifier: keychain.clientIdentifier(),
             product: "VisionPlex",
-            version: "0.1.0",
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
             deviceName: "Apple Vision Pro"
         )
         let model = AppModel(identity: identity)
