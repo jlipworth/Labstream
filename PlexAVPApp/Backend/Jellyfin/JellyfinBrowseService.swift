@@ -65,10 +65,12 @@ struct JellyfinBrowseService {
         return item
     }
 
-    func playbackOpen(item: MediaItem, maxVideoBitrateKbps: Int) async throws -> JellyfinPlaybackOpenResult {
+    func playbackOpen(item: MediaItem,
+                      maxVideoBitrateKbps: Int,
+                      resumeOffsetMs: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
         let context = try context()
         let maxBitrateBps = maxVideoBitrateKbps <= 0 ? 200_000_000 : maxVideoBitrateKbps * 1_000
-        let startTicks = item.viewOffset.map { $0 * 10_000 }
+        let startTicks = (resumeOffsetMs ?? item.viewOffset).map { $0 * 10_000 }
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,
                                                            identity: jellyfinIdentity,
