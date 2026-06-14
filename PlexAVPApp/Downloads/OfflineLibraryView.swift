@@ -91,11 +91,13 @@ public struct OfflineLibraryView: View {
                         ProgressView(value: progress)
                         Text(progressCaption(for: record, progress: progress))
                             .font(.caption)
+                            .monospacedDigit()
                             .foregroundStyle(.secondary)
                     } else {
                         ProgressView()
                         Text(progressCaption(for: record, progress: nil))
                             .font(.caption)
+                            .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
                 }
