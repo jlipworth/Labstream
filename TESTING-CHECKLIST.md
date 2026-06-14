@@ -300,6 +300,31 @@ set. Run these before merging the branch._
 
 ---
 
+## Wave 2 — Plex bar (re-applied onto the custom player)
+
+_Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks before merge._
+
+### #30 — failure card layout
+- [ ] Trigger a playback failure (kill the server mid-stream): the failure card shows **Retry stacked ABOVE Close**, both buttons equal width, centered (not a wide edge-to-edge row).
+
+### #34 — reconnecting overlay (verify, then close issue)
+- [ ] Trigger a transient reconnect: the "Reconnecting…" card is a **compact centered dialog** (≈260pt), not full-window-width. (Already satisfied by the custom rewrite — confirm and close #34.)
+
+### #31 — Direct Stream headroom gate (default OFF)
+- [ ] Settings ▸ Playback shows "Require bandwidth headroom", **disabled** until "Direct Stream (experimental)" is ON.
+- [ ] With BOTH on, play an in-cap copy-eligible title on a fast link: log shows the direct-play commit (gate allowed).
+- [ ] With BOTH on, on a constrained link (or low recent throughput sample): log shows `headroom gate blocked copy start (...)` and playback falls back to transcode — no stall.
+- [ ] With the headroom toggle OFF, behavior is identical to today's #7 Direct Stream.
+
+### #26 — expanded Settings
+- [ ] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
+- [ ] "Reset playback preferences" clears remembered speed + subtitle/audio language (NOT streaming quality), shows "Preferences reset".
+- [ ] Maintenance ▸ "Clear image cache" shows "Cache cleared"; artwork re-downloads on next view.
+- [ ] About shows app version (build), visionOS, client (product on device — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
+- [ ] Sign Out now shows a confirmation dialog; Cancel keeps you signed in, Sign Out returns to login.
+
+---
+
 ## D. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + Direct Stream within cap:** PMSKit probe groundwork
