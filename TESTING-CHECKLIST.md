@@ -154,9 +154,11 @@ required**.
       URLSession`, control requests fail fast or recover instead of hanging ~30s, and a healthy PMS
       can be reached on the first explicit Retry without waiting for the OS to evict the old pooled
       socket.
-- [ ] **Final-target deep seek rebuild (GH #33 reset)** — Stage-3 proxy-owned segment splicing is
-      abandoned/removed from the app path. The player loads direct PMS `start.m3u8` URLs; out-of-
-      buffer seeks debounce for the final target and rebuild one `AVPlayerItem` there. Claude
+- [~] **Final-target deep seek rebuild (GH #33 reset)** — PARTIAL / WRAP-UP: Stage-3 proxy-owned
+      segment splicing is abandoned/removed from the app path. The player loads direct PMS
+      `start.m3u8` URLs; out-of-buffer seeks debounce for the final target and rebuild one
+      `AVPlayerItem` there. **Manual result after `9ed4569`: single drag OK; double-drag still
+      shows behavior very similar to the pre-reset failure, so do not mark #33 solved.** Claude
       self-serves screenshots/logs (`xcrun simctl io booted screenshot`,
       `log show --predicate 'process == "PlexAVPApp"'`).
       - [ ] **Normal playback uses direct PMS URL.** Open any title; no `media proxy open ok` or
@@ -164,12 +166,10 @@ required**.
             decision/probe data.
       - [ ] **Small in-buffer scrub is instant.** Drag a few seconds within already-buffered
             content. It seeks natively (no `[VP] seek: rebuilding stream…`, no transcode restart).
-      - [ ] **Single deep drag rebuilds once.** Start a transcoded item, let it play, drag far
-            ahead/back (minutes), and release. Playback visibly reloads/buffers and resumes at the
-            final target. Log shows a single `[VP] seek: rebuilding stream at final target <ms>`.
-      - [ ] **Drag twice in quick succession — the original bug.** Drag deep, then immediately drag
-            somewhere else before the first rebuild lands. Playback ends up at the SECOND target,
-            with no reconnect loop and no storm of 503s/start requests.
+      - [x] **Single deep drag rebuilds once.** Manual user test after `9ed4569`: single drag is OK.
+      - [ ] **Drag twice in quick succession — the original bug.** Manual user test after `9ed4569`:
+            still behaves very similarly to before. Treat this as the remaining blocker if/when
+            playback work resumes; do not assume final-target rebuild solved double-drag.
       - [ ] **Resume doesn't self-trigger a rebuild.** Open an item with a saved deep resume point.
             It resumes once and keeps playing — no spurious final-target rebuild from the resume
             seek echo.
