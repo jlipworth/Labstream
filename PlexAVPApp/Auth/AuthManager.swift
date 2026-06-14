@@ -43,10 +43,27 @@ final class AuthManager {
         self.keychain = keychain
     }
 
+    func selectBackend(_ backend: MediaBackendKind) {
+        cancelPendingLogin()
+        appModel.activeBackend = backend
+        keychain.selectedBackend = backend
+        state = .idle
+    }
+
     /// Restore a previously-saved token (call on launch). Returns true if a token
     /// was found; the caller may then refresh discovery.
     @discardableResult
     func restoreSession() async -> Bool {
+        appModel.activeBackend = keychain.selectedBackend
+        switch appModel.activeBackend {
+        case .plex:
+            return await restorePlexSession()
+        case .jellyfin:
+            return await restoreJellyfinSession()
+        }
+    }
+
+    private func restorePlexSession() async -> Bool {
         guard let saved = keychain.token else { return false }
         appModel.token = saved
         do {
@@ -62,6 +79,39 @@ final class AuthManager {
         }
     }
 
+    private func restoreJellyfinSession() async -> Bool {
+        guard let urlString = keychain.jellyfinServerURLString,
+              let server = URL(string: urlString),
+              let token = keychain.jellyfinAccessToken,
+              let userID = keychain.jellyfinUserID else { return false }
+        appModel.jellyfinServerBaseURL = server
+        appModel.jellyfinAccessToken = token
+        appModel.jellyfinUserID = userID
+        appModel.jellyfinServerID = keychain.jellyfinServerID
+        do {
+            let req = try JellyfinLibrary.userViewsRequest(server: server,
+                                                           token: token,
+                                                           identity: jellyfinIdentity,
+                                                           userId: userID)
+            let (_, response) = try await Self.jellyfinSession.data(for: req)
+            if let http = response as? HTTPURLResponse {
+                switch http.statusCode {
+                case 200..<300: break
+                case 401, 403: throw JellyfinAuthError.unauthorized
+                default: throw JellyfinAuthError.http(http.statusCode)
+                }
+            }
+            state = .authenticated
+            return true
+        } catch JellyfinAuthError.unauthorized {
+            signOutJellyfin()
+            return false
+        } catch {
+            state = .failed("Signed in, but the Jellyfin server could not be reached.")
+            return true
+        }
+    }
+
     /// Start a fresh login. Creates TWO PINs (#16): a non-strong one whose
     /// 4-character code the UI displays for plex.tv/link, and a strong one whose
     /// long code backs the `app.plex.tv/auth` web URL (a strong code cannot be
@@ -69,6 +119,7 @@ final class AuthManager {
     /// Both are polled; whichever the user completes wins.
     /// Returns the URL the UI should present for the in-headset browser path.
     func createPin() async throws -> URL {
+        selectBackend(.plex)
         cancelPendingLogin()
         async let linkReq = appModel.client.send(
             PinAuth.createPinRequest(identity: appModel.identity, strong: false),
@@ -119,6 +170,7 @@ final class AuthManager {
 
     /// Persist the token, update the model, and discover servers.
     private func finishLogin(token: String) async {
+        keychain.selectedBackend = .plex
         guard keychain.saveToken(token) else {
             state = .failed("Couldn’t securely save the Plex token.")
             return
@@ -131,6 +183,52 @@ final class AuthManager {
             state = .authenticated
         } catch {
             state = .failed("Signed in, but server discovery failed.")
+        }
+    }
+
+    func loginToJellyfin(server: URL, username: String, password: String) async {
+        cancelPendingLogin()
+        appModel.activeBackend = .jellyfin
+        keychain.selectedBackend = .jellyfin
+        state = .idle
+        do {
+            let request = try JellyfinAuth.authenticateByNameRequest(server: server,
+                                                                    username: username,
+                                                                    password: password,
+                                                                    identity: jellyfinIdentity)
+            let (data, response) = try await Self.jellyfinSession.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                switch http.statusCode {
+                case 200..<300:
+                    break
+                case 401, 403:
+                    throw JellyfinAuthError.unauthorized
+                default:
+                    throw JellyfinAuthError.http(http.statusCode)
+                }
+            }
+            let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
+            guard let token = result.accessToken, !token.isEmpty,
+                  let userID = result.user?.id, !userID.isEmpty else {
+                throw JellyfinAuthError.missingCredentials
+            }
+            keychain.jellyfinServerURLString = server.absoluteString
+            keychain.jellyfinAccessToken = token
+            keychain.jellyfinUserID = userID
+            keychain.jellyfinServerID = result.serverId
+            appModel.jellyfinServerBaseURL = server
+            appModel.jellyfinAccessToken = token
+            appModel.jellyfinUserID = userID
+            appModel.jellyfinServerID = result.serverId
+            state = .authenticated
+        } catch JellyfinAuthError.unauthorized {
+            state = .failed("Invalid Jellyfin username or password.")
+        } catch JellyfinAuthError.http(let status) {
+            state = .failed("Jellyfin sign-in failed (HTTP \(status)).")
+        } catch JellyfinAuthError.missingCredentials {
+            state = .failed("Jellyfin did not return a usable session.")
+        } catch {
+            state = .failed("Couldn’t reach Jellyfin server.")
         }
     }
 
@@ -224,12 +322,32 @@ final class AuthManager {
     /// Clear all auth state and return to login. Call on sign-out or any 401.
     func signOut() {
         cancelPendingLogin()
+        switch appModel.activeBackend {
+        case .plex:
+            signOutPlex()
+        case .jellyfin:
+            signOutJellyfin()
+        }
+        state = .idle
+    }
+
+    private func signOutPlex() {
         keychain.token = nil
         appModel.token = nil
         appModel.serverToken = nil
         appModel.selectedServer = nil
         appModel.serverBaseURL = nil
-        state = .idle
+    }
+
+    private func signOutJellyfin() {
+        keychain.jellyfinServerURLString = nil
+        keychain.jellyfinAccessToken = nil
+        keychain.jellyfinUserID = nil
+        keychain.jellyfinServerID = nil
+        appModel.jellyfinServerBaseURL = nil
+        appModel.jellyfinAccessToken = nil
+        appModel.jellyfinUserID = nil
+        appModel.jellyfinServerID = nil
     }
 
     func cancelPendingLogin() {
@@ -237,4 +355,25 @@ final class AuthManager {
         pollTask = nil
         activePinIDs = []
     }
+
+    private var jellyfinIdentity: JellyfinClientIdentity {
+        JellyfinClientIdentity(client: appModel.identity.product,
+                               device: appModel.identity.deviceName,
+                               deviceId: appModel.identity.clientIdentifier,
+                               version: appModel.identity.version)
+    }
+
+    private static let jellyfinSession: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 15
+        cfg.timeoutIntervalForResource = 30
+        cfg.waitsForConnectivity = false
+        return URLSession(configuration: cfg)
+    }()
+}
+
+private enum JellyfinAuthError: Error {
+    case unauthorized
+    case http(Int)
+    case missingCredentials
 }

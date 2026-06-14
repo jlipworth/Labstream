@@ -2,6 +2,20 @@ import Foundation
 import Observation
 import PMSKit
 
+enum MediaBackendKind: String, Codable, CaseIterable, Identifiable {
+    case plex
+    case jellyfin
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .plex: return "Plex"
+        case .jellyfin: return "Jellyfin"
+        }
+    }
+}
+
 /// Central app state, observed by SwiftUI.
 ///
 /// Holds the stable client identity, the current auth token, the selected server
@@ -14,6 +28,10 @@ import PMSKit
 @MainActor
 @Observable
 final class AppModel {
+    /// Active media backend. Plex remains the default for existing installs; Jellyfin
+    /// carries separate credentials/session state so the two modes do not overwrite each other.
+    var activeBackend: MediaBackendKind
+
     /// Stable client identity (clientIdentifier from Keychain, fixed product/version).
     var identity: ClientIdentity
 
@@ -31,15 +49,39 @@ final class AppModel {
     /// The resolved base URL for `selectedServer` (best-ranked connection).
     var serverBaseURL: URL?
 
+    /// Jellyfin session state. These mirror the Plex fields above but are intentionally
+    /// separate so a Jellyfin sign-in never clobbers Plex credentials.
+    var jellyfinServerBaseURL: URL?
+    var jellyfinAccessToken: String?
+    var jellyfinUserID: String?
+    var jellyfinServerID: String?
+
     /// Shared live executor for all Plex API requests.
     let client: PlexClient
 
-    var isAuthenticated: Bool { token != nil }
-    var isBrowseReady: Bool { token != nil && serverToken != nil && serverBaseURL != nil }
+    var isAuthenticated: Bool {
+        switch activeBackend {
+        case .plex:
+            return token != nil
+        case .jellyfin:
+            return jellyfinAccessToken != nil
+        }
+    }
+
+    var isBrowseReady: Bool {
+        switch activeBackend {
+        case .plex:
+            return token != nil && serverToken != nil && serverBaseURL != nil
+        case .jellyfin:
+            return jellyfinServerBaseURL != nil && jellyfinAccessToken != nil && jellyfinUserID != nil
+        }
+    }
 
     init(identity: ClientIdentity,
+         activeBackend: MediaBackendKind = .plex,
          token: String? = nil,
          client: PlexClient? = nil) {
+        self.activeBackend = activeBackend
         self.identity = identity
         self.token = token
         self.client = client ?? PlexClient(identity: identity)
