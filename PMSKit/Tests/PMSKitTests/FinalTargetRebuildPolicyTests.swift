@@ -23,6 +23,18 @@ import Foundation
     #expect(policy.beginRebuild(offsetMs: 200_000, now: 10) == .start(generation: 2, offsetMs: 200_000))
 }
 
+@Test func finalTargetRebuildPolicyDefaultAllowsSeveralCommittedScrubsBeforeEscalating() {
+    var policy = FinalTargetRebuildPolicy()
+
+    for i in 0..<5 {
+        #expect(policy.beginRebuild(offsetMs: 100_000 * (i + 1), now: TimeInterval(i * 6)) ==
+            .start(generation: i + 1, offsetMs: 100_000 * (i + 1)))
+        policy.finishRebuild(generation: i + 1)
+    }
+
+    #expect(policy.beginRebuild(offsetMs: 600_000, now: 35) == .escalate(recentCount: 5))
+}
+
 @Test func finalTargetRebuildPolicyEscalatesInsteadOfAllowingRestartStorm() {
     var policy = FinalTargetRebuildPolicy(budget: SeekRestartBudget(cooldownSeconds: 0,
                                                                     burstLimit: 2,
