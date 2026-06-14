@@ -1980,6 +1980,18 @@ final class PlaybackController {
             return
         }
 
+        // Device-only AVFoundation behavior seen on Vision Pro hardware: after loading a
+        // start.m3u8 primed at a non-zero offset, the item can emit an early
+        // `timeJumpedNotification` at/near 0 before playback has settled at the primed offset.
+        // The custom player already owns real user seek intent through `performUserSeek(toMs:)`;
+        // treating this transient 0 as intent immediately rebuilds the stream back to 0:00 and
+        // breaks resume, chapter jumps, and scrubber commits on capped transcodes.
+        if lastPrimedOffsetMs > Self.finalTargetEchoEpsilonMs,
+           targetMs <= Self.finalTargetEchoEpsilonMs {
+            playbackLog.notice("seek: ignoring transient zero timeJump after primed offset targetMs=\(targetMs, privacy: .public) primedMs=\(self.lastPrimedOffsetMs, privacy: .public)")
+            return
+        }
+
         if isWithinLoadedRanges(seconds: now) {
             cancelPendingFinalTargetRebuild()
             return
