@@ -1,5 +1,5 @@
 import Foundation
-import AVKit
+import AVFoundation
 import AVFAudio
 import UIKit
 
