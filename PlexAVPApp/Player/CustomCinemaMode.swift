@@ -2,12 +2,16 @@ import AVFoundation
 import PMSKit
 import SwiftUI
 
-/// Shared identifiers and active-session state for the custom-player Cinema Mode work.
+/// Shared identifiers and active-session state for the hidden custom-player Cinema scaffold.
 ///
 /// Apple's cinema environment is only available through `AVPlayerViewController`, which the
 /// custom `AVPlayerLayer` player cannot reuse — so Cinema Mode is an app-owned visionOS scene
 /// that still leans on Apple primitives: `ImmersiveSpace`, SwiftUI scene content, and the same
 /// `AVPlayer` the custom player already owns.
+///
+/// Do not use this as the issue #12 implementation path. The RealityKit theater work now lives
+/// behind `RealityTheaterFeature` / `RealityTheaterSessionStore` and stays separately hidden until
+/// real-device behavior is proven.
 enum CustomCinemaMode {
     static let immersiveSpaceID = "custom-player-cinema"
 
