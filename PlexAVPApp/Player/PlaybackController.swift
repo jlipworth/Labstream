@@ -165,6 +165,18 @@ final class PlaybackController {
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
 
+    /// Playback-time direct-play fallback (Direct Play / Maximum). PMS can agree to copy the
+    /// video (`savesVideoEncode`) yet hand back an HLS rendition AVFoundation can't actually
+    /// play, which fails at LOAD time — not at the decision stage. `directPlayFallbackArmed`
+    /// is set only while a committed direct-play stream is live; on its first failure we
+    /// degrade once to the maximum transcode instead of surfacing a dead-end.
+    /// `suppressDirectPlayProbe` is the one-shot that makes that rebuild skip the probe (so it
+    /// takes the transcode path) and also marks "a fallback is in flight" so a sibling failure
+    /// callback on the same dead item doesn't surface over it. Both are reset/consumed at the
+    /// top of every `startStreaming`.
+    private var directPlayFallbackArmed = false
+    private var suppressDirectPlayProbe = false
+
     /// Server-safe final-target rebuild policy (#33 reset). A drag can emit many
     /// `timeJumpedNotification`s, but PMS must only see one intentional rebuild at the final
     /// settled target. The pure policy is unit-tested in PMSKit; the controller owns the timer and
@@ -1142,21 +1154,32 @@ final class PlaybackController {
 
         var decision: DecisionResponse?
         var streamURL = transcode.startM3U8URL()
-        // "Maximum / Original" asks PMS to direct-play the source bits when it can copy the
+        // This build decides afresh whether it commits to direct play, so disarm any prior
+        // fallback and consume the one-shot probe suppression. `suppressDirectPlayProbe` is set
+        // by the playback-time fallback below: when a committed direct-play stream fails to
+        // load, the rebuild skips the probe and takes the maximum-transcode path instead.
+        directPlayFallbackArmed = false
+        let skipDirectPlayProbe = suppressDirectPlayProbe
+        suppressDirectPlayProbe = false
+        // "Direct Play / Maximum" asks PMS to direct-play the source bits when it can copy the
         // video; if it can't (or the probe fails) we fall through to the maximum transcode
         // below. Every capped rung — including "Maximum (transcoded)" — skips the probe and
         // transcodes. The user picks the path by picking the quality; there is no separate
         // toggle or pre-flight bandwidth gate (#31 superseded).
-        if maxVideoBitrateKbps <= 0 {
+        if maxVideoBitrateKbps <= 0, !skipDirectPlayProbe {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 if probe.savesVideoEncode {
-                    NSLog("PlaybackController: Maximum/Original — PMS will copy video; committing direct-play start.m3u8")
+                    NSLog("PlaybackController: Direct Play / Maximum — PMS will copy video; committing direct-play start.m3u8")
                     decision = probe
                     streamURL = transcode.directPlayStartM3U8URL()
+                    // Arm the playback-time fallback: PMS agreed to copy, but the resulting HLS
+                    // rendition may still fail to load (e.g. HEVC-in-TS AVFoundation won't play).
+                    // If it does, degrade once to the maximum transcode rather than dead-ending.
+                    directPlayFallbackArmed = true
                 } else {
-                    NSLog("PlaybackController: Maximum/Original — PMS cannot copy video; using maximum transcode")
+                    NSLog("PlaybackController: Direct Play / Maximum — PMS cannot copy video; using maximum transcode")
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
@@ -1785,6 +1808,28 @@ final class PlaybackController {
     /// become a hidden restart loop that can hammer the server. Retry is an explicit user action.
     private func handlePlaybackFailure(_ error: Error?) {
         guard !playbackError.isFailed else { return }
+        // Direct Play / Maximum, playback-time fallback: a committed direct-play stream that
+        // fails to load isn't a hard failure — PMS agreed to copy the video, but AVFoundation
+        // couldn't play the resulting HLS rendition. Degrade ONCE to the maximum-transcode path
+        // (resuming at the live playhead) instead of surfacing a dead-end. Armed only while a
+        // direct-play stream is live and consumed here, so the transcode rebuild — or any later
+        // failure — surfaces normally; the rebuild can't loop back into another direct play.
+        if directPlayFallbackArmed {
+            directPlayFallbackArmed = false
+            suppressDirectPlayProbe = true
+            let resumeMs = currentResumeMs
+            NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to maximum transcode",
+                  String(describing: error))
+            finalTargetRebuildPolicy.reset()
+            removeObservers()
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+            return
+        }
+        // A sibling failure callback on the same dead direct-play item (status `.failed` and
+        // `failedToPlayToEndTime` can both fire) — the fallback rebuild is already in flight, so
+        // don't surface over it. `suppressDirectPlayProbe` stays set until that rebuild's
+        // `startStreaming` consumes it, well before any new item could fail.
+        if suppressDirectPlayProbe { return }
         NSLog("PlaybackController: playback failed, surfacing to UI (%@)",
               String(describing: error))
         surfaceFailure(error)

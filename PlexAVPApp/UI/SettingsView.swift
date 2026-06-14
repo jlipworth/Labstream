@@ -55,7 +55,7 @@ struct SettingsView: View {
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. \"Maximum / Original\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes.")
+            Text("The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes.")
         }
     }
 
