@@ -1,36 +1,30 @@
 import SwiftUI
 import PMSKit
 
-/// Lets the user pick a QUALITY before an offline download starts, then kicks off the
-/// transfer through `DownloadManager.optimizeAndDownload(_:quality:mediaIndex:partIndex:)`.
-///
-/// Self-contained and trivial to present — it reads `DownloadManager` and `AppModel`
-/// from the environment, so a caller only supplies the item:
-///
-/// ```swift
-/// .sheet(isPresented: $showDownloadOptions) {
-///     DownloadOptionsSheet(item: item)
-/// }
-/// ```
-///
-/// The chosen quality maps to a video-bitrate cap handed to the SAME universal
-/// transcoder the player streams from (a single progressive MP4 we can fetch with one
-/// background `URLSession` task), so the offline copy matches what the player would
-/// produce at that cap. Once a download exists for the item the sheet shows that
-/// state instead of re-offering the picker, and we surface the visionOS reality that
-/// background transfers pause while the headset is off.
+/// Probe-first download sheet (offline-download redesign). On appear it runs the direct-play
+/// probe: if the WHOLE file direct-plays it offers a single "Download original — <size> · <res>"
+/// action (no quality picker); otherwise it offers the server's real optimize presets. If the
+/// probe fails / the server is unreachable, it falls back to offering the optimizer presets.
+/// Both routes converge on the same background-`URLSession` + validation pipeline.
 struct DownloadOptionsSheet: View {
     let item: MediaItem
     var mediaIndex: Int = 0
     var partIndex: Int = 0
 
     @Environment(DownloadManager.self) private var downloadManager
+    @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
 
-    /// User's quality choice; defaults to the app-wide 1080p/8 Mbps preset.
-    @State private var quality: DownloadManager.DownloadQuality = .default
+    private enum ProbeState: Equatable {
+        case checking
+        case direct(sizeBytes: Int?, resolution: String?)
+        case optimize(presets: [String], probeFailed: Bool)
+    }
 
-    /// Already downloaded (or downloading) before this sheet was opened?
+    @State private var probeState: ProbeState = .checking
+    /// Chosen optimizer preset name (when not direct).
+    @State private var selectedPreset: String = "Optimized for TV"
+
     private var existingRecord: DownloadRecord? {
         downloadManager.records.first { $0.ratingKey == item.ratingKey }
     }
@@ -41,8 +35,16 @@ struct DownloadOptionsSheet: View {
                 if let record = existingRecord {
                     existingSection(record)
                 } else {
-                    qualitySection
-                    infoSection
+                    switch probeState {
+                    case .checking:
+                        SwiftUI.Section { Label("Checking compatibility…", systemImage: "wifi") }
+                    case let .direct(sizeBytes, resolution):
+                        directSection(sizeBytes: sizeBytes, resolution: resolution)
+                        infoSection
+                    case let .optimize(presets, probeFailed):
+                        optimizeSection(presets: presets, probeFailed: probeFailed)
+                        infoSection
+                    }
                 }
             }
             .navigationTitle("Download")
@@ -50,36 +52,84 @@ struct DownloadOptionsSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
-                if existingRecord == nil {
+                if existingRecord == nil, probeState != .checking {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Download") { startDownload() }
                     }
                 }
             }
         }
+        .task { await runProbe() }
     }
 
-    // MARK: - Picker
+    // MARK: - Probe
 
-    private var qualitySection: some View {
+    private func runProbe() async {
+        guard existingRecord == nil else { return }
+        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
+            probeState = .optimize(presets: defaultPresets, probeFailed: true)
+            return
+        }
+        let result = await downloadManager.directPlayProbe(
+            for: item, server: server, token: token,
+            mediaIndex: mediaIndex, partIndex: partIndex)
+        if result.direct {
+            let media = item.media?[safe: mediaIndex]
+            probeState = .direct(sizeBytes: result.part?.size,
+                                 resolution: DownloadManager.resolutionLabel(for: media))
+        } else {
+            // Try the server's real presets; fall back to the built-in names if unavailable.
+            let presets = await downloadManager.optimizePresetNames(server: server, token: token)
+            probeState = .optimize(presets: presets.isEmpty ? defaultPresets : presets,
+                                   probeFailed: false)
+        }
+    }
+
+    private var defaultPresets: [String] {
+        ["Optimized for TV", "Optimized for Mobile", "Original Quality"]
+    }
+
+    // MARK: - Sections
+
+    @ViewBuilder
+    private func directSection(sizeBytes: Int?, resolution: String?) -> some View {
         SwiftUI.Section {
-            // A radio-style list so each option shows its label + caption.
-            ForEach(DownloadManager.DownloadQuality.allCases) { option in
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Download original")
+                    Text(directDetail(sizeBytes: sizeBytes, resolution: resolution))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } icon: { Image(systemName: "checkmark.seal") }
+        } header: {
+            Text("Compatible")
+        } footer: {
+            Text("This file plays as-is on your headset, so it downloads at full original "
+                 + "quality without server transcoding.")
+        }
+    }
+
+    private func directDetail(sizeBytes: Int?, resolution: String?) -> String {
+        var parts: [String] = []
+        if let sizeBytes, sizeBytes > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))
+        }
+        if let resolution { parts.append(resolution) }
+        return parts.isEmpty ? "Original file" : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func optimizeSection(presets: [String], probeFailed: Bool) -> some View {
+        SwiftUI.Section {
+            ForEach(presets, id: \.self) { preset in
                 Button {
-                    quality = option
+                    selectedPreset = preset
                 } label: {
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(option.label)
-                                .foregroundStyle(.primary)
-                            Text(option.caption)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(preset).foregroundStyle(.primary)
                         Spacer()
-                        if option == quality {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(.tint)
+                        if preset == selectedPreset {
+                            Image(systemName: "checkmark").foregroundStyle(.tint)
                         }
                     }
                     .contentShape(Rectangle())
@@ -87,10 +137,18 @@ struct DownloadOptionsSheet: View {
                 .buttonStyle(.plain)
             }
         } header: {
-            Text("Quality")
+            Text("Optimize on server")
         } footer: {
-            Text("Higher quality means a larger download. The chosen quality is "
-                 + "transcoded by your Plex server before transfer.")
+            Text(probeFailed
+                 ? "Couldn't check compatibility, so your server will render a compatible "
+                   + "version. Pick a preset."
+                 : "This file needs converting, so your server renders a compatible version. "
+                   + "Pick a preset.")
+        }
+        .onAppear {
+            if !presets.contains(selectedPreset), let first = presets.first {
+                selectedPreset = first
+            }
         }
     }
 
@@ -99,11 +157,8 @@ struct DownloadOptionsSheet: View {
             Label {
                 Text("Transfers continue in the background and pause while the headset "
                      + "is off, resuming when it's worn again.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } icon: {
-                Image(systemName: "wifi")
-            }
+                    .font(.footnote).foregroundStyle(.secondary)
+            } icon: { Image(systemName: "wifi") }
         }
     }
 
@@ -111,8 +166,6 @@ struct DownloadOptionsSheet: View {
 
     @ViewBuilder
     private func existingSection(_ record: DownloadRecord) -> some View {
-        // Drive off the explicit persisted status (D2) so a stalled/failed row is no
-        // longer mistaken for an in-progress one.
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
         SwiftUI.Section {
@@ -120,30 +173,25 @@ struct DownloadOptionsSheet: View {
                 Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
             } else if isFailed {
                 Label("Download failed", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
                 Button {
                     downloadManager.retry(ratingKey: item.ratingKey)
                     dismiss()
-                } label: {
-                    Label("Retry Download", systemImage: "arrow.clockwise")
-                }
+                } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
             } else {
                 Label("Downloading…", systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)
                 Text("\(Int(record.progress * 100))%")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Button(role: .destructive) {
                 downloadManager.delete(ratingKey: item.ratingKey)
                 dismiss()
             } label: {
-                Label(isComplete ? "Remove Download" : "Cancel Download",
-                      systemImage: "trash")
+                Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
             }
         }
     }
@@ -151,10 +199,14 @@ struct DownloadOptionsSheet: View {
     // MARK: - Action
 
     private func startDownload() {
-        let chosen = quality
-        Task { await downloadManager.optimizeAndDownload(item, quality: chosen,
-                                                         mediaIndex: mediaIndex,
-                                                         partIndex: partIndex) }
+        let choice: DownloadManager.DownloadChoice
+        switch probeState {
+        case .direct: choice = .original
+        case .optimize: choice = .optimize(targetName: selectedPreset)
+        case .checking: return
+        }
+        Task { await downloadManager.download(item, choice: choice,
+                                              mediaIndex: mediaIndex, partIndex: partIndex) }
         dismiss()
     }
 }
