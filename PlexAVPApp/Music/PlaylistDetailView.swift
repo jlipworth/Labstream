@@ -1,12 +1,14 @@
 import SwiftUI
 import PMSKit
 
-/// Plexamp-signature album page: the cover art bleeds behind the whole screen as a
-/// heavily-blurred backdrop, with the real cover, album credits, Play/Shuffle actions
-/// and the track list in the foreground. Tracks come from the album's children
-/// (`GET /library/metadata/{ratingKey}/children`), sorted disc-then-track.
-struct AlbumDetailView: View {
-    let album: MediaItem
+/// Playlist page — a structural clone of `AlbumDetailView` minus the year header and
+/// disc sort (MUSIC-DESIGN §3.4): blurred composite-art backdrop, title and
+/// track-count/duration credits, Play / Shuffle, and the ordered track list. Items
+/// come from `GET /playlists/{ratingKey}/items` and PLAYLIST ORDER IS PRESERVED —
+/// no client-side sorting. Per-row 44-pt art because artwork varies across a
+/// playlist (unlike an album, where the cover is the header). Read-only in v1.
+struct PlaylistDetailView: View {
+    let playlist: MediaItem
 
     @Environment(AppModel.self) private var appModel
     @Environment(MusicPlayerController.self) private var player
@@ -14,27 +16,8 @@ struct AlbumDetailView: View {
     @State private var tracks: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
 
-    /// Hero cover size, matching the detail-screen poster width.
+    /// Hero art size, matching the album detail header.
     private let coverSize: CGFloat = 300
-
-    /// On an *album* item, `parentTitle` is the artist name (PMS hierarchy:
-    /// artist → album → track).
-    private var albumArtist: String? { album.parentTitle }
-
-    /// The album's artist as a pushable item. Albums from hub rails sometimes omit
-    /// `parentRatingKey`, so fall back to the loaded tracks' grandparent linkage.
-    private var artistItem: MediaItem? {
-        if let key = album.parentRatingKey, let title = albumArtist {
-            return MediaItem(ratingKey: key, title: title, type: "artist",
-                             thumb: album.parentThumb)
-        }
-        if let track = tracks.first, let key = track.grandparentRatingKey,
-           let title = track.grandparentTitle {
-            return MediaItem(ratingKey: key, title: title, type: "artist",
-                             thumb: track.grandparentThumb)
-        }
-        return nil
-    }
 
     var body: some View {
         ZStack {
@@ -48,15 +31,15 @@ struct AlbumDetailView: View {
                     case .idle, .loading:
                         trackSkeleton
                     case .failed(let message):
-                        ContentUnavailableView("Couldn’t load \(album.title)",
+                        ContentUnavailableView("Couldn’t load \(playlist.title)",
                                                systemImage: "exclamationmark.triangle",
                                                description: Text(message))
                             .frame(maxWidth: .infinity, minHeight: 240)
                     case .loaded:
                         if tracks.isEmpty {
                             ContentUnavailableView("No tracks",
-                                                   systemImage: "music.note",
-                                                   description: Text("Nothing to show for \(album.title)."))
+                                                   systemImage: "music.note.list",
+                                                   description: Text("Nothing to show for \(playlist.title)."))
                                 .frame(maxWidth: .infinity, minHeight: 240)
                         } else {
                             trackList
@@ -67,17 +50,17 @@ struct AlbumDetailView: View {
                 .padding(.vertical, DS.Space.xl)
             }
         }
-        .navigationTitle(album.title)
+        .navigationTitle(playlist.title)
         .task { await load() }
     }
 
     // MARK: - Backdrop
 
-    /// Blurred, dimmed wash of the album cover behind the content — the same
-    /// decorative treatment as `DetailView`'s key-art backdrop. Never hit-testable.
+    /// Blurred, dimmed wash of the composite art behind the content — same decorative
+    /// treatment as `AlbumDetailView`. Never hit-testable.
     @ViewBuilder
     private var artBackdrop: some View {
-        if let art = album.thumb ?? album.art, !art.isEmpty {
+        if let art = playlist.musicArtPath, !art.isEmpty {
             PosterImage(path: art, width: 900, height: 600, cornerRadius: 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .blur(radius: 60)
@@ -93,41 +76,21 @@ struct AlbumDetailView: View {
 
     // MARK: - Header
 
-    /// Cover + title/artist/year + Play / Shuffle actions.
+    /// Composite art + title + "N tracks · duration" + Play / Shuffle actions.
     private var header: some View {
         HStack(alignment: .bottom, spacing: DS.Space.xxl) {
-            PosterImage(path: album.thumb, width: coverSize, height: coverSize,
+            PosterImage(path: playlist.musicArtPath, width: coverSize, height: coverSize,
                         cornerRadius: DS.Radius.poster)
                 .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
                                                              style: .continuous)))
 
             VStack(alignment: .leading, spacing: DS.Space.sm) {
-                Text(album.title)
+                Text(playlist.title)
                     .font(.largeTitle.bold())
-                if let artist = albumArtist, !artist.isEmpty {
-                    // Tappable like Now Playing's "go to artist" — this view already
-                    // lives in the music stack, so a plain value link pushes directly.
-                    if let artistItem {
-                        NavigationLink(value: artistItem) {
-                            Text(artist)
-                                .font(.title3)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, DS.Space.sm)
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .hoverEffect(.highlight)
-                        .padding(.leading, -DS.Space.sm) // keep text flush with the title
-                    } else {
-                        Text(artist)
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                if let year = album.year {
-                    Text(String(year))
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
+                if let credits {
+                    Text(credits)
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack(spacing: DS.Space.lg) {
@@ -156,29 +119,41 @@ struct AlbumDetailView: View {
         }
     }
 
+    /// "42 tracks · 2 hr 5 min" — counts the loaded items when present (truth), the
+    /// playlist row's `leafCount`/`duration` before they arrive; drops missing halves.
+    private var credits: String? {
+        let count = tracks.isEmpty ? playlist.leafCount : tracks.count
+        let totalMs = tracks.isEmpty
+            ? playlist.duration
+            : tracks.compactMap(\.duration).reduce(0, +)
+        var parts: [String] = []
+        if let count { parts.append(count == 1 ? "1 track" : "\(count) tracks") }
+        if let totalMs, totalMs > 0 { parts.append(formatPlaylistDuration(milliseconds: totalMs)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     // MARK: - Track list
 
-    /// Tracks on a single material card, separated by hairlines — denser than the
-    /// episode rows but the same visual weight.
+    /// Tracks on a single material card in PLAYLIST ORDER, separated by hairlines —
+    /// same card as the album list, but rows carry 44-pt art instead of numbers.
     private var trackList: some View {
         VStack(spacing: 0) {
-            ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+            // Position-keyed: a playlist may contain the SAME track twice, so the
+            // ratingKey is not a unique row identity here (unlike an album).
+            ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
                 Button {
                     player.play(tracks: tracks, startingAt: index)
                 } label: {
-                    TrackRow(track: track,
-                             albumArtist: albumArtist,
-                             isCurrent: player.current?.ratingKey == track.ratingKey)
+                    PlaylistTrackRow(track: track,
+                                     isCurrent: player.current?.ratingKey == track.ratingKey)
                 }
                 .cardLink(cornerRadius: DS.Radius.chip)
-                // Queue actions (#17 Phase 4). NOTE: contextMenu coexisting with
-                // the row's hover chrome is flagged as a risk in MUSIC-DESIGN
-                // §3.6 — if hover misbehaves live, fall back to a trailing `…`
-                // Menu button.
+                // Queue actions (#17 Phase 4): playlist items are FULL tracks
+                // (Media/Part present), so the shared menu applies directly.
                 .contextMenu { TrackQueueMenu(track: track, player: player) }
 
                 if index < tracks.count - 1 {
-                    Divider().padding(.leading, DS.Space.xxl + DS.Space.lg)
+                    Divider().padding(.leading, DS.Space.xxl + DS.Space.lg + 44)
                 }
             }
         }
@@ -187,13 +162,13 @@ struct AlbumDetailView: View {
                     in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
     }
 
-    /// Shimmering row placeholders keeping the card's footprint while tracks load.
+    /// Shimmering row placeholders keeping the card's footprint while items load.
     private var trackSkeleton: some View {
         VStack(spacing: DS.Space.md) {
             ForEach(0..<8, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
                     .fill(.regularMaterial)
-                    .frame(height: 40)
+                    .frame(height: 52)
                     .overlay { ShimmerView() }
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
             }
@@ -201,22 +176,18 @@ struct AlbumDetailView: View {
     }
 
     private func load() async {
-        // `.task` re-fires on pop-back/reappear; tracks don't change mid-session,
-        // so load once and keep the view (and its scroll position) stable.
-        if case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
         loadState = .loading
-        let req = BrowseAPI.children(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: album.ratingKey)
+        let req = PlaylistRequest.items(server: server, token: token,
+                                        identity: appModel.identity,
+                                        ratingKey: playlist.ratingKey)
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            // Multi-disc albums: order by disc (`parentIndex`) then track (`index`).
-            tracks = resp.mediaContainer.metadata.sorted {
-                ($0.parentIndex ?? 1, $0.index ?? 0) < ($1.parentIndex ?? 1, $1.index ?? 0)
-            }
+            // Playlist order is the user's order — keep the server sequence verbatim.
+            tracks = resp.mediaContainer.metadata.filter { $0.kind == .track }
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
@@ -224,37 +195,25 @@ struct AlbumDetailView: View {
     }
 }
 
-/// One dense track row: number (or a tinted waveform glyph when it's the playing
-/// track), title, track artist when it differs from the album artist, and duration.
-private struct TrackRow: View {
+/// One playlist track row: 44-pt album art (artwork varies across a playlist),
+/// title — tinted with a leading waveform glyph when it's the playing track —
+/// "artist · album" subtitle, and duration.
+private struct PlaylistTrackRow: View {
     let track: MediaItem
-    /// The album's artist; the row only shows the track's own artist when it differs
-    /// (compilations / featured artists).
-    let albumArtist: String?
     let isCurrent: Bool
 
     var body: some View {
         HStack(spacing: DS.Space.lg) {
-            Group {
-                if isCurrent {
-                    Image(systemName: "waveform")
-                        .foregroundStyle(.tint)
-                } else {
-                    Text(track.index.map(String.init) ?? "–")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.subheadline.monospacedDigit())
-            .frame(width: DS.Space.xxl, alignment: .trailing)
+            PosterImage(path: track.musicArtPath, width: 44, height: 44,
+                        cornerRadius: DS.Radius.chip)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(.body)
                     .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .lineLimit(1)
-                // On a *track*, `grandparentTitle` is the artist (artist → album → track).
-                if let artist = track.grandparentTitle, !artist.isEmpty, artist != albumArtist {
-                    Text(artist)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -264,23 +223,49 @@ private struct TrackRow: View {
             Spacer(minLength: DS.Space.md)
 
             if let duration = track.duration {
-                Text(formatTrackDuration(milliseconds: duration))
+                Text(formatPlaylistTrackDuration(milliseconds: duration))
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+
+            if isCurrent {
+                Image(systemName: "waveform")
+                    .font(.subheadline)
+                    .foregroundStyle(.tint)
+            }
         }
         .padding(.horizontal, DS.Space.lg)
-        .padding(.vertical, DS.Space.sm + 2)
+        .padding(.vertical, DS.Space.sm)
         .contentShape(Rectangle())
         // Highlight comes from the wrapping button's `.cardLink(cornerRadius: .chip)` —
         // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
         // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
     }
+
+    /// "artist · album" — `originalTitle` (compilation performer) wins over
+    /// `grandparentTitle`; drops whichever half is missing.
+    private var subtitle: String {
+        let artist = [track.originalTitle, track.grandparentTitle]
+            .compactMap { $0 }.first { !$0.isEmpty }
+        return [artist, track.parentTitle]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
 }
 
-/// Format a track duration as `m:ss`, or `h:mm:ss` at an hour or more.
-private func formatTrackDuration(milliseconds: Int) -> String {
+/// Header total as "2 hr 5 min" / "23 min" — coarse on purpose (Apple Music style);
+/// per-row durations stay exact.
+private func formatPlaylistDuration(milliseconds: Int) -> String {
+    let totalMinutes = max(1, milliseconds / 60_000)
+    let hours = totalMinutes / 60
+    let minutes = totalMinutes % 60
+    return hours > 0 ? "\(hours) hr \(minutes) min" : "\(minutes) min"
+}
+
+/// Per-row duration as `m:ss`, or `h:mm:ss` at an hour or more.
+private func formatPlaylistTrackDuration(milliseconds: Int) -> String {
     let total = milliseconds / 1000
     let hours = total / 3600
     let minutes = (total % 3600) / 60

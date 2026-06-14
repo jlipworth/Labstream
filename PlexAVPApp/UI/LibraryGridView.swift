@@ -73,7 +73,10 @@ struct LibrariesView: View {
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
-            // Hide music libraries until a dedicated Plexamp-style experience exists (#15).
+            // Music sections deliberately stay out of this tab even after the #17
+            // un-hide: the Music tab is their dedicated entry point and listing the
+            // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
+            // #17's original "remove the !isMusic filter" checklist item).
             sections = resp.mediaContainer.directory.filter { !$0.isMusic }
             loadState = .loaded
         } catch {

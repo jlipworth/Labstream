@@ -6,6 +6,10 @@ import PMSKit
 /// Up Next queue. All state lives in `MusicPlayerController`; the only local state
 /// is the in-flight scrub position so a drag never fights the playback clock.
 struct NowPlayingView: View {
+    /// When true, the sheet opens pre-scrolled to the Up Next card (the mini bar's
+    /// ☰ queue button); default presentation opens at the top as before.
+    var scrollToQueue: Bool = false
+
     @Environment(MusicPlayerController.self) private var player
     @Environment(\.dismiss) private var dismiss
 
@@ -13,6 +17,19 @@ struct NowPlayingView: View {
     /// so the thumb tracks the user's finger; the seek fires once on release.
     @State private var isScrubbing = false
     @State private var scrubSeconds: Double = 0
+
+    /// First queue index the Up Next card displays. Trails `player.currentIndex`
+    /// by ~1.5s: as playback advances, the played rows pop off the front so the
+    /// playing track is always the top row; rewinding prepends them back.
+    @State private var displayStart = 0
+    /// Queue index of the row pinned at the top of the card's scroll window;
+    /// tracks user scrolling and is SET on each front-pop to re-anchor the
+    /// playing row at the top.
+    @State private var queueTopRow: Int?
+    /// In-flight delayed front-pop. The delay is deliberate: an accidental
+    /// "next" can be undone with "previous" before the list moves; any further
+    /// index change cancels the pending update and re-arms it.
+    @State private var followTask: Task<Void, Never>?
 
     /// Hero artwork size — small enough that title, scrubber and transport all fit
     /// in the sheet without scrolling (420 pushed the controls below the fold; a
@@ -23,26 +40,37 @@ struct NowPlayingView: View {
         ZStack {
             artBackdrop
 
-            ScrollView {
-                VStack(spacing: DS.Space.xl) {
-                    errorBanner
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: DS.Space.xl) {
+                        errorBanner
 
-                    PosterImage(path: artPath, width: artSize, height: artSize,
-                                cornerRadius: DS.Radius.poster)
-                        .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
-                                                                     style: .continuous)))
+                        PosterImage(path: artPath, width: artSize, height: artSize,
+                                    cornerRadius: DS.Radius.poster)
+                            .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
+                                                                         style: .continuous)))
 
-                    titleBlock
-                    scrubber
-                        .frame(maxWidth: 420)
-                    transportRow
+                        titleBlock
+                        scrubber
+                            .frame(maxWidth: 420)
+                        transportRow
 
-                    if !player.queue.isEmpty {
-                        upNext
+                        if !player.queue.isEmpty {
+                            upNext
+                                .id(upNextAnchorID)
+                        }
+                    }
+                    .padding(DS.Space.xxl)
+                    .frame(maxWidth: .infinity)
+                }
+                .onAppear {
+                    // The ☰ queue button's pre-scroll (MUSIC-DESIGN §4.1). Unanimated:
+                    // an animated scroll during sheet presentation visibly fights the
+                    // presentation transition.
+                    if scrollToQueue, !player.queue.isEmpty {
+                        proxy.scrollTo(upNextAnchorID, anchor: .top)
                     }
                 }
-                .padding(DS.Space.xxl)
-                .frame(maxWidth: .infinity)
             }
         }
         // NOTE: the close X lives in `MiniPlayerBar`'s sheet wrapper, NOT here — an
@@ -55,6 +83,9 @@ struct NowPlayingView: View {
     private var artPath: String? {
         player.current?.musicArtPath
     }
+
+    /// ScrollViewReader anchor for the Up Next card (queue-button pre-scroll).
+    private let upNextAnchorID = "upNext"
 
     // MARK: - Backdrop
 
@@ -252,15 +283,88 @@ struct NowPlayingView: View {
     // MARK: - Up Next
 
     /// The play queue; the current row is highlighted and any row jumps playback.
+    /// Per-row long-press menu offers Move Up / Move Down / Remove (#17 Phase 4 —
+    /// the design's documented fallback to `List.onMove`, whose drag handles need
+    /// a real `List` and are flagged finicky under gaze input); the header's
+    /// Clear button drops everything but the current track.
     private var upNext: some View {
         VStack(alignment: .leading, spacing: DS.Space.md) {
-            Text("Up Next")
-                .font(.title3.bold())
+            HStack {
+                Text("Up Next")
+                    .font(.title3.bold())
+                Spacer()
+                if player.queue.count > 1 {
+                    Button {
+                        player.clearUpcoming()
+                    } label: {
+                        Text("Clear")
+                            .font(.subheadline)
+                            .padding(.horizontal, DS.Space.xs)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Clear queue")
+                }
+            }
 
+            // The card shows queue[displayStart...] only — played tracks pop off
+            // the front (Plexamp-style "Up Next"), they don't accumulate above the
+            // highlight. Scrolling the sheet to "follow" the row was wrong twice
+            // over (live): it moved the whole screen, and the dead rows stayed.
+            ScrollView {
+                queueRows
+            }
+            .frame(height: queueWindowHeight)
+            .scrollBounceBehavior(.basedOnSize)
+            // Declarative re-anchor: a pop shrinks the content ABOVE the viewport,
+            // so a scrolled list leapt to arbitrary rows and the playing track
+            // vanished (live: "there is no anchor"). ScrollViewReader.scrollTo in
+            // the same transaction resolved against stale layout (live: still
+            // jumped) — scrollPosition commits with the content change instead.
+            .scrollPosition(id: $queueTopRow, anchor: .top)
+            .onAppear {
+                // Open already trimmed to the playing track — no pop animation
+                // during sheet presentation.
+                displayStart = player.currentIndex ?? 0
+            }
+            // Trail playback: pop played rows / prepend rewound ones after a
+            // grace period, so an accidental "next" can be undone with
+            // "previous" before the list moves.
+            .onChange(of: player.currentIndex) { _, newIndex in
+                followTask?.cancel()
+                guard let index = newIndex else { return }
+                followTask = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeInOut(duration: 0.5)) {
+                        displayStart = index
+                        queueTopRow = index
+                    }
+                }
+            }
+            .onDisappear { followTask?.cancel() }
+            .background(.regularMaterial,
+                        in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        }
+        .frame(maxWidth: 520)
+    }
+
+    /// Height of the queue's scroll window: caps at ~6.5 rows so a long queue
+    /// visibly scrolls (the half row signals there's more), but shrinks to fit
+    /// what's left to play so the card carries no dead glass.
+    private var queueWindowHeight: CGFloat {
+        let rowHeight: CGFloat = 52   // two text lines + vertical padding + divider
+        let visibleCount = max(1, player.queue.count - displayStart)
+        return min(rowHeight * 6.5, CGFloat(visibleCount) * rowHeight + DS.Space.sm * 2)
+    }
+
+    private var queueRows: some View {
             VStack(spacing: 0) {
                 // Index-keyed: shuffled queues can never hold duplicate items, but an
-                // explicit positional identity keeps jump targets unambiguous.
-                ForEach(Array(player.queue.enumerated()), id: \.offset) { index, track in
+                // explicit positional identity keeps jump targets unambiguous. The
+                // dropFirst is the front-pop: indices stay ABSOLUTE queue offsets,
+                // so jump/move/remove are untouched by the trimming.
+                ForEach(Array(player.queue.enumerated().dropFirst(displayStart)),
+                        id: \.offset) { index, track in
                     let isCurrent = index == player.currentIndex
                     Button {
                         player.jump(to: index)
@@ -300,6 +404,35 @@ struct NowPlayingView: View {
                     // the gaze region and misroutes pinches to a NEIGHBORING row
                     // (DEVELOPMENT.md); the chip-radius contentShape tames its highlight.
                     .cardLink(cornerRadius: DS.Radius.chip)
+                    // Int identity feeds scrollPosition's re-anchor (pins the
+                    // playing row to the top of the card after a front-pop).
+                    .id(index)
+                    .contextMenu {
+                        Button {
+                            player.move(fromOffsets: IndexSet(integer: index),
+                                        toOffset: index - 1)
+                        } label: {
+                            Label("Move Up", systemImage: "arrow.up")
+                        }
+                        // Can't move above the visible top — the rows before
+                        // displayStart are played-and-popped, not reorder targets.
+                        .disabled(index <= displayStart)
+
+                        Button {
+                            // onMove semantics: one row down = original offset + 2.
+                            player.move(fromOffsets: IndexSet(integer: index),
+                                        toOffset: index + 2)
+                        } label: {
+                            Label("Move Down", systemImage: "arrow.down")
+                        }
+                        .disabled(index == player.queue.count - 1)
+
+                        Button(role: .destructive) {
+                            player.remove(at: index)
+                        } label: {
+                            Label("Remove from Queue", systemImage: "trash")
+                        }
+                    }
 
                     if index < player.queue.count - 1 {
                         Divider().padding(.leading, DS.Space.xxl + DS.Space.md)
@@ -307,10 +440,8 @@ struct NowPlayingView: View {
                 }
             }
             .padding(.vertical, DS.Space.sm)
-            .background(.regularMaterial,
-                        in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        }
-        .frame(maxWidth: 520)
+            // Exposes the rows' Int ids to `scrollPosition` for the re-anchor.
+            .scrollTargetLayout()
     }
 }
 

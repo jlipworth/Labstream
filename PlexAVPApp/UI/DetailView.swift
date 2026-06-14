@@ -64,15 +64,54 @@ struct DetailView: View {
     }
 
     var body: some View {
+        // Music never gets the video detail/player (#17 un-hide): any music item
+        // that reaches DetailView re-routes into the music module. The old
+        // silent `guard !detailed.isMusic` play-button guard is replaced by this
+        // routing, so leafDetail below is video-only by construction.
+        // (Video/photo playlists are not music — they keep the video path below.)
+        if item.isMusic || item.isAudioPlaylist {
+            musicRedirect
+        }
         // Show/season are CONTAINERS: they carry no Media/Part and must be drilled into
         // (a series download/play of a container ratingKey makes PMS return HTTP 400).
         // Render a season/episode browser for those; the leaf detail (with Play/Download)
         // is reserved for movies and episodes — the items that actually own a Part.
-        if item.isContainer {
+        else if item.isContainer {
             ContainerBrowserView(container: item)
         } else {
             leafDetail
         }
+    }
+
+    /// Music routing for items that land here from generic surfaces (Home hubs,
+    /// stale links): containers go to their music views; a TRACK opens its album
+    /// (tracks never navigate to a detail page — the album page plays them).
+    @ViewBuilder
+    private var musicRedirect: some View {
+        switch item.kind {
+        case .artist, .album, .playlist:
+            // Cross-section surface → no music sectionKey (artist view uses its
+            // children fallback).
+            musicDestination(for: item, sectionKey: nil)
+        case .track:
+            if let album = parentAlbumItem {
+                AlbumDetailView(album: album)
+            } else {
+                ContentUnavailableView("Open from the Music tab",
+                                       systemImage: "music.note",
+                                       description: Text("This track has no album link to browse into."))
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    /// A track's parent album as a navigable item (same synthesis as
+    /// NowPlayingView's go-to-album).
+    private var parentAlbumItem: MediaItem? {
+        guard item.kind == .track, let key = item.parentRatingKey else { return nil }
+        return MediaItem(ratingKey: key, title: item.parentTitle ?? "Album",
+                         type: "album", thumb: item.parentThumb)
     }
 
     /// The play/download detail for a LEAF item (movie or episode). Actions target this
@@ -251,8 +290,9 @@ struct DetailView: View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             HStack(spacing: DS.Space.lg) {
                 Button {
-                    // Defense-in-depth (#15): music is filtered from browse, but never let
-                    // a music item launch the video player. Unreachable in normal flow.
+                    // Defense-in-depth: body routes all music to `musicRedirect`, so a
+                    // music item can never reach this video-player launch. Cheap guard
+                    // kept in case `detailed`'s refresh ever reclassifies the item.
                     guard !detailed.isMusic else { return }
                     // Video and music share one audio session — pause music and yield
                     // the system transport so AirPods controls drive the video (#17).

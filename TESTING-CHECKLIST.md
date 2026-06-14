@@ -203,8 +203,9 @@ required**.
 
 ## C. Music (GH #17 — Plexamp-style module)
 
-- [ ] **Music tab appears** — a Music tab shows when the server has a music library; Libraries/Home/
-      Search still hide music items (the tab is the dedicated entry point).
+- [ ] **Music tab appears** — a Music tab shows when the server has a music library. Music now
+      also surfaces in Search (C3) and Home (C6); the Libraries tab alone still omits music
+      SECTIONS (deliberate — the Music tab is their entry point, MUSIC-DESIGN §2).
 - [ ] **Browse: Artists → Albums → Tracks** — Music tab shows a Recently Added albums rail + artists
       grid (square art); artist → albums grid; album → blurred-art header with Play / Shuffle + track
       list (disc/track order, durations).
@@ -279,6 +280,140 @@ required**.
 - [x] **Stop controls** — ✅ verified live: mini-bar ✕ and Now Playing ⏹ end the session
       (full teardown: stopped scrobble, session deactivated, queue cleared, bar gone);
       playing again afterward re-prepares the session cleanly.
+
+### C3. Music redesign Phase 3 (search faceting — docs/MUSIC-DESIGN.md §5, GH #22)
+
+- [ ] **Music appears in Search** — searching an artist/album/song name in the Search tab
+      now returns music (previously stripped by `hidingMusic`). Faceted order: Artists rail
+      (CIRCULAR art) → Albums rail (square, artist subtitle) → Songs list → video hubs.
+- [ ] **Artist/album results navigate** — tapping an artist or album cell pushes the same
+      ArtistDetailView / AlbumDetailView as the Music tab (no music sectionKey from search —
+      the artist page uses its children fallback and should still list albums).
+- [ ] **Song rows PLAY, never navigate** — tapping a Songs row starts playback immediately
+      (mini bar appears) with the rest of the song results queued behind it (capped at 20);
+      the currently playing song's row shows a tinted title + waveform glyph.
+- [ ] **Songs expander** — more than 5 song results shows "Show all N songs"; expanding and
+      collapsing works; rows past 5 still play correctly.
+- [ ] **Song row metadata** — 44-pt ALBUM art (track thumbs 404 on this PMS), title,
+      "artist · album" subtitle, duration.
+- [ ] **Video search unchanged** — movie/show/episode results still render as poster rails
+      and open DetailView; a mixed query (e.g. a name matching both a film and a band)
+      shows both music facets and video hubs without crashes or duplicates.
+- [ ] **Search errors** — a song-play failure shows a yellow inline error capsule under the
+      Songs card (friendly message, not a raw error).
+
+### C4. Music redesign Phase 4 (queue management — docs/MUSIC-DESIGN.md §4.3, GH #17)
+
+- [ ] **Context menu vs .card hover (the §3.6 risk — verify FIRST)** — long-press/pinch-hold an
+      AlbumDetailView track row: a context menu appears with Play Next / Add to Queue, and after
+      dismissing it the row's gaze highlight + tap-to-play still behave (no stuck hover chrome,
+      no oversized system capsule). If the menu fights the custom `.card` chrome, the documented
+      fallback is a trailing `…` Menu button — record the finding in docs/DEVELOPMENT.md.
+- [ ] **Play Next** — while a queue plays, Play Next on an album track inserts it as the row
+      DIRECTLY below the current one in Up Next, and it plays after the current track ends
+      (works from album rows, artist Popular rows, and search Songs rows — search rows fetch
+      metadata first, so allow a beat).
+- [ ] **Add to Queue** — appends to the BOTTOM of Up Next; with shuffle ON it still plays last
+      (append-to-traversal-tail is deliberate, not a bug).
+- [ ] **Play Next under shuffle** — with shuffle on, a Play Next track is still the very next
+      to play (traversal honors the insert even though display order ≠ play order).
+- [ ] **Queue actions while idle** — Play Next / Add to Queue with nothing playing just starts
+      playing the track (mini bar appears).
+- [ ] **Up Next: remove** — long-press a queue row → Remove from Queue: the row vanishes,
+      indices/highlight stay correct. Removing the PLAYING row advances to the next track;
+      removing the playing row when it's last stops playback (bar/sheet show nothing playing)
+      but the remaining rows stay tappable. Removing the only row clears everything.
+- [ ] **Up Next: reorder** — Move Up / Move Down in the row menu reorders the display list;
+      with shuffle OFF playback then follows the new order; Move Up on the first row and
+      Move Down on the last are disabled.
+- [ ] **Clear queue** — the Up Next header's Clear button leaves only the current track
+      (button hidden when the queue is a single track); playback continues uninterrupted.
+- [ ] **Scrobble/timeline regression** — after queue surgery (insert/remove/reorder), track
+      ends still advance correctly and the next track reports/scrobbles (the per-track
+      reporter lifecycle is untouched).
+
+### C5. Music redesign Phase 5 (playlists — docs/MUSIC-DESIGN.md §3.4, GH #17)
+
+- [ ] **Playlists pivot** — the Music tab pivot now shows Home | Artists | Albums | Playlists;
+      Playlists lists the server's AUDIO playlists as card rows (56-pt composite mosaic art,
+      title, "N tracks"); video/photo playlists do NOT appear. Note: playlists are server-wide
+      (`/playlists` has no section scope), so the toolbar library Picker deliberately does not
+      filter this pivot.
+- [ ] **Empty/error states** — a server with no audio playlists shows the "No Playlists"
+      empty state (not a spinner forever); network failure shows the friendly error.
+- [ ] **PlaylistDetailView** — tapping a row pushes the detail page: blurred composite
+      backdrop, 300-pt art, title, "N tracks · X hr Y min" credits, Play + Shuffle. Track
+      rows carry 44-pt per-row album art (artwork varies across a playlist), title,
+      "artist · album", duration.
+- [ ] **Playlist order preserved** — rows appear in the playlist's own order (compare with
+      Plex Web), NOT re-sorted by disc/track/title.
+- [ ] **Play / row tap / Shuffle** — Play starts at row 1 with the whole playlist queued;
+      tapping any row starts THERE with the rest following; Shuffle starts a shuffled pass.
+      Playing row shows the tinted waveform; mini bar appears.
+- [ ] **Queue actions** — long-press a playlist track row → Play Next / Add to Queue work
+      (playlist items are full tracks; no metadata re-fetch beat like search rows).
+- [ ] **Duplicate tracks in one playlist** — a playlist containing the same track twice still
+      renders both rows and tapping the second plays from the second (rows are identified by
+      ratingKey — duplicates share one; verify no crash/skip).
+- [ ] **Compilation credits** — on a mixed/compilation playlist, rows show the performing
+      artist (`originalTitle`) over "Various Artists".
+
+### C6. Music redesign Phases 6–7 (mini-bar polish + app-wide un-hide — MUSIC-DESIGN §4.1, §8)
+
+- [ ] **Mini bar: previous** — the bar now shows ⏮ ⏯ ⏭: previous restarts/steps back exactly
+      like the Now Playing sheet's previous; all bar buttons still win the tap over the
+      open-sheet gesture.
+- [ ] **Mini bar: queue button** — the ☰ button opens Now Playing PRE-SCROLLED so the Up Next
+      card is at the top (no animation fighting the sheet transition); a plain bar tap still
+      opens at the top (art/scrubber). After dismissing a queue-opened sheet, a plain tap
+      opens unscrolled again.
+- [ ] **Mini bar: progress hairline** — a thin sliver along the bar's bottom edge fills with
+      elapsed time. It is PASSIVE: dragging it must not seek (scrubbing lives in the sheet).
+      Check it stays inside the glass platter's rounded corners at both ends.
+- [ ] **Mini bar: width / hide-on-sheet regression** — the bar may grow to ~560 pt (longer
+      titles fit); it still disappears while the Now Playing sheet is up and returns on
+      dismissal (the ZStack sheet host — do not regress).
+- [ ] **Artist Play / Shuffle** — the artist header shows Play (prominent) + Shuffle: Play
+      queues the FULL discography (allLeaves, album order) from track 1; Shuffle starts a
+      shuffled pass over all of it; both disabled while the fetch is in flight; failure shows
+      a yellow inline message. (No Radio button — v2, Pass-gated.)
+- [ ] **Home shows music (Phase 7)** — server hubs on the Home tab now include music
+      artists/albums (2:3 poster cells are acceptable here); TRACK items are still dropped
+      from Home rails (no play affordance in poster rails — v2). A wholly-track music hub
+      vanishing from Home is therefore expected, not a bug.
+- [ ] **Home music routing** — tapping an artist/album (or playlist) in a Home rail pushes the
+      music views (ArtistDetailView via the no-sectionKey children fallback / AlbumDetailView),
+      NEVER the video DetailView or AVKit player.
+- [ ] **Video playlists stay video** — a VIDEO playlist reached from Home/Search routes to the
+      video path, never the music PlaylistDetailView (routing checks `playlistType`; only
+      audio playlists enter the music module).
+- [ ] **DetailView music redirect** — if a music item ever reaches DetailView (stale link),
+      artist/album/playlist render their music pages and a track opens its parent ALBUM page;
+      no Play/Download/Mark-Watched video actions appear for music.
+- [ ] **Video regression pass (Phase 7 touched Home)** — movie/show Home rails unchanged:
+      posters, continue-watching slivers, episode subtitles, tap → DetailView → playback all
+      behave; Search video hubs likewise (music stripped from video hubs is dedup — facets
+      above carry it).
+- [ ] **Libraries tab unchanged** — music sections still do NOT appear in Libraries
+      (deliberate #17-checklist exception per MUSIC-DESIGN §2; the Music tab owns them).
+
+### C7. Post-rebase spot-checks (cardLink migration onto main, 2026-06-12)
+
+The rebase onto main replaced every branch-added `.buttonStyle(.card)`/`gazeHighlight` with
+main's `.cardLink()` (PlaylistDetailView, SearchView, MusicLibraryView) and merged the
+mini-bar with main's fitted-sheet chrome. None of it has rendered on a simulator yet:
+
+- [ ] **Track-row context menus over cardLink chrome** — long-press/secondary-click a queue or
+      album track row: the Play Next / Add to Queue menu renders cleanly over the hover
+      highlight (the pre-rebase risk in MUSIC-DESIGN §3.6, now on a different button idiom),
+      and a plain tap still plays the row — no gaze-region misrouting (the bug class
+      cardLink exists to fix).
+- [ ] **Mini bar: five-control density** — the bar now carries ⏮ ⏯ ⏭ ☰ ⏹ (branch transport +
+      queue shortcut, main's stop). At max width (~560 pt) and with a long title, controls
+      stay tappable and don't crowd the progress hairline or the open-sheet tap target.
+- [ ] **Migrated surfaces render** — Playlists pivot grid, Search facet results, and Music
+      library cells (the three views whose card links were migrated post-rebase) hover and
+      route correctly.
 
 ---
 
