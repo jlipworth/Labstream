@@ -107,11 +107,6 @@ final class PlaybackController {
     /// the next stream rebuild: the in-headset kill switch from the research/15 plan.
     static let directStreamEnabledKey = "directStreamEnabled"
 
-    /// `@AppStorage`-style key for #31's experimental Direct Stream headroom gate.
-    /// Default OFF: existing Direct Stream behavior is unchanged unless the user explicitly
-    /// asks for the additional conservative throughput check.
-    static let directStreamHeadroomEnabledKey = "directStreamHeadroomEnabled"
-
     // MARK: - Playback speed (R5)
 
     /// `@AppStorage`-style key for the persisted playback rate (UserDefaults-backed so the
@@ -1155,8 +1150,10 @@ final class PlaybackController {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
+                // The copy path has no ABR rendition to fall back to, so commit to it only
+                // when a recent throughput sample shows headroom over the source bitrate;
+                // otherwise drop to the (ABR-capable) transcode path below.
                 let headroomGate = DirectStreamHeadroomGate(
-                    isEnabled: UserDefaults.standard.bool(forKey: Self.directStreamHeadroomEnabledKey),
                     observedThroughputKbps: UserDefaults.standard.object(forKey: PlaybackDiagnostics.observedThroughputEstimateKey) as? Double
                 )
                 let headroomVerdict = headroomGate.verdict(
