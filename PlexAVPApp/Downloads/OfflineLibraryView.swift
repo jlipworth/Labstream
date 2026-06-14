@@ -83,10 +83,8 @@ public struct OfflineLibraryView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    // The server streams transcoded downloads without a Content-Length,
-                    // so `record.progress` is 0 even as bytes climb. Drive the bar off an
-                    // estimate (quality cap × runtime) when we have one; otherwise show an
-                    // indeterminate bar. See `displayProgress(for:)`.
+                    // Both download paths serve a static file with a real Content-Length, so
+                    // `record.progress` drives the bar directly. See `displayProgress(for:)`.
                     if let progress = displayProgress(for: record) {
                         ProgressView(value: progress)
                         Text(progressCaption(for: record, progress: progress))
@@ -219,32 +217,24 @@ public struct OfflineLibraryView: View {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
-    /// The download quality chosen at enqueue time, if persisted (D5).
-    private func quality(for record: DownloadRecord) -> DownloadManager.DownloadQuality? {
-        record.metadata?.quality.flatMap(DownloadManager.DownloadQuality.init(rawValue:))
+    /// The downloaded file's resolution label, if captured (offline-download redesign).
+    private func resolutionLabel(for record: DownloadRecord) -> String? {
+        record.metadata?.resolutionLabel
     }
 
-    /// Progress fraction for the bar: the server-reported value when present (direct
-    /// downloads send a Content-Length), otherwise an estimate from quality × runtime
-    /// (transcoded downloads stream without one). Clamped to 0.99 so an underestimate
-    /// never shows 100% before the file is actually validated complete. nil → the
-    /// caller shows an indeterminate bar (Original quality / unknown runtime).
+    /// Progress fraction for the bar. Both download paths now serve a STATIC file with a real
+    /// Content-Length, so the server-reported `record.progress` is authoritative — no estimate
+    /// needed (the bitrate-cap estimation was retired with the progressive path). nil → the
+    /// server hasn't reported yet (show an indeterminate bar).
     private func displayProgress(for record: DownloadRecord) -> Double? {
-        if record.progress > 0 { return record.progress }
-        if let total = DownloadManager.estimatedTranscodeBytes(
-                quality: quality(for: record), durationMs: record.metadata?.duration),
-           total > 0, record.bytes > 0 {
-            return min(0.99, Double(record.bytes) / Double(total))
-        }
-        return nil
+        record.progress > 0 ? record.progress : nil
     }
 
-    /// Caption under the in-progress bar, e.g. "23% • 106.5 MB • 12 MB/s • ~2 min left • 1080p".
-    /// Each piece is included only when known, so an estimate-less Original download still
-    /// shows bytes + speed + the quality marker.
+    /// Caption under the in-progress bar, e.g. "23% • 106.5 MB • 12 MB/s • 1080p".
+    /// Each piece is included only when known. Speed comes from the smoothed EMA in
+    /// `DownloadManager.refreshRecords` (kept — orthogonal jitter fix).
     private func progressCaption(for record: DownloadRecord, progress: Double?) -> String {
         let isActive = manager.activeJobs.contains(record.ratingKey)
-        // No bytes yet on an active job = the server is still spinning up the transcode.
         if record.bytes == 0 { return isActive ? "Preparing on server…" : "Queued…" }
 
         var pieces: [String] = []
@@ -252,29 +242,15 @@ public struct OfflineLibraryView: View {
         pieces.append(byteString(record.bytes))
         if let speed = manager.downloadSpeed[record.ratingKey], speed > 0 {
             pieces.append("\(byteString(Int(speed)))/s")
-            if let total = DownloadManager.estimatedTranscodeBytes(
-                    quality: quality(for: record), durationMs: record.metadata?.duration),
-               total > record.bytes {
-                pieces.append("~\(etaString(Double(total - record.bytes) / speed)) left")
-            }
         }
-        if let q = quality(for: record)?.shortLabel { pieces.append(q) }
+        if let r = resolutionLabel(for: record) { pieces.append(r) }
         return pieces.joined(separator: " • ")
     }
 
-    /// Caption for a completed row: file size + the quality marker, e.g. "1.2 GB • 1080p".
+    /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
     private func completeCaption(for record: DownloadRecord) -> String {
         var parts = [byteString(record.bytes)]
-        if let q = quality(for: record)?.shortLabel { parts.append(q) }
+        if let r = resolutionLabel(for: record) { parts.append(r) }
         return parts.joined(separator: " • ")
-    }
-
-    /// Human ETA: seconds under 90s show as "N sec", else rounded minutes, else hours.
-    private func etaString(_ seconds: Double) -> String {
-        if seconds < 90 { return "\(max(1, Int(seconds.rounded()))) sec" }
-        let minutes = Int((seconds / 60).rounded())
-        if minutes < 60 { return "\(minutes) min" }
-        let hours = minutes / 60, mins = minutes % 60
-        return mins == 0 ? "\(hours) hr" : "\(hours) hr \(mins) min"
     }
 }
