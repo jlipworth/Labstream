@@ -182,7 +182,13 @@ private struct CustomPlayerChrome: View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture { revealChrome() }
+                .onTapGesture {
+                    if selectedMenu != nil {
+                        closeMenu()
+                    } else {
+                        revealChrome()
+                    }
+                }
 
             if shouldShowChrome {
                 topChrome
@@ -237,16 +243,17 @@ private struct CustomPlayerChrome: View {
                 }
             }
 
-            if selectedMenu != nil {
-                CustomPlayerMenuPanel(selection: Binding(
-                    get: { self.selectedMenu ?? .quality },
-                    set: { self.selectedMenu = $0 }
-                ),
-                controller: controller,
-                menuState: menuState,
-                onClose: { closeMenu() })
-                .padding(40)
-                .transition(.scale(scale: 0.96).combined(with: .opacity))
+            if let selectedMenu {
+                VStack {
+                    Spacer()
+                    CustomPlayerMenuPopover(menu: selectedMenu,
+                                            controller: controller,
+                                            menuState: menuState,
+                                            onClose: { closeMenu() })
+                        .padding(.horizontal, 34)
+                        .padding(.bottom, 176)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
@@ -336,12 +343,12 @@ private struct CustomPlayerChrome: View {
                 } label: {
                     Label(menu.shortTitle, systemImage: menu.systemImage)
                         .labelStyle(.titleAndIcon)
-                        .font(.callout.weight(.semibold))
+                        .font(.headline.weight(.semibold))
                         .frame(minWidth: menu.minChromeWidth)
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, 8)
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.small)
+                .controlSize(.regular)
             }
         }
     }
@@ -537,77 +544,59 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var minChromeWidth: CGFloat {
         switch self {
-        case .quality, .subtitles, .audio, .speed, .stats: 78
-        case .chapters: 104
+        case .quality, .subtitles, .audio, .speed, .stats: 84
+        case .chapters: 112
+        }
+    }
+
+    var popoverSize: CGSize {
+        switch self {
+        case .quality, .speed: CGSize(width: 400, height: 260)
+        case .subtitles, .audio: CGSize(width: 460, height: 280)
+        case .chapters: CGSize(width: 820, height: 235)
+        case .stats: CGSize(width: 560, height: 340)
         }
     }
 }
 
-private struct CustomPlayerMenuPanel: View {
-    @Binding var selection: CustomPlayerMenuKind
+private struct CustomPlayerMenuPopover: View {
+    let menu: CustomPlayerMenuKind
     let controller: PlaybackController
     @Bindable var menuState: PlayerMenuState
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                Label("Player options", systemImage: "info.circle")
-                    .font(.headline)
+                Label(menu.title, systemImage: menu.systemImage)
+                    .font(.title3.weight(.semibold))
                 Spacer()
                 Button(action: onClose) {
                     Label("Close menu", systemImage: "xmark")
                         .labelStyle(.iconOnly)
-                        .frame(width: 38, height: 38)
+                        .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.bordered)
             }
 
-            HStack(alignment: .top, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(CustomPlayerMenuKind.allCases) { item in
-                        if selection == item {
-                            menuButton(item)
-                                .buttonStyle(.borderedProminent)
-                        } else {
-                            menuButton(item)
-                                .buttonStyle(.bordered)
-                        }
-                    }
-                }
-                .frame(width: 170)
+            Divider().opacity(0.35)
 
-                Divider()
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Label(selection.title, systemImage: selection.systemImage)
-                        .font(.title3.weight(.semibold))
-                    menuContent
-                        .frame(minWidth: 560, maxWidth: 760, minHeight: 320, maxHeight: 420)
-                }
-            }
+            menuContent
+                .frame(width: menu.popoverSize.width, height: menu.popoverSize.height, alignment: .topLeading)
         }
-        .padding(24)
+        .padding(22)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .shadow(radius: 30)
-    }
-
-    private func menuButton(_ item: CustomPlayerMenuKind) -> some View {
-        Button {
-            selection = item
-        } label: {
-            Label(item.title, systemImage: item.systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .shadow(radius: 24)
     }
 
     @ViewBuilder private var menuContent: some View {
-        switch selection {
+        switch menu {
         case .quality:
             QualityTabView(state: menuState) { kbps in
                 controller.reload(bitrateKbps: kbps)
                 menuState.selectedBitrateKbps = kbps
                 UserDefaults.standard.set(kbps, forKey: "maxVideoBitrateKbps")
+                onClose()
             }
         case .subtitles:
             SubtitlesTabView(
@@ -639,6 +628,7 @@ private struct CustomPlayerMenuPanel: View {
         case .speed:
             SpeedTabView(state: controller.speedState) { rate in
                 controller.setPlaybackSpeed(rate)
+                onClose()
             }
         case .stats:
             StatsTabView(diagnostics: controller.diagnostics)
