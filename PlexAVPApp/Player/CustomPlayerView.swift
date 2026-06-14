@@ -189,14 +189,18 @@ private struct CustomPlayerChrome: View {
                     .transition(.opacity)
             }
 
+            if isReconnecting, controller.playbackError.isFailed != true {
+                CustomReconnectingOverlay(onClose: onClose)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding(40)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+            }
+
             VStack {
                 Spacer()
 
                 if controller.playbackError.isFailed {
                     failureCard
-                        .padding(.bottom, 18)
-                } else if isReconnecting {
-                    CustomReconnectingOverlay(onClose: onClose)
                         .padding(.bottom, 18)
                 } else if controller.buffering.isBuffering {
                     bufferingCard
@@ -333,7 +337,8 @@ private struct CustomPlayerChrome: View {
                     Label(menu.shortTitle, systemImage: menu.systemImage)
                         .labelStyle(.titleAndIcon)
                         .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 4)
+                        .frame(minWidth: menu.minChromeWidth)
+                        .padding(.horizontal, 6)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -529,6 +534,13 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .stats: "chart.bar.doc.horizontal"
         }
     }
+
+    var minChromeWidth: CGFloat {
+        switch self {
+        case .quality, .subtitles, .audio, .speed, .stats: 78
+        case .chapters: 104
+        }
+    }
 }
 
 private struct CustomPlayerMenuPanel: View {
@@ -638,19 +650,24 @@ private struct CustomReconnectingOverlay: View {
     let onClose: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: DS.Space.lg) {
+        VStack(spacing: 14) {
             ProgressView()
                 .controlSize(.large)
             Text("Reconnecting…")
-                .font(.headline)
+                .font(.headline.weight(.semibold))
             if let onClose {
                 Button(role: .cancel, action: onClose) {
-                    Text("Close").frame(maxWidth: .infinity)
+                    Text("Close")
+                        .frame(width: 150)
                 }
                 .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
         }
-        .padding(DS.Space.xl)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .padding(.horizontal, 24)
+        .padding(.vertical, 22)
+        .frame(width: 260)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(radius: 18)
     }
 }
