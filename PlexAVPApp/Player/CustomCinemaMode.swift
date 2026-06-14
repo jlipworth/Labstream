@@ -4,10 +4,10 @@ import SwiftUI
 
 /// Shared identifiers and active-session state for the custom-player Cinema Mode work.
 ///
-/// The AVKit path gets Apple's cinema environment via `AVPlayerViewController`. The custom
-/// AVPlayerLayer path cannot reuse that controller chrome, so its Cinema Mode is an app-owned
-/// visionOS scene that still leans on Apple primitives: `ImmersiveSpace`, SwiftUI scene content,
-/// and the same `AVPlayer` the custom player already owns.
+/// Apple's cinema environment is only available through `AVPlayerViewController`, which the
+/// custom `AVPlayerLayer` player cannot reuse — so Cinema Mode is an app-owned visionOS scene
+/// that still leans on Apple primitives: `ImmersiveSpace`, SwiftUI scene content, and the same
+/// `AVPlayer` the custom player already owns.
 enum CustomCinemaMode {
     static let immersiveSpaceID = "custom-player-cinema"
 }

@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import AVKit
+import AVFoundation
 import AVFAudio
 import MediaPlayer
 import UIKit

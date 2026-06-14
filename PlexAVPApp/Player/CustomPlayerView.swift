@@ -3,11 +3,12 @@ import PMSKit
 import SwiftUI
 import UIKit
 
-/// Experimental fallback video player with app-owned chrome and scrubber.
+/// The app's video player: app-owned chrome + scrubber over an `AVPlayerLayer` presenter.
 ///
-/// This intentionally does NOT replace the default AVPlayerViewController path. It is routed
-/// only by the default-off Settings toggle so we can test whether deterministic scrubber intent
-/// and an AVPlayerLayer presenter avoid native AVKit control/chrome seek weirdness.
+/// This is now the ONLY video player. The former AVKit `AVPlayerViewController` path — and the
+/// default-off Settings toggle that used to route to this view — have been removed. The
+/// app-owned scrubber gives deterministic seek intent and avoids the native AVKit control/chrome
+/// seek weirdness that motivated the switch.
 struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace

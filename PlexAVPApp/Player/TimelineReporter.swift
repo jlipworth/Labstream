@@ -1,5 +1,5 @@
 import Foundation
-import AVKit
+import AVFoundation
 import PMSKit
 
 /// Reports playback state to PMS for one playback session: the ~10s timeline
