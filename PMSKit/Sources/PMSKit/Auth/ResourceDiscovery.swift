@@ -66,6 +66,9 @@ public struct PlexDevice: Decodable, Sendable, Identifiable {
     public let clientIdentifier: String
     public let provides: String?
     public let accessToken: String?
+    /// PMS version string (e.g. "1.40.2.8395-abcdef123"), as advertised in the
+    /// resources payload. Display-only (#26 Settings); absent for non-server devices.
+    public let productVersion: String?
     public let connections: [PlexConnection]
 
     public var id: String { clientIdentifier }
@@ -75,15 +78,18 @@ public struct PlexDevice: Decodable, Sendable, Identifiable {
         case clientIdentifier
         case provides
         case accessToken
+        case productVersion
         case connections = "connections"
     }
 
     public init(name: String, clientIdentifier: String, provides: String? = nil,
-                accessToken: String? = nil, connections: [PlexConnection]) {
+                accessToken: String? = nil, productVersion: String? = nil,
+                connections: [PlexConnection]) {
         self.name = name
         self.clientIdentifier = clientIdentifier
         self.provides = provides
         self.accessToken = accessToken
+        self.productVersion = productVersion
         self.connections = connections
     }
 
@@ -93,6 +99,7 @@ public struct PlexDevice: Decodable, Sendable, Identifiable {
         self.clientIdentifier = try c.decodeIfPresent(String.self, forKey: .clientIdentifier) ?? ""
         self.provides = try c.decodeIfPresent(String.self, forKey: .provides)
         self.accessToken = try c.decodeIfPresent(String.self, forKey: .accessToken)
+        self.productVersion = try c.decodeIfPresent(String.self, forKey: .productVersion)
         self.connections = try c.decodeIfPresent([PlexConnection].self, forKey: .connections) ?? []
     }
 }
