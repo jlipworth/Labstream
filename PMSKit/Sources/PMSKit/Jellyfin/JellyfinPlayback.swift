@@ -132,6 +132,7 @@ public enum JellyfinPlayback {
 
     public static func resolveStream(response: JellyfinPlaybackInfoResponse,
                                      server: URL,
+                                     identity: JellyfinClientIdentity,
                                      token: String,
                                      itemId: String,
                                      preferredMediaSourceId: String? = nil) throws -> JellyfinPlaybackOpenResult {
@@ -146,14 +147,14 @@ public enum JellyfinPlayback {
         }
 
         if let transcodingURL = source.transcodingURL, !transcodingURL.isEmpty {
-            let url = try jellyfinURL(server: server, pathOrURLString: transcodingURL)
+            let url = try streamURLWithoutURLToken(jellyfinURL(server: server, pathOrURLString: transcodingURL))
             let method: JellyfinPlayMethod = source.supportsDirectStream && !source.supportsDirectPlay ? .directStream : .transcode
             return JellyfinPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
                 playMethod: method,
-                requiredHTTPHeaders: source.requiredHTTPHeaders ?? [:])
+                requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity))
         }
 
         guard source.supportsDirectPlay || source.supportsDirectStream else {
@@ -168,7 +169,6 @@ public enum JellyfinPlayback {
             URLQueryItem(name: "Static", value: "true"),
             URLQueryItem(name: "mediaSourceId", value: mediaSourceId),
             URLQueryItem(name: "PlaySessionId", value: playSessionId),
-            URLQueryItem(name: "api_key", value: token),
         ]
         if let tag = source.eTag, !tag.isEmpty {
             comps.queryItems?.append(URLQueryItem(name: "Tag", value: tag))
@@ -179,7 +179,29 @@ public enum JellyfinPlayback {
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
             playMethod: source.supportsDirectPlay ? .directPlay : .directStream,
-            requiredHTTPHeaders: source.requiredHTTPHeaders ?? [:])
+            requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity))
+    }
+
+    private static func streamHeaders(for source: JellyfinMediaSourceInfo,
+                                      token: String,
+                                      identity: JellyfinClientIdentity) -> [String: String] {
+        var headers = source.requiredHTTPHeaders ?? [:]
+        headers["Authorization"] = JellyfinAuth.authorizationHeader(identity: identity, token: token)
+        return headers
+    }
+
+    private static func streamURLWithoutURLToken(_ url: URL) throws -> URL {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        comps.queryItems = comps.queryItems?.filter { item in
+            item.name != "api_key" && item.name != "apiKey"
+        }
+        if comps.queryItems?.isEmpty == true {
+            comps.queryItems = nil
+        }
+        guard let sanitized = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        return sanitized
     }
 
     static func chooseSource(_ sources: [JellyfinMediaSourceInfo],

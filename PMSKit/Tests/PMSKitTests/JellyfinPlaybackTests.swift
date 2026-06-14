@@ -50,7 +50,7 @@ struct JellyfinPlaybackTests {
             "SupportsDirectPlay": false,
             "SupportsDirectStream": false,
             "SupportsTranscoding": true,
-            "TranscodingUrl": "/Videos/movie-1/master.m3u8?mediaSourceId=source-1&playSessionId=play-1",
+            "TranscodingUrl": "/Videos/movie-1/master.m3u8?mediaSourceId=source-1&playSessionId=play-1&api_key=server-token",
             "TranscodingSubProtocol": "hls",
             "TranscodingContainer": "ts"
           }]
@@ -60,6 +60,7 @@ struct JellyfinPlaybackTests {
         let result = try JellyfinPlayback.resolveStream(
             response: response,
             server: server,
+            identity: identity,
             token: "token-abc",
             itemId: "movie-1")
 
@@ -67,6 +68,7 @@ struct JellyfinPlaybackTests {
         #expect(result.playSessionId == "play-1")
         #expect(result.mediaSourceId == "source-1")
         #expect(result.playMethod == .transcode)
+        #expect(result.requiredHTTPHeaders["Authorization"]?.contains("Token=\"token-abc\"") == true)
     }
 
     @Test func buildsStaticVideoStreamURLWhenNoTranscodingURLIsNeeded() throws {
@@ -87,6 +89,7 @@ struct JellyfinPlaybackTests {
         let result = try JellyfinPlayback.resolveStream(
             response: response,
             server: server,
+            identity: identity,
             token: "token-abc",
             itemId: "movie-1")
 
@@ -100,7 +103,9 @@ struct JellyfinPlaybackTests {
         #expect(query["mediaSourceId"] == "source-1")
         #expect(query["PlaySessionId"] == "play-1")
         #expect(query["Tag"] == "tag-1")
-        #expect(query["api_key"] == "token-abc")
+        #expect(query["api_key"] == nil)
+        #expect(query["apiKey"] == nil)
+        #expect(result.requiredHTTPHeaders["Authorization"]?.contains("Token=\"token-abc\"") == true)
         #expect(result.playMethod == .directPlay)
     }
 }
