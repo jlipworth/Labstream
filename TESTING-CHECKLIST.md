@@ -205,12 +205,12 @@ required**.
       with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
       tab shows 4 Mbps checked; change quality in-player → Settings reflects it.
-- [ ] **Library A–Z rail + true-length scroll (GH #23)** — Wave 5 video-library pass: Movies/TV
-      grids now page in 200 items at a time, pre-size placeholders from PMS `totalSize` so
-      drag-to-bottom reaches the real end, and show a trailing A–Z rail from PMS
-      `/firstCharacter` counts. Verify on a large movie/show library: bottom scroll lands on
-      the final item, placeholders fill as they appear, and tapping letters jumps near that
-      initial without resetting when returning from detail.
+- [~] **Library A–Z rail + true-length scroll (GH #23)** — Wave 5 video-library pass:
+      ✅ sim-confirmed scrollbar reaches the true bottom and the A–Z rail is visible. Remaining
+      spot checks before closing: placeholders fill as they appear, tapping letters jumps near
+      that initial, and returning from detail preserves position. Implementation pages Movies/TV
+      grids 200 items at a time and pre-sizes placeholders from PMS `totalSize`; the rail uses
+      PMS `/firstCharacter` counts.
 
 ## C. Music (GH #17 — Plexamp-style module)
 
