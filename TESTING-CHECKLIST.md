@@ -77,6 +77,11 @@ required**.
 - [x] **Playback speed + Now Playing metadata** ✅ verified — Speed tab changes rate and survives
       a Quality reload. (Control Center metadata not separately re-checked.)
 - [ ] **Buffering indicator** — centered spinner on a real stall, NOT on manual pause.
+- [ ] **Bandwidth mismatch toast (GH #32)** — on a real stall where AVFoundation's
+      AccessLog observed throughput is materially below the selected quality/source bitrate, a
+      short non-blocking toast appears above the buffering spinner (debounced; no automatic
+      quality change). Verify it does NOT appear for a manual pause or a normal healthy initial
+      prime.
 - [~] **Forward buffer depth** — on a direct-play title, Stats ▸ buffered-ahead climbs well past
       ~60s (deep 600s `preferredForwardBufferDuration` hint) and memory stays bounded — AVPlayer
       self-limits the actual window against resources (observed ~540 MB footprint, flat, no jetsam
