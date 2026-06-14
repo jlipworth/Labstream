@@ -76,7 +76,7 @@ struct CustomPlayerView: View {
         await MainActor.run {
             let playback = makeController()
             controller = playback
-            cinemaSession.activate(title: item.title, player: playback.player)
+            cinemaSession.activate(title: item.title, controller: playback)
             refreshScrubberClock(from: playback)
             playback.start()
             Task { @MainActor in
@@ -329,6 +329,8 @@ private struct CustomPlayerChrome: View {
                 }
                 .buttonStyle(.borderedProminent)
 
+                skipControls
+
                 Text(format(ms: scrubState.displayedPositionMs))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -348,6 +350,33 @@ private struct CustomPlayerChrome: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    private var skipControls: some View {
+        HStack(spacing: 8) {
+            skipButton(seconds: -30)
+            skipButton(seconds: -10)
+            skipButton(seconds: 10)
+            skipButton(seconds: 30)
+        }
+    }
+
+    private func skipButton(seconds: Int) -> some View {
+        let isForward = seconds > 0
+        let amount = abs(seconds)
+        return Button {
+            performRelativeSkip(seconds: seconds)
+        } label: {
+            Label(isForward ? "Forward \(amount) seconds" : "Back \(amount) seconds",
+                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
+                .labelStyle(.iconOnly)
+                .font(.title3.weight(.semibold))
+                .frame(width: 38, height: 38)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .disabled(scrubState.durationMs <= 0)
+        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
     }
 
     @ViewBuilder private var cinemaButton: some View {
@@ -488,6 +517,15 @@ private struct CustomPlayerChrome: View {
         } else {
             revealChrome()
         }
+    }
+
+    private func performRelativeSkip(seconds: Int) {
+        revealChrome(keepVisible: true)
+        let target = controller.performRelativeUserSeek(bySeconds: seconds,
+                                                        from: scrubState.displayedPositionMs,
+                                                        durationMs: scrubState.durationMs)
+        _ = scrubState.commit(toMs: target)
+        revealChrome()
     }
 
     private func togglePlayback() {

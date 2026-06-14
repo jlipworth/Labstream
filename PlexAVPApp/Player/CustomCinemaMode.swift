@@ -21,19 +21,20 @@ final class CustomCinemaSessionStore {
     }
 
     var title: String?
-    var player: AVPlayer?
+    var controller: PlaybackController?
     var presentationState: PresentationState = .closed
 
-    var hasActivePlayer: Bool { player != nil }
+    var player: AVPlayer? { controller?.player }
+    var hasActivePlayer: Bool { controller != nil }
 
-    func activate(title: String, player: AVPlayer) {
+    func activate(title: String, controller: PlaybackController) {
         self.title = title
-        self.player = player
+        self.controller = controller
     }
 
     func clear() {
         title = nil
-        player = nil
+        controller = nil
         presentationState = .closed
     }
 }
@@ -83,19 +84,41 @@ struct CustomCinemaScaffoldView: View {
                         .shadow(color: .black.opacity(0.45), radius: 38, y: 18)
                 }
 
-            Button {
-                Task { @MainActor in
-                    session.presentationState = .inTransition
-                    await dismissImmersiveSpace()
+            HStack(spacing: 10) {
+                cinemaSkipButton(seconds: -30)
+                cinemaSkipButton(seconds: -10)
+                Button {
+                    Task { @MainActor in
+                        session.presentationState = .inTransition
+                        await dismissImmersiveSpace()
+                    }
+                } label: {
+                    Label("Exit Cinema", systemImage: "rectangle.on.rectangle.slash")
                 }
-            } label: {
-                Label("Exit Cinema", systemImage: "rectangle.on.rectangle.slash")
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                cinemaSkipButton(seconds: 10)
+                cinemaSkipButton(seconds: 30)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
         }
         .padding(30)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 46, style: .continuous))
+    }
+
+    private func cinemaSkipButton(seconds: Int) -> some View {
+        let isForward = seconds > 0
+        let amount = abs(seconds)
+        return Button {
+            session.controller?.performRelativeUserSeek(bySeconds: seconds)
+        } label: {
+            Label(isForward ? "Forward \(amount) seconds" : "Back \(amount) seconds",
+                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .disabled(session.controller == nil)
+        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
     }
 
     private var inactiveState: some View {
