@@ -10,13 +10,7 @@ import UIKit
 /// and an AVPlayerLayer presenter avoid native AVKit control/chrome seek weirdness.
 struct CustomPlayerView: View {
     private let item: MediaItem
-    private let server: URL
-    private let token: String
-    private let identity: ClientIdentity
-    private let client: PlexClient
-    private let maxVideoBitrateKbps: Int
-    private let mediaIndex: Int
-    private let machineIdentifier: String?
+    private let controllerFactory: @MainActor () -> PlaybackController
     private let onClose: (() -> Void)?
     private let onRequestPlay: ((MediaItem) -> Void)?
 
@@ -26,23 +20,11 @@ struct CustomPlayerView: View {
     @State private var isReconnecting = false
 
     init(item: MediaItem,
-         server: URL,
-         token: String,
-         identity: ClientIdentity,
-         client: PlexClient,
-         maxVideoBitrateKbps: Int = 8000,
-         mediaIndex: Int = 0,
-         machineIdentifier: String? = nil,
+         controllerFactory: @escaping @MainActor () -> PlaybackController,
          onClose: (() -> Void)? = nil,
          onRequestPlay: ((MediaItem) -> Void)? = nil) {
         self.item = item
-        self.server = server
-        self.token = token
-        self.identity = identity
-        self.client = client
-        self.maxVideoBitrateKbps = maxVideoBitrateKbps
-        self.mediaIndex = mediaIndex
-        self.machineIdentifier = machineIdentifier
+        self.controllerFactory = controllerFactory
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
         _scrubState = State(initialValue: PlaybackScrubState(durationMs: item.duration ?? 0,
@@ -77,14 +59,7 @@ struct CustomPlayerView: View {
 
     @MainActor
     private func makeController() -> PlaybackController {
-        let playback = PlaybackController(item: item,
-                                          server: server,
-                                          token: token,
-                                          identity: identity,
-                                          client: client,
-                                          maxVideoBitrateKbps: maxVideoBitrateKbps,
-                                          mediaIndex: mediaIndex,
-                                          machineIdentifier: machineIdentifier)
+        let playback = controllerFactory()
         playback.onAdvanceToNext = onRequestPlay
         playback.onPlaybackActive = { isReconnecting = false }
         return playback
@@ -357,6 +332,8 @@ private struct CustomPlayerChrome: View {
                 } label: {
                     Label(menu.shortTitle, systemImage: menu.systemImage)
                         .labelStyle(.titleAndIcon)
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 4)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)

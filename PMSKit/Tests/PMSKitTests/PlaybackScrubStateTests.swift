@@ -18,6 +18,7 @@ struct PlaybackScrubStateTests {
         #expect(state.displayedPositionMs == 120_000)
         #expect(state.commit() == 120_000)
         #expect(!state.isDragging)
+        #expect(state.displayedPositionMs == 120_000)
     }
 
     @Test("cancel restores live display")
@@ -44,5 +45,34 @@ struct PlaybackScrubStateTests {
         #expect(state.displayedPositionMs == 10_000)
         #expect(state.commit() == nil)
         #expect(!state.isDragging)
+    }
+
+    @Test("committed target remains displayed until live clock catches up")
+    func committedTargetDoesNotSnapBackWhileBuffering() {
+        var state = PlaybackScrubState(durationMs: 120_000, livePositionMs: 80_000)
+
+        state.beginDrag(livePositionMs: 80_000)
+        state.updateDrag(fraction: 0.25)
+        #expect(state.commit() == 30_000)
+        #expect(state.displayedPositionMs == 30_000)
+
+        state.updateLivePosition(80_500)
+        #expect(state.displayedPositionMs == 30_000)
+
+        state.updateLivePosition(31_000)
+        #expect(state.displayedPositionMs == 31_000)
+    }
+
+    @Test("new drag clears pending committed target")
+    func newDragClearsCommittedTarget() {
+        var state = PlaybackScrubState(durationMs: 120_000, livePositionMs: 80_000)
+
+        state.beginDrag(livePositionMs: 80_000)
+        state.updateDrag(fraction: 0.25)
+        #expect(state.commit() == 30_000)
+        #expect(state.displayedPositionMs == 30_000)
+
+        state.beginDrag(livePositionMs: 79_000)
+        #expect(state.displayedPositionMs == 79_000)
     }
 }
