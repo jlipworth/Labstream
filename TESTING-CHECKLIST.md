@@ -290,28 +290,28 @@ player (all AVKit code deleted). The custom Cinema ImmersiveSpace is hidden/defe
 device testing showed it is not equivalent to Apple's AVKit Cinema Environment._
 
 ### Streaming (windowed)
-- [ ] Play a movie from DetailView → custom player opens (no AVKit transport bar).
-- [ ] Play/pause, scrubber drag-to-seek, and skip ±10/±30 all work.
-- [ ] Each menu opens and applies: Quality, Subtitles, Audio, Chapters, Speed, Stats.
-- [ ] Close (✕) dismisses back to DetailView.
-- [ ] Up Next autoplay advances to the next episode (controller rebuilds cleanly).
+- [x] Play a movie from DetailView → custom player opens (no AVKit transport bar).
+- [x] Play/pause, scrubber drag-to-seek, and skip ±10/±30 all work.
+- [x] Each menu opens and applies: Quality, Subtitles, Audio, Chapters, Speed, Stats.
+- [x] Close (✕) dismisses back to DetailView.
+- [x] Up Next autoplay advances to the next episode (controller rebuilds cleanly).
 
 ### Offline / downloaded
-- [ ] Play a completed download from the Offline tab → custom player opens and plays the local file.
-- [ ] Play a downloaded copy from DetailView (offline) → custom player opens and plays.
-- [ ] Scrubber + skip work on a local file (no network).
+- [x] Play a completed download from the Offline tab → custom player opens and plays the local file.
+- [x] Play a downloaded copy from DetailView (offline) → custom player opens and plays.
+- [x] Scrubber + skip work on a local file (no network).
 
 ### Cinema / theater
 - [x] Custom Cinema button is hidden (`CustomCinemaMode.isUserVisible = false`) because the
       custom ImmersiveSpace is not equivalent to Apple's AVKit Cinema Environment on device.
-- [ ] No visible Cinema affordance appears in the windowed player chrome.
+- [x] No visible Cinema affordance appears in the windowed player chrome.
 
 ### Settings
-- [ ] Settings → Playback no longer shows the "Custom player fallback" toggle.
-- [ ] Streaming quality picker present and functional; it lists both "Maximum (transcoded)" and "Direct Play / Maximum" at the top (no separate Direct Stream toggle).
+- [x] Settings → Playback no longer shows the "Custom player fallback" toggle.
+- [x] Streaming quality picker present and functional; it lists both "Maximum (transcoded)" and "Direct Play / Maximum" at the top (no separate Direct Stream toggle).
 
 ### Regression
-- [ ] No reference to the old AVKit player anywhere in the UI.
+- [x] No reference to the old AVKit player anywhere in the UI.
 - [x] Reconnect/failure: kill the server mid-stream → failure card with Retry appears in the windowed player. _(Previously verified during #8/#33 reset testing — failure card + Retry path unchanged by the sole-player switch.)_
 
 ---
@@ -321,21 +321,21 @@ device testing showed it is not equivalent to Apple's AVKit Cinema Environment._
 _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks before merge._
 
 ### #30 — failure card layout
-- [ ] Trigger a playback failure (kill the server mid-stream): the failure card is a **compact centered dialog** (capped at 360pt) with **Retry stacked ABOVE Close**, both buttons equal width; a long server message **wraps onto multiple centered lines** rather than stretching the card wide.
+- [x] Trigger a playback failure (kill the server mid-stream): the failure card is a **compact centered dialog** (capped at 360pt) with **Retry stacked ABOVE Close**, both buttons equal width; a long server message **wraps onto multiple centered lines** rather than stretching the card wide.
 
 ### #34 — reconnecting overlay (verify, then close issue)
-- [ ] Trigger a transient reconnect: the "Reconnecting…" card is a **compact centered dialog** (≈260pt), not full-window-width. (Already satisfied by the custom rewrite — confirm and close #34.)
-- [ ] While "Reconnecting…" is shown, the "Buffering…" pill does **NOT** also appear — only one status at a time.
+- [x] Trigger a transient reconnect: the "Reconnecting…" card is a **compact centered dialog** (≈260pt), not full-window-width. (Already satisfied by the custom rewrite — confirm and close #34.)
+- [x] While "Reconnecting…" is shown, the "Buffering…" pill does **NOT** also appear — only one status at a time.
 
 ### #31 — superseded by quality-picker direct play
-- [ ] Settings ▸ Playback has NO "Direct Stream" or "Require bandwidth headroom" toggles — both are gone. Direct play is now driven entirely by picking "Direct Play / Maximum" (verified under the #7 item above). The pre-flight bandwidth-headroom gate was removed (the throughput sample it relied on was measured during a capped transcode, so it could never clear the full-source bar).
+- [x] Settings ▸ Playback has NO "Direct Stream" or "Require bandwidth headroom" toggles — both are gone. Direct play is now driven entirely by picking "Direct Play / Maximum" (verified under the #7 item above). The pre-flight bandwidth-headroom gate was removed (the throughput sample it relied on was measured during a capped transcode, so it could never clear the full-source bar).
 
 ### #26 — expanded Settings
-- [ ] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
-- [ ] "Reset playback preferences" lives in the **Account** section (just above Sign Out), shows a **confirmation dialog**, and on confirm clears remembered speed + subtitle/audio language (NOT streaming quality), showing "Preferences reset".
-- [ ] Maintenance ▸ "Clear image cache" shows "Cache cleared"; artwork re-downloads on next view.
-- [ ] About shows app version (build), visionOS, client (product on device — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
-- [ ] Sign Out now shows a confirmation dialog; Cancel keeps you signed in, Sign Out returns to login.
+- [x] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
+- [x] "Reset playback preferences" lives in the **Account** section (just above Sign Out), shows a **confirmation dialog**, and on confirm clears remembered speed + subtitle/audio language (NOT streaming quality), showing "Preferences reset".
+- [x] Maintenance ▸ "Clear image cache" shows "Cache cleared"; artwork re-downloads on next view.
+- [x] About shows app version (build), visionOS, client (product on device — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
+- [x] Sign Out now shows a confirmation dialog; Cancel keeps you signed in, Sign Out returns to login.
 
 ### Device-only bugs found on Apple Vision Pro hardware (2026-06-14/15)
 
