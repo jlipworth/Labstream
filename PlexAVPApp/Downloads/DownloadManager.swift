@@ -497,14 +497,15 @@ public final class DownloadManager {
             targetTagID = resolved
         }
 
-        let sourceURI = await optimizerSourceURI(for: item, server: server, token: token, identity: identity)
+        let source = await optimizerSource(for: item, server: server, token: token, identity: identity)
 
         // 3. PUT the optimize job to the background-processing playlist.
         let settings = custom?.settings ?? Self.mediaSettings(forTargetName: targetName)
         let create = OptimizeRequest.createOnPlaylist(
             server: server, token: token, identity: identity,
             backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
-            sourceURI: sourceURI, title: queueTitle, targetTagID: targetTagID,
+            sourceURI: source?.uri, locationID: source?.locationID ?? -1,
+            title: queueTitle, targetTagID: targetTagID,
             targetName: custom == nil ? "" : "Custom: \(custom!.deviceProfile)",
             deviceProfile: custom?.deviceProfile, mediaSettings: settings)
         do {
@@ -515,15 +516,38 @@ public final class DownloadManager {
     }
 
     private struct LibrarySectionsResponse: Decodable {
-        struct Container: Decodable { let directory: [Directory]
-            enum CodingKeys: String, CodingKey { case directory = "Directory" } }
-        struct Directory: Decodable { let key: String; let uuid: String? }
+        struct Container: Decodable {
+            let directory: [Directory]
+            enum CodingKeys: String, CodingKey { case directory = "Directory" }
+        }
+        struct Directory: Decodable {
+            struct Location: Decodable { let id: Int; let path: String }
+            let key: String
+            let uuid: String?
+            let location: [Location]
+            enum CodingKeys: String, CodingKey {
+                case key
+                case uuid
+                case location = "Location"
+            }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                key = try container.decode(String.self, forKey: .key)
+                uuid = try container.decodeIfPresent(String.self, forKey: .uuid)
+                location = try container.decodeIfPresent([Location].self, forKey: .location) ?? []
+            }
+        }
         let mediaContainer: Container
         enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
     }
 
-    private func optimizerSourceURI(for item: MediaItem, server: URL, token: String,
-                                    identity: ClientIdentity) async -> String? {
+    private struct OptimizerSource {
+        let uri: String
+        let locationID: Int
+    }
+
+    private func optimizerSource(for item: MediaItem, server: URL, token: String,
+                                 identity: ClientIdentity) async -> OptimizerSource? {
         let sectionID = item.librarySectionID.map(String.init)
             ?? item.librarySectionKey?.split(separator: "/").last.map(String.init)
         guard let sectionID else { return nil }
@@ -531,10 +555,27 @@ public final class DownloadManager {
                                   method: "GET", queryItems: [],
                                   headers: PlexHeaders.standard(identity: identity, token: token))
         guard let response = try? await appModel.client.send(request, as: LibrarySectionsResponse.self),
-              let uuid = response.mediaContainer.directory.first(where: { $0.key == sectionID })?.uuid,
+              let section = response.mediaContainer.directory.first(where: { $0.key == sectionID }),
+              let uuid = section.uuid,
               let metadataKey = item.key ?? Optional("/library/metadata/\(item.ratingKey)")
         else { return nil }
-        return "library://\(uuid)/item/\(metadataKey.urlQueryEscapedForPlexPath)"
+
+        let sourceFiles = (item.media ?? []).flatMap { $0.part.compactMap(\.file) }
+        let sourceLocationIDs = Set(section.location.compactMap { location -> Int? in
+            sourceFiles.contains { Self.filePath($0, isUnder: location.path) } ? location.id : nil
+        })
+        // PlexAPI's `locationID = -1` means "beside the original file". If the library has
+        // an extra location (for example a writable optimized-version mount), prefer that so
+        // read-only media libraries do not force optimizer failures.
+        let alternateLocationID = section.location.first { !sourceLocationIDs.contains($0.id) }?.id
+
+        return OptimizerSource(uri: "library://\(uuid)/item/\(metadataKey.urlQueryEscapedForPlexPath)",
+                               locationID: alternateLocationID ?? -1)
+    }
+
+    private static func filePath(_ file: String, isUnder directory: String) -> Bool {
+        let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
+        return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")
     }
 
     private struct CustomDownloadProfile {
