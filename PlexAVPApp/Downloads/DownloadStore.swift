@@ -46,6 +46,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// captured from the chosen `Media` at download time. Drives the offline caption.
     /// Replaces the retired bitrate-cap `quality` marker (offline-download redesign).
     public var resolutionLabel: String?
+    public var librarySectionID: Int?
+    public var librarySectionKey: String?
     public var mediaIndex: Int?
     public var partIndex: Int?
     /// Locally-cached poster path, relative to the Downloads base directory.
@@ -65,6 +67,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 thumb: String? = nil,
                 art: String? = nil,
                 resolutionLabel: String? = nil,
+                librarySectionID: Int? = nil,
+                librarySectionKey: String? = nil,
                 mediaIndex: Int? = nil,
                 partIndex: Int? = nil,
                 posterRelativePath: String? = nil) {
@@ -82,6 +86,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.thumb = thumb
         self.art = art
         self.resolutionLabel = resolutionLabel
+        self.librarySectionID = librarySectionID
+        self.librarySectionKey = librarySectionKey
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
         self.posterRelativePath = posterRelativePath
@@ -103,6 +109,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
         art = try c.decodeIfPresent(String.self, forKey: .art)
         resolutionLabel = try c.decodeIfPresent(String.self, forKey: .resolutionLabel)
+        librarySectionID = try c.decodeIfPresent(Int.self, forKey: .librarySectionID)
+        librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
         mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
         partIndex = try c.decodeIfPresent(Int.self, forKey: .partIndex)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
