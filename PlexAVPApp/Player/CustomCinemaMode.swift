@@ -1,8 +1,9 @@
 import AVFoundation
 import PMSKit
+import RealityKit
 import SwiftUI
 
-/// Shared identifiers and active-session state for the hidden custom-player Cinema scaffold.
+/// Shared identifiers and active-session state for the custom-player Cinema scaffold.
 ///
 /// Apple's cinema environment is only available through `AVPlayerViewController`, which the
 /// custom `AVPlayerLayer` player cannot reuse — so Cinema Mode is an app-owned visionOS scene
@@ -14,16 +15,27 @@ import SwiftUI
 /// real-device behavior is proven.
 enum CustomCinemaMode {
     static let immersiveSpaceID = "custom-player-cinema"
+    static let mainWindowID = "main-window"
 
-    /// The custom-player "Cinema" scene is intentionally hidden from the shipping chrome for now.
+    /// The custom-player "Cinema" scene is visible while we iterate on a black true-immersive
+    /// theater route.
     ///
-    /// On Apple Vision Pro hardware it does not behave like Apple's AVKit Cinema Environment:
-    /// entering it from a fully immersed Environment can pull the viewer out of that environment,
-    /// and it does not provide the expected system-managed screen placement/scale. Since the
-    /// custom player no longer uses `AVPlayerViewController`, it cannot reuse the system Cinema
-    /// Environment directly. Keep the scaffold in-tree for future RealityKit/immersive-player
-    /// work, but do not expose a net-negative button in the player UI.
-    static let isUserVisible = false
+    /// This deliberately starts as a minimal video plane + tiny exit/play control. The previous
+    /// iterations failed because they presented a second SwiftUI/window-like video surface or
+    /// tried to reuse the full chrome before the video renderer itself was proven clean.
+    static let isUserVisible = true
+
+    static let controlsAttachmentID = "custom-cinema-minimal-controls"
+    static let emergencyExitAttachmentID = "custom-cinema-emergency-exit"
+    static let screenWidthMeters: Float = 9.4
+    static let screenDistanceMeters: Float = 6.25
+    static let verticalOffsetMeters: Float = 2.25
+    static let aspectRatio: Float = 16.0 / 9.0
+
+    static var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
+    static var screenPosition: SIMD3<Float> {
+        SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters)
+    }
 }
 
 @Observable
@@ -38,6 +50,7 @@ final class CustomCinemaSessionStore {
     var title: String?
     var controller: PlaybackController?
     var presentationState: PresentationState = .closed
+    var shouldRestoreMainWindowOnDismiss = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
@@ -51,81 +64,185 @@ final class CustomCinemaSessionStore {
         title = nil
         controller = nil
         presentationState = .closed
+        shouldRestoreMainWindowOnDismiss = false
     }
 }
 
-/// Apple-scene-backed theater surface for the experimental custom player.
+/// Minimal black immersive theater surface for the custom player.
 ///
-/// This deliberately does not reintroduce the old AVKit three-state animation workaround. The
-/// custom route has the normal custom-player presentation plus this explicit Cinema scene. The
-/// scene reads the active backend-neutral session and renders the same `AVPlayer` through the
-/// app-owned `AVPlayerLayer` presenter used by `CustomPlayerView`.
+/// This intentionally does NOT host `PlayerLayerView` or the full `CustomPlayerChrome`. It renders
+/// the active `AVPlayer` as a RealityKit `VideoMaterial` plane and exposes only tiny exit/play
+/// controls until the video surface is proven stable on-device.
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
-
-    /// Cinema owns its own scrubber clock so the reused chrome has a live timeline; the
-    /// windowed player keeps its own. Both read the same shared `controller`.
-    @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        ZStack {
-            if let controller = session.controller, let player = session.player {
-                cinemaSurface(controller: controller, player: player)
-            } else {
-                inactiveState
+        RealityView { content, attachments in
+            content.add(Self.makeRoot(player: session.player))
+            if let controls = attachments.entity(for: CustomCinemaMode.controlsAttachmentID) {
+                placeControls(controls)
+                content.add(controls)
+            }
+            if let exit = attachments.entity(for: CustomCinemaMode.emergencyExitAttachmentID) {
+                placeEmergencyExit(exit)
+                content.add(exit)
+            }
+        } update: { content, attachments in
+            content.entities.removeAll(where: { $0.name == "custom-cinema-root" })
+            content.add(Self.makeRoot(player: session.player))
+            if let controls = attachments.entity(for: CustomCinemaMode.controlsAttachmentID) {
+                placeControls(controls)
+                if controls.parent == nil {
+                    content.add(controls)
+                }
+            }
+            if let exit = attachments.entity(for: CustomCinemaMode.emergencyExitAttachmentID) {
+                placeEmergencyExit(exit)
+                if exit.parent == nil {
+                    content.add(exit)
+                }
+            }
+        } attachments: {
+            Attachment(id: CustomCinemaMode.controlsAttachmentID) {
+                if let controller = session.controller {
+                    minimalControls(controller: controller)
+                } else {
+                    inactiveState
+                }
+            }
+            Attachment(id: CustomCinemaMode.emergencyExitAttachmentID) {
+                emergencyExitButton
             }
         }
-        .onAppear { session.presentationState = .open }
+        .preferredSurroundingsEffect(.ultraDark)
+        .onAppear {
+            print("[Custom Cinema] black immersive opened: width \(CustomCinemaMode.screenWidthMeters)m · distance \(CustomCinemaMode.screenDistanceMeters)m · vertical \(CustomCinemaMode.verticalOffsetMeters)m; title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
+            session.presentationState = .open
+        }
         .onDisappear {
+            print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
+            reopenMainWindowIfNeeded()
             if session.presentationState != .closed {
                 session.presentationState = .closed
             }
         }
     }
 
-    private func cinemaSurface(controller: PlaybackController, player: AVPlayer) -> some View {
-        // Full normal-mode control parity: the Cinema scene hosts the SAME `CustomPlayerChrome`
-        // as the windowed player (play/pause, scrubber, skip, and the Quality/Subtitles/Audio/
-        // Chapters/Speed/Stats menu). The chrome's cinema button auto-flips to "Exit Cinema"
-        // because `presentationState == .open`; `onClose` is nil so no redundant window-close
-        // affordance appears inside the theater.
-        PlayerLayerView(player: player)
-            .frame(width: 1180, height: 664)
-            .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-            }
-            .background {
-                RoundedRectangle(cornerRadius: 44, style: .continuous)
-                    .fill(.black.opacity(0.92))
-                    .shadow(color: .black.opacity(0.45), radius: 38, y: 18)
-            }
-            .overlay {
-                CustomPlayerChrome(controller: controller,
-                                   title: session.title ?? "Cinema Mode",
-                                   scrubState: $scrubState,
-                                   isReconnecting: false,
-                                   onRetry: { session.controller?.retry() },
-                                   onClose: nil)
-            }
-            .padding(30)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 46, style: .continuous))
-            .task(id: session.controller != nil) { await runCinemaClock(controller) }
+    @MainActor
+    private static func makeRoot(player: AVPlayer?) -> Entity {
+        let root = Entity()
+        root.name = "custom-cinema-root"
+
+        let screen: ModelEntity
+        if let player {
+            let material = VideoMaterial(avPlayer: player)
+            screen = ModelEntity(mesh: .generatePlane(width: CustomCinemaMode.screenWidthMeters,
+                                                      height: CustomCinemaMode.screenHeightMeters),
+                                 materials: [material])
+            screen.name = "custom-cinema-video-plane"
+        } else {
+            screen = ModelEntity(mesh: .generatePlane(width: CustomCinemaMode.screenWidthMeters,
+                                                      height: CustomCinemaMode.screenHeightMeters),
+                                 materials: [SimpleMaterial(color: .black,
+                                                            roughness: 1.0,
+                                                            isMetallic: false)])
+            screen.name = "custom-cinema-empty-plane"
+        }
+        screen.position = CustomCinemaMode.screenPosition
+        root.addChild(screen)
+        return root
     }
 
-    private func runCinemaClock(_ controller: PlaybackController) async {
-        await MainActor.run {
-            tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
-        }
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(500))
-            await MainActor.run {
-                guard let controller = session.controller else { return }
-                tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
+    private func placeControls(_ entity: Entity) {
+        entity.name = "custom-cinema-controls"
+        // Attach controls to the visible video surface instead of floating below the user's gaze.
+        // Put this one near top-center and make it large/high-contrast; earlier small attachments
+        // were not visible enough on device.
+        entity.position = CustomCinemaMode.screenPosition + SIMD3<Float>(0,
+                                                                         (CustomCinemaMode.screenHeightMeters / 2.0) - 0.72,
+                                                                         0.55)
+        entity.scale = SIMD3<Float>(repeating: 0.0052)
+    }
+
+    private func placeEmergencyExit(_ entity: Entity) {
+        entity.name = "custom-cinema-emergency-exit"
+        // A second large exit sits on the lower center of the screen plane, not down near the user.
+        entity.position = CustomCinemaMode.screenPosition + SIMD3<Float>(0,
+                                                                         -(CustomCinemaMode.screenHeightMeters / 2.0) + 0.82,
+                                                                         0.58)
+        entity.scale = SIMD3<Float>(repeating: 0.0060)
+    }
+
+    private func minimalControls(controller: PlaybackController) -> some View {
+        HStack(spacing: 22) {
+            Button {
+                if controller.transport.isPaused {
+                    controller.player.play()
+                } else {
+                    controller.player.pause()
+                }
+            } label: {
+                Label(controller.transport.isPaused ? "Play" : "Pause",
+                      systemImage: controller.transport.isPaused ? "play.fill" : "pause.fill")
             }
+            .buttonStyle(.borderedProminent)
+
+            exitCinemaButton(label: "EXIT CINEMA", prominent: true)
         }
+        .font(.largeTitle.weight(.bold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 42)
+        .padding(.vertical, 28)
+        .background(.red.opacity(0.72), in: Capsule())
+    }
+
+    private var emergencyExitButton: some View {
+        exitCinemaButton(label: "EXIT CINEMA", prominent: true)
+            .font(.largeTitle.weight(.bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 42)
+            .padding(.vertical, 28)
+            .background(.red.opacity(0.92), in: Capsule())
+    }
+
+    @ViewBuilder
+    private func exitCinemaButton(label: String, prominent: Bool) -> some View {
+        if prominent {
+            Button {
+                Task { @MainActor in
+                    session.presentationState = .inTransition
+                    reopenMainWindowIfNeeded()
+                    session.controller?.stop()
+                    await dismissImmersiveSpace()
+                    session.clear()
+                }
+            } label: {
+                Label(label, systemImage: "xmark.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+        } else {
+            Button {
+                Task { @MainActor in
+                    session.presentationState = .inTransition
+                    reopenMainWindowIfNeeded()
+                    session.controller?.stop()
+                    await dismissImmersiveSpace()
+                    session.clear()
+                }
+            } label: {
+                Label(label, systemImage: "xmark.circle.fill")
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+
+    private func reopenMainWindowIfNeeded() {
+        guard session.shouldRestoreMainWindowOnDismiss else { return }
+        session.shouldRestoreMainWindowOnDismiss = false
+        openWindow(id: CustomCinemaMode.mainWindowID)
     }
 
     private var inactiveState: some View {
@@ -140,14 +257,16 @@ struct CustomCinemaScaffoldView: View {
             Button {
                 Task { @MainActor in
                     session.presentationState = .inTransition
+                    reopenMainWindowIfNeeded()
                     await dismissImmersiveSpace()
+                    session.clear()
                 }
             } label: {
                 Label("Close", systemImage: "xmark")
             }
             .buttonStyle(.bordered)
         }
-        .padding(28)
+        .frame(width: 760, height: 320)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 }

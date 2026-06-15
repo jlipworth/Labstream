@@ -18,15 +18,12 @@ enum RealityTheaterFeature {
     /// and full-Environment behavior are manually proven on Apple Vision Pro hardware.
     static let isShippingEntryPointVisible = false
 
-    /// Debug builds surface the RealityKit theater as a first-class device-testing control.
-    /// Release builds still require the shipping gate above so this cannot leak as a half-proven
-    /// customer affordance.
+    /// The RealityKit theater lab is not automatically surfaced in debug builds. Device testing
+    /// showed that this prototype currently presents as a second black attachment in front of the
+    /// existing player window, so keep it behind the explicit developer defaults key until the
+    /// presentation model can replace/dismiss the windowed player cleanly.
     static var isDeviceTestingEntryPointVisible: Bool {
-        #if DEBUG
-        true
-        #else
         false
-        #endif
     }
 
     static func isDeveloperEntryPointEnabled(defaults: UserDefaults = .standard) -> Bool {
