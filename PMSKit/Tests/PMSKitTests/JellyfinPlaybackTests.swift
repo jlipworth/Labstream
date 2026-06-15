@@ -16,7 +16,9 @@ struct JellyfinPlaybackTests {
             userId: "user-1",
             mediaSourceId: "source-1",
             startTimeTicks: 12_300_000_000,
-            maxStreamingBitrate: 8_000_000)
+            maxStreamingBitrate: 8_000_000,
+            audioStreamIndex: 3,
+            subtitleStreamIndex: 7)
 
         #expect(request.url == URL(string: "https://jellyfin.example.test/base/Items/movie-1/PlaybackInfo"))
         #expect(request.httpMethod == "POST")
@@ -30,6 +32,8 @@ struct JellyfinPlaybackTests {
         #expect(object["MediaSourceId"] as? String == "source-1")
         #expect(object["StartTimeTicks"] as? Int == 12_300_000_000)
         #expect(object["MaxStreamingBitrate"] as? Int == 8_000_000)
+        #expect(object["AudioStreamIndex"] as? Int == 3)
+        #expect(object["SubtitleStreamIndex"] as? Int == 7)
         #expect(object["EnableDirectPlay"] as? Bool == true)
         #expect(object["EnableDirectStream"] as? Bool == true)
         #expect(object["EnableTranscoding"] as? Bool == true)

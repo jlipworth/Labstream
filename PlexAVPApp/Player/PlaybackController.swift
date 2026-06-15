@@ -25,7 +25,24 @@ struct RemoteStreamOpenResult {
     }
 }
 
-typealias RemoteStreamReopener = (_ offsetMs: Int, _ bitrateKbps: Int) async throws -> RemoteStreamOpenResult
+struct RemoteStreamReopenRequest: Sendable {
+    let offsetMs: Int
+    let bitrateKbps: Int
+    let audioStreamIndex: Int?
+    let subtitleStreamIndex: Int?
+
+    init(offsetMs: Int,
+         bitrateKbps: Int,
+         audioStreamIndex: Int? = nil,
+         subtitleStreamIndex: Int? = nil) {
+        self.offsetMs = offsetMs
+        self.bitrateKbps = bitrateKbps
+        self.audioStreamIndex = audioStreamIndex
+        self.subtitleStreamIndex = subtitleStreamIndex
+    }
+}
+
+typealias RemoteStreamReopener = (RemoteStreamReopenRequest) async throws -> RemoteStreamOpenResult
 
 /// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
 /// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
@@ -320,6 +337,12 @@ final class PlaybackController {
     /// Plex uses the media-session proxy; backend-resolved playback (Jellyfin) can
     /// provide a reopener closure without pretending to be a Plex timeline session.
     var supportsQualityReload: Bool { isStreaming || remoteStreamReopener != nil }
+
+    /// Whether the Audio tab should use backend/container metadata instead of AVFoundation's
+    /// currently-loaded audible group. Plex and Jellyfin both expose alternate tracks in media
+    /// metadata and require a stream reopen/rebuild to switch tracks; local downloads still use
+    /// AVFoundation because the whole playable file is already on disk.
+    var supportsMetadataAudioSelection: Bool { isStreaming || remoteStreamReopener != nil }
 
     private var supportsSeekReprime: Bool { isStreaming || remoteStreamReopener != nil }
 
@@ -956,10 +979,17 @@ final class PlaybackController {
         return media[mediaIndex].part.first
     }
 
-    /// After a successful `selectAudioStream` PUT, the locally-known active stream id.
-    /// The `item` snapshot's `selected` flags are stale from that point on, so the loader
-    /// prefers this override when rebuilding the checkmarked list.
+    /// After a successful metadata-driven audio switch, the locally-known active stream id.
+    /// For Plex this is `Stream.id` (sent to the part-selection endpoint); for Jellyfin-backed
+    /// items our adapter maps it to `MediaStream.Index` (sent back through PlaybackInfo as
+    /// `AudioStreamIndex`). The item snapshot's `selected` flags are stale after a switch, so
+    /// the loader prefers this override when rebuilding the checkmarked list.
     private var audioStreamIDOverride: Int?
+
+    /// Reserved for the same backend-reopen path as audio once subtitle metadata selection is
+    /// promoted beyond AVFoundation's currently-loaded legible group. Keeping the request shape
+    /// shared now prevents another one-off Jellyfin closure later.
+    private var subtitleStreamIndexOverride: Int?
 
     /// Build the Audio tab's track list from part metadata. Synchronous — pure reads of the
     /// decoded item. Returns an empty array when the metadata carries no audio streams (the
@@ -1000,29 +1030,40 @@ final class PlaybackController {
     /// the Quality reload — PMS can't swap audio mid-session, so the stream must restart).
     /// Also persists the language preference so the next item auto-selects it.
     func selectAudioStream(_ choice: AudioStreamChoice) async {
-        guard isStreaming, let server, let token, let part = streamingPart else { return }
+        guard supportsMetadataAudioSelection, let part = streamingPart else { return }
         guard !choice.isSelected else { return }
-        let request = StreamSelectionRequest.selectAudioStream(server: server,
-                                                               token: token,
-                                                               identity: identity,
-                                                               partID: part.id,
-                                                               audioStreamID: choice.id)
-        do {
-            try await client.send(request)
-        } catch {
-            NSLog("PlaybackController: audio stream selection failed: %@", String(describing: error))
-            return
+
+        if isStreaming, let server, let token {
+            let request = StreamSelectionRequest.selectAudioStream(server: server,
+                                                                   token: token,
+                                                                   identity: identity,
+                                                                   partID: part.id,
+                                                                   audioStreamID: choice.id)
+            do {
+                try await client.send(request)
+            } catch {
+                NSLog("PlaybackController: audio stream selection failed: %@", String(describing: error))
+                return
+            }
         }
+
         audioStreamIDOverride = choice.id
-        if let lang = part.audioStreams.first(where: { $0.id == choice.id })?.languageTag,
+        if let lang = part.audioStreams.first(where: { $0.id == choice.id })?.languageTag
+            ?? part.audioStreams.first(where: { $0.id == choice.id })?.language,
            !lang.isEmpty {
             UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
         }
-        // Restart the transcode where the viewer is — mirror `reload(bitrateKbps:)`.
+
+        // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
+        // stream selection above; Jellyfin carries the stream index in the reopen request.
         let resumeMs = currentResumeMs
         finalTargetRebuildPolicy.reset()
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
+        } else {
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
     }
 
     // MARK: - Playback speed (R5)
@@ -2181,7 +2222,11 @@ final class PlaybackController {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let reopened = try await remoteStreamReopener(offsetMs, bitrateKbps)
+                let request = RemoteStreamReopenRequest(offsetMs: offsetMs,
+                                                        bitrateKbps: bitrateKbps,
+                                                        audioStreamIndex: audioStreamIDOverride,
+                                                        subtitleStreamIndex: subtitleStreamIndexOverride)
+                let reopened = try await remoteStreamReopener(request)
                 self.remoteHTTPHeaders = reopened.headers
                 if let sourceMetadata = reopened.sourceMetadata {
                     self.remoteSourceMetadata = sourceMetadata
