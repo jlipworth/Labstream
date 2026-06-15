@@ -403,7 +403,7 @@ struct CustomPlayerChrome: View {
                       ? "rectangle.on.rectangle.slash" : "theatermasks.fill")
                     .labelStyle(.titleAndIcon)
                     .font(.headline.weight(.semibold))
-                    .frame(minWidth: 128)
+                    .frame(minWidth: realityTheaterButtonMinWidth)
                     .padding(.horizontal, 8)
             }
             .buttonStyle(.bordered)
@@ -411,6 +411,11 @@ struct CustomPlayerChrome: View {
             .disabled(realityTheaterSession.phase == .opening)
             .help("RealityKit cinema prototype for #12 headset testing")
         }
+    }
+
+
+    private var realityTheaterButtonMinWidth: CGFloat {
+        realityTheaterSession.phase == .open ? 128 : CustomPlayerMenuKind.quality.minChromeWidth
     }
 
     private var menuStrip: some View {
