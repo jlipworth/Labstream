@@ -83,6 +83,11 @@ final class PlaybackController {
     /// next episode). Nil for sessions with no advance handler (e.g. offline playback).
     var onAdvanceToNext: ((MediaItem) -> Void)?
 
+    /// Invoked when playback reaches EOF and there is no resolved Up Next item to advance to.
+    /// Player presentations wire this to their close/dismiss action so completed movies and
+    /// offline files return to the app instead of sitting on a paused final frame.
+    var onPlaybackEnded: (() -> Void)?
+
     /// Fired whenever the item reaches `.playing`. PlayerView uses it to dismiss the
     /// "Reconnecting…" overlay shown during a failure-recovery rebuild (GH #33): the overlay
     /// covers the window where this controller is nil / the fresh item hasn't started, and
@@ -1773,6 +1778,9 @@ final class PlaybackController {
                 // `advanceToNextItem` re-flushes timeline/scrobble idempotently.
                 if self.upNext.nextItem != nil, !self.upNext.isCancelled {
                     self.advanceToNextItem()
+                } else {
+                    self.player.pause()
+                    self.onPlaybackEnded?()
                 }
             }
         }

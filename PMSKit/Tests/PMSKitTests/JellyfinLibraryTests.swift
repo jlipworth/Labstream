@@ -54,6 +54,7 @@ struct JellyfinLibraryTests {
         #expect(query["fields"]?.contains("OfficialRating") == true)
         #expect(query["fields"]?.contains("CommunityRating") == true)
         #expect(query["fields"]?.contains("Genres") == true)
+        #expect(query["fields"]?.contains("Chapters") == true)
     }
 
     @Test func itemsRequestCarriesSearchTerm() throws {
@@ -62,17 +63,20 @@ struct JellyfinLibraryTests {
                                                        identity: identity,
                                                        userId: "user-1",
                                                        recursive: true,
+                                                       startIndex: 25,
                                                        limit: 50,
-                                                       searchTerm: "pilot")
+                                                       searchTerm: "pilot",
+                                                       includeItemTypes: "Movie")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
         #expect(components.path == "/base/Items")
         #expect(query["recursive"] == "true")
+        #expect(query["startIndex"] == "25")
         #expect(query["limit"] == "50")
         #expect(query["searchTerm"] == "pilot")
-        #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode")
+        #expect(query["includeItemTypes"] == "Movie")
     }
 
     @Test func resumeItemsRequestTargetsContinueWatching() throws {
@@ -248,6 +252,10 @@ struct JellyfinLibraryTests {
             "OfficialRating": "PG-13",
             "Taglines": ["One dream can change everything"],
             "Genres": ["Adventure", "Drama"],
+            "Chapters": [
+              { "StartPositionTicks": 0, "Name": "Chapter 01" },
+              { "StartPositionTicks": 3003420000, "Name": "Chapter 02" }
+            ],
             "ImageTags": { "Primary": "poster-tag" },
             "BackdropImageTags": ["backdrop-tag"],
             "MediaSources": [{
@@ -285,6 +293,8 @@ struct JellyfinLibraryTests {
         #expect(item.contentRating == "PG-13")
         #expect(item.tagline == "One dream can change everything")
         #expect(item.genres?.map(\.tag) == ["Adventure", "Drama"])
+        #expect(item.chapters?.map(\.tag) == ["Chapter 01", "Chapter 02"])
+        #expect(item.chapters?[1].startTimeOffset == 300_342)
         let media = try #require(item.media?.first)
         #expect(media.container == "mkv")
         #expect(media.bitrate == 8200)

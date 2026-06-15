@@ -285,8 +285,19 @@ struct LibraryGridView: View {
 
     private func loadJellyfin(view: JellyfinLibraryLink) async {
         do {
-            let items = try await JellyfinBrowseService(appModel: appModel).items(parentId: view.id, recursive: false)
-            slots = items.map(Optional.some)
+            let page = try await JellyfinBrowseService(appModel: appModel)
+                .itemsPage(parentId: view.id,
+                           recursive: false,
+                           startIndex: 0,
+                           limit: pageSize,
+                           includeItemTypes: jellyfinLibraryItemTypes(for: view))
+            let total = max(page.total ?? page.items.count, page.items.count)
+            var fresh = [MediaItem?](repeating: nil, count: total)
+            for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
+                fresh[i] = item
+            }
+            slots = fresh
+            firstCharacters = []
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
@@ -301,29 +312,61 @@ struct LibraryGridView: View {
     }
 
     private func loadPage(containing index: Int) async {
-        guard case .plex(let section) = source,
-              slots.indices.contains(index),
-              let server = appModel.serverBaseURL,
-              let token = appModel.serverToken
-        else { return }
+        guard slots.indices.contains(index) else { return }
         let page = index / pageSize
         guard !loadingPages.contains(page) else { return }
         loadingPages.insert(page)
         let start = page * pageSize
-        let req = BrowseAPI.sectionItems(server: server, token: token,
-                                         identity: appModel.identity, sectionKey: section.key,
-                                         containerStart: start, containerSize: pageSize,
-                                         sort: "titleSort")
-        do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            for (i, item) in resp.mediaContainer.metadata.enumerated()
-            where slots.indices.contains(start + i) {
-                slots[start + i] = item
+
+        switch source {
+        case .plex(let section):
+            guard let server = appModel.serverBaseURL,
+                  let token = appModel.serverToken
+            else {
+                loadingPages.remove(page)
+                return
             }
-        } catch {
-            // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            let req = BrowseAPI.sectionItems(server: server, token: token,
+                                             identity: appModel.identity, sectionKey: section.key,
+                                             containerStart: start, containerSize: pageSize,
+                                             sort: "titleSort")
+            do {
+                let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+                for (i, item) in resp.mediaContainer.metadata.enumerated()
+                where slots.indices.contains(start + i) {
+                    slots[start + i] = item
+                }
+            } catch {
+                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            }
+        case .jellyfin(let view):
+            do {
+                let page = try await JellyfinBrowseService(appModel: appModel)
+                    .itemsPage(parentId: view.id,
+                               recursive: false,
+                               startIndex: start,
+                               limit: pageSize,
+                               includeItemTypes: jellyfinLibraryItemTypes(for: view))
+                for (i, item) in page.items.enumerated()
+                where slots.indices.contains(start + i) {
+                    slots[start + i] = item
+                }
+            } catch {
+                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            }
         }
         loadingPages.remove(page)
+    }
+}
+
+private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {
+    switch view.collectionType?.lowercased() {
+    case "movies":
+        return "Movie"
+    case "tvshows":
+        return "Series"
+    default:
+        return "Movie,Series,Season,Episode"
     }
 }
 
