@@ -290,7 +290,8 @@ struct LibraryGridView: View {
                            recursive: false,
                            startIndex: 0,
                            limit: pageSize,
-                           includeItemTypes: jellyfinLibraryItemTypes(for: view))
+                           includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                           fields: JellyfinLibrary.gridItemFields)
             let total = max(page.total ?? page.items.count, page.items.count)
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
@@ -299,6 +300,7 @@ struct LibraryGridView: View {
             slots = fresh
             firstCharacters = []
             loadState = .loaded
+            Task { await loadJellyfinFirstCharacters(view: view, total: total) }
         } catch {
             loadState = .failed(friendlyMessage(error))
         }
@@ -346,7 +348,8 @@ struct LibraryGridView: View {
                                recursive: false,
                                startIndex: start,
                                limit: pageSize,
-                               includeItemTypes: jellyfinLibraryItemTypes(for: view))
+                               includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                               fields: JellyfinLibrary.gridItemFields)
                 for (i, item) in page.items.enumerated()
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
@@ -357,6 +360,30 @@ struct LibraryGridView: View {
         }
         loadingPages.remove(page)
     }
+    private func loadJellyfinFirstCharacters(view: JellyfinLibraryLink, total: Int) async {
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
+        let service = JellyfinBrowseService(appModel: appModel)
+        var counts: [(display: String, count: Int)] = []
+        for letter in letters {
+            let page = try? await service.itemsPage(parentId: view.id,
+                                                    recursive: false,
+                                                    limit: 1,
+                                                    nameStartsWith: letter,
+                                                    includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                                                    fields: JellyfinLibrary.gridItemFields)
+            let count = page?.total ?? 0
+            if count > 0 { counts.append((letter, count)) }
+        }
+        var offset = 0
+        let entries = counts.map { entry -> LibraryFirstCharacter in
+            defer { offset += entry.count }
+            return LibraryFirstCharacter(display: entry.display,
+                                         count: entry.count,
+                                         offset: min(offset, max(total - 1, 0)))
+        }
+        firstCharacters = entries
+    }
+
 }
 
 private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {

@@ -66,7 +66,9 @@ struct JellyfinLibraryTests {
                                                        startIndex: 25,
                                                        limit: 50,
                                                        searchTerm: "pilot",
-                                                       includeItemTypes: "Movie")
+                                                       nameStartsWith: "P",
+                                                       includeItemTypes: "Movie",
+                                                       fields: JellyfinLibrary.gridItemFields)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
@@ -76,7 +78,9 @@ struct JellyfinLibraryTests {
         #expect(query["startIndex"] == "25")
         #expect(query["limit"] == "50")
         #expect(query["searchTerm"] == "pilot")
+        #expect(query["nameStartsWith"] == "P")
         #expect(query["includeItemTypes"] == "Movie")
+        #expect(query["fields"] == JellyfinLibrary.gridItemFields)
     }
 
     @Test func resumeItemsRequestTargetsContinueWatching() throws {
@@ -142,8 +146,8 @@ struct JellyfinLibraryTests {
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
-        #expect(components.path == "/base/Items/item-1")
-        #expect(query["userId"] == "user-1")
+        #expect(components.path == "/base/Users/user-1/Items/item-1")
+        #expect(query["userId"] == nil)
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
 
@@ -156,6 +160,29 @@ struct JellyfinLibraryTests {
         #expect(query["tag"] == "tag-1")
         #expect(query["width"] == "400")
         #expect(query["height"] == "600")
+    }
+
+    @Test func itemRequestAsksForFullMetadataFields() throws {
+        let request = try JellyfinLibrary.itemRequest(server: server, token: "token-abc", identity: identity, userId: "user-1", itemId: "item-1")
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Users/user-1/Items/item-1")
+        #expect(query["userId"] == nil)
+        #expect(query["fields"]?.contains("MediaSources") == true)
+        #expect(query["fields"]?.contains("Chapters") == true)
+    }
+
+    @Test func chapterImageURLPreservesBasePathAndUsesChapterEndpoint() throws {
+        let url = try JellyfinLibrary.chapterImageURL(server: server, itemId: "item-1", chapterIndex: 2, tag: "chapter-tag", width: 480, height: 270)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Items/item-1/Images/Chapter/2")
+        #expect(query["tag"] == "chapter-tag")
+        #expect(query["fillWidth"] == "480")
+        #expect(query["fillHeight"] == "270")
     }
 
     @Test func activeEncodingStopTargetsDeviceAndSession() throws {
@@ -253,8 +280,8 @@ struct JellyfinLibraryTests {
             "Taglines": ["One dream can change everything"],
             "Genres": ["Adventure", "Drama"],
             "Chapters": [
-              { "StartPositionTicks": 0, "Name": "Chapter 01" },
-              { "StartPositionTicks": 3003420000, "Name": "Chapter 02" }
+              { "StartPositionTicks": 0, "Name": "Chapter 01", "ImageTag": "chapter-tag-1" },
+              { "StartPositionTicks": 3003420000, "Name": "Chapter 02", "ImageTag": "chapter-tag-2" }
             ],
             "ImageTags": { "Primary": "poster-tag" },
             "BackdropImageTags": ["backdrop-tag"],
@@ -294,6 +321,8 @@ struct JellyfinLibraryTests {
         #expect(item.tagline == "One dream can change everything")
         #expect(item.genres?.map(\.tag) == ["Adventure", "Drama"])
         #expect(item.chapters?.map(\.tag) == ["Chapter 01", "Chapter 02"])
+        #expect(item.chapters?[0].thumb == "jellyfin://item/movie-1/Chapter/0?tag=chapter-tag-1")
+        #expect(item.chapters?[1].thumb == "jellyfin://item/movie-1/Chapter/1?tag=chapter-tag-2")
         #expect(item.chapters?[1].startTimeOffset == 300_342)
         let media = try #require(item.media?.first)
         #expect(media.container == "mkv")

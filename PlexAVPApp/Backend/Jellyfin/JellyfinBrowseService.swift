@@ -48,18 +48,22 @@ struct JellyfinBrowseService {
                startIndex: Int? = nil,
                limit: Int? = nil,
                searchTerm: String? = nil,
+               nameStartsWith: String? = nil,
                sortBy: String = "SortName",
                sortOrder: String = "Ascending",
                includeItemTypes: String = "Movie,Series,Season,Episode",
+               fields: String = JellyfinLibrary.fullItemFields,
                filters: [String] = []) async throws -> [MediaItem] {
         let page = try await itemsPage(parentId: parentId,
                                        recursive: recursive,
                                        startIndex: startIndex,
                                        limit: limit,
                                        searchTerm: searchTerm,
+                                       nameStartsWith: nameStartsWith,
                                        sortBy: sortBy,
                                        sortOrder: sortOrder,
                                        includeItemTypes: includeItemTypes,
+                                       fields: fields,
                                        filters: filters)
         return page.items
     }
@@ -69,9 +73,11 @@ struct JellyfinBrowseService {
                    startIndex: Int? = nil,
                    limit: Int? = nil,
                    searchTerm: String? = nil,
+                   nameStartsWith: String? = nil,
                    sortBy: String = "SortName",
                    sortOrder: String = "Ascending",
                    includeItemTypes: String = "Movie,Series,Season,Episode",
+                   fields: String = JellyfinLibrary.fullItemFields,
                    filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
         let req = try JellyfinLibrary.itemsRequest(server: context.server,
@@ -83,9 +89,11 @@ struct JellyfinBrowseService {
                                                    startIndex: startIndex,
                                                    limit: limit,
                                                    searchTerm: searchTerm,
+                                                   nameStartsWith: nameStartsWith,
                                                    sortBy: sortBy,
                                                    sortOrder: sortOrder,
                                                    includeItemTypes: includeItemTypes,
+                                                   fields: fields,
                                                    filters: filters)
         let response = try await send(req, as: JellyfinItemsResponse.self)
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
@@ -180,6 +188,8 @@ struct JellyfinBrowseService {
                       subtitleStreamIndex: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
         let context = try context()
         let maxBitrateBps = maxVideoBitrateKbps <= 0 ? 200_000_000 : maxVideoBitrateKbps * 1_000
+        let resolutionCap = Self.resolutionCap(forBitrateKbps: maxVideoBitrateKbps)
+        let audioBitrate = Self.audioBitrate(forBitrateKbps: maxVideoBitrateKbps)
         let startTicks = (resumeOffsetMs ?? item.viewOffset).map { $0 * 10_000 }
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,
@@ -195,7 +205,35 @@ struct JellyfinBrowseService {
                                                   server: context.server,
                                                   identity: jellyfinIdentity,
                                                   token: context.token,
-                                                  itemId: item.ratingKey)
+                                                  itemId: item.ratingKey,
+                                                  maxWidth: resolutionCap?.width,
+                                                  maxHeight: resolutionCap?.height,
+                                                  audioBitrate: audioBitrate)
+    }
+
+
+    private static func resolutionCap(forBitrateKbps kbps: Int) -> (width: Int, height: Int)? {
+        switch kbps {
+        case 1...4_000:
+            return (1280, 720)
+        case 4_001...20_000:
+            return (1920, 1080)
+        case 20_001...40_000:
+            return (3840, 2160)
+        default:
+            return nil
+        }
+    }
+
+    private static func audioBitrate(forBitrateKbps kbps: Int) -> Int? {
+        switch kbps {
+        case 1...4_000:
+            return 256_000
+        case 4_001...20_000:
+            return 640_000
+        default:
+            return nil
+        }
     }
 
     func setPlayed(itemId: String, played: Bool) async throws {
