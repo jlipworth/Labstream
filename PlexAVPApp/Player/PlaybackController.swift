@@ -5,6 +5,45 @@ import UIKit
 import os
 import PMSKit
 
+struct RemoteStreamOpenResult {
+    let url: URL
+    let headers: [String: String]
+    let sourceMetadata: JellyfinPlaybackSourceMetadata?
+    let playMethod: JellyfinPlayMethod?
+    let onStop: (() -> Void)?
+
+    init(url: URL,
+         headers: [String: String],
+         sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
+         playMethod: JellyfinPlayMethod? = nil,
+         onStop: (() -> Void)? = nil) {
+        self.url = url
+        self.headers = headers
+        self.sourceMetadata = sourceMetadata
+        self.playMethod = playMethod
+        self.onStop = onStop
+    }
+}
+
+struct RemoteStreamReopenRequest: Sendable {
+    let offsetMs: Int
+    let bitrateKbps: Int
+    let audioStreamIndex: Int?
+    let subtitleStreamIndex: Int?
+
+    init(offsetMs: Int,
+         bitrateKbps: Int,
+         audioStreamIndex: Int? = nil,
+         subtitleStreamIndex: Int? = nil) {
+        self.offsetMs = offsetMs
+        self.bitrateKbps = bitrateKbps
+        self.audioStreamIndex = audioStreamIndex
+        self.subtitleStreamIndex = subtitleStreamIndex
+    }
+}
+
+typealias RemoteStreamReopener = (RemoteStreamReopenRequest) async throws -> RemoteStreamOpenResult
+
 /// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
 /// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
 /// before an in-place restart (#27), which guards against the server-OOM job pile-up.
@@ -61,6 +100,11 @@ final class PlaybackController {
     /// next episode). Nil for sessions with no advance handler (e.g. offline playback).
     var onAdvanceToNext: ((MediaItem) -> Void)?
 
+    /// Invoked when playback reaches EOF and there is no resolved Up Next item to advance to.
+    /// Player presentations wire this to their close/dismiss action so completed movies and
+    /// offline files return to the app instead of sitting on a paused final frame.
+    var onPlaybackEnded: (() -> Void)?
+
     /// Fired whenever the item reaches `.playing`. PlayerView uses it to dismiss the
     /// "Reconnecting…" overlay shown during a failure-recovery rebuild (GH #33): the overlay
     /// covers the window where this controller is nil / the fresh item hasn't started, and
@@ -80,6 +124,21 @@ final class PlaybackController {
 
     /// The local file URL, when playing offline content.
     private let localFile: URL?
+
+    /// Already-resolved remote media URL, when a non-Plex backend (currently Jellyfin) has
+    /// performed its own playback negotiation and only needs the custom player to open the
+    /// resulting stream. This keeps the player surface agnostic: Plex owns its transcode resolver,
+    /// while other backends can hand us a concrete stream URL and a re-open hook for quality/seek.
+    private let remoteStreamURL: URL?
+
+    /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin playback tokens must stay in
+    /// headers rather than URL query parameters so client logs/history never capture URL tokens.
+    private var remoteHTTPHeaders: [String: String]
+    private var remoteSourceMetadata: JellyfinPlaybackSourceMetadata?
+    private var remotePlayMethod: JellyfinPlayMethod?
+    private var onStopRemoteSession: (() -> Void)?
+    private let remoteStreamReopener: RemoteStreamReopener?
+    private var didStopRemoteSession = false
 
     /// The server's machine identifier (== the Plex resource `clientIdentifier`), used to
     /// build a play queue for "Up Next" resolution (#15). `nil` when unavailable (offline
@@ -274,6 +333,19 @@ final class PlaybackController {
     /// player surface offers (quality reload only makes sense for streaming).
     var isStreaming: Bool { localFile == nil && server != nil && token != nil }
 
+    /// Whether this session can reopen its media stream at a new offset/quality.
+    /// Plex uses the media-session proxy; backend-resolved playback (Jellyfin) can
+    /// provide a reopener closure without pretending to be a Plex timeline session.
+    var supportsQualityReload: Bool { isStreaming || remoteStreamReopener != nil }
+
+    /// Whether the Audio tab should use backend/container metadata instead of AVFoundation's
+    /// currently-loaded audible group. Plex and Jellyfin both expose alternate tracks in media
+    /// metadata and require a stream reopen/rebuild to switch tracks; local downloads still use
+    /// AVFoundation because the whole playable file is already on disk.
+    var supportsMetadataAudioSelection: Bool { isStreaming || remoteStreamReopener != nil }
+
+    private var supportsSeekReprime: Bool { isStreaming || remoteStreamReopener != nil }
+
     /// Chapter markers for the current item, if Plex provided any. Empty when none —
     /// the player hides the Chapters info-panel tab in that case.
     ///
@@ -386,6 +458,12 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
+        self.remoteStreamURL = nil
+        self.remoteHTTPHeaders = [:]
+        self.remoteSourceMetadata = nil
+        self.remotePlayMethod = nil
+        self.onStopRemoteSession = nil
+        self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
@@ -406,12 +484,54 @@ final class PlaybackController {
         self.client = client
         self.server = nil
         self.token = nil
+        self.remoteStreamURL = nil
+        self.remoteHTTPHeaders = [:]
+        self.remoteSourceMetadata = nil
+        self.remotePlayMethod = nil
+        self.onStopRemoteSession = nil
+        self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         // A local file is already one concrete version on disk; no version selection.
         self.mediaIndex = 0
         // Offline playback has no server session to build a play queue against.
         self.machineIdentifier = nil
         // Local files resume from the item's saved offset; no rebuild override.
+        self.initialResumeMsOverride = nil
+        self.chapters = item.chapters ?? []
+        self.speedState.speed = self.playbackSpeed
+    }
+
+    /// Resolved remote-stream initializer for non-Plex backends. The caller owns
+    /// backend-specific auth/playback negotiation; this controller only loads the supplied stream
+    /// into AVKit and reuses the same player UI, observers, buffering, diagnostics and metadata.
+    init(remoteStreamURL: URL,
+         item: MediaItem,
+         identity: ClientIdentity,
+         client: PlexClient,
+         httpHeaders: [String: String] = [:],
+         sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
+         playMethod: JellyfinPlayMethod? = nil,
+         onStopRemoteSession: (() -> Void)? = nil,
+         remoteStreamReopener: RemoteStreamReopener? = nil,
+         maxVideoBitrateKbps: Int = 0) {
+        self.item = item
+        self.localFile = nil
+        self.remoteStreamURL = remoteStreamURL
+        self.remoteHTTPHeaders = httpHeaders
+        self.remoteSourceMetadata = sourceMetadata
+        self.remotePlayMethod = playMethod
+        self.onStopRemoteSession = onStopRemoteSession
+        self.remoteStreamReopener = remoteStreamReopener
+        self.identity = identity
+        self.client = client
+        self.server = nil
+        self.token = nil
+        self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        // A backend-resolved URL is already one concrete stream.
+        self.mediaIndex = 0
+        // Non-Plex playback has no Plex play queue to resolve against.
+        self.machineIdentifier = nil
+        // The backend spike starts at the server-selected offset for now.
         self.initialResumeMsOverride = nil
         self.chapters = item.chapters ?? []
         self.speedState.speed = self.playbackSpeed
@@ -425,6 +545,8 @@ final class PlaybackController {
         started = true
         if let localFile {
             loadLocalFile(localFile)
+        } else if let remoteStreamURL {
+            loadRemoteStream(remoteStreamURL, headers: remoteHTTPHeaders)
         } else {
             // Use the rebuild resume override on first start when present (recovering from a
             // wedged player); otherwise startStreaming falls back to the item's saved offset.
@@ -448,6 +570,7 @@ final class PlaybackController {
         playbackGeneration += 1
         timeline.report(state: .stopped, force: true)
         sendTranscodeStop()
+        stopRemoteSessionIfNeeded()
         cancelPendingFinalTargetRebuild()
         if let activeFinalTargetRebuildGeneration {
             finalTargetRebuildPolicy.cancelRebuild(generation: activeFinalTargetRebuildGeneration)
@@ -461,6 +584,12 @@ final class PlaybackController {
         // resume (#17).
         audioSession.removeObservers()
         audioSession.deactivate()
+    }
+
+    private func stopRemoteSessionIfNeeded() {
+        guard remoteStreamURL != nil, !didStopRemoteSession else { return }
+        didStopRemoteSession = true
+        onStopRemoteSession?()
     }
 
     /// Whether the final `/video/:/transcode/universal/stop` was already fired, so
@@ -850,10 +979,17 @@ final class PlaybackController {
         return media[mediaIndex].part.first
     }
 
-    /// After a successful `selectAudioStream` PUT, the locally-known active stream id.
-    /// The `item` snapshot's `selected` flags are stale from that point on, so the loader
-    /// prefers this override when rebuilding the checkmarked list.
+    /// After a successful metadata-driven audio switch, the locally-known active stream id.
+    /// For Plex this is `Stream.id` (sent to the part-selection endpoint); for Jellyfin-backed
+    /// items our adapter maps it to `MediaStream.Index` (sent back through PlaybackInfo as
+    /// `AudioStreamIndex`). The item snapshot's `selected` flags are stale after a switch, so
+    /// the loader prefers this override when rebuilding the checkmarked list.
     private var audioStreamIDOverride: Int?
+
+    /// Reserved for the same backend-reopen path as audio once subtitle metadata selection is
+    /// promoted beyond AVFoundation's currently-loaded legible group. Keeping the request shape
+    /// shared now prevents another one-off Jellyfin closure later.
+    private var subtitleStreamIndexOverride: Int?
 
     /// Build the Audio tab's track list from part metadata. Synchronous — pure reads of the
     /// decoded item. Returns an empty array when the metadata carries no audio streams (the
@@ -894,29 +1030,40 @@ final class PlaybackController {
     /// the Quality reload — PMS can't swap audio mid-session, so the stream must restart).
     /// Also persists the language preference so the next item auto-selects it.
     func selectAudioStream(_ choice: AudioStreamChoice) async {
-        guard isStreaming, let server, let token, let part = streamingPart else { return }
+        guard supportsMetadataAudioSelection, let part = streamingPart else { return }
         guard !choice.isSelected else { return }
-        let request = StreamSelectionRequest.selectAudioStream(server: server,
-                                                               token: token,
-                                                               identity: identity,
-                                                               partID: part.id,
-                                                               audioStreamID: choice.id)
-        do {
-            try await client.send(request)
-        } catch {
-            NSLog("PlaybackController: audio stream selection failed: %@", String(describing: error))
-            return
+
+        if isStreaming, let server, let token {
+            let request = StreamSelectionRequest.selectAudioStream(server: server,
+                                                                   token: token,
+                                                                   identity: identity,
+                                                                   partID: part.id,
+                                                                   audioStreamID: choice.id)
+            do {
+                try await client.send(request)
+            } catch {
+                NSLog("PlaybackController: audio stream selection failed: %@", String(describing: error))
+                return
+            }
         }
+
         audioStreamIDOverride = choice.id
-        if let lang = part.audioStreams.first(where: { $0.id == choice.id })?.languageTag,
+        if let lang = part.audioStreams.first(where: { $0.id == choice.id })?.languageTag
+            ?? part.audioStreams.first(where: { $0.id == choice.id })?.language,
            !lang.isEmpty {
             UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
         }
-        // Restart the transcode where the viewer is — mirror `reload(bitrateKbps:)`.
+
+        // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
+        // stream selection above; Jellyfin carries the stream index in the reopen request.
         let resumeMs = currentResumeMs
         finalTargetRebuildPolicy.reset()
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
+        } else {
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
     }
 
     // MARK: - Playback speed (R5)
@@ -956,9 +1103,9 @@ final class PlaybackController {
     /// that position before playing. `0` requests "Maximum / Original" (no cap — we pass
     /// a very high ceiling so PMS still produces a compatible HLS rendition).
     ///
-    /// Only valid for streaming sessions; a no-op for local files.
+    /// Only valid for reopenable sessions; a no-op for local files/static streams.
     func reload(bitrateKbps: Int) {
-        guard isStreaming else { return }
+        guard supportsQualityReload else { return }
         guard bitrateKbps != maxVideoBitrateKbps else { return }
         maxVideoBitrateKbps = bitrateKbps
         // Snapshot position so we can resume where the viewer was.
@@ -967,7 +1114,11 @@ final class PlaybackController {
         // (didScrobble is intentionally NOT reset — the same content shouldn't re-scrobble.)
         finalTargetRebuildPolicy.reset()
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: bitrateKbps)
+        } else {
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
     }
 
     // MARK: - Failure / retry
@@ -975,16 +1126,21 @@ final class PlaybackController {
     /// User-initiated retry after a surfaced playback failure (P3 #8). Re-runs the
     /// streaming start path from the last known playhead so a transient bad start.m3u8
     /// (or a recovered network blip) gets one fresh, user-requested session rather than a
-    /// permanent black screen or hidden restart loop. No-op for local-file sessions (nothing
-    /// to re-fetch).
+    /// permanent black screen or hidden restart loop. Remote backend sessions use their re-open
+    /// hook so Jellyfin gets the same visible Retry affordance as Plex. No-op for local-file
+    /// sessions/static remote streams (nothing to re-fetch).
     func retry() {
-        guard isStreaming else { return }
+        guard isStreaming || remoteStreamReopener != nil else { return }
         let resumeMs = currentResumeMs
-        switchToRecoveryControlClient()
         finalTargetRebuildPolicy.reset()
         playbackError.clear()
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
+        } else {
+            switchToRecoveryControlClient()
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
     }
 
     /// App-owned scrubber commit hook for the experimental custom player path (#38).
@@ -999,7 +1155,7 @@ final class PlaybackController {
         let target = CMTime(value: CMTimeValue(clamped), timescale: 1000)
         let seconds = Double(clamped) / 1000
 
-        guard isStreaming, !playbackError.isFailed else {
+        guard supportsSeekReprime, !playbackError.isFailed else {
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
             return
         }
@@ -1271,6 +1427,26 @@ final class PlaybackController {
         load(playerItem, resumeOffsetMs: item.viewOffset)
     }
 
+    private func loadRemoteStream(_ url: URL, headers: [String: String], resumeOffsetMs: Int? = nil) {
+        // Seed static facts for the Stats overlay. The stream has already been resolved by the
+        // backend, so there is no Plex decision/proxy state to report here.
+        diagnostics.applyStatic(item: item,
+                                mediaIndex: mediaIndex,
+                                decision: nil,
+                                server: url,
+                                targetBitrateKbps: maxVideoBitrateKbps)
+        if let remoteSourceMetadata, let remotePlayMethod {
+            diagnostics.applyJellyfinSource(remoteSourceMetadata,
+                                            playMethod: remotePlayMethod)
+        }
+        diagnostics.connectionHost = url.host ?? "Remote stream"
+
+        let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
+        let asset = AVURLAsset(url: url, options: options)
+        let playerItem = AVPlayerItem(asset: asset)
+        load(playerItem, resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
+    }
+
     // MARK: - Now Playing / cinema chrome metadata (R5)
 
     /// Build the textual `externalMetadata` items for the player chrome (Now Playing /
@@ -1405,7 +1581,23 @@ final class PlaybackController {
     /// `UIHostingController`, outside that environment. The controller already
     /// holds the server + token, so it vends the URL directly instead.
     func chapterThumbnailURL(for imagePath: String?) -> URL? {
-        guard let imagePath, !imagePath.isEmpty, let server, let token else { return nil }
+        guard let imagePath, !imagePath.isEmpty else { return nil }
+
+        // Jellyfin chapters are carried through PMSKit's shared `Chapter.thumb` as a synthetic
+        // stable key. The player is the only place that has the resolved remote HLS URL, so it
+        // derives the server base here and asks Jellyfin's native chapter-image endpoint for a
+        // 16:9 thumbnail. Keep this purely an image URL translation; do not touch playback state.
+        if let jellyfin = parsedJellyfinChapterImagePath(imagePath),
+           let base = remoteStreamURL.flatMap(jellyfinServerBaseURL(from:)) {
+            return try? JellyfinLibrary.chapterImageURL(server: base,
+                                                        itemId: jellyfin.itemId,
+                                                        chapterIndex: jellyfin.index,
+                                                        tag: jellyfin.tag,
+                                                        width: 480,
+                                                        height: 270)
+        }
+
+        guard let server, let token else { return nil }
         guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
                                         resolvingAgainstBaseURL: false) else { return nil }
         PlexURLQueryEncoder.replaceQueryItems([
@@ -1416,6 +1608,34 @@ final class PlaybackController {
             .init(name: "upscale", value: "1"),
             .init(name: "X-Plex-Token", value: token),
         ], in: &comps)
+        return comps.url
+    }
+
+    private func parsedJellyfinChapterImagePath(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
+        guard let url = URL(string: imagePath),
+              url.scheme == "jellyfin",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return (parts[0], index, tag)
+    }
+
+    private func jellyfinServerBaseURL(from streamURL: URL) -> URL? {
+        guard var comps = URLComponents(url: streamURL, resolvingAgainstBaseURL: false) else { return nil }
+        let lowerPath = comps.percentEncodedPath.lowercased()
+        if let range = lowerPath.range(of: "/videos/") {
+            comps.percentEncodedPath = String(comps.percentEncodedPath[..<range.lowerBound])
+        } else if let range = lowerPath.range(of: "/items/") {
+            comps.percentEncodedPath = String(comps.percentEncodedPath[..<range.lowerBound])
+        } else {
+            comps.percentEncodedPath = ""
+        }
+        comps.percentEncodedQuery = nil
+        comps.fragment = nil
         return comps.url
     }
 
@@ -1643,6 +1863,9 @@ final class PlaybackController {
                 // `advanceToNextItem` re-flushes timeline/scrobble idempotently.
                 if self.upNext.nextItem != nil, !self.upNext.isCancelled {
                     self.advanceToNextItem()
+                } else {
+                    self.player.pause()
+                    self.onPlaybackEnded?()
                 }
             }
         }
@@ -1712,8 +1935,7 @@ final class PlaybackController {
     /// marker is currently active.
     func skipCurrentMarker() {
         guard let active = skipMarker.active else { return }
-        let target = CMTime(seconds: active.seekTargetSeconds, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
+        performUserSeek(toMs: Int(active.seekTargetSeconds * 1000))
         skipMarker.clear()
     }
 
@@ -1971,7 +2193,7 @@ final class PlaybackController {
     /// buffered, AVKit owns the seek natively. If it is outside the loaded range, record the target
     /// and debounce so a drag collapses to one final-target rebuild.
     private func handleSeekJump() {
-        guard isStreaming, !playbackError.isFailed else { return }
+        guard supportsSeekReprime, !playbackError.isFailed else { return }
         let now = player.currentTime().seconds
         guard now.isFinite, now >= 0 else { return }
         let targetMs = Int(now * 1000)
@@ -2015,17 +2237,57 @@ final class PlaybackController {
     }
 
     /// Arm (or re-arm) the debounced final-target rebuild. Each out-of-buffer jump during a drag
-    /// records the latest target; only the settled target gets a PMS stop/decision/start.
+    /// records the latest target; only the settled target gets a PMS restart or backend re-open.
     private func scheduleFinalTargetRebuild(toMs targetMs: Int) {
         finalTargetRebuildPolicy.recordFinalTarget(offsetMs: targetMs)
         finalTargetSettleTask?.cancel()
         finalTargetSettleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.finalTargetSettleNanos)
             guard let self, !Task.isCancelled else { return }
-            guard self.isStreaming, !self.playbackError.isFailed else { return }
+            guard self.supportsSeekReprime, !self.playbackError.isFailed else { return }
             guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else { return }
             self.finalTargetSettleTask = nil
-            self.beginFinalTargetRebuild(toMs: target)
+            if self.remoteStreamReopener != nil {
+                self.reopenRemoteStream(offsetMs: target, bitrateKbps: self.maxVideoBitrateKbps)
+            } else {
+                guard self.isStreaming else { return }
+                self.beginFinalTargetRebuild(toMs: target)
+            }
+        }
+    }
+
+    private func reopenRemoteStream(offsetMs: Int, bitrateKbps: Int) {
+        guard let remoteStreamReopener else { return }
+        lastPrimedOffsetMs = offsetMs
+        let priorStop = didStopRemoteSession ? nil : onStopRemoteSession
+        didStopRemoteSession = true
+        priorStop?()
+        playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let request = RemoteStreamReopenRequest(offsetMs: offsetMs,
+                                                        bitrateKbps: bitrateKbps,
+                                                        audioStreamIndex: audioStreamIDOverride,
+                                                        subtitleStreamIndex: subtitleStreamIndexOverride)
+                let reopened = try await remoteStreamReopener(request)
+                self.remoteHTTPHeaders = reopened.headers
+                if let sourceMetadata = reopened.sourceMetadata {
+                    self.remoteSourceMetadata = sourceMetadata
+                }
+                if let playMethod = reopened.playMethod {
+                    self.remotePlayMethod = playMethod
+                }
+                self.onStopRemoteSession = reopened.onStop
+                self.didStopRemoteSession = false
+                self.loadRemoteStream(reopened.url, headers: reopened.headers, resumeOffsetMs: offsetMs)
+            } catch {
+                NSLog("PlaybackController: remote stream reopen failed (%@)", String(describing: error))
+                self.surfaceFailure(NSError(
+                    domain: "PlexAVPApp.Playback", code: -1004,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Couldn't reopen the stream at that position. Tap Retry or try a lower quality setting."]))
+            }
         }
     }
 
