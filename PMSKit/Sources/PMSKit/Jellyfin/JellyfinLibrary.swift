@@ -428,11 +428,29 @@ public enum JellyfinLibrary {
     public static func downloadRequest(server: URL,
                                        token: String,
                                        identity: JellyfinClientIdentity,
-                                       itemId: String) throws -> URLRequest {
-        let url = try url(server: server,
-                          path: "/Items/\(itemId)/Download",
-                          queryItems: [])
-        var req = get(url: url, token: token, identity: identity)
+                                       itemId: String,
+                                       mediaSourceId: String?,
+                                       container: String?) throws -> URLRequest {
+        let cleanContainer = (container ?? "mp4")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+        let ext = cleanContainer.isEmpty ? "mp4" : cleanContainer
+        let url = try JellyfinPlayback.jellyfinURL(server: server,
+                                                  path: "/Videos/\(itemId)/stream.\(ext)")
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        var query = [
+            URLQueryItem(name: "static", value: "true"),
+            URLQueryItem(name: "deviceId", value: identity.deviceId),
+        ]
+        if let mediaSourceId, !mediaSourceId.isEmpty {
+            query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
+        }
+        comps.queryItems = query
+        guard let built = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        var req = authenticatedRequest(url: built, token: token, identity: identity)
         req.setValue("*/*", forHTTPHeaderField: "Accept")
         return req
     }
