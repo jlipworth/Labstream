@@ -14,9 +14,20 @@ enum RealityTheaterFeature {
     /// real-device behavior is proven.
     static let developerDefaultsKey = "developerRealityKitTheaterEnabled"
 
-    /// Hard shipping gate: #12 is not user-visible until screen placement/scale and full-Environment
-    /// behavior are manually proven on Apple Vision Pro hardware.
+    /// Hard shipping gate: #12 is not user-visible in release builds until screen placement/scale
+    /// and full-Environment behavior are manually proven on Apple Vision Pro hardware.
     static let isShippingEntryPointVisible = false
+
+    /// Debug builds surface the RealityKit theater as a first-class device-testing control.
+    /// Release builds still require the shipping gate above so this cannot leak as a half-proven
+    /// customer affordance.
+    static var isDeviceTestingEntryPointVisible: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
 
     static func isDeveloperEntryPointEnabled(defaults: UserDefaults = .standard) -> Bool {
         #if DEBUG
