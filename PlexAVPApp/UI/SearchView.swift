@@ -182,7 +182,7 @@ private struct SearchHubSection: View {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
-                            PosterCell(item: item)
+                            RailMediaCell(item: item)
                         }
                         .cardLink()
                     }
