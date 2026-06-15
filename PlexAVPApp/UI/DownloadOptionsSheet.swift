@@ -13,7 +13,6 @@ struct DownloadOptionsSheet: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
-    @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
 
     private struct OriginalOption: Equatable {
