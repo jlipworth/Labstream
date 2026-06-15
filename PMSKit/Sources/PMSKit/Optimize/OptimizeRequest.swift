@@ -235,10 +235,10 @@ public enum OptimizeRequest {
         guard var components = URLComponents(url: partURL, resolvingAgainstBaseURL: false) else {
             preconditionFailure("OptimizeRequest: part URL is not decomposable: \(partURL)")
         }
-        components.queryItems = [
+        PlexURLQueryEncoder.replaceQueryItems([
             .init(name: "download", value: "1"),
             .init(name: "X-Plex-Token", value: token),
-        ]
+        ], in: &components)
         guard let url = components.url else {
             preconditionFailure("OptimizeRequest: could not rebuild download URL for part \(partKey)")
         }

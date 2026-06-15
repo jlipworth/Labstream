@@ -745,17 +745,17 @@ final class MusicPlayerController {
     private nonisolated static func artworkTranscodeURL(imagePath: String,
                                                         server: URL,
                                                         token: String) -> URL? {
-        var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                  resolvingAgainstBaseURL: false)
-        comps?.queryItems = [
+        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
+                                        resolvingAgainstBaseURL: false) else { return nil }
+        PlexURLQueryEncoder.replaceQueryItems([
             .init(name: "url", value: imagePath),
             .init(name: "width", value: "600"),
             .init(name: "height", value: "600"),
             .init(name: "minSize", value: "1"),
             .init(name: "upscale", value: "1"),
             .init(name: "X-Plex-Token", value: token),
-        ]
-        return comps?.url
+        ], in: &comps)
+        return comps.url
     }
 
     /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it

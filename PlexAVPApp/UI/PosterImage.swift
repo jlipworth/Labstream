@@ -109,17 +109,17 @@ struct PosterImage: View {
         // The image path is itself relative to the server; the transcoder wants it
         // as the `url` query value (it may be an absolute path on the same server).
         let scale = 2.0 // request at @2x for crisp posters on visionOS
-        var comps = URLComponents(url: base.appendingPathComponent("/photo/:/transcode"),
-                                  resolvingAgainstBaseURL: false)
-        comps?.queryItems = [
+        guard var comps = URLComponents(url: base.appendingPathComponent("/photo/:/transcode"),
+                                        resolvingAgainstBaseURL: false) else { return nil }
+        PlexURLQueryEncoder.replaceQueryItems([
             .init(name: "url", value: path),
             .init(name: "width", value: String(Int(width * scale))),
             .init(name: "height", value: String(Int(height * scale))),
             .init(name: "minSize", value: "1"),
             .init(name: "upscale", value: "1"),
             .init(name: "X-Plex-Token", value: token),
-        ]
-        return comps?.url
+        ], in: &comps)
+        return comps.url
     }
 }
 

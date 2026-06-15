@@ -381,17 +381,17 @@ public final class DownloadManager {
     /// Build the `/photo/:/transcode` URL for an image path, mirroring `PosterImage`.
     /// Requests a poster-sized image so the cached file stays small.
     private static func posterTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
-        var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                  resolvingAgainstBaseURL: false)
-        comps?.queryItems = [
+        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
+                                        resolvingAgainstBaseURL: false) else { return nil }
+        PlexURLQueryEncoder.replaceQueryItems([
             .init(name: "url", value: thumb),
             .init(name: "width", value: "400"),
             .init(name: "height", value: "600"),
             .init(name: "minSize", value: "1"),
             .init(name: "upscale", value: "1"),
             .init(name: "X-Plex-Token", value: token),
-        ]
-        return comps?.url
+        ], in: &comps)
+        return comps.url
     }
 
     // MARK: - Optimize path (HIGH UNCERTAINTY — isolated; Phase 0 confirms the contract)
