@@ -178,8 +178,12 @@ public enum OptimizeRequest {
     /// confirmed by Phase 0.
     public static func createOnPlaylist(server: URL, token: String, identity: ClientIdentity,
                                         backgroundProcessingKey: String,
-                                        ratingKey: String, title: String,
-                                        targetTagID: Int,
+                                        ratingKey: String,
+                                        sourceURI: String? = nil,
+                                        title: String,
+                                        targetTagID: Int?,
+                                        targetName: String? = nil,
+                                        deviceProfile: String? = nil,
                                         mediaSettings: MediaSettings) -> PlexRequest {
         let trimmed = backgroundProcessingKey.hasPrefix("/")
             ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
@@ -187,10 +191,18 @@ public enum OptimizeRequest {
         var items: [URLQueryItem] = [
             .init(name: "Item[type]", value: "42"),
             .init(name: "Item[title]", value: title),
-            .init(name: "Item[targetTagID]", value: String(targetTagID)),
+            .init(name: "Item[target]", value: targetName ?? ""),
+            .init(name: "Item[targetTagID]", value: targetTagID.map(String.init) ?? ""),
             .init(name: "Item[Location][uri]",
-                  value: "server://\(identity.clientIdentifier)/com.plexapp.plugins.library/library/metadata/\(ratingKey)"),
+                  value: sourceURI ?? "server://\(identity.clientIdentifier)/com.plexapp.plugins.library/library/metadata/\(ratingKey)"),
+            .init(name: "Item[locationID]", value: "-1"),
+            .init(name: "Item[Policy][scope]", value: "all"),
+            .init(name: "Item[Policy][value]", value: "0"),
+            .init(name: "Item[Policy][unwatched]", value: "0"),
         ]
+        if let deviceProfile, !deviceProfile.isEmpty {
+            items.append(.init(name: "Item[Device][profile]", value: deviceProfile))
+        }
         if let q = mediaSettings.videoQuality {
             items.append(.init(name: "Item[MediaSettings][videoQuality]", value: String(q)))
         }
@@ -200,7 +212,14 @@ public enum OptimizeRequest {
         if let res = mediaSettings.videoResolution {
             items.append(.init(name: "Item[MediaSettings][videoResolution]", value: res))
         }
-        return PlexRequest(url: url, method: "POST", queryItems: items,
+        items += [
+            .init(name: "Item[MediaSettings][audioBoost]", value: ""),
+            .init(name: "Item[MediaSettings][subtitleSize]", value: ""),
+            .init(name: "Item[MediaSettings][musicBitrate]", value: ""),
+            .init(name: "Item[MediaSettings][photoQuality]", value: ""),
+            .init(name: "Item[MediaSettings][photoResolution]", value: ""),
+        ]
+        return PlexRequest(url: url, method: "PUT", queryItems: items,
                            headers: PlexHeaders.standard(identity: identity, token: token))
     }
 

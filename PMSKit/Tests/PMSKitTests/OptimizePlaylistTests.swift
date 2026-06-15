@@ -24,7 +24,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
-@Test func createOnPlaylistPostsToKeyWithItemGrammar() {
+@Test func createOnPlaylistPutsToKeyWithItemGrammar() {
     let r = OptimizeRequest.createOnPlaylist(
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
@@ -33,7 +33,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
         mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: 8000,
                              videoResolution: "1920x1080"))
     #expect(r.url.path == "/playlists/9/items")
-    #expect(r.method == "POST")
+    #expect(r.method == "PUT")
     func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
     #expect(v("Item[type]") == "42")
     #expect(v("Item[title]") == "Blade Runner")
@@ -41,8 +41,28 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
     #expect(v("Item[targetTagID]") == "7")
     #expect(v("Item[MediaSettings][maxVideoBitrate]") == "8000")
     #expect(v("Item[MediaSettings][videoResolution]") == "1920x1080")
+    #expect(v("Item[locationID]") == "-1")
+    #expect(v("Item[Policy][scope]") == "all")
     #expect(v("Item[Location][uri]")?.contains("/library/metadata/101") == true)
     #expect(r.headers["X-Plex-Token"] == "tok")
+}
+
+@Test func createOnPlaylistSupportsCustomDeviceProfileQuality() {
+    let r = OptimizeRequest.createOnPlaylist(
+        server: server, token: "tok", identity: id,
+        backgroundProcessingKey: "/playlists/9/items",
+        ratingKey: "101", sourceURI: "library://section/item/%2Flibrary%2Fmetadata%2F101",
+        title: "T", targetTagID: nil, targetName: "Custom: Universal TV",
+        deviceProfile: "Universal TV",
+        mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: 20_000,
+                             videoResolution: "1920x1080"))
+    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
+    #expect(r.method == "PUT")
+    #expect(v("Item[target]") == "Custom: Universal TV")
+    #expect(v("Item[targetTagID]") == "")
+    #expect(v("Item[Device][profile]") == "Universal TV")
+    #expect(v("Item[MediaSettings][maxVideoBitrate]") == "20000")
+    #expect(v("Item[Location][uri]") == "library://section/item/%2Flibrary%2Fmetadata%2F101")
 }
 
 @Test func createOnPlaylistOmitsAbsentMediaSettings() {
