@@ -180,12 +180,16 @@ struct JellyfinBrowseService {
         _ = try await send(req)
     }
 
-    func downloadRequest(itemId: String) throws -> URLRequest {
+    func downloadRequest(itemId: String,
+                         mediaSourceId: String?,
+                         container: String?) throws -> URLRequest {
         let context = try context()
         return try JellyfinLibrary.downloadRequest(server: context.server,
                                                    token: context.token,
                                                    identity: jellyfinIdentity,
-                                                   itemId: itemId)
+                                                   itemId: itemId,
+                                                   mediaSourceId: mediaSourceId,
+                                                   container: container)
     }
 
     func transcodedDownloadRequest(itemId: String,
