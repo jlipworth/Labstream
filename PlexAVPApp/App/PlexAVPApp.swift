@@ -7,6 +7,12 @@ struct PlexAVPApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var customCinemaSession = CustomCinemaSessionStore()
 
+    init() {
+        // Register App Shortcuts at process start, per Apple guidance; Home refreshes
+        // dynamic media parameters again after browse data loads.
+        VisionPlexShortcuts.updateAppShortcutParameters()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

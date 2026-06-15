@@ -107,6 +107,14 @@ struct VisionPlexShortcuts: AppShortcutsProvider {
             shortTitle: "Play",
             systemImageName: "play.fill")
         AppShortcut(
+            intent: OpenMediaIntent(),
+            phrases: [
+                "Open \(\.$item) in \(.applicationName)",
+                "Show \(\.$item) in \(.applicationName)",
+            ],
+            shortTitle: "Open",
+            systemImageName: "info.circle")
+        AppShortcut(
             intent: ResumeContinueWatchingIntent(),
             phrases: [
                 "Resume \(.applicationName)",

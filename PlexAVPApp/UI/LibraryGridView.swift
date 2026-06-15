@@ -279,7 +279,7 @@ struct LibraryGridView: View {
             firstCharacters = (await initialsResponse)?.libraryEntries(totalSize: total) ?? []
             loadState = .loaded
             // Make the browsed page findable in system search (#24).
-            SpotlightIndexer.index(items)
+            SpotlightIndexer.index(page, server: server)
         } catch {
             loadState = .failed(friendlyMessage(error))
         }
@@ -336,10 +336,12 @@ struct LibraryGridView: View {
                                              sort: "titleSort")
             do {
                 let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-                for (i, item) in resp.mediaContainer.metadata.enumerated()
+                let pageItems = resp.mediaContainer.metadata
+                for (i, item) in pageItems.enumerated()
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
+                SpotlightIndexer.index(pageItems, server: server)
             } catch {
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
             }

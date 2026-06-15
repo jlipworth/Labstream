@@ -80,9 +80,11 @@ struct MediaItemEntityQuery: EntityStringQuery {
         let req = BrowseAPI.search(server: ctx.server, token: ctx.token,
                                    identity: ctx.identity, query: string)
         guard let resp = try? await ctx.client.send(req, as: HubsResponse.self) else { return [] }
-        // Same shaping as the in-app Search tab: music stays hidden (#15).
-        return resp.mediaContainer.hub.hidingMusic
+        // This first system surface opens video DetailView, so keep music out;
+        // music has its own in-app navigation paths.
+        return resp.mediaContainer.hub
             .flatMap(\.metadata)
+            .filter { !$0.isMusic }
             .prefix(15)
             .map(MediaItemEntity.init)
     }
