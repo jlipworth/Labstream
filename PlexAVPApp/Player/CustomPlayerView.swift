@@ -11,6 +11,7 @@ import UIKit
 /// seek weirdness that motivated the switch.
 struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+    @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     private let item: MediaItem
@@ -18,6 +19,7 @@ struct CustomPlayerView: View {
     private let trickPlayProvider: (any TrickPlayThumbnailProviding)?
     private let onClose: (() -> Void)?
     private let onRequestPlay: ((MediaItem) -> Void)?
+    private let allowsRealityTheater: Bool
 
     @State private var controller: PlaybackController?
     @State private var scrubState: PlaybackScrubState
@@ -28,12 +30,14 @@ struct CustomPlayerView: View {
          controllerFactory: @escaping @MainActor () -> PlaybackController,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          onClose: (() -> Void)? = nil,
-         onRequestPlay: ((MediaItem) -> Void)? = nil) {
+         onRequestPlay: ((MediaItem) -> Void)? = nil,
+         allowsRealityTheater: Bool = false) {
         self.item = item
         self.controllerFactory = controllerFactory
         self.trickPlayProvider = trickPlayProvider
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
+        self.allowsRealityTheater = allowsRealityTheater
         _scrubState = State(initialValue: PlaybackScrubState(durationMs: item.duration ?? 0,
                                                             livePositionMs: item.viewOffset ?? 0))
     }
@@ -60,7 +64,8 @@ struct CustomPlayerView: View {
                   },
                   trickPlayProvider: nil,
                   onClose: onClose,
-                  onRequestPlay: nil)
+                  onRequestPlay: nil,
+                  allowsRealityTheater: true)
     }
 
     var body: some View {
@@ -77,7 +82,8 @@ struct CustomPlayerView: View {
                                    trickPlayProvider: trickPlayProvider,
                                    isReconnecting: isReconnecting,
                                    onRetry: { retry(controller) },
-                                   onClose: onClose)
+                                   onClose: onClose,
+                                   allowsRealityTheater: allowsRealityTheater)
             } else {
                 ProgressView()
                     .controlSize(.large)
@@ -90,6 +96,7 @@ struct CustomPlayerView: View {
         .onDisappear {
             controller?.stop()
             cinemaSession.clear()
+            realityTheaterSession.clear()
             Task { @MainActor in await dismissImmersiveSpace() }
         }
     }

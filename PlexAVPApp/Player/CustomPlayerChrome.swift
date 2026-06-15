@@ -43,6 +43,7 @@ struct CustomPlayerChrome: View {
     let isReconnecting: Bool
     let onRetry: () -> Void
     let onClose: (() -> Void)?
+    let allowsRealityTheater: Bool
 
     @State private var chromeVisible = true
     @State private var hideTask: Task<Void, Never>?
@@ -63,7 +64,8 @@ struct CustomPlayerChrome: View {
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          isReconnecting: Bool,
          onRetry: @escaping () -> Void,
-         onClose: (() -> Void)?) {
+         onClose: (() -> Void)?,
+         allowsRealityTheater: Bool = false) {
         self.controller = controller
         self.title = title
         _scrubState = scrubState
@@ -71,6 +73,7 @@ struct CustomPlayerChrome: View {
         self.isReconnecting = isReconnecting
         self.onRetry = onRetry
         self.onClose = onClose
+        self.allowsRealityTheater = allowsRealityTheater
         _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
     }
 
@@ -387,13 +390,15 @@ struct CustomPlayerChrome: View {
 
 
     @ViewBuilder private var realityTheaterDeveloperButton: some View {
-        if RealityTheaterFeature.isDeveloperEntryPointEnabled()
-            || RealityTheaterFeature.isShippingEntryPointVisible {
+        if allowsRealityTheater
+            && (RealityTheaterFeature.isDeviceTestingEntryPointVisible
+                || RealityTheaterFeature.isDeveloperEntryPointEnabled()
+                || RealityTheaterFeature.isShippingEntryPointVisible) {
             Button {
                 revealChrome(keepVisible: true)
                 Task { @MainActor in await toggleRealityTheaterMode() }
             } label: {
-                Label(realityTheaterSession.phase == .open ? "Exit Theater Lab" : "Theater Lab",
+                Label(realityTheaterSession.phase == .open ? "Exit Cinema" : "Cinema",
                       systemImage: realityTheaterSession.phase == .open
                       ? "rectangle.on.rectangle.slash" : "theatermasks.fill")
                     .labelStyle(.titleAndIcon)
@@ -404,7 +409,7 @@ struct CustomPlayerChrome: View {
             .buttonStyle(.bordered)
             .controlSize(.regular)
             .disabled(realityTheaterSession.phase == .opening)
-            .help("Developer-only RealityKit theater prototype for #12")
+            .help("RealityKit cinema prototype for #12 headset testing")
         }
     }
 
