@@ -93,10 +93,56 @@ enum RealityTheaterControlsPlacement: String, CaseIterable, Equatable, Hashable,
     case seatRail
 
     var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .belowScreen: "Below screen"
+        case .seatRail: "Seat rail"
+        }
+    }
+}
+
+enum RealityTheaterBaselinePreset: String, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
+    case appleDefaultish
+    case appleLargeBackRow
+    case frontRowDebug
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .appleDefaultish: "Apple-ish default"
+        case .appleLargeBackRow: "Apple-ish large/back"
+        case .frontRowDebug: "Front-row debug"
+        }
+    }
+
+    var configuration: RealityTheaterConfiguration {
+        switch self {
+        case .appleDefaultish:
+            RealityTheaterConfiguration(screen: RealityTheaterScreenConfiguration(widthMeters: 4.8,
+                                                                                 distanceMeters: 5.0,
+                                                                                 verticalOffsetMeters: 0.25),
+                                       seat: .center,
+                                       controlsPlacement: .belowScreen)
+        case .appleLargeBackRow:
+            RealityTheaterConfiguration(screen: RealityTheaterScreenConfiguration(widthMeters: 6.2,
+                                                                                 distanceMeters: 6.5,
+                                                                                 verticalOffsetMeters: 0.32),
+                                       seat: .back,
+                                       controlsPlacement: .seatRail)
+        case .frontRowDebug:
+            RealityTheaterConfiguration(screen: RealityTheaterScreenConfiguration(widthMeters: 3.4,
+                                                                                 distanceMeters: 3.2,
+                                                                                 verticalOffsetMeters: 0.12),
+                                       seat: .front,
+                                       controlsPlacement: .seatRail)
+        }
+    }
 }
 
 struct RealityTheaterConfiguration: Equatable, Hashable, Sendable {
-    static let `default` = RealityTheaterConfiguration()
+    static let `default` = RealityTheaterBaselinePreset.appleDefaultish.configuration
 
     var screen: RealityTheaterScreenConfiguration
     var seat: RealityTheaterSeatPreset
@@ -121,6 +167,15 @@ struct RealityTheaterConfiguration: Equatable, Hashable, Sendable {
         case .seatRail:
             seat.prototypeSeatOffset + SIMD3<Float>(0, 0.18, -0.55)
         }
+    }
+
+    var debugSummary: String {
+        String(format: "width %.1fm · distance %.1fm · vertical %.2fm · %@ · %@",
+               screen.widthMeters,
+               screen.distanceMeters,
+               screen.verticalOffsetMeters,
+               seat.displayName,
+               controlsPlacement.displayName)
     }
 }
 
