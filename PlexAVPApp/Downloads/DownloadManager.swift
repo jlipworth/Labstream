@@ -134,16 +134,17 @@ public final class DownloadManager {
         }
     }
 
-    /// The server's real optimize preset names (`/media/processing/targets`), for the sheet.
-    /// Returns [] on any failure so the sheet falls back to the built-in preset names.
-    /// SERVER-SPECIFIC — confirmed by Phase 0.
+    /// Download quality labels for the sheet. Plex exposes three server Media Optimizer
+    /// target tags, but first-party clients also offer custom sync/videoQuality profiles
+    /// (Universal TV + 20/12/10/8 Mbps 1080p, 720p, 480p, etc.). Always include those
+    /// custom profiles so the offline picker matches the iPad-style quality ladder.
     public func optimizePresetNames(server: URL, token: String) async -> [String] {
-        guard let targets = try? await appModel.client.send(
+        let serverTargets = (try? await appModel.client.send(
             OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token,
                                                           identity: appModel.identity),
-            as: MediaProcessingTargets.self)
-        else { return [] }
-        return targets.targets.map(\.name).filter { !$0.isEmpty }
+            as: MediaProcessingTargets.self))?.targets.map(\.name) ?? []
+        return Self.dedup(serverTargets + Self.customDownloadProfileNames)
+            .filter { !$0.isEmpty }
     }
 
     /// Probe-driven download entry point (offline-download redesign). `choice` comes from the
@@ -318,6 +319,8 @@ public final class DownloadManager {
                         thumb: item.thumb,
                         art: item.art,
                         resolutionLabel: resolutionLabel,
+                        librarySectionID: item.librarySectionID,
+                        librarySectionKey: item.librarySectionKey,
                         mediaIndex: mediaIndex,
                         partIndex: partIndex,
                         posterRelativePath: nil)
@@ -466,28 +469,104 @@ public final class DownloadManager {
             throw DownloadError.optimizeFailed("playlists?type=42: \(String(describing: error))")
         }
 
-        // 2. Resolve the chosen preset NAME to the server's targetTagID. If the targets
-        //    endpoint isn't available, fall back to the conventional id so the POST still
-        //    has a value (Phase 0 will confirm whether that's accepted).
-        var targetTagID = Self.conventionalTagID(forName: targetName)
-        if let targets = try? await appModel.client.send(
+        // 2. Resolve built-in PMS target tags from the server. Custom iPad-style
+        //    quality rows intentionally leave targetTagID empty and instead send
+        //    Item[Device][profile] + Item[MediaSettings], matching python-plexapi.
+        let custom = Self.customDownloadProfile(named: targetName)
+        var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: targetName) : nil
+        if custom == nil,
+           let targets = try? await appModel.client.send(
             OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token, identity: identity),
             as: MediaProcessingTargets.self),
            let resolved = targets.tagID(forName: targetName) {
             targetTagID = resolved
         }
 
-        // 3. POST the optimize job to the background-processing playlist.
-        let settings = Self.mediaSettings(forTargetName: targetName)
+        let sourceURI = await optimizerSourceURI(for: item, server: server, token: token, identity: identity)
+
+        // 3. PUT the optimize job to the background-processing playlist.
+        let settings = custom?.settings ?? Self.mediaSettings(forTargetName: targetName)
         let create = OptimizeRequest.createOnPlaylist(
             server: server, token: token, identity: identity,
             backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
-            title: item.title, targetTagID: targetTagID, mediaSettings: settings)
+            sourceURI: sourceURI, title: item.title, targetTagID: targetTagID,
+            targetName: custom == nil ? "" : "Custom: \(custom!.deviceProfile)",
+            deviceProfile: custom?.deviceProfile, mediaSettings: settings)
         do {
             try await appModel.client.send(create)
         } catch {
             throw DownloadError.optimizeFailed("optimize POST: \(String(describing: error))")
         }
+    }
+
+    private struct LibrarySectionsResponse: Decodable {
+        struct Container: Decodable { let directory: [Directory]
+            enum CodingKeys: String, CodingKey { case directory = "Directory" } }
+        struct Directory: Decodable { let key: String; let uuid: String? }
+        let mediaContainer: Container
+        enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    }
+
+    private func optimizerSourceURI(for item: MediaItem, server: URL, token: String,
+                                    identity: ClientIdentity) async -> String? {
+        let sectionID = item.librarySectionID.map(String.init)
+            ?? item.librarySectionKey?.split(separator: "/").last.map(String.init)
+        guard let sectionID else { return nil }
+        let request = PlexRequest(url: server.appendingPathComponent("library/sections"),
+                                  method: "GET", queryItems: [],
+                                  headers: PlexHeaders.standard(identity: identity, token: token))
+        guard let response = try? await appModel.client.send(request, as: LibrarySectionsResponse.self),
+              let uuid = response.mediaContainer.directory.first(where: { $0.key == sectionID })?.uuid,
+              let metadataKey = item.key ?? Optional("/library/metadata/\(item.ratingKey)")
+        else { return nil }
+        return "library://\(uuid)/item/\(metadataKey.urlQueryEscapedForPlexPath)"
+    }
+
+    private struct CustomDownloadProfile {
+        let name: String
+        let deviceProfile: String
+        let settings: OptimizeRequest.MediaSettings
+    }
+
+    private static let customDownloadProfiles: [CustomDownloadProfile] = [
+        .init(name: "Original", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: nil, maxVideoBitrateKbps: nil, videoResolution: nil)),
+        .init(name: "1080p 20 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 100, maxVideoBitrateKbps: 20_000, videoResolution: "1920x1080")),
+        .init(name: "1080p 12 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 90, maxVideoBitrateKbps: 12_000, videoResolution: "1920x1080")),
+        .init(name: "1080p 10 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 75, maxVideoBitrateKbps: 10_000, videoResolution: "1920x1080")),
+        .init(name: "1080p 8 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 60, maxVideoBitrateKbps: 8_000, videoResolution: "1920x1080")),
+        .init(name: "720p 4 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 100, maxVideoBitrateKbps: 4_000, videoResolution: "1280x720")),
+        .init(name: "720p 3 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 75, maxVideoBitrateKbps: 3_000, videoResolution: "1280x720")),
+        .init(name: "720p 2 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 60, maxVideoBitrateKbps: 2_000, videoResolution: "1280x720")),
+        .init(name: "480p 1.5 Mbps", deviceProfile: "Universal Mobile",
+              settings: .init(videoQuality: 60, maxVideoBitrateKbps: 1_500, videoResolution: "720x480")),
+    ]
+
+    private static var customDownloadProfileNames: [String] {
+        customDownloadProfiles.map(\.name)
+    }
+
+    private static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
+        customDownloadProfiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    private static func dedup(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for name in names {
+            let key = name.lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(name)
+        }
+        return result
     }
 
     /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
@@ -994,5 +1073,12 @@ final class BackgroundDownloadCompletionRegistry {
     func fireCompletion(for identifier: String) {
         guard let handler = handlers.removeValue(forKey: identifier) else { return }
         handler()
+    }
+}
+
+
+private extension String {
+    var urlQueryEscapedForPlexPath: String {
+        addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? self
     }
 }
