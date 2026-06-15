@@ -7,7 +7,9 @@ struct LibrariesView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var sections: [PlexSection] = []
+    @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadedIdentity: String?
 
     var body: some View {
         Group {
@@ -21,7 +23,9 @@ struct LibrariesView: View {
                                        systemImage: "exclamationmark.triangle",
                                        description: Text(message))
             case .loaded:
-                if sections.isEmpty {
+                if appModel.activeBackend == .jellyfin {
+                    jellyfinLibrariesList
+                } else if sections.isEmpty {
                     ContentUnavailableView("No libraries",
                                            systemImage: "rectangle.stack",
                                            description: Text("This server has no libraries."))
@@ -44,11 +48,23 @@ struct LibrariesView: View {
         .navigationDestination(for: PlexSection.self) { section in
             LibraryGridView(section: section)
         }
+        .navigationDestination(for: JellyfinLibraryLink.self) { view in
+            LibraryGridView(jellyfin: view)
+        }
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
-        .task { await load() }
+        .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private var loadIdentity: String {
+        switch appModel.activeBackend {
+        case .plex:
+            return "plex:\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+        case .jellyfin:
+            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+        }
     }
 
     private func icon(for type: String) -> String {
@@ -61,15 +77,50 @@ struct LibrariesView: View {
         }
     }
 
+    @ViewBuilder
+    private var jellyfinLibrariesList: some View {
+        if jellyfinViews.isEmpty {
+            ContentUnavailableView("No Jellyfin libraries",
+                                   systemImage: "rectangle.stack",
+                                   description: Text("This Jellyfin user has no visible libraries."))
+        } else {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260, maximum: 340),
+                                    spacing: DS.Space.xl)],
+                          spacing: DS.Space.xl) {
+                    ForEach(jellyfinViews) { view in
+                        NavigationLink(value: view) {
+                            JellyfinLibraryCard(view: view)
+                        }
+                        .cardLink(cornerRadius: DS.Radius.card)
+                    }
+                }
+                .padding(DS.Space.xl)
+            }
+        }
+    }
+
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back; the section list doesn't change mid-session,
         // so only first load and pull-to-refresh fetch.
-        if !force, case .loaded = loadState { return }
+        if !force, loadedIdentity == loadIdentity, case .loaded = loadState { return }
+        loadState = .loading
+
+        if appModel.activeBackend == .jellyfin {
+            do {
+                jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                loadedIdentity = loadIdentity
+                loadState = .loaded
+            } catch {
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
-        loadState = .loading
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
@@ -78,9 +129,22 @@ struct LibrariesView: View {
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
             sections = resp.mediaContainer.directory.filter { !$0.isMusic }
+            loadedIdentity = loadIdentity
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+enum LibraryGridSource: Hashable {
+    case plex(PlexSection)
+    case jellyfin(JellyfinLibraryLink)
+
+    var title: String {
+        switch self {
+        case .plex(let section): return section.title
+        case .jellyfin(let view): return view.title
         }
     }
 }
@@ -92,7 +156,7 @@ extension PlexSection: @retroactive Hashable {
 
 /// Poster grid for a single library section (`GET /library/sections/<key>/all`).
 struct LibraryGridView: View {
-    let section: PlexSection
+    let source: LibraryGridSource
 
     @Environment(AppModel.self) private var appModel
 
@@ -105,6 +169,14 @@ struct LibraryGridView: View {
                                     spacing: DS.Space.xl)]
     private let pageSize = 200
 
+    init(section: PlexSection) {
+        self.source = .plex(section)
+    }
+
+    init(jellyfin view: JellyfinLibraryLink) {
+        self.source = .jellyfin(view)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -112,16 +184,16 @@ struct LibraryGridView: View {
                 case .idle, .loading:
                     SkeletonGrid()
                 case .failed(let message):
-                    ContentUnavailableView("Couldn’t load \(section.title)",
+                    ContentUnavailableView("Couldn’t load \(source.title)",
                                            systemImage: "exclamationmark.triangle",
                                            description: Text(message))
-                    .frame(maxWidth: .infinity, minHeight: 360)
+                        .frame(maxWidth: .infinity, minHeight: 360)
                 case .loaded:
                     if slots.isEmpty {
                         ContentUnavailableView("Empty library",
                                                systemImage: "rectangle.stack",
-                                               description: Text("No items in \(section.title)."))
-                        .frame(maxWidth: .infinity, minHeight: 360)
+                                               description: Text("No items in \(source.title)."))
+                            .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
                         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
                             ForEach(slots.indices, id: \.self) { index in
@@ -160,7 +232,7 @@ struct LibraryGridView: View {
                 }
             }
         }
-        .navigationTitle(section.title)
+        .navigationTitle(source.title)
         .task { await load() }
         .refreshable { await load(force: true) }
     }
@@ -169,12 +241,23 @@ struct LibraryGridView: View {
         // `.task` re-fires on pop-back from an item; reloading the whole grid then
         // would dump the scroll position the user is returning to. Load once.
         if !force, case .loaded = loadState { return }
+        loadState = .loading
+        loadingPages = []
+        firstCharacters = []
+
+        switch source {
+        case .plex(let section):
+            await loadPlex(section: section)
+        case .jellyfin(let view):
+            await loadJellyfin(view: view)
+        }
+    }
+
+    private func loadPlex(section: PlexSection) async {
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
         }
-        loadState = .loading
-        loadingPages = []
         let req = BrowseAPI.sectionItems(server: server, token: token,
                                          identity: appModel.identity, sectionKey: section.key,
                                          containerStart: 0, containerSize: pageSize,
@@ -182,7 +265,8 @@ struct LibraryGridView: View {
         do {
             async let itemsResponse = appModel.client.send(req, as: MetadataResponse.self)
             async let initialsResponse: FirstCharacterResponse? = loadFirstCharacters(server: server,
-                                                                                      token: token)
+                                                                                      token: token,
+                                                                                      section: section)
 
             let resp = try await itemsResponse
             let page = resp.mediaContainer.metadata
@@ -199,35 +283,117 @@ struct LibraryGridView: View {
         }
     }
 
-    private func loadFirstCharacters(server: URL, token: String) async -> FirstCharacterResponse? {
+    private func loadJellyfin(view: JellyfinLibraryLink) async {
+        do {
+            let page = try await JellyfinBrowseService(appModel: appModel)
+                .itemsPage(parentId: view.id,
+                           recursive: false,
+                           startIndex: 0,
+                           limit: pageSize,
+                           includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                           fields: JellyfinLibrary.gridItemFields)
+            let total = max(page.total ?? page.items.count, page.items.count)
+            var fresh = [MediaItem?](repeating: nil, count: total)
+            for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
+                fresh[i] = item
+            }
+            slots = fresh
+            firstCharacters = []
+            loadState = .loaded
+            Task { await loadJellyfinFirstCharacters(view: view, total: total) }
+        } catch {
+            loadState = .failed(friendlyMessage(error))
+        }
+    }
+
+    private func loadFirstCharacters(server: URL, token: String,
+                                     section: PlexSection) async -> FirstCharacterResponse? {
         let req = BrowseAPI.firstCharacters(server: server, token: token,
                                             identity: appModel.identity, sectionKey: section.key)
         return try? await appModel.client.send(req, as: FirstCharacterResponse.self)
     }
 
     private func loadPage(containing index: Int) async {
-        guard slots.indices.contains(index),
-              let server = appModel.serverBaseURL,
-              let token = appModel.serverToken
-        else { return }
+        guard slots.indices.contains(index) else { return }
         let page = index / pageSize
         guard !loadingPages.contains(page) else { return }
         loadingPages.insert(page)
         let start = page * pageSize
-        let req = BrowseAPI.sectionItems(server: server, token: token,
-                                         identity: appModel.identity, sectionKey: section.key,
-                                         containerStart: start, containerSize: pageSize,
-                                         sort: "titleSort")
-        do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            for (i, item) in resp.mediaContainer.metadata.enumerated()
-            where slots.indices.contains(start + i) {
-                slots[start + i] = item
+
+        switch source {
+        case .plex(let section):
+            guard let server = appModel.serverBaseURL,
+                  let token = appModel.serverToken
+            else {
+                loadingPages.remove(page)
+                return
             }
-        } catch {
-            // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            let req = BrowseAPI.sectionItems(server: server, token: token,
+                                             identity: appModel.identity, sectionKey: section.key,
+                                             containerStart: start, containerSize: pageSize,
+                                             sort: "titleSort")
+            do {
+                let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+                for (i, item) in resp.mediaContainer.metadata.enumerated()
+                where slots.indices.contains(start + i) {
+                    slots[start + i] = item
+                }
+            } catch {
+                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            }
+        case .jellyfin(let view):
+            do {
+                let page = try await JellyfinBrowseService(appModel: appModel)
+                    .itemsPage(parentId: view.id,
+                               recursive: false,
+                               startIndex: start,
+                               limit: pageSize,
+                               includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                               fields: JellyfinLibrary.gridItemFields)
+                for (i, item) in page.items.enumerated()
+                where slots.indices.contains(start + i) {
+                    slots[start + i] = item
+                }
+            } catch {
+                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            }
         }
         loadingPages.remove(page)
+    }
+    private func loadJellyfinFirstCharacters(view: JellyfinLibraryLink, total: Int) async {
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
+        let service = JellyfinBrowseService(appModel: appModel)
+        var counts: [(display: String, count: Int)] = []
+        for letter in letters {
+            let page = try? await service.itemsPage(parentId: view.id,
+                                                    recursive: false,
+                                                    limit: 1,
+                                                    nameStartsWith: letter,
+                                                    includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                                                    fields: JellyfinLibrary.gridItemFields)
+            let count = page?.total ?? 0
+            if count > 0 { counts.append((letter, count)) }
+        }
+        var offset = 0
+        let entries = counts.map { entry -> LibraryFirstCharacter in
+            defer { offset += entry.count }
+            return LibraryFirstCharacter(display: entry.display,
+                                         count: entry.count,
+                                         offset: min(offset, max(total - 1, 0)))
+        }
+        firstCharacters = entries
+    }
+
+}
+
+private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {
+    switch view.collectionType?.lowercased() {
+    case "movies":
+        return "Movie"
+    case "tvshows":
+        return "Series"
+    default:
+        return "Movie,Series,Season,Episode"
     }
 }
 
@@ -333,6 +499,70 @@ private extension KeyedDecodingContainer {
         if let int = try decodeIfPresent(Int.self, forKey: key) { return int }
         if let string = try decodeIfPresent(String.self, forKey: key) { return Int(string) }
         return nil
+    }
+}
+
+struct JellyfinLibraryCard: View {
+    let view: JellyfinLibraryLink
+
+    var body: some View {
+        HStack(spacing: DS.Space.lg) {
+            ZStack {
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .fill(.tint.opacity(0.18))
+                Image(systemName: jellyfinLibraryIcon(collectionType: view.collectionType))
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+            .frame(width: 76, height: 76)
+
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text(view.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text(jellyfinLibrarySubtitle(collectionType: view.collectionType))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Space.lg)
+        .frame(width: 300, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .posterHover()
+    }
+}
+
+func jellyfinLibraryIcon(collectionType: String?) -> String {
+    switch collectionType?.lowercased() {
+    case "movies": return "film"
+    case "tvshows": return "tv"
+    case "music": return "music.note"
+    case "boxsets": return "square.stack.3d.up"
+    case "homevideos", "livetv": return "play.rectangle"
+    case "photos": return "photo"
+    case "folders": return "folder"
+    default: return "rectangle.stack"
+    }
+}
+
+func jellyfinLibrarySubtitle(collectionType: String?) -> String {
+    switch collectionType?.lowercased() {
+    case "movies": return "Movies"
+    case "tvshows": return "TV shows"
+    case "music": return "Music"
+    case "boxsets": return "Collections"
+    case "homevideos": return "Home videos"
+    case "livetv": return "Live TV"
+    case "photos": return "Photos"
+    case "folders": return "Folder"
+    default: return "Library"
     }
 }
 

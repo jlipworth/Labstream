@@ -23,11 +23,33 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(url.path == "/video/:/transcode/universal/start.m3u8")
     #expect(v("protocol") == "hls")
     #expect(v("maxVideoBitrate") == "8000")
+    #expect(v("maxVideoResolution") == "1920x1080")
+    #expect(v("maxAudioBitrate") == "640")
     #expect(v("directPlay") == "0")
     #expect(v("path") == "/library/metadata/101")
     #expect(v("session") == "SESSION-1")
     #expect(v("X-Plex-Token") == "tok")            // token as QUERY param
     #expect(v("partIndex") == "0")
+}
+
+
+@Test func qualityLadderAddsResolutionAndAudioCaps() {
+    let low = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 3000,
+                               sessionID: "S", mediaIndex: 0, partIndex: 0)
+    let lowQuery = queryItems(low.startM3U8URL())
+    func lowValue(_ n: String) -> String? { lowQuery.first { $0.name == n }?.value }
+    #expect(lowValue("maxVideoResolution") == "1280x720")
+    #expect(lowValue("maxAudioBitrate") == "256")
+
+    let maximum = TranscodeRequest(server: server, token: "tok", identity: id,
+                                   metadataKey: "/library/metadata/101",
+                                   maxVideoBitrateKbps: 200_000,
+                                   sessionID: "S", mediaIndex: 0, partIndex: 0)
+    let maximumNames = Set(queryItems(maximum.startM3U8URL()).map(\.name))
+    #expect(!maximumNames.contains("maxVideoResolution"))
+    #expect(!maximumNames.contains("maxAudioBitrate"))
 }
 
 @Test func startURLPercentEncodesReservedQuerySeparators() throws {
@@ -65,9 +87,11 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
 }
 
 @Test func deviceProfileDeclaresHLSAndBitrateLimit() {
-    let p = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000)
+    let p = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000, maxAudioBitrateKbps: 640)
     #expect(p.clientProfileExtra.contains("add-transcode-target"))
     #expect(p.clientProfileExtra.contains("protocol=hls"))
+    #expect(p.clientProfileExtra.contains("name=video.bitrate&value=8000"))
+    #expect(p.clientProfileExtra.contains("name=audio.bitrate&value=640"))
 }
 
 @Test func stopRequestTargetsUniversalStopWithSession() {

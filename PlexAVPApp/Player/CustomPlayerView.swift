@@ -93,6 +93,7 @@ struct CustomPlayerView: View {
     private func makeController() -> PlaybackController {
         let playback = controllerFactory()
         playback.onAdvanceToNext = onRequestPlay
+        playback.onPlaybackEnded = onClose
         playback.onPlaybackActive = { isReconnecting = false }
         return playback
     }

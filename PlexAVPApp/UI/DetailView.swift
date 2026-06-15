@@ -27,7 +27,11 @@ struct DetailView: View {
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
     @State private var playLocalURL: URL?
+    @State private var remotePlayback: JellyfinRemotePlayback?
     @State private var showDownloadOptions = false
+    @State private var playbackErrorMessage: String?
+    @State private var isResolvingPlayback = false
+    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
 
     /// The item currently being PLAYED in the cover. Starts as the detail item, but the
     /// Up Next autoplay (#15) swaps it to the next episode while keeping the cover up — the
@@ -39,10 +43,6 @@ struct DetailView: View {
     /// Defaults to `0` (the primary version). Reset whenever a metadata refresh swaps the
     /// underlying item out from under us so we never index past the array.
     @State private var selectedMediaIndex = 0
-
-    /// Same persisted default cap that Settings uses. The custom player passes it into its
-    /// `PlaybackController` so playback starts from the saved quality choice.
-    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
 
     /// Optimistic local override of the server's watched state. `nil` means "use the
     /// value from `detailed`"; once the user toggles we hold their intent here so the row
@@ -290,30 +290,36 @@ struct DetailView: View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             HStack(spacing: DS.Space.lg) {
                 Button {
-                    // Defense-in-depth: body routes all music to `musicRedirect`, so a
-                    // music item can never reach this video-player launch. Cheap guard
-                    // kept in case `detailed`'s refresh ever reclassifies the item.
-                    guard !detailed.isMusic else { return }
-                    // Video and music share one audio session — pause music and yield
-                    // the system transport so AirPods controls drive the video (#17).
-                    musicPlayer.pauseForVideo()
-                    playLocalURL = nil
-                    playingItem = detailed
-                    presentingPlayer = true
+                    Task { await startPlayback() }
                 } label: {
-                    Label(resumeLabel, systemImage: "play.fill")
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.md)
-                        .padding(.vertical, DS.Space.xs)
+                    Group {
+                        if isResolvingPlayback {
+                            ProgressView()
+                        } else {
+                            Label(resumeLabel, systemImage: "play.fill")
+                        }
+                    }
+                    .font(.title3.weight(.semibold))
+                    .padding(.horizontal, DS.Space.md)
+                    .padding(.vertical, DS.Space.xs)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(isResolvingPlayback)
 
                 downloadButton
 
-                markWatchedButton
+                if supportsWatchedToggle {
+                    markWatchedButton
+                }
             }
 
             versionPicker
+
+            if let playbackErrorMessage {
+                Text(playbackErrorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
         }
     }
 
@@ -325,6 +331,7 @@ struct DetailView: View {
             Button {
                 musicPlayer.pauseForVideo()
                 playLocalURL = local
+                remotePlayback = nil
                 playingItem = detailed
                 presentingPlayer = true
             } label: {
@@ -395,6 +402,46 @@ struct DetailView: View {
             CustomPlayerView(localFile: local, item: playing,
                              onClose: { presentingPlayer = false })
                 .ignoresSafeArea()
+        } else if let remote = remotePlayback {
+            CustomPlayerView(item: playing,
+                             controllerFactory: {
+                                 PlaybackController(remoteStreamURL: remote.url,
+                                                    item: playing,
+                                                    identity: appModel.identity,
+                                                    client: appModel.client,
+                                                    httpHeaders: remote.headers,
+                                                    sourceMetadata: remote.sourceMetadata,
+                                                    playMethod: remote.playMethod,
+                                                    onStopRemoteSession: {
+                                                        Task {
+                                                            await JellyfinBrowseService(appModel: appModel)
+                                                                .stopActiveEncoding(playSessionId: remote.playSessionId)
+                                                        }
+                                                    },
+                                                    remoteStreamReopener: { request in
+                                                        let result = try await JellyfinBrowseService(appModel: appModel)
+                                                            .playbackOpen(item: playing,
+                                                                          maxVideoBitrateKbps: request.bitrateKbps,
+                                                                          resumeOffsetMs: request.offsetMs,
+                                                                          audioStreamIndex: request.audioStreamIndex,
+                                                                          subtitleStreamIndex: request.subtitleStreamIndex)
+                                                        return RemoteStreamOpenResult(
+                                                            url: result.url,
+                                                            headers: result.requiredHTTPHeaders,
+                                                            sourceMetadata: result.sourceMetadata,
+                                                            playMethod: result.playMethod,
+                                                            onStop: {
+                                                                Task {
+                                                                    await JellyfinBrowseService(appModel: appModel)
+                                                                        .stopActiveEncoding(playSessionId: result.playSessionId)
+                                                                }
+                                                            })
+                                                    },
+                                                    maxVideoBitrateKbps: maxVideoBitrateKbps)
+                             },
+                             onClose: { presentingPlayer = false })
+                .id(remote.id)
+                .ignoresSafeArea()
         } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
             // The custom player owns its own chrome, including a top-leading Close affordance,
             // so a `.fullScreenCover` is always escapable (the old AVKit path had no system
@@ -440,47 +487,92 @@ struct DetailView: View {
 
     // MARK: - Watched toggle
 
-    /// Scrobble / unscrobble against PMS, updating the local watched state optimistically.
+    /// Scrobble / unscrobble against the active backend, updating the local watched state
+    /// optimistically.
     ///
     /// We flip `watchedOverride` first so the UI reacts immediately, then fire the
     /// request. On failure we roll the override back. NOTE: never logs the token — the
     /// builders carry it internally and we only ever inspect the `Bool` outcome here.
     private func toggleWatched() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         let wasWatched = isWatched
         // Optimistic flip.
         watchedOverride = !wasWatched
 
-        let req = wasWatched
-            ? TimelineRequest.unscrobble(server: server, token: token,
-                                         identity: appModel.identity,
-                                         ratingKey: detailed.ratingKey)
-            : TimelineRequest.scrobble(server: server, token: token,
-                                       identity: appModel.identity,
-                                       ratingKey: detailed.ratingKey)
-
         do {
-            _ = try await appModel.client.send(req)
+            switch appModel.activeBackend {
+            case .plex:
+                guard let server = appModel.serverBaseURL,
+                      let token = appModel.serverToken else {
+                    watchedOverride = wasWatched
+                    return
+                }
+                let req = wasWatched
+                    ? TimelineRequest.unscrobble(server: server, token: token,
+                                                 identity: appModel.identity,
+                                                 ratingKey: detailed.ratingKey)
+                    : TimelineRequest.scrobble(server: server, token: token,
+                                               identity: appModel.identity,
+                                               ratingKey: detailed.ratingKey)
+                _ = try await appModel.client.send(req)
+            case .jellyfin:
+                try await JellyfinBrowseService(appModel: appModel)
+                    .setPlayed(itemId: detailed.ratingKey, played: !wasWatched)
+            }
         } catch {
-            // Roll back the optimistic flip; PMS rejected the change.
+            // Roll back the optimistic flip; the server rejected the change.
             watchedOverride = wasWatched
+        }
+    }
+
+    private func startPlayback() async {
+        // Defense-in-depth (#15): music is filtered from browse, but never let a music item
+        // launch the video player. Unreachable in normal flow.
+        guard !detailed.isMusic else { return }
+        playbackErrorMessage = nil
+        musicPlayer.pauseForVideo()
+        playLocalURL = nil
+        playingItem = detailed
+        switch appModel.activeBackend {
+        case .plex:
+            remotePlayback = nil
+            presentingPlayer = true
+        case .jellyfin:
+            isResolvingPlayback = true
+            do {
+                let service = JellyfinBrowseService(appModel: appModel)
+                let playbackItem = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                playingItem = playbackItem
+                let result = try await service
+                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: maxVideoBitrateKbps)
+                remotePlayback = JellyfinRemotePlayback(url: result.url,
+                                                        headers: result.requiredHTTPHeaders,
+                                                        playSessionId: result.playSessionId,
+                                                        sourceMetadata: result.sourceMetadata,
+                                                        playMethod: result.playMethod)
+                presentingPlayer = true
+            } catch {
+                playbackErrorMessage = friendlyMessage(error)
+            }
+            isResolvingPlayback = false
         }
     }
 
     // MARK: - Derived state
 
     private var localURL: URL? {
-        downloadManager.localURL(for: detailed.ratingKey)
+        return downloadManager.localURL(for: downloadManager.recordKey(for: detailed))
     }
 
     private var isDownloading: Bool {
-        downloadManager.records.contains {
-            $0.ratingKey == detailed.ratingKey && ($0.status == .queued || $0.status == .downloading)
+        let key = downloadManager.recordKey(for: detailed)
+        return downloadManager.records.contains {
+            $0.ratingKey == key && ($0.status == .queued || $0.status == .downloading)
         }
     }
 
     private var downloadLabel: String {
-        if let rec = downloadManager.records.first(where: { $0.ratingKey == detailed.ratingKey }) {
+        let key = downloadManager.recordKey(for: detailed)
+        if let rec = downloadManager.records.first(where: { $0.ratingKey == key }) {
             if rec.status == .failed { return "Download Failed" }
             if rec.status == .complete { return "Downloaded" }
             return "Downloading \(Int(rec.progress * 100))%"
@@ -491,6 +583,13 @@ struct DetailView: View {
     private var isWatched: Bool {
         if let override = watchedOverride { return override }
         return (detailed.viewCount ?? 0) > 0
+    }
+
+    private var supportsWatchedToggle: Bool {
+        switch appModel.activeBackend {
+        case .plex, .jellyfin:
+            return true
+        }
     }
 
     private var resumeLabel: String {
@@ -546,6 +645,14 @@ struct DetailView: View {
     }
 
     private func refreshMetadata() async {
+        if appModel.activeBackend == .jellyfin {
+            if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
+                detailed = full
+                selectedMediaIndex = 0
+                watchedOverride = nil
+            }
+            return
+        }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         let req = BrowseAPI.metadata(server: server, token: token,
                                      identity: appModel.identity, ratingKey: item.ratingKey)
@@ -561,6 +668,15 @@ struct DetailView: View {
             watchedOverride = nil
         }
     }
+}
+
+private struct JellyfinRemotePlayback: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    let headers: [String: String]
+    let playSessionId: String
+    let sourceMetadata: JellyfinPlaybackSourceMetadata
+    let playMethod: JellyfinPlayMethod
 }
 
 /// Browser for a TV CONTAINER (a `show` or a `season`).
@@ -649,6 +765,17 @@ struct ContainerBrowserView: View {
         // `.task` re-fires when popping back from a pushed season/episode; reloading
         // then resets the scroll position the user is returning to. Load once.
         if case .loaded = loadState { return }
+        if appModel.activeBackend == .jellyfin {
+            loadState = .loading
+            do {
+                children = try await JellyfinBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
+                loadState = .loaded
+            } catch {
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return

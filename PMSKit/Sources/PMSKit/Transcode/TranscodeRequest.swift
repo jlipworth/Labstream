@@ -19,6 +19,11 @@ public struct TranscodeRequest: Sendable, Equatable {
     public let metadataKey: String
     /// Hard cap on transcoded video bitrate, in kbps.
     public let maxVideoBitrateKbps: Int
+    /// Optional resolution cap paired with the streaming-quality ladder (e.g. 1280x720).
+    public let maxVideoResolution: String?
+    /// Optional audio bitrate cap in kbps. Low/mid profiles cap audio so TrueHD/DTS sources do
+    /// not consume the entire bandwidth budget; high/maximum profiles leave audio uncapped.
+    public let maxAudioBitrateKbps: Int?
     /// Per-playback transcode session identifier.
     public let sessionID: String
     /// Index into the item's `Media` array.
@@ -41,6 +46,8 @@ public struct TranscodeRequest: Sendable, Equatable {
                 identity: ClientIdentity,
                 metadataKey: String,
                 maxVideoBitrateKbps: Int,
+                maxVideoResolution: String? = nil,
+                maxAudioBitrateKbps: Int? = nil,
                 sessionID: String,
                 mediaIndex: Int,
                 partIndex: Int,
@@ -51,6 +58,8 @@ public struct TranscodeRequest: Sendable, Equatable {
         self.identity = identity
         self.metadataKey = metadataKey
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.maxVideoResolution = maxVideoResolution ?? Self.resolutionCap(forBitrateKbps: maxVideoBitrateKbps)
+        self.maxAudioBitrateKbps = maxAudioBitrateKbps ?? Self.audioBitrateCap(forBitrateKbps: maxVideoBitrateKbps)
         self.sessionID = sessionID
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
@@ -60,7 +69,32 @@ public struct TranscodeRequest: Sendable, Equatable {
 
     /// The device profile advertised to PMS for this request.
     public var deviceProfile: DeviceProfile {
-        DeviceProfile.visionOS(maxVideoBitrateKbps: maxVideoBitrateKbps)
+        DeviceProfile.visionOS(maxVideoBitrateKbps: maxVideoBitrateKbps,
+                               maxAudioBitrateKbps: maxAudioBitrateKbps)
+    }
+
+    public static func resolutionCap(forBitrateKbps kbps: Int) -> String? {
+        switch kbps {
+        case 1...4_000:
+            return "1280x720"
+        case 4_001...20_000:
+            return "1920x1080"
+        case 20_001...40_000:
+            return "3840x2160"
+        default:
+            return nil
+        }
+    }
+
+    public static func audioBitrateCap(forBitrateKbps kbps: Int) -> Int? {
+        switch kbps {
+        case 1...4_000:
+            return 256
+        case 4_001...20_000:
+            return 640
+        default:
+            return nil
+        }
     }
 
     /// The shared parameter set used by both URLs.
@@ -85,6 +119,17 @@ public struct TranscodeRequest: Sendable, Equatable {
             .init(name: "X-Plex-Client-Profile-Name", value: "Safari"),
             .init(name: "X-Plex-Client-Profile-Extra", value: deviceProfile.clientProfileExtra),
         ]
+
+        // Match the app's quality ladder semantics. PMS honors maxVideoBitrate, but without an
+        // explicit resolution cap a "3 Mbps · 720p" selection can still resolve as a larger
+        // rendition depending on source/server heuristics. Keep maximum/high profiles uncapped
+        // so high-quality audio remains available when explicitly selected.
+        if let maxVideoResolution {
+            items.append(.init(name: "maxVideoResolution", value: maxVideoResolution))
+        }
+        if let maxAudioBitrateKbps {
+            items.append(.init(name: "maxAudioBitrate", value: String(maxAudioBitrateKbps)))
+        }
 
         // Resume offset: tell PMS where to start the transcode session (seconds).
         if let off = startOffsetSeconds, off > 0 {
@@ -185,7 +230,8 @@ public struct TranscodeRequest: Sendable, Equatable {
         items.append(.init(name: "directPlay", value: "1"))
         // Advertise the direct-play-capable profile only on this path.
         items.removeAll { $0.name == "X-Plex-Client-Profile-Extra" }
-        let probeProfile = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps)
+        let probeProfile = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                                                 maxAudioBitrateKbps: maxAudioBitrateKbps)
         items.append(.init(name: "X-Plex-Client-Profile-Extra", value: probeProfile.clientProfileExtra))
         return items
     }
