@@ -48,3 +48,15 @@ This slice creates a clean #12 boundary while keeping the product safe:
 - `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' -configuration Debug build CODE_SIGNING_ALLOWED=NO`
 - `git diff --check`
 - Confirm no visible player-chrome theater affordance was added and `CustomCinemaMode.isUserVisible` remains `false`.
+## 2026-06-15 buildout update
+
+- Added a DEBUG/developer-gated player chrome entry point (`Theater Lab`) behind
+  `RealityTheaterFeature.developerDefaultsKey`; it remains hidden in normal/shipping UI.
+- The entry point prepares `RealityTheaterSessionStore` from the active `PlaybackController`
+  and opens the separate #12 immersive space.
+- `RealityTheaterPrototypeView` now hosts a SwiftUI/AVPlayer attachment over the RealityKit
+  screen placeholder, giving the next device pass a concrete video-surface proof path without
+  re-enabling the old hidden `CustomCinemaMode` button.
+- Validation: PMSKit tests, hygiene, and Vision Pro simulator build/run passed after rebasing
+  on `origin/main` with downloads + URL-query hardening merged.
+
