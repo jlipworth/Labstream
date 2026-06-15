@@ -188,6 +188,22 @@ struct JellyfinBrowseService {
                                                    itemId: itemId)
     }
 
+    func transcodedDownloadRequest(itemId: String,
+                                   mediaSourceId: String?,
+                                   maxVideoBitrate: Int,
+                                   maxWidth: Int?,
+                                   maxHeight: Int?) throws -> URLRequest {
+        let context = try context()
+        return try JellyfinLibrary.transcodedDownloadRequest(server: context.server,
+                                                             token: context.token,
+                                                             identity: jellyfinIdentity,
+                                                             itemId: itemId,
+                                                             mediaSourceId: mediaSourceId,
+                                                             maxVideoBitrate: maxVideoBitrate,
+                                                             maxWidth: maxWidth,
+                                                             maxHeight: maxHeight)
+    }
+
     func stopActiveEncoding(playSessionId: String) async {
         guard let context = try? context(), !playSessionId.isEmpty else { return }
         guard let req = try? JellyfinLibrary.activeEncodingStopRequest(server: context.server,

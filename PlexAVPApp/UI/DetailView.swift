@@ -555,17 +555,19 @@ struct DetailView: View {
     // MARK: - Derived state
 
     private var localURL: URL? {
-        return downloadManager.localURL(for: detailed.ratingKey)
+        return downloadManager.localURL(for: downloadManager.recordKey(for: detailed))
     }
 
     private var isDownloading: Bool {
+        let key = downloadManager.recordKey(for: detailed)
         return downloadManager.records.contains {
-            $0.ratingKey == detailed.ratingKey && ($0.status == .queued || $0.status == .downloading)
+            $0.ratingKey == key && ($0.status == .queued || $0.status == .downloading)
         }
     }
 
     private var downloadLabel: String {
-        if let rec = downloadManager.records.first(where: { $0.ratingKey == detailed.ratingKey }) {
+        let key = downloadManager.recordKey(for: detailed)
+        if let rec = downloadManager.records.first(where: { $0.ratingKey == key }) {
             if rec.status == .failed { return "Download Failed" }
             if rec.status == .complete { return "Downloaded" }
             return "Downloading \(Int(rec.progress * 100))%"

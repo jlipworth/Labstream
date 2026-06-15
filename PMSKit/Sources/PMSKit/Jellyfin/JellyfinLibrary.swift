@@ -437,6 +437,48 @@ public enum JellyfinLibrary {
         return req
     }
 
+    public static func transcodedDownloadRequest(server: URL,
+                                                 token: String,
+                                                 identity: JellyfinClientIdentity,
+                                                 itemId: String,
+                                                 mediaSourceId: String?,
+                                                 maxVideoBitrate: Int,
+                                                 maxWidth: Int?,
+                                                 maxHeight: Int?) throws -> URLRequest {
+        let url = try JellyfinPlayback.jellyfinURL(server: server, path: "/Videos/\(itemId)/stream.mp4")
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        var query = [
+            URLQueryItem(name: "static", value: "false"),
+            URLQueryItem(name: "container", value: "mp4"),
+            URLQueryItem(name: "videoCodec", value: "h264"),
+            URLQueryItem(name: "audioCodec", value: "aac"),
+            URLQueryItem(name: "videoBitRate", value: String(maxVideoBitrate)),
+            URLQueryItem(name: "audioBitRate", value: "192000"),
+            URLQueryItem(name: "maxAudioChannels", value: "6"),
+            URLQueryItem(name: "allowVideoStreamCopy", value: "false"),
+            URLQueryItem(name: "allowAudioStreamCopy", value: "false"),
+            URLQueryItem(name: "enableAutoStreamCopy", value: "false"),
+            URLQueryItem(name: "breakOnNonKeyFrames", value: "false"),
+            URLQueryItem(name: "deviceId", value: identity.deviceId),
+        ]
+        if let mediaSourceId, !mediaSourceId.isEmpty {
+            query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
+        }
+        if let maxWidth {
+            query.append(URLQueryItem(name: "maxWidth", value: String(maxWidth)))
+        }
+        if let maxHeight {
+            query.append(URLQueryItem(name: "maxHeight", value: String(maxHeight)))
+        }
+        comps.queryItems = query
+        guard let built = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        var req = authenticatedRequest(url: built, token: token, identity: identity)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
     public static func imageURL(server: URL,
                                 itemId: String,
                                 imageType: JellyfinImageType,
