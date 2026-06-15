@@ -142,7 +142,7 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
             thumb: syntheticImagePath(type: .primary, tag: imageTags[JellyfinImageType.primary.rawValue]),
             art: syntheticImagePath(type: .backdrop, tag: backdropImageTags.first),
             media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
-            rating: communityRating,
+            rating: shouldExposeCommunityRating ? communityRating : nil,
             contentRating: officialRating,
             tagline: taglines.first,
             genres: genres.isEmpty ? nil : genres.map(Tag.init(tag:)),
@@ -161,6 +161,15 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
         case "Season": return "season"
         case "Episode": return "episode"
         default: return nil
+        }
+    }
+
+    private var shouldExposeCommunityRating: Bool {
+        switch type {
+        case "Movie", "Series":
+            return true
+        default:
+            return false
         }
     }
 
