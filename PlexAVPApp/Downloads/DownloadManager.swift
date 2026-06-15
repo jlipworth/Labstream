@@ -222,25 +222,36 @@ public final class DownloadManager {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         lastError[ratingKey] = nil
         let metadata = record.metadata
-        // Drop the stale `.failed` row so the re-run re-seeds it cleanly; this also
-        // removes any leftover invalid file from the failed attempt.
-        store.remove(ratingKey: ratingKey)
-        refreshRecords()
         let item = metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
         let mediaIndex = metadata?.mediaIndex ?? 0
         let partIndex = metadata?.partIndex ?? 0
         // Re-probe so the retry takes the correct path: a now-compatible file goes direct,
-        // otherwise re-render via the optimizer (default "Optimized for TV" preset).
+        // otherwise re-render via the optimizer (default "Optimized for TV" preset). Keep the
+        // failed row visible until after auth/server preflight succeeds; otherwise tapping retry
+        // while disconnected/not-ready removes the only visible retry affordance.
         Task { [weak self] in
-            guard let self,
-                  let token = self.appModel.serverToken,
-                  let server = self.appModel.serverBaseURL else { return }
+            guard let self else { return }
+            guard let token = self.appModel.serverToken,
+                  let server = self.appModel.serverBaseURL else {
+                self.lastError[ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: ratingKey, .failed)
+                self.refreshRecords()
+                return
+            }
+            guard !self.activeJobs.contains(ratingKey) else { return }
             let probe = await self.directPlayProbe(for: item, server: server, token: token,
                                                    mediaIndex: mediaIndex, partIndex: partIndex)
-            let choice: DownloadChoice = probe.direct ? .original
+            let media = item.media?.indices.contains(mediaIndex) == true ? item.media?[mediaIndex] : item.media?.first
+            let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
+            let choice: DownloadChoice = (probe.direct && Self.isLocallyPlayableOriginal(part: part))
+                ? .original
                 : .optimize(targetName: "Optimized for TV")
+            // Drop the stale `.failed` row only once we know the replacement can be seeded.
+            // This also removes any leftover invalid/partial file from the failed attempt.
+            self.store.remove(ratingKey: ratingKey)
             await self.download(item, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
+            self.refreshRecords()
         }
     }
 
@@ -325,6 +336,17 @@ public final class DownloadManager {
         case let (w?, h?):                return "\(w)×\(h)"
         default:                          return nil
         }
+    }
+
+    /// Whether the original source part is a good local-file download target. PMS may be able
+    /// to stream/copy an MKV through HLS, but AVFoundation often cannot open that same MKV as a
+    /// downloaded local file. Keep direct-original conservative and route other containers
+    /// through the optimizer presets.
+    static func isLocallyPlayableOriginal(part: Part?) -> Bool {
+        guard let part else { return false }
+        let raw = (part.container?.isEmpty == false ? part.container : (part.file as NSString?)?.pathExtension) ?? ""
+        let normalized = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["mp4", "m4v", "mov"].contains(normalized)
     }
 
     /// Download + cache the item's poster locally so the offline library shows artwork
@@ -553,7 +575,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
     private var retryCounts: [String: Int] = [:]
+    /// Last UI refresh per ratingKey; progress callbacks can arrive many times per second.
+    private var lastProgressNotify: [String: Date] = [:]
     private let maxTransientRetries = 3
+    private let progressNotifyInterval: TimeInterval = 0.5
     private let lock = NSLock()
 
     /// Called on any progress/completion so the manager can refresh records.
@@ -672,6 +697,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let task = urlSession.downloadTask(with: url)
         lock.lock()
         retryCounts[ratingKey] = 0
+        lastProgressNotify[ratingKey] = nil
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
         downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(url.path, privacy: .public)")
@@ -728,7 +754,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         store.updateProgress(ratingKey: entry.ratingKey,
                              bytes: Int(totalBytesWritten),
                              progress: progress)
-        onChange?()
+        notifyProgressChangeIfNeeded(ratingKey: entry.ratingKey, progress: progress)
     }
 
     func urlSession(_ session: URLSession,
@@ -743,9 +769,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         func fail(_ reason: String) {
             downloadLog.error("invalid-download ratingKey=\(entry.ratingKey, privacy: .public) reason=\(reason, privacy: .public)")
             try? fileManager.removeItem(at: entry.destination)
-            lock.lock()
-            retryCounts.removeValue(forKey: entry.ratingKey)
-            lock.unlock()
+            clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .invalidDownload(reason))
             onChange?()
@@ -848,23 +872,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
-            lock.lock()
-            retryCounts.removeValue(forKey: entry.ratingKey)
-            lock.unlock()
+            clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
         } else {
-            lock.lock()
-            retryCounts.removeValue(forKey: entry.ratingKey)
-            lock.unlock()
+            clearRetryCount(ratingKey: entry.ratingKey)
             downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
         }
         onChange?()
     }
 
+    private func notifyProgressChangeIfNeeded(ratingKey: String, progress: Double) {
+        let now = Date()
+        lock.lock()
+        let last = lastProgressNotify[ratingKey]
+        let shouldNotify = (last.map { now.timeIntervalSince($0) >= progressNotifyInterval } ?? true)
+            || progress >= 1.0
+        if shouldNotify { lastProgressNotify[ratingKey] = now }
+        lock.unlock()
+        if shouldNotify { onChange?() }
+    }
+
     private func clearRetryCount(ratingKey: String) {
         lock.lock()
         retryCounts.removeValue(forKey: ratingKey)
+        lastProgressNotify.removeValue(forKey: ratingKey)
         lock.unlock()
     }
 
