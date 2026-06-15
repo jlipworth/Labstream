@@ -88,8 +88,6 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, minHeight: 360)
         } else {
             LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                JellyfinLibrariesRail(views: jellyfinViews)
-
                 if jellyfinRails.isEmpty {
                     ContentUnavailableView("Open a library to browse",
                                            systemImage: "rectangle.stack",
@@ -141,34 +139,6 @@ struct HomeView: View {
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
-        }
-    }
-}
-
-/// Icon-card row for Jellyfin user views. This replaces the old full-screen folder
-/// list with a compact launch rail, leaving the rest of Home for Plex-style media rails.
-struct JellyfinLibrariesRail: View {
-    let views: [JellyfinLibraryLink]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.lg) {
-            Text("Libraries")
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
-
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: DS.Space.lg) {
-                    ForEach(views) { view in
-                        NavigationLink(value: view) {
-                            JellyfinLibraryCard(view: view)
-                        }
-                        .cardLink(cornerRadius: DS.Radius.card)
-                    }
-                }
-                .padding(.vertical, DS.Space.sm)
-            }
-            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
-            .scrollClipDisabled()
         }
     }
 }
