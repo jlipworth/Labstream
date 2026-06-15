@@ -103,10 +103,10 @@ final class PlaybackController {
     /// The local file URL, when playing offline content.
     private let localFile: URL?
 
-    /// Already-resolved remote media URL, when an experimental non-Plex backend (currently the
-    /// Jellyfin spike in Settings) has performed its own playback negotiation and only needs the
-    /// system player to open the resulting stream. This keeps the player surface agnostic: Plex
-    /// owns its proxy/transcode resolver, while other backends can hand us a concrete stream URL.
+    /// Already-resolved remote media URL, when a non-Plex backend (currently Jellyfin) has
+    /// performed its own playback negotiation and only needs the custom player to open the
+    /// resulting stream. This keeps the player surface agnostic: Plex owns its transcode resolver,
+    /// while other backends can hand us a concrete stream URL and a re-open hook for quality/seek.
     private let remoteStreamURL: URL?
 
     /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin playback tokens must stay in
@@ -473,7 +473,7 @@ final class PlaybackController {
         self.speedState.speed = self.playbackSpeed
     }
 
-    /// Resolved remote-stream initializer for experimental non-Plex backends. The caller owns
+    /// Resolved remote-stream initializer for non-Plex backends. The caller owns
     /// backend-specific auth/playback negotiation; this controller only loads the supplied stream
     /// into AVKit and reuses the same player UI, observers, buffering, diagnostics and metadata.
     init(remoteStreamURL: URL,
@@ -1080,16 +1080,21 @@ final class PlaybackController {
     /// User-initiated retry after a surfaced playback failure (P3 #8). Re-runs the
     /// streaming start path from the last known playhead so a transient bad start.m3u8
     /// (or a recovered network blip) gets one fresh, user-requested session rather than a
-    /// permanent black screen or hidden restart loop. No-op for local-file sessions (nothing
-    /// to re-fetch).
+    /// permanent black screen or hidden restart loop. Remote backend sessions use their re-open
+    /// hook so Jellyfin gets the same visible Retry affordance as Plex. No-op for local-file
+    /// sessions/static remote streams (nothing to re-fetch).
     func retry() {
-        guard isStreaming else { return }
+        guard isStreaming || remoteStreamReopener != nil else { return }
         let resumeMs = currentResumeMs
-        switchToRecoveryControlClient()
         finalTargetRebuildPolicy.reset()
         playbackError.clear()
         removeObservers()
-        beginStreaming(resumeOffsetMsOverride: resumeMs)
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
+        } else {
+            switchToRecoveryControlClient()
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
     }
 
     /// App-owned scrubber commit hook for the experimental custom player path (#38).
@@ -1837,7 +1842,7 @@ final class PlaybackController {
     /// marker is currently active.
     func skipCurrentMarker() {
         guard let active = skipMarker.active else { return }
-        seek(toMs: Int(active.seekTargetSeconds * 1000))
+        performUserSeek(toMs: Int(active.seekTargetSeconds * 1000))
         skipMarker.clear()
     }
 
@@ -2161,7 +2166,7 @@ final class PlaybackController {
     private func reopenRemoteStream(offsetMs: Int, bitrateKbps: Int) {
         guard let remoteStreamReopener else { return }
         lastPrimedOffsetMs = offsetMs
-        let priorStop = onStopRemoteSession
+        let priorStop = didStopRemoteSession ? nil : onStopRemoteSession
         didStopRemoteSession = true
         priorStop?()
         playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")

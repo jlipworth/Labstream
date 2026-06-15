@@ -182,7 +182,7 @@ Reuse the stream resolver already added:
    - start ticks derived from `MediaItem.viewOffset` when present
 4. Decode `JellyfinPlaybackInfoResponse`.
 5. Resolve stream URL.
-6. Present `PlayerView(remoteStreamURL:item:identity:client:httpHeaders:)`.
+6. Present `CustomPlayerView with PlaybackController(remoteStreamURL:item:identity:client:httpHeaders:)`.
 
 Jellyfin active-encoding cleanup is part of this slice: when a Jellyfin remote-stream player stops or is dismissed, call `DELETE /Videos/ActiveEncodings` with the current device ID and `PlaySessionId`. Full Jellyfin progress reporting (`/Sessions/Playing`, `/Progress`, `/Stopped`) remains a follow-up because it is not required to prove login, browse, and basic playback.
 

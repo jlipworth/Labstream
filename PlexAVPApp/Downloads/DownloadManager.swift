@@ -236,7 +236,8 @@ public final class DownloadManager {
         let ext = part?.container ?? media?.container ?? "mp4"
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
-        let metadata = Self.offlineMetadata(from: item, quality: nil,
+        let resolutionLabel = Self.resolutionLabel(for: media)
+        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex)
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
