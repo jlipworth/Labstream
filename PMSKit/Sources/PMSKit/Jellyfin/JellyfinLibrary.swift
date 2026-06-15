@@ -145,7 +145,7 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
             thumb: syntheticImagePath(type: .primary, tag: imageTags[JellyfinImageType.primary.rawValue]),
             art: syntheticImagePath(type: .backdrop, tag: backdropImageTags.first),
             media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
-            chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset) },
+            chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset, itemId: id) },
             rating: shouldExposeCommunityRating ? communityRating : nil,
             contentRating: officialRating,
             tagline: taglines.first,
@@ -194,12 +194,17 @@ public struct JellyfinChapterDto: Decodable, Sendable, Equatable {
         case imageTag = "ImageTag"
     }
 
-    func toPlexChapter(index: Int) -> Chapter {
+    func toPlexChapter(index: Int, itemId: String) -> Chapter {
         Chapter(id: index + 1,
                 tag: name,
                 startTimeOffset: startPositionTicks.map { $0 / 10_000 },
                 endTimeOffset: nil,
-                thumb: nil)
+                thumb: syntheticChapterImagePath(index: index, itemId: itemId))
+    }
+
+    private func syntheticChapterImagePath(index: Int, itemId: String) -> String? {
+        guard let imageTag, !imageTag.isEmpty else { return nil }
+        return "jellyfin://item/\(itemId)/Chapter/\(index)?tag=\(imageTag)"
     }
 }
 
@@ -357,17 +362,22 @@ public enum JellyfinLibrary {
                                     startIndex: Int? = nil,
                                     limit: Int? = nil,
                                     searchTerm: String? = nil,
+                                    nameStartsWith: String? = nil,
                                     sortBy: String = "SortName",
                                     sortOrder: String = "Ascending",
                                     includeItemTypes: String = "Movie,Series,Season,Episode",
+                                    fields: String = fullItemFields,
                                     filters: [String] = []) throws -> URLRequest {
-        var query = baseItemsQuery(userId: userId)
+        var query = baseItemsQuery(userId: userId, fields: fields)
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
         query.append(URLQueryItem(name: "recursive", value: recursive ? "true" : "false"))
         if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let searchTerm, !searchTerm.isEmpty {
             query.append(URLQueryItem(name: "searchTerm", value: searchTerm))
+        }
+        if let nameStartsWith, !nameStartsWith.isEmpty {
+            query.append(URLQueryItem(name: "nameStartsWith", value: nameStartsWith))
         }
         replaceQueryItem(named: "includeItemTypes", with: includeItemTypes, in: &query)
         if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: filters.joined(separator: ","))) }
@@ -442,8 +452,8 @@ public enum JellyfinLibrary {
                                    identity: JellyfinClientIdentity,
                                    userId: String,
                                    itemId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/Items/\(itemId)", queryItems: [
-            URLQueryItem(name: "userId", value: userId),
+        let url = try url(server: server, path: "/Users/\(userId)/Items/\(itemId)", queryItems: [
+            URLQueryItem(name: "fields", value: fullItemFields),
         ])
         return get(url: url, token: token, identity: identity)
     }
@@ -547,6 +557,19 @@ public enum JellyfinLibrary {
         return try url(server: server, path: "/Items/\(itemId)/Images/\(imageType.rawValue)", queryItems: query)
     }
 
+    public static func chapterImageURL(server: URL,
+                                       itemId: String,
+                                       chapterIndex: Int,
+                                       tag: String?,
+                                       width: Int? = nil,
+                                       height: Int? = nil) throws -> URL {
+        var query: [URLQueryItem] = []
+        if let tag, !tag.isEmpty { query.append(URLQueryItem(name: "tag", value: tag)) }
+        if let width { query.append(URLQueryItem(name: "fillWidth", value: String(width))) }
+        if let height { query.append(URLQueryItem(name: "fillHeight", value: String(height))) }
+        return try url(server: server, path: "/Items/\(itemId)/Images/Chapter/\(chapterIndex)", queryItems: query)
+    }
+
     public static func activeEncodingStopRequest(server: URL,
                                                  token: String,
                                                  identity: JellyfinClientIdentity,
@@ -574,18 +597,20 @@ public enum JellyfinLibrary {
         return req
     }
 
-    private static func baseItemsQuery(userId: String) -> [URLQueryItem] {
+    private static func baseItemsQuery(userId: String, fields: String = fullItemFields) -> [URLQueryItem] {
         [
             URLQueryItem(name: "userId", value: userId),
             URLQueryItem(name: "includeItemTypes", value: "Movie,Series,Season,Episode"),
-            URLQueryItem(name: "fields", value: itemFields),
+            URLQueryItem(name: "fields", value: fields),
             URLQueryItem(name: "enableUserData", value: "true"),
             URLQueryItem(name: "sortBy", value: "SortName"),
             URLQueryItem(name: "sortOrder", value: "Ascending"),
         ]
     }
 
-    private static let itemFields = "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines,Chapters"
+    public static let gridItemFields = "PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating"
+    public static let fullItemFields = "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines,Chapters"
+    private static let itemFields = fullItemFields
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
         query.removeAll { $0.name == name }

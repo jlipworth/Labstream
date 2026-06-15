@@ -19,15 +19,21 @@ public struct DeviceProfile: Sendable, Equatable {
         self.clientProfileExtra = clientProfileExtra
     }
 
-    /// Build the visionOS device profile, capping the transcoded video bitrate.
+    /// Build the visionOS device profile, capping the transcoded video bitrate and, for
+    /// low/mid quality ladder rungs, audio bitrate.
     /// - Parameter maxVideoBitrateKbps: hard cap on transcoded video bitrate, in kbps.
-    public static func visionOS(maxVideoBitrateKbps: Int) -> DeviceProfile {
+    /// - Parameter maxAudioBitrateKbps: optional cap on transcoded audio bitrate, in kbps.
+    public static func visionOS(maxVideoBitrateKbps: Int,
+                                maxAudioBitrateKbps: Int? = nil) -> DeviceProfile {
         // HEVC over HLS must use the fMP4 (mp4) container; H.264 works in both ts and mp4.
-        let directives = [
+        var directives = [
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=ts&videoCodec=h264&audioCodec=aac,ac3)",
             "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value=\(maxVideoBitrateKbps))",
         ]
+        if let maxAudioBitrateKbps {
+            directives.append("add-limitation(scope=audioCodec&scopeName=*&type=upperBound&name=audio.bitrate&value=\(maxAudioBitrateKbps))")
+        }
         return DeviceProfile(clientProfileExtra: directives.joined(separator: "+"))
     }
 
@@ -45,13 +51,18 @@ public struct DeviceProfile: Sendable, Equatable {
     /// The two `add-transcode-target` directives are identical to `visionOS(...)` so
     /// above-cap (or non-whitelisted) sources still have a valid transcode target.
     /// - Parameter maxVideoBitrateKbps: hard cap on video bitrate, in kbps; `isRequired=true`.
-    public static func visionOSDirectPlayProbe(maxVideoBitrateKbps: Int) -> DeviceProfile {
-        let directives = [
+    /// - Parameter maxAudioBitrateKbps: optional cap on audio bitrate, in kbps.
+    public static func visionOSDirectPlayProbe(maxVideoBitrateKbps: Int,
+                                               maxAudioBitrateKbps: Int? = nil) -> DeviceProfile {
+        var directives = [
             "add-direct-play-profile(type=videoProfile&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=ts&videoCodec=h264&audioCodec=aac,ac3)",
             "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value=\(maxVideoBitrateKbps)&isRequired=true)",
         ]
+        if let maxAudioBitrateKbps {
+            directives.append("add-limitation(scope=audioCodec&scopeName=*&type=upperBound&name=audio.bitrate&value=\(maxAudioBitrateKbps))")
+        }
         return DeviceProfile(clientProfileExtra: directives.joined(separator: "+"))
     }
 }
