@@ -133,6 +133,97 @@ public enum OptimizeRequest {
                            headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
+    // MARK: - Real optimize contract (Phase-0-gated; see the redesign spec/plan)
+
+    /// Settings for an optimize job's rendered output. `nil` fields are omitted from the
+    /// request so PMS uses the preset's defaults.
+    public struct MediaSettings: Sendable, Equatable {
+        public let videoQuality: Int?
+        public let maxVideoBitrateKbps: Int?
+        public let videoResolution: String?
+        public init(videoQuality: Int? = 100, maxVideoBitrateKbps: Int? = nil,
+                    videoResolution: String? = nil) {
+            self.videoQuality = videoQuality
+            self.maxVideoBitrateKbps = maxVideoBitrateKbps
+            self.videoResolution = videoResolution
+        }
+    }
+
+    /// `GET /playlists?type=42` — the background-processing playlist that owns optimize jobs.
+    /// Decode with `BackgroundProcessingPlaylist` and read its `key` (e.g. `/playlists/9/items`).
+    /// `PlexHeaders.standard` sets `Accept: application/json` (PMS returns XML by default and
+    /// the decode would fail — the same trap the decision call hits).
+    public static func backgroundProcessingRequest(server: URL, token: String,
+                                                   identity: ClientIdentity) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/playlists"),
+                    method: "GET",
+                    queryItems: [.init(name: "type", value: "42")],
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `GET /media/processing/targets` — the server's real optimize presets (name + id).
+    /// SERVER-SPECIFIC: the exact path/field names are confirmed by Phase 0; this is the
+    /// best-known endpoint. Decode with `MediaProcessingTargets`.
+    public static func mediaProcessingTargetsRequest(server: URL, token: String,
+                                                    identity: ClientIdentity) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/media/processing/targets"),
+                    method: "GET",
+                    queryItems: [],
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `POST {backgroundProcessingKey}` — enqueue an optimize job using the nested `Item[...]`
+    /// grammar python-plexapi sends. `targetTagID` is the SERVER-RESOLVED id (from the targets
+    /// list), NOT a hardcoded enum default. SERVER-SPECIFIC: the accepted key + grammar are
+    /// confirmed by Phase 0.
+    public static func createOnPlaylist(server: URL, token: String, identity: ClientIdentity,
+                                        backgroundProcessingKey: String,
+                                        ratingKey: String,
+                                        sourceURI: String? = nil,
+                                        locationID: Int = -1,
+                                        title: String,
+                                        targetTagID: Int?,
+                                        targetName: String? = nil,
+                                        deviceProfile: String? = nil,
+                                        mediaSettings: MediaSettings) -> PlexRequest {
+        let trimmed = backgroundProcessingKey.hasPrefix("/")
+            ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
+        let url = server.appendingPathComponent(trimmed)
+        var items: [URLQueryItem] = [
+            .init(name: "Item[type]", value: "42"),
+            .init(name: "Item[title]", value: title),
+            .init(name: "Item[target]", value: targetName ?? ""),
+            .init(name: "Item[targetTagID]", value: targetTagID.map(String.init) ?? ""),
+            .init(name: "Item[Location][uri]",
+                  value: sourceURI ?? "server://\(identity.clientIdentifier)/com.plexapp.plugins.library/library/metadata/\(ratingKey)"),
+            .init(name: "Item[locationID]", value: String(locationID)),
+            .init(name: "Item[Policy][scope]", value: "all"),
+            .init(name: "Item[Policy][value]", value: "0"),
+            .init(name: "Item[Policy][unwatched]", value: "0"),
+        ]
+        if let deviceProfile, !deviceProfile.isEmpty {
+            items.append(.init(name: "Item[Device][profile]", value: deviceProfile))
+        }
+        if let q = mediaSettings.videoQuality {
+            items.append(.init(name: "Item[MediaSettings][videoQuality]", value: String(q)))
+        }
+        if let b = mediaSettings.maxVideoBitrateKbps {
+            items.append(.init(name: "Item[MediaSettings][maxVideoBitrate]", value: String(b)))
+        }
+        if let res = mediaSettings.videoResolution {
+            items.append(.init(name: "Item[MediaSettings][videoResolution]", value: res))
+        }
+        items += [
+            .init(name: "Item[MediaSettings][audioBoost]", value: ""),
+            .init(name: "Item[MediaSettings][subtitleSize]", value: ""),
+            .init(name: "Item[MediaSettings][musicBitrate]", value: ""),
+            .init(name: "Item[MediaSettings][photoQuality]", value: ""),
+            .init(name: "Item[MediaSettings][photoResolution]", value: ""),
+        ]
+        return PlexRequest(url: url, method: "PUT", queryItems: items,
+                           headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
     /// Build the offline-download URL for an optimized (or any) part.
     ///
     /// `<server><partKey>?download=1&X-Plex-Token=<token>` — token as query param
@@ -153,5 +244,62 @@ public enum OptimizeRequest {
             preconditionFailure("OptimizeRequest: could not rebuild download URL for part \(partKey)")
         }
         return url
+    }
+}
+
+/// The background-processing playlist (`GET /playlists?type=42`). We only need its `key`
+/// (e.g. `/playlists/9/items`) to POST optimize jobs against. Lenient: server shapes vary.
+public struct BackgroundProcessingPlaylist: Decodable, Sendable, Equatable {
+    public let key: String?
+
+    enum RootKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    enum ContainerKeys: String, CodingKey { case metadata = "Metadata" }
+    private struct Entry: Decodable { let key: String?; let playlistType: String? }
+
+    public init(key: String?) { self.key = key }
+
+    public init(from decoder: Decoder) throws {
+        let root = try decoder.container(keyedBy: RootKeys.self)
+        let container = try root.nestedContainer(keyedBy: ContainerKeys.self, forKey: .mediaContainer)
+        let entries = try container.decodeIfPresent([Entry].self, forKey: .metadata) ?? []
+        // Prefer the type-42 entry; fall back to the first with a key.
+        self.key = entries.first(where: { $0.playlistType == "42" })?.key
+            ?? entries.first(where: { $0.key != nil })?.key
+    }
+}
+
+/// The server's media-processing (optimize) targets (`GET /media/processing/targets`).
+/// SERVER-SPECIFIC shape — Phase 0 confirms the element + field names. Lenient.
+public struct MediaProcessingTargets: Decodable, Sendable, Equatable {
+    public struct Target: Decodable, Sendable, Equatable, Identifiable {
+        public let id: Int
+        public let name: String
+        public init(id: Int, name: String) { self.id = id; self.name = name }
+
+        enum CodingKeys: String, CodingKey { case id; case tag; case title }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = (try? c.decode(Int.self, forKey: .id)) ?? -1
+            self.name = (try? c.decodeIfPresent(String.self, forKey: .tag))
+                ?? (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        }
+    }
+
+    public let targets: [Target]
+
+    enum RootKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    enum ContainerKeys: String, CodingKey { case target = "MediaProcessingTarget" }
+
+    public init(targets: [Target]) { self.targets = targets }
+
+    public init(from decoder: Decoder) throws {
+        let root = try decoder.container(keyedBy: RootKeys.self)
+        let container = try root.nestedContainer(keyedBy: ContainerKeys.self, forKey: .mediaContainer)
+        self.targets = (try container.decodeIfPresent([Target].self, forKey: .target)) ?? []
+    }
+
+    /// Case-insensitive name → targetTagID lookup (used to resolve a chosen preset name).
+    public func tagID(forName name: String) -> Int? {
+        targets.first { $0.name.lowercased() == name.lowercased() }?.id
     }
 }

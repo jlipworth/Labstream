@@ -103,6 +103,8 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     public let thumb: String?
     public let art: String?
     public let media: [Media]?
+    public let librarySectionID: Int?
+    public let librarySectionKey: String?
     /// Chapter markers, when PMS provides them (`Chapter` elements on the metadata).
     /// Absent for most items; the player hides chapter UI when this is empty/nil so the
     /// control degrades gracefully.
@@ -187,6 +189,8 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case thumb
         case art
         case media = "Media"
+        case librarySectionID
+        case librarySectionKey
         case chapters = "Chapter"
         case markers = "Marker"
         case rating
@@ -222,6 +226,8 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 thumb: String? = nil,
                 art: String? = nil,
                 media: [Media]? = nil,
+                librarySectionID: Int? = nil,
+                librarySectionKey: String? = nil,
                 chapters: [Chapter]? = nil,
                 markers: [Marker]? = nil,
                 rating: Double? = nil,
@@ -255,6 +261,8 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.thumb = thumb
         self.art = art
         self.media = media
+        self.librarySectionID = librarySectionID
+        self.librarySectionKey = librarySectionKey
         self.chapters = chapters
         self.markers = markers
         self.rating = rating

@@ -41,66 +41,12 @@ public final class DownloadManager {
         case invalidDownload(String)
     }
 
-    /// A user-selectable download quality.
-    ///
-    /// Each case maps to a video-bitrate cap (kbps) handed to the SAME universal
-    /// transcoder the player uses, via `TranscodeRequest.downloadURL()`. We download
-    /// a single progressive MP4 at the chosen cap rather than going through the
-    /// fragile server-side optimize queue (see `optimizeAndDownload(_:quality:)` for
-    /// the rationale). `.original` requests "no cap" — we pass a very high ceiling so
-    /// PMS still emits a compatible MP4 rather than rejecting an absent cap (mirrors
-    /// the player's `0`-means-maximum convention in `PlaybackController`).
-    public enum DownloadQuality: String, Sendable, Equatable, CaseIterable, Identifiable {
-        case p480
-        case p720
-        case p1080
+    /// What the user chose in the download sheet, resolved from the direct-play probe.
+    public enum DownloadChoice: Sendable, Equatable {
+        /// Direct-download the original file (probe said whole-file direct play).
         case original
-
-        public var id: String { rawValue }
-
-        /// Human label for the picker.
-        public var label: String {
-            switch self {
-            case .p480:     return "480p · 2 Mbps"
-            case .p720:     return "720p · 4 Mbps"
-            case .p1080:    return "1080p · 8 Mbps"
-            case .original: return "Original / Maximum"
-            }
-        }
-
-        /// Short caption for secondary text / accessibility.
-        public var caption: String {
-            switch self {
-            case .p480:     return "Smallest file, lowest quality"
-            case .p720:     return "Balanced size and quality"
-            case .p1080:    return "Best quality for the headset"
-            case .original: return "Largest file, source quality"
-            }
-        }
-
-        /// Compact resolution marker for tight UI (the download progress caption).
-        public var shortLabel: String {
-            switch self {
-            case .p480:     return "480p"
-            case .p720:     return "720p"
-            case .p1080:    return "1080p"
-            case .original: return "Original"
-            }
-        }
-
-        /// Video-bitrate cap in kbps handed to the transcoder. `nil` == no cap
-        /// (original); the manager translates that to the transcoder's high ceiling.
-        public var maxVideoBitrateKbps: Int? {
-            switch self {
-            case .p480:     return 2000
-            case .p720:     return 4000
-            case .p1080:    return 8000
-            case .original: return nil
-            }
-        }
-
-        /// The default offered to the user: the app-wide 1080p/8 Mbps cap.
-        public static var `default`: DownloadQuality { .p1080 }
+        /// Server-side optimize to a named preset (the server's real target name).
+        case optimize(targetName: String)
     }
 
     /// Live records (in-progress + completed), backed by `DownloadStore`.
@@ -162,79 +108,52 @@ public final class DownloadManager {
         store.localURL(for: ratingKey)
     }
 
-    /// Full pipeline: optimize -> poll -> background-download -> record.
-    /// Records the resulting state (including any error) rather than throwing.
-    public func optimizeAndDownload(_ item: MediaItem) async {
-        let ratingKey = item.ratingKey
-        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
-            lastError[ratingKey] = .notAuthenticated
-            return
-        }
-        guard !activeJobs.contains(ratingKey) else { return }
-        activeJobs.insert(ratingKey)
-        lastError[ratingKey] = nil
-        defer { activeJobs.remove(ratingKey) }
-
-        // D5: snapshot metadata (no explicit quality on this legacy optimize path).
-        let metadata = Self.offlineMetadata(from: item, quality: nil,
-                                            mediaIndex: 0, partIndex: 0)
-        // Seed a 0% record so the UI shows the job immediately.
-        let seed = DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                  localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                  bytes: 0, progress: 0, metadata: metadata)
-        store.upsert(seed)
-        refreshRecords()
-        cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
-                    server: server, token: token)
-
+    /// Run the download-time direct-play probe for `item` at the given media/part. Advertises
+    /// the `.original` 200_000 kbps ceiling so a high-bitrate-but-compatible file still
+    /// qualifies for a direct download — a cap must NEVER force a transcode verdict for
+    /// downloads. Returns `(playsWholeFileDirectly, originalPart)`; on any probe failure
+    /// returns `(false, part?)` so the caller falls back to the optimizer.
+    public func directPlayProbe(for item: MediaItem, server: URL, token: String,
+                                mediaIndex: Int, partIndex: Int)
+        async -> (direct: Bool, part: Part?) {
+        let part = item.media?[safe: mediaIndex]?.part[safe: partIndex]
+        let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
+        let transcode = TranscodeRequest(server: server, token: token,
+                                         identity: appModel.identity,
+                                         metadataKey: metadataKey,
+                                         maxVideoBitrateKbps: 200_000,
+                                         sessionID: "plex-avp-dl-probe-" + UUID().uuidString,
+                                         mediaIndex: mediaIndex, partIndex: partIndex)
         do {
-            try await triggerOptimize(item: item, server: server, token: token,
-                                      identity: appModel.identity)
-            let part = try await pollForOptimizedPart(ratingKey: ratingKey, server: server,
-                                                      token: token, identity: appModel.identity)
-            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
-            let destination = store.destinationURL(ratingKey: ratingKey, ext: ext.isEmpty ? "mp4" : ext)
-            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                        localURL: destination, bytes: 0, progress: 0,
-                                        metadata: metadata))
-            refreshRecords()
-
-            let downloadURL = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            try session.start(ratingKey: ratingKey, from: downloadURL, to: destination,
-                              expectedBytes: part.size)
-            refreshRecords()
-        } catch let error as DownloadError {
-            // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
-            // so the UI can explain the failure and offer a retry.
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+            let decision = try await appModel.client.send(transcode.directPlayProbeRequest(),
+                                                          as: DecisionResponse.self)
+            return (decision.playsWholeFileDirectly, part)
         } catch {
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+            downloadLog.error("download-probe-failed ratingKey=\(item.ratingKey, privacy: .public) err=\(String(describing: error), privacy: .public)")
+            return (false, part)
         }
     }
 
-    /// Download `item` at a user-chosen `quality` via the universal-transcode path.
-    ///
-    /// **Why this, not the optimize queue:** the legacy `optimizeAndDownload(_:)`
-    /// above triggers a server-side OPTIMIZE (a `targetTagID` preset) and then polls
-    /// for the resulting part. That path is the highest-uncertainty area in the app —
-    /// the live `backgroundProcessing.key` + server-specific `targetTagID` are
-    /// UNVERIFIED (see the big `TODO(live)` on `triggerOptimize`). This method instead
-    /// reuses the SAME universal transcoder the player streams from
-    /// (`TranscodeRequest.downloadURL()` with the `Safari` profile + `maxVideoBitrate`
-    /// cap), asking for a single progressive MP4 we can fetch with one background
-    /// `downloadTask`. That contract is verified end-to-end for streaming, so it's the
-    /// reliable way to honor a chosen quality offline. No optimize queue, no polling.
-    ///
-    /// Records state (including any error) rather than throwing. Keeps the existing
-    /// background `URLSession` transfer machinery, so it survives suspension/relaunch.
-    public func optimizeAndDownload(_ item: MediaItem,
-                                    quality: DownloadQuality,
-                                    mediaIndex: Int = 0,
-                                    partIndex: Int = 0) async {
+    /// Download quality labels for the sheet. Plex exposes three server Media Optimizer
+    /// target tags, but first-party clients also offer custom sync/videoQuality profiles
+    /// (Universal TV + 20/12/10/8 Mbps 1080p, 720p, 480p, etc.). Always include those
+    /// custom profiles so the offline picker matches the iPad-style quality ladder.
+    public func optimizePresetNames(server: URL, token: String) async -> [String] {
+        let serverTargets = (try? await appModel.client.send(
+            OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token,
+                                                          identity: appModel.identity),
+            as: MediaProcessingTargets.self))?.targets.map(\.name) ?? []
+        return Self.dedup(serverTargets + Self.customDownloadProfileNames)
+            .filter { !$0.isEmpty }
+    }
+
+    /// Probe-driven download entry point (offline-download redesign). `choice` comes from the
+    /// sheet, which already ran the direct-play probe: `.original` direct-downloads the source
+    /// file; `.optimize` renders a compatible MP4 server-side then downloads it. Both converge
+    /// on the same background-`URLSession` + validation pipeline. Records state rather than
+    /// throwing.
+    public func download(_ item: MediaItem, choice: DownloadChoice,
+                         mediaIndex: Int = 0, partIndex: Int = 0) async {
         let ratingKey = item.ratingKey
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             lastError[ratingKey] = .notAuthenticated
@@ -245,51 +164,48 @@ public final class DownloadManager {
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
 
-        // The transcoded download always lands as an MP4 (we ask `protocol=http`).
-        let destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-        // D5: snapshot the source item + chosen quality so the offline library renders
-        // richly without the server and `retry()` can rebuild a faithful MediaItem.
-        let metadata = Self.offlineMetadata(from: item, quality: quality,
+        let chosenMedia = item.media?[safe: mediaIndex]
+        let resolutionLabel = Self.resolutionLabel(for: chosenMedia)
+        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex)
-        // Seed a 0% record so the UI shows the job immediately.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
-        refreshRecords()
         // D5: cache the poster locally (best-effort) so artwork shows offline. A fetch
         // failure is not a download failure — it just leaves the row without a poster.
         cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
                     server: server, token: token)
 
-        // `nil` cap (Original) maps to a very high ceiling so PMS still emits a
-        // playable MP4 rather than rejecting an absent cap (mirrors PlaybackController).
-        let cap = quality.maxVideoBitrateKbps ?? 200_000
-        let metadataKey = item.key ?? "/library/metadata/\(ratingKey)"
-        let transcode = TranscodeRequest(server: server,
-                                         token: token,
-                                         identity: appModel.identity,
-                                         metadataKey: metadataKey,
-                                         maxVideoBitrateKbps: cap,
-                                         sessionID: "plex-avp-dl-" + UUID().uuidString,
-                                         mediaIndex: mediaIndex,
-                                         partIndex: partIndex)
-        do {
-            try session.start(ratingKey: ratingKey,
-                              from: transcode.downloadURL(),
-                              to: destination,
-                              expectedBytes: Self.estimatedTranscodeBytes(
-                                  quality: quality, durationMs: item.duration))
+        switch choice {
+        case .original:
+            guard let part = chosenMedia?.part[safe: partIndex] else {
+                lastError[ratingKey] = .transferFailed("No media part to download.")
+                return
+            }
+            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
+            let destination = store.destinationURL(ratingKey: ratingKey,
+                                                   ext: ext.isEmpty ? "mp4" : ext)
+            // Seed a 0% record so the UI shows the job immediately.
+            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                        localURL: destination, bytes: 0, progress: 0,
+                                        metadata: metadata))
             refreshRecords()
-        } catch let error as DownloadError {
-            // D3: keep a `.failed` row (with surfaced reason) instead of erasing it,
-            // so the UI can explain the failure and offer a retry.
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
-        } catch {
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+            // The original file is a STATIC GET with a real Content-Length + valid moov atom.
+            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
+            do {
+                try session.start(ratingKey: ratingKey, from: url, to: destination,
+                                  expectedBytes: part.size)
+                refreshRecords()
+            } catch let error as DownloadError {
+                lastError[ratingKey] = error
+                store.setStatus(ratingKey: ratingKey, .failed)
+                refreshRecords()
+            } catch {
+                lastError[ratingKey] = .transferFailed(String(describing: error))
+                store.setStatus(ratingKey: ratingKey, .failed)
+                refreshRecords()
+            }
+
+        case .optimize(let targetName):
+            await triggerOptimizeAndDownload(item: item, targetName: targetName,
+                                             metadata: metadata, server: server, token: token)
         }
     }
 
@@ -300,24 +216,44 @@ public final class DownloadManager {
     }
 
     /// Retry a previously `.failed` download (D3/D5). We rebuild the source `MediaItem`
-    /// from the persisted `OfflineMetadata` snapshot (real type + the originally chosen
-    /// quality) and re-run the verified universal-transcode path. Rows persisted before
-    /// D5 lack a snapshot, so we fall back to a minimal movie at the default quality.
+    /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
+    /// re-run the probe-driven download path — re-probing so a now-compatible file goes
+    /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
     public func retry(ratingKey: String) {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         lastError[ratingKey] = nil
         let metadata = record.metadata
-        // Drop the stale `.failed` row so `optimizeAndDownload` re-seeds it cleanly;
-        // this also removes any leftover invalid file from the failed attempt.
-        store.remove(ratingKey: ratingKey)
-        refreshRecords()
         let item = metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
-        let quality = metadata?.quality.flatMap(DownloadQuality.init(rawValue:)) ?? .default
         let mediaIndex = metadata?.mediaIndex ?? 0
         let partIndex = metadata?.partIndex ?? 0
-        Task { await optimizeAndDownload(item, quality: quality,
-                                         mediaIndex: mediaIndex, partIndex: partIndex) }
+        // Re-probe so the retry takes the correct path: a now-compatible file goes direct,
+        // otherwise re-render via the optimizer (default "Optimized for TV" preset). Keep the
+        // failed row visible until after auth/server preflight succeeds; otherwise tapping retry
+        // while disconnected/not-ready removes the only visible retry affordance.
+        Task { [weak self] in
+            guard let self else { return }
+            guard let token = self.appModel.serverToken,
+                  let server = self.appModel.serverBaseURL else {
+                self.lastError[ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: ratingKey, .failed)
+                self.refreshRecords()
+                return
+            }
+            guard !self.activeJobs.contains(ratingKey) else { return }
+            let probe = await self.directPlayProbe(for: item, server: server, token: token,
+                                                   mediaIndex: mediaIndex, partIndex: partIndex)
+            let media = item.media?.indices.contains(mediaIndex) == true ? item.media?[mediaIndex] : item.media?.first
+            let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
+            let choice: DownloadChoice = (probe.direct && Self.isLocallyPlayableOriginal(part: part))
+                ? .original
+                : .optimize(targetName: "Optimized for TV")
+            // Drop the stale `.failed` row only once we know the replacement can be seeded.
+            // This also removes any leftover invalid/partial file from the failed attempt.
+            self.store.remove(ratingKey: ratingKey)
+            await self.download(item, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
+            self.refreshRecords()
+        }
     }
 
     /// Delete a download and its backing file.
@@ -359,27 +295,14 @@ public final class DownloadManager {
         records = fresh
     }
 
-    /// Estimated final byte size of a transcoded download, from the chosen quality cap
-    /// × runtime. Plex streams the transcode without a `Content-Length` (so the download
-    /// delegate's `totalBytesExpectedToWrite` is -1 and can't drive a %), so the UI uses
-    /// this estimate for the progress bar + ETA. Returns nil when we can't estimate —
-    /// Original has no fixed cap, or the runtime is unknown — and the UI then falls back
-    /// to an indeterminate bar + byte count. A `+192 kbps` allowance covers the audio
-    /// track PMS transcodes alongside the video.
-    public static func estimatedTranscodeBytes(quality: DownloadQuality?, durationMs: Int?) -> Int? {
-        guard let durationMs, durationMs > 0,
-              let quality, let videoKbps = quality.maxVideoBitrateKbps else { return nil }
-        let totalBitsPerSec = Double(videoKbps + 192) * 1000.0
-        let seconds = Double(durationMs) / 1000.0
-        return Int(totalBitsPerSec / 8.0 * seconds)
-    }
-
     // MARK: - D5: offline metadata + poster caching
 
-    /// Build the persisted snapshot of a source `MediaItem` + the chosen quality.
-    /// Captures only the fields the offline UI/player/retry actually read.
+    /// Build the persisted snapshot of a source `MediaItem` + a human resolution label.
+    /// Captures only the fields the offline UI/player/retry actually read. `resolutionLabel`
+    /// is descriptive ("1080p"/"4K") for the offline-library caption — it is NOT a transcode
+    /// cap (the redesign downloads either the original file or a server-rendered MP4).
     private static func offlineMetadata(from item: MediaItem,
-                                        quality: DownloadQuality?,
+                                        resolutionLabel: String?,
                                         mediaIndex: Int,
                                         partIndex: Int) -> OfflineMetadata {
         OfflineMetadata(ratingKey: item.ratingKey,
@@ -395,10 +318,38 @@ public final class DownloadManager {
                         tagline: item.tagline,
                         thumb: item.thumb,
                         art: item.art,
-                        quality: quality?.rawValue,
+                        resolutionLabel: resolutionLabel,
+                        librarySectionID: item.librarySectionID,
+                        librarySectionKey: item.librarySectionKey,
                         mediaIndex: mediaIndex,
                         partIndex: partIndex,
                         posterRelativePath: nil)
+    }
+
+    /// Human-readable resolution label for the chosen media version, for the offline-library
+    /// caption only (descriptive, never a transcode cap). Derived from the media's pixel
+    /// height with the common consumer-resolution buckets; falls back to "W×H" then nil.
+    static func resolutionLabel(for media: Media?) -> String? {
+        guard let media else { return nil }
+        switch (media.width, media.height) {
+        case let (_, h?) where h >= 2160: return "4K"
+        case let (_, h?) where h >= 1080: return "1080p"
+        case let (_, h?) where h >= 720:  return "720p"
+        case let (_, h?) where h >= 480:  return "480p"
+        case let (w?, h?):                return "\(w)×\(h)"
+        default:                          return nil
+        }
+    }
+
+    /// Whether the original source part is a good local-file download target. PMS may be able
+    /// to stream/copy an MKV through HLS, but AVFoundation often cannot open that same MKV as a
+    /// downloaded local file. Keep direct-original conservative and route other containers
+    /// through the optimizer presets.
+    static func isLocallyPlayableOriginal(part: Part?) -> Bool {
+        guard let part else { return false }
+        let raw = (part.container?.isEmpty == false ? part.container : (part.file as NSString?)?.pathExtension) ?? ""
+        let normalized = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return ["mp4", "m4v", "mov"].contains(normalized)
     }
 
     /// Download + cache the item's poster locally so the offline library shows artwork
@@ -443,48 +394,256 @@ public final class DownloadManager {
         return comps?.url
     }
 
-    // MARK: - Optimize trigger (HIGH UNCERTAINTY — isolated)
+    // MARK: - Optimize path (HIGH UNCERTAINTY — isolated; Phase 0 confirms the contract)
 
-    /// Trigger the server-side optimized (capped-bitrate) version of `item`.
+    /// Render a compatible MP4 server-side, poll for the rendered Part, then download it.
     ///
-    /// // TODO(live): verify optimize endpoint + targetTagID against the live
-    /// server (research/11). PMSKit's `OptimizeRequest.create` encodes a
-    /// BEST-EFFORT contract: a flat `PUT /library/optimize` carrying
-    /// `title`/`target`/`targetTagID` plus python-plexapi's nested `Item[...]`
-    /// MediaSettings params. The REAL Plex optimize is NOT this static PUT — it
-    /// posts to `{backgroundProcessing.key}/items`, where `backgroundProcessing.key`
-    /// is fetched at runtime from `/playlists?type=42` (the background-processing
-    /// playlist), and `targetTagID` is a SERVER-SPECIFIC id resolved from the
-    /// server's `mediaProcessingTarget` tag list — NOT the conventional `2` we use
-    /// for the 8 Mbps/1080p "Optimized for TV" preset here.
+    /// Real contract (python-plexapi `Video.optimize`), implemented to the best-known shape:
+    ///   1. GET /playlists?type=42  → read `backgroundProcessing.key` (e.g. /playlists/9/items)
+    ///   2. GET /media/processing/targets → resolve the chosen preset NAME to its server
+    ///      `targetTagID` (NOT a hardcoded 2/1/3; those are version-specific)
+    ///   3. POST {key}  with the Item[...] grammar
+    ///   4. poll item metadata for the new Part, then download it (static file, real size).
     ///
-    /// This method is the ONLY place that path lives. To go live:
-    ///   1. GET `/playlists?type=42` -> read `backgroundProcessing.key`,
-    ///   2. resolve the real `targetTagID` from the server's target tags,
-    ///   3. PUT to `{key}/items` with the `Item[...]` grammar.
-    /// None of the rest of the pipeline changes.
-    ///
-    /// NOT VERIFIED against a live server. A non-2xx here is reported as
-    /// `.optimizeFailed`; the caller still polls metadata so that if optimize was
-    /// already triggered out-of-band the existing optimized part is picked up.
-    private func triggerOptimize(item: MediaItem,
-                                 server: URL,
-                                 token: String,
-                                 identity: ClientIdentity) async throws {
-        let request = OptimizeRequest.create(
-            server: server,
-            token: token,
-            identity: identity,
-            ratingKey: item.ratingKey,
-            title: item.title,
-            targetTagID: .tv1080p8Mbps      // 8 Mbps 1080p preset (tagID best-effort = 2)
-        )
+    /// // TODO(live, Phase 0): the background-processing key, the targets endpoint/shape, and
+    /// the accepted POST grammar are confirmed by `scripts/live-optimize-probe.sh`. Until then
+    /// this is the best-known contract and is NOT live-verified. Failures are recorded as
+    /// `.optimizeFailed`; we still poll metadata so an out-of-band optimized part is picked up.
+    private func triggerOptimizeAndDownload(item: MediaItem, targetName: String,
+                                            metadata: OfflineMetadata,
+                                            server: URL, token: String) async {
+        let ratingKey = item.ratingKey
+        let identity = appModel.identity
+        // Seed a 0% record so the UI shows the job immediately while we set up the optimize.
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                                    bytes: 0, progress: 0, metadata: metadata))
+        refreshRecords()
+
         do {
-            try await appModel.client.send(request)
-        } catch let error as PlexError {
-            // Don't hard-fail: the optimized part may already exist on the server.
-            // We log the optimize-trigger failure but proceed to poll metadata.
-            throw DownloadError.optimizeFailed(String(describing: error))
+            let queueTitle = "\(item.title) [VisionPlex \(UUID().uuidString.prefix(8))]"
+            let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
+                                                         token: token, identity: identity) ?? item
+            let originalPartIDs = Set((sourceItem.media ?? item.media ?? []).flatMap { $0.part.map(\.id) })
+            guard !originalPartIDs.isEmpty else {
+                throw DownloadError.optimizeFailed("No source media parts found before optimize.")
+            }
+            try await triggerOptimize(item: sourceItem, targetName: targetName,
+                                      queueTitle: queueTitle,
+                                      server: server, token: token, identity: identity)
+            let part = try await pollForOptimizedPart(ratingKey: ratingKey,
+                                                      originalPartIDs: originalPartIDs,
+                                                      backgroundProcessingKey: await bgKeyForPolling(server: server,
+                                                                                               token: token,
+                                                                                               identity: identity),
+                                                      queueTitle: queueTitle,
+                                                      server: server, token: token,
+                                                      identity: identity)
+            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
+            let destination = store.destinationURL(ratingKey: ratingKey,
+                                                   ext: ext.isEmpty ? "mp4" : ext)
+            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                        localURL: destination, bytes: 0, progress: 0,
+                                        metadata: metadata))
+            refreshRecords()
+            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
+            try session.start(ratingKey: ratingKey, from: url, to: destination,
+                              expectedBytes: part.size)
+            refreshRecords()
+        } catch let error as DownloadError {
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        } catch {
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        }
+    }
+
+    /// Steps 1–3 of the optimize contract: fetch the background-processing key, resolve the
+    /// target tag id from the server's targets, POST the optimize job. Isolated so the live
+    /// (server-specific) path is the only thing Phase 0 needs to confirm.
+    private func triggerOptimize(item: MediaItem, targetName: String,
+                                 queueTitle: String,
+                                 server: URL, token: String,
+                                 identity: ClientIdentity) async throws {
+        // 1. Background-processing playlist key.
+        let bgKey: String
+        do {
+            let pl = try await appModel.client.send(
+                OptimizeRequest.backgroundProcessingRequest(server: server, token: token, identity: identity),
+                as: BackgroundProcessingPlaylist.self)
+            guard let key = pl.key else {
+                throw DownloadError.optimizeFailed("No background-processing playlist key.")
+            }
+            bgKey = key
+        } catch let e as DownloadError {
+            throw e
+        } catch {
+            throw DownloadError.optimizeFailed("playlists?type=42: \(String(describing: error))")
+        }
+
+        // 2. Resolve built-in PMS target tags from the server. Custom iPad-style
+        //    quality rows intentionally leave targetTagID empty and instead send
+        //    Item[Device][profile] + Item[MediaSettings], matching python-plexapi.
+        let custom = Self.customDownloadProfile(named: targetName)
+        var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: targetName) : nil
+        if custom == nil,
+           let targets = try? await appModel.client.send(
+            OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token, identity: identity),
+            as: MediaProcessingTargets.self),
+           let resolved = targets.tagID(forName: targetName) {
+            targetTagID = resolved
+        }
+
+        let source = await optimizerSource(for: item, server: server, token: token, identity: identity)
+
+        // 3. PUT the optimize job to the background-processing playlist.
+        let settings = custom?.settings ?? Self.mediaSettings(forTargetName: targetName)
+        let create = OptimizeRequest.createOnPlaylist(
+            server: server, token: token, identity: identity,
+            backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
+            sourceURI: source?.uri, locationID: source?.locationID ?? -1,
+            title: queueTitle, targetTagID: targetTagID,
+            targetName: custom == nil ? "" : "Custom: \(custom!.deviceProfile)",
+            deviceProfile: custom?.deviceProfile, mediaSettings: settings)
+        do {
+            try await appModel.client.send(create)
+        } catch {
+            throw DownloadError.optimizeFailed("optimize POST: \(String(describing: error))")
+        }
+    }
+
+    private struct LibrarySectionsResponse: Decodable {
+        struct Container: Decodable {
+            let directory: [Directory]
+            enum CodingKeys: String, CodingKey { case directory = "Directory" }
+        }
+        struct Directory: Decodable {
+            struct Location: Decodable { let id: Int; let path: String }
+            let key: String
+            let uuid: String?
+            let location: [Location]
+            enum CodingKeys: String, CodingKey {
+                case key
+                case uuid
+                case location = "Location"
+            }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                key = try container.decode(String.self, forKey: .key)
+                uuid = try container.decodeIfPresent(String.self, forKey: .uuid)
+                location = try container.decodeIfPresent([Location].self, forKey: .location) ?? []
+            }
+        }
+        let mediaContainer: Container
+        enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    }
+
+    private struct OptimizerSource {
+        let uri: String
+        let locationID: Int
+    }
+
+    private func optimizerSource(for item: MediaItem, server: URL, token: String,
+                                 identity: ClientIdentity) async -> OptimizerSource? {
+        let sectionID = item.librarySectionID.map(String.init)
+            ?? item.librarySectionKey?.split(separator: "/").last.map(String.init)
+        guard let sectionID else { return nil }
+        let request = PlexRequest(url: server.appendingPathComponent("library/sections"),
+                                  method: "GET", queryItems: [],
+                                  headers: PlexHeaders.standard(identity: identity, token: token))
+        guard let response = try? await appModel.client.send(request, as: LibrarySectionsResponse.self),
+              let section = response.mediaContainer.directory.first(where: { $0.key == sectionID }),
+              let uuid = section.uuid,
+              let metadataKey = item.key ?? Optional("/library/metadata/\(item.ratingKey)")
+        else { return nil }
+
+        let sourceFiles = (item.media ?? []).flatMap { $0.part.compactMap(\.file) }
+        let sourceLocationIDs = Set(section.location.compactMap { location -> Int? in
+            sourceFiles.contains { Self.filePath($0, isUnder: location.path) } ? location.id : nil
+        })
+        // PlexAPI's `locationID = -1` means "beside the original file". If the library has
+        // an extra location (for example a writable optimized-version mount), prefer that so
+        // read-only media libraries do not force optimizer failures.
+        let alternateLocationID = section.location.first { !sourceLocationIDs.contains($0.id) }?.id
+
+        return OptimizerSource(uri: "library://\(uuid)/item/\(metadataKey.urlQueryEscapedForPlexPath)",
+                               locationID: alternateLocationID ?? -1)
+    }
+
+    private static func filePath(_ file: String, isUnder directory: String) -> Bool {
+        let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
+        return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")
+    }
+
+    private struct CustomDownloadProfile {
+        let name: String
+        let deviceProfile: String
+        let settings: OptimizeRequest.MediaSettings
+    }
+
+    private static let customDownloadProfiles: [CustomDownloadProfile] = [
+        .init(name: "Original", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: nil, maxVideoBitrateKbps: nil, videoResolution: nil)),
+        .init(name: "1080p 20 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 100, maxVideoBitrateKbps: 20_000, videoResolution: "1920x1080")),
+        .init(name: "1080p 12 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 90, maxVideoBitrateKbps: 12_000, videoResolution: "1920x1080")),
+        .init(name: "1080p 10 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 75, maxVideoBitrateKbps: 10_000, videoResolution: "1920x1080")),
+        .init(name: "1080p 8 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 60, maxVideoBitrateKbps: 8_000, videoResolution: "1920x1080")),
+        .init(name: "720p 4 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 100, maxVideoBitrateKbps: 4_000, videoResolution: "1280x720")),
+        .init(name: "720p 3 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 75, maxVideoBitrateKbps: 3_000, videoResolution: "1280x720")),
+        .init(name: "720p 2 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 60, maxVideoBitrateKbps: 2_000, videoResolution: "1280x720")),
+        .init(name: "480p 1.5 Mbps", deviceProfile: "Universal Mobile",
+              settings: .init(videoQuality: 60, maxVideoBitrateKbps: 1_500, videoResolution: "720x480")),
+    ]
+
+    private static var customDownloadProfileNames: [String] {
+        customDownloadProfiles.map(\.name)
+    }
+
+    private static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
+        customDownloadProfiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    private static func dedup(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for name in names {
+            let key = name.lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(name)
+        }
+        return result
+    }
+
+    /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
+    /// targets endpoint resolves them). Phase 0 confirms the real ids.
+    private static func conventionalTagID(forName name: String) -> Int {
+        switch name.lowercased() {
+        case "optimized for mobile": return 1
+        case "original quality":     return 3
+        default:                     return 2   // "Optimized for TV"
+        }
+    }
+
+    /// Best-known render settings per preset name (fallback caps; the server preset governs).
+    private static func mediaSettings(forTargetName name: String) -> OptimizeRequest.MediaSettings {
+        switch name.lowercased() {
+        case "optimized for mobile":
+            return .init(videoQuality: 100, maxVideoBitrateKbps: 2000, videoResolution: "1280x720")
+        case "original quality":
+            return .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil)
+        default:
+            return .init(videoQuality: 100, maxVideoBitrateKbps: 8000, videoResolution: "1920x1080")
         }
     }
 
@@ -497,36 +656,87 @@ public final class DownloadManager {
     /// the first part whose id is NOT in that original set is the optimized output.
     /// If the item had no media at all, we take the highest-id new part.
     private func pollForOptimizedPart(ratingKey: String,
+                                      originalPartIDs: Set<Int>,
+                                      backgroundProcessingKey: String?,
+                                      queueTitle: String,
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
-        let originalPartIDs = Set((appModelItemMedia(ratingKey) ?? []).flatMap { $0.part.map(\.id) })
         let deadline = Date().addingTimeInterval(optimizePollTimeout)
 
         while Date() < deadline {
-            let statusReq = OptimizeRequest.statusRequest(server: server, token: token,
-                                                          identity: identity, ratingKey: ratingKey)
-            if let response = try? await appModel.client.send(statusReq, as: MetadataResponse.self),
-               let metadata = response.mediaContainer.metadata.first {
+            if let metadata = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
+                                                          token: token, identity: identity) {
                 let allParts = (metadata.media ?? []).flatMap { $0.part }
                 if let newPart = allParts.first(where: { !originalPartIDs.contains($0.id) }) {
                     return newPart
                 }
-                // Fallback: if there was originally NO media, any part counts.
-                if originalPartIDs.isEmpty, let only = allParts.last {
-                    return only
-                }
+            }
+            if let backgroundProcessingKey,
+               let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
+                                                       queueTitle: queueTitle, server: server,
+                                                       token: token, identity: identity),
+               status.isFailed {
+                downloadLog.error("optimizer-failed title=\(queueTitle, privacy: .public) failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
+                throw DownloadError.optimizeFailed("Plex server could not create an optimized version; optimized-version storage may be read-only.")
             }
             try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
         }
         throw DownloadError.optimizeTimedOut
     }
 
-    /// Best-effort: the media we already had for this item (used to diff parts).
-    /// We don't cache full items here, so this returns nil and the poll treats all
-    /// discovered parts as candidates (taking the last). Kept as a seam so a future
-    /// caller can pass through the originally-loaded `MediaItem.media`.
-    private func appModelItemMedia(_ ratingKey: String) -> [Media]? { nil }
+    private func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
+                                       identity: ClientIdentity) async -> MediaItem? {
+        let statusReq = OptimizeRequest.statusRequest(server: server, token: token,
+                                                      identity: identity, ratingKey: ratingKey)
+        return (try? await appModel.client.send(statusReq, as: MetadataResponse.self))?
+            .mediaContainer.metadata.first
+    }
+
+
+    private func bgKeyForPolling(server: URL, token: String, identity: ClientIdentity) async -> String? {
+        guard let pl = try? await appModel.client.send(
+            OptimizeRequest.backgroundProcessingRequest(server: server, token: token, identity: identity),
+            as: BackgroundProcessingPlaylist.self)
+        else { return nil }
+        return pl.key
+    }
+
+    private struct OptimizerQueueResponse: Decodable {
+        struct Container: Decodable {
+            let item: [Item]
+            enum CodingKeys: String, CodingKey { case item = "Item" }
+        }
+        struct Item: Decodable {
+            let title: String?
+            let status: Status?
+            enum CodingKeys: String, CodingKey { case title; case status = "Status" }
+        }
+        struct Status: Decodable {
+            let itemsSuccessfulCount: Int?
+            let itemsFailedCount: Int?
+            let state: String?
+            var isFailed: Bool {
+                (itemsFailedCount ?? 0) > 0 && (itemsSuccessfulCount ?? 0) == 0
+                    && state?.lowercased() == "complete"
+            }
+        }
+        let mediaContainer: Container
+        enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    }
+
+    private func optimizerQueueStatus(backgroundProcessingKey: String, queueTitle: String,
+                                      server: URL, token: String,
+                                      identity: ClientIdentity) async -> OptimizerQueueResponse.Status? {
+        let trimmed = backgroundProcessingKey.hasPrefix("/")
+            ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
+        let req = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
+                              queryItems: [],
+                              headers: PlexHeaders.standard(identity: identity, token: token))
+        guard let response = try? await appModel.client.send(req, as: OptimizerQueueResponse.self)
+        else { return nil }
+        return response.mediaContainer.item.last(where: { $0.title == queueTitle })?.status
+    }
 }
 
 /// Wraps a background `URLSession` so transfers survive app suspension and
@@ -549,6 +759,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var inflight: [Int: (ratingKey: String, destination: URL)] = [:]
     /// taskIdentifiers whose expected-size has already been logged once (diagnostics).
     private var loggedExpectation: Set<Int> = []
+    /// Retry count by ratingKey for transient URLSession drops that provide resume data.
+    private var retryCounts: [String: Int] = [:]
+    /// Last UI refresh per ratingKey; progress callbacks can arrive many times per second.
+    private var lastProgressNotify: [String: Date] = [:]
+    private let maxTransientRetries = 3
+    private let progressNotifyInterval: TimeInterval = 0.5
     private let lock = NSLock()
 
     /// Called on any progress/completion so the manager can refresh records.
@@ -666,6 +882,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         let task = urlSession.downloadTask(with: url)
         lock.lock()
+        retryCounts[ratingKey] = 0
+        lastProgressNotify[ratingKey] = nil
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
         downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(url.path, privacy: .public)")
@@ -722,7 +940,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         store.updateProgress(ratingKey: entry.ratingKey,
                              bytes: Int(totalBytesWritten),
                              progress: progress)
-        onChange?()
+        notifyProgressChangeIfNeeded(ratingKey: entry.ratingKey, progress: progress)
     }
 
     func urlSession(_ session: URLSession,
@@ -737,6 +955,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         func fail(_ reason: String) {
             downloadLog.error("invalid-download ratingKey=\(entry.ratingKey, privacy: .public) reason=\(reason, privacy: .public)")
             try? fileManager.removeItem(at: entry.destination)
+            clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .invalidDownload(reason))
             onChange?()
@@ -810,10 +1029,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if playable {
                 // Validated: mark explicitly complete (D2) so a relaunch trusts it.
                 downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
+                self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
                 downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=not-playable bytes=\(bytes, privacy: .public)")
                 try? self.fileManager.removeItem(at: destination)
+                self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.onError?(ratingKey, .invalidDownload("Downloaded file isn't a playable video container."))
             }
@@ -833,14 +1054,76 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
         if nsError.code != NSURLErrorCancelled {
+            if retryTransientFailure(nsError, task: task, entry: entry) {
+                return
+            }
             downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+            clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
         } else {
+            clearRetryCount(ratingKey: entry.ratingKey)
             downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
         }
         onChange?()
     }
+
+    private func notifyProgressChangeIfNeeded(ratingKey: String, progress: Double) {
+        let now = Date()
+        lock.lock()
+        let last = lastProgressNotify[ratingKey]
+        let shouldNotify = (last.map { now.timeIntervalSince($0) >= progressNotifyInterval } ?? true)
+            || progress >= 1.0
+        if shouldNotify { lastProgressNotify[ratingKey] = now }
+        lock.unlock()
+        if shouldNotify { onChange?() }
+    }
+
+    private func clearRetryCount(ratingKey: String) {
+        lock.lock()
+        retryCounts.removeValue(forKey: ratingKey)
+        lastProgressNotify.removeValue(forKey: ratingKey)
+        lock.unlock()
+    }
+
+    /// Resume transient transfer drops before surfacing a failed row. Plex/static-file
+    /// downloads can start successfully and then lose the TCP stream mid-body (`-1005`);
+    /// URLSession gives us resume data in that case, so failing immediately throws away
+    /// exactly the recovery mechanism the OS provides.
+    private func retryTransientFailure(_ error: NSError,
+                                       task: URLSessionTask,
+                                       entry: (ratingKey: String, destination: URL)) -> Bool {
+        guard error.domain == NSURLErrorDomain,
+              Self.transientDownloadErrorCodes.contains(error.code),
+              let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
+              !resumeData.isEmpty else { return false }
+
+        lock.lock()
+        let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1
+        guard nextAttempt <= maxTransientRetries else {
+            lock.unlock()
+            return false
+        }
+        retryCounts[entry.ratingKey] = nextAttempt
+        lock.unlock()
+
+        let retryTask = urlSession.downloadTask(withResumeData: resumeData)
+        lock.lock()
+        inflight[retryTask.taskIdentifier] = entry
+        lock.unlock()
+        downloadLog.error("transfer-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+        retryTask.resume()
+        onChange?()
+        return true
+    }
+
+    private static let transientDownloadErrorCodes: Set<Int> = [
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorTimedOut,
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorCannotFindHost,
+        NSURLErrorDNSLookupFailed
+    ]
 
     /// Called when the background session has delivered all events queued while the
     /// app was suspended/terminated (after a relaunch). We invoke the system-supplied
@@ -897,5 +1180,12 @@ final class BackgroundDownloadCompletionRegistry {
     func fireCompletion(for identifier: String) {
         guard let handler = handlers.removeValue(forKey: identifier) else { return }
         handler()
+    }
+}
+
+
+private extension String {
+    var urlQueryEscapedForPlexPath: String {
+        addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? self
     }
 }
