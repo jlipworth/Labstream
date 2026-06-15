@@ -13,9 +13,19 @@ extension PlexRequest {
 
         if !queryItems.isEmpty {
             // Preserve any query items already on the URL, then append ours.
-            var merged = components.queryItems ?? []
-            merged.append(contentsOf: queryItems)
-            components.queryItems = merged
+            // URLComponents.queryItems leaves some reserved separators (notably `;`, `:`
+            // and `/`) unescaped in query VALUES. PMS treats `;` as a query separator on
+            // optimizer playlist PUTs, so titles like `Vaccine Court; ...` produce a
+            // malformed request. Build the percentEncodedQuery ourselves with RFC3986
+            // unreserved characters only for both names and values.
+            let existing = components.percentEncodedQuery
+            let encoded = queryItems
+                .map { "\($0.name.plexQueryEscaped)=\(($0.value ?? "").plexQueryEscaped)" }
+                .joined(separator: "&")
+            components.percentEncodedQuery = [existing, encoded]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: "&")
         }
 
         let finalURL = components.url ?? url
@@ -26,5 +36,14 @@ extension PlexRequest {
         }
         request.httpBody = body
         return request
+    }
+}
+
+
+private extension String {
+    var plexQueryEscaped: String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
     }
 }
