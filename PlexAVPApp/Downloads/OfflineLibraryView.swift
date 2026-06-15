@@ -87,15 +87,20 @@ public struct OfflineLibraryView: View {
                     // `record.progress` drives the bar directly. See `displayProgress(for:)`.
                     if let progress = displayProgress(for: record) {
                         ProgressView(value: progress)
+                            .animation(.linear(duration: 0.2), value: progress)
                         Text(progressCaption(for: record, progress: progress))
                             .font(.caption)
                             .monospacedDigit()
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(.secondary)
                     } else {
                         ProgressView()
                         Text(progressCaption(for: record, progress: nil))
                             .font(.caption)
                             .monospacedDigit()
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(.secondary)
                     }
                 }
