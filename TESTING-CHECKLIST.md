@@ -226,6 +226,22 @@ required**.
       that initial, and returning from detail preserves position. Implementation pages Movies/TV
       grids 200 items at a time and pre-sizes placeholders from PMS `totalSize`; the rail uses
       PMS `/firstCharacter` counts.
+- [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
+  - About: Version matches the bundle marketing version + build; visionOS row sane;
+    Client row says "VisionPlex on Apple Vision Pro" (NO client identifier shown).
+  - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
+    the connection scheme only — no token, client identifier, hostname, or full URL.
+  - Server section: Version row shows the PMS version; Status row says "Tap to check",
+    tap → green dot + "Checked <time>" when reachable (try with sim networking cut for red).
+  - Re-discover servers resets the status row back to "Tap to check".
+  - Sign Out now confirms (dialog mentions plex.tv re-auth); Cancel keeps the session.
+  - Maintenance → Clear image cache: row flips to "Cache cleared"; artwork re-loads on
+    next browse (no crash, no blank-forever posters).
+  - Playback → Reset playback preferences: after setting a 1.5× speed + a subtitle/audio
+    language in the player, reset, then play something — speed back to 1×, no auto
+    subtitle/audio language; streaming-quality pick is UNCHANGED.
+  - X-Plex-Version sanity: requests now carry the bundle version (was hardcoded 0.1.0) —
+    login/browse still work.
 
 ## C. Music (GH #17 — Plexamp-style module)
 
