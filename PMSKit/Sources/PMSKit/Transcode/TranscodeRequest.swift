@@ -217,7 +217,7 @@ public struct TranscodeRequest: Sendable, Equatable {
             preconditionFailure("TranscodeRequest: server URL is not decomposable: \(server)")
         }
         components.path = path
-        components.queryItems = queryItems
+        PlexURLQueryEncoder.replaceQueryItems(queryItems, in: &components)
         guard let url = components.url else {
             preconditionFailure("TranscodeRequest: could not rebuild URL for path \(path)")
         }
