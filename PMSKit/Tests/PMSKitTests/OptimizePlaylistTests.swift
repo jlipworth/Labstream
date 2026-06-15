@@ -52,6 +52,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
         server: server, token: "tok", identity: id,
         backgroundProcessingKey: "/playlists/9/items",
         ratingKey: "101", sourceURI: "library://section/item/%2Flibrary%2Fmetadata%2F101",
+        locationID: 6,
         title: "T", targetTagID: nil, targetName: "Custom: Universal TV",
         deviceProfile: "Universal TV",
         mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: 20_000,
@@ -62,6 +63,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
     #expect(v("Item[targetTagID]") == "")
     #expect(v("Item[Device][profile]") == "Universal TV")
     #expect(v("Item[MediaSettings][maxVideoBitrate]") == "20000")
+    #expect(v("Item[locationID]") == "6")
     #expect(v("Item[Location][uri]") == "library://section/item/%2Flibrary%2Fmetadata%2F101")
 }
 
