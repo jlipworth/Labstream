@@ -1,3 +1,4 @@
+import AVFoundation
 import RealityKit
 import SwiftUI
 import UIKit
@@ -14,7 +15,9 @@ struct RealityTheaterPrototypeView: View {
         let configuration = session.configuration
 
         ZStack(alignment: .top) {
-            RealityTheaterScene(configuration: configuration)
+            RealityTheaterScene(configuration: configuration,
+                                player: session.player,
+                                title: session.title ?? "Theater Lab")
             prototypeBanner
                 .padding(.top, 30)
         }
@@ -37,19 +40,82 @@ struct RealityTheaterPrototypeView: View {
 }
 
 private struct RealityTheaterScene: View {
+    private static let playerAttachmentID = "reality-theater-player-surface"
+
     let configuration: RealityTheaterConfiguration
+    let player: AVPlayer?
+    let title: String
 
     var body: some View {
-        RealityView { content in
-            content.add(RealityTheaterEntityFactory.makeRoot(configuration: configuration))
+        RealityView { content, attachments in
+            content.add(RealityTheaterEntityFactory.makeRoot(configuration: configuration,
+                                                            hasVideoSurface: player != nil))
+            if let playerSurface = attachments.entity(for: Self.playerAttachmentID) {
+                RealityTheaterEntityFactory.placePlayerSurface(playerSurface,
+                                                               configuration: configuration)
+                content.add(playerSurface)
+            }
+        } update: { content, attachments in
+            if let playerSurface = attachments.entity(for: Self.playerAttachmentID) {
+                RealityTheaterEntityFactory.placePlayerSurface(playerSurface,
+                                                               configuration: configuration)
+                if playerSurface.parent == nil {
+                    content.add(playerSurface)
+                }
+            }
+        } attachments: {
+            Attachment(id: Self.playerAttachmentID) {
+                RealityTheaterPlayerAttachment(player: player, title: title)
+            }
         }
         .id(configuration)
     }
 }
 
+private struct RealityTheaterPlayerAttachment: View {
+    let player: AVPlayer?
+    let title: String
+
+    var body: some View {
+        ZStack {
+            if let player {
+                PlayerLayerView(player: player)
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(.black)
+                    .overlay {
+                        VStack(spacing: 10) {
+                            Image(systemName: "play.rectangle.on.rectangle")
+                                .font(.largeTitle.weight(.semibold))
+                            Text("No active player")
+                                .font(.headline)
+                            Text("Open from the custom player with the developer theater flag enabled.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .padding(14)
+        }
+        .frame(width: 1280, height: 720)
+        .background(.black)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+}
+
 @MainActor
 private enum RealityTheaterEntityFactory {
-    static func makeRoot(configuration: RealityTheaterConfiguration) -> Entity {
+    static func makeRoot(configuration: RealityTheaterConfiguration,
+                         hasVideoSurface: Bool) -> Entity {
         let root = Entity()
         root.name = "reality-theater-root"
 
@@ -71,7 +137,7 @@ private enum RealityTheaterEntityFactory {
                                height: configuration.screen.heightMeters,
                                depth: 0.025,
                                cornerRadius: 0.025),
-            materials: [SimpleMaterial(color: UIColor.black,
+            materials: [SimpleMaterial(color: hasVideoSurface ? UIColor(white: 0.02, alpha: 1.0) : UIColor.black,
                                        roughness: 0.45,
                                        isMetallic: false)]
         )
@@ -106,5 +172,15 @@ private enum RealityTheaterEntityFactory {
         root.addChild(seatMarker)
 
         return root
+    }
+
+    static func placePlayerSurface(_ entity: Entity,
+                                   configuration: RealityTheaterConfiguration) {
+        entity.name = "reality-theater-player-attachment"
+        entity.position = configuration.screenPosition + SIMD3<Float>(0, 0, 0.055)
+        // RealityView attachments are authored in SwiftUI points. Scale the 1280x720 attachment
+        // so its visible width matches the meter-based theater screen configuration.
+        let scale = configuration.screen.widthMeters / 1280.0
+        entity.scale = SIMD3<Float>(repeating: scale)
     }
 }
