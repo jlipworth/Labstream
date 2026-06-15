@@ -226,3 +226,15 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(url.absoluteString
         == "https://192.0.2.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
 }
+
+@Test func trackStreamURLPercentEncodesReservedQuerySeparators() throws {
+    let url = MusicRequest.trackStreamURL(server: server,
+                                          token: "tok;download=1&x=/",
+                                          partKey: "/library/parts/123/456/file.mp3")
+    let query = try #require(URLComponents(url: url,
+                                           resolvingAgainstBaseURL: false)?.percentEncodedQuery)
+
+    #expect(query == "X-Plex-Token=tok%3Bdownload%3D1%26x%3D%2F")
+    #expect(!query.contains(";"))
+    #expect(!query.contains("&x="))
+}

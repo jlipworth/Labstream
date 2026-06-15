@@ -25,6 +25,18 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(url.absoluteString.contains("X-Plex-Token=tok"))
 }
 
+@Test func downloadURLPercentEncodesReservedQuerySeparators() throws {
+    let url = OptimizeRequest.downloadURL(server: server,
+                                          token: "tok;download=0&x=/",
+                                          partKey: "/library/parts/55/file.mp4")
+    let query = try #require(URLComponents(url: url,
+                                           resolvingAgainstBaseURL: false)?.percentEncodedQuery)
+
+    #expect(query == "download=1&X-Plex-Token=tok%3Bdownload%3D0%26x%3D%2F")
+    #expect(!query.contains(";"))
+    #expect(!query.contains("&x="))
+}
+
 @Test func optimizeCarriesTargetAndTagID() {
     let r = OptimizeRequest.create(server: server, token: "tok", identity: id,
                                    ratingKey: "101", title: "Blade Runner",

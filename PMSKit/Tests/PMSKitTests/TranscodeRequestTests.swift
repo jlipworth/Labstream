@@ -30,6 +30,30 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("partIndex") == "0")
 }
 
+@Test func startURLPercentEncodesReservedQuerySeparators() throws {
+    let unsafeIdentity = ClientIdentity(clientIdentifier: "CID;bad=1",
+                                        product: "VisionPlex",
+                                        version: "0.1.0",
+                                        deviceName: "AVP")
+    let req = TranscodeRequest(server: server,
+                               token: "tok;download=0&x=/",
+                               identity: unsafeIdentity,
+                               metadataKey: "/library/metadata/101;bad=true",
+                               maxVideoBitrateKbps: 8000,
+                               sessionID: "SESSION;evil=1",
+                               mediaIndex: 0,
+                               partIndex: 0)
+    let query = try #require(URLComponents(url: req.startM3U8URL(),
+                                           resolvingAgainstBaseURL: false)?.percentEncodedQuery)
+
+    #expect(query.contains("path=%2Flibrary%2Fmetadata%2F101%3Bbad%3Dtrue"))
+    #expect(query.contains("session=SESSION%3Bevil%3D1"))
+    #expect(query.contains("X-Plex-Token=tok%3Bdownload%3D0%26x%3D%2F"))
+    #expect(query.contains("X-Plex-Client-Identifier=CID%3Bbad%3D1"))
+    #expect(!query.contains(";"))
+    #expect(!query.contains("&x="))
+}
+
 @Test func decisionURLUsesDecisionPathAndHasMDE() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
                                metadataKey: "/library/metadata/101",
