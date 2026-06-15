@@ -102,3 +102,21 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
     #expect(r.tagID(forName: "optimized for tv") == 7)
     #expect(r.tagID(forName: "nonexistent") == nil)
 }
+
+@Test func urlRequestEscapesOptimizerReservedQueryValueSeparators() throws {
+    let r = OptimizeRequest.createOnPlaylist(
+        server: server, token: "tok", identity: id,
+        backgroundProcessingKey: "/playlists/9/items",
+        ratingKey: "31518",
+        sourceURI: "library://62bf/item/%2Flibrary%2Fmetadata%2F31518",
+        title: "Vaccine Court; The Tequila Heist; This Is Rob Reiner",
+        targetTagID: nil, targetName: "Custom: Universal TV",
+        deviceProfile: "Universal TV",
+        mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: 4_000,
+                             videoResolution: "1280x720"))
+    let absolute = try #require(r.urlRequest().url?.absoluteString)
+    #expect(absolute.contains("Vaccine%20Court%3B%20The%20Tequila"))
+    #expect(absolute.contains("Custom%3A%20Universal%20TV"))
+    #expect(absolute.contains("library%3A%2F%2F62bf%2Fitem%2F%252Flibrary%252Fmetadata%252F31518"))
+    #expect(!absolute.contains("Vaccine%20Court;%20"))
+}
