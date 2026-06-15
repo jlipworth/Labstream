@@ -421,6 +421,7 @@ public final class DownloadManager {
         refreshRecords()
 
         do {
+            let queueTitle = "\(item.title) [VisionPlex \(UUID().uuidString.prefix(8))]"
             let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                          token: token, identity: identity) ?? item
             let originalPartIDs = Set((sourceItem.media ?? item.media ?? []).flatMap { $0.part.map(\.id) })
@@ -428,9 +429,14 @@ public final class DownloadManager {
                 throw DownloadError.optimizeFailed("No source media parts found before optimize.")
             }
             try await triggerOptimize(item: sourceItem, targetName: targetName,
+                                      queueTitle: queueTitle,
                                       server: server, token: token, identity: identity)
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
+                                                      backgroundProcessingKey: await bgKeyForPolling(server: server,
+                                                                                               token: token,
+                                                                                               identity: identity),
+                                                      queueTitle: queueTitle,
                                                       server: server, token: token,
                                                       identity: identity)
             let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
@@ -459,6 +465,7 @@ public final class DownloadManager {
     /// target tag id from the server's targets, POST the optimize job. Isolated so the live
     /// (server-specific) path is the only thing Phase 0 needs to confirm.
     private func triggerOptimize(item: MediaItem, targetName: String,
+                                 queueTitle: String,
                                  server: URL, token: String,
                                  identity: ClientIdentity) async throws {
         // 1. Background-processing playlist key.
@@ -497,7 +504,7 @@ public final class DownloadManager {
         let create = OptimizeRequest.createOnPlaylist(
             server: server, token: token, identity: identity,
             backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
-            sourceURI: sourceURI, title: item.title, targetTagID: targetTagID,
+            sourceURI: sourceURI, title: queueTitle, targetTagID: targetTagID,
             targetName: custom == nil ? "" : "Custom: \(custom!.deviceProfile)",
             deviceProfile: custom?.deviceProfile, mediaSettings: settings)
         do {
@@ -609,6 +616,8 @@ public final class DownloadManager {
     /// If the item had no media at all, we take the highest-id new part.
     private func pollForOptimizedPart(ratingKey: String,
                                       originalPartIDs: Set<Int>,
+                                      backgroundProcessingKey: String?,
+                                      queueTitle: String,
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
@@ -622,6 +631,14 @@ public final class DownloadManager {
                     return newPart
                 }
             }
+            if let backgroundProcessingKey,
+               let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
+                                                       queueTitle: queueTitle, server: server,
+                                                       token: token, identity: identity),
+               status.isFailed {
+                downloadLog.error("optimizer-failed title=\(queueTitle, privacy: .public) failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
+                throw DownloadError.optimizeFailed("Plex optimizer job failed on the server.")
+            }
             try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
         }
         throw DownloadError.optimizeTimedOut
@@ -633,6 +650,51 @@ public final class DownloadManager {
                                                       identity: identity, ratingKey: ratingKey)
         return (try? await appModel.client.send(statusReq, as: MetadataResponse.self))?
             .mediaContainer.metadata.first
+    }
+
+
+    private func bgKeyForPolling(server: URL, token: String, identity: ClientIdentity) async -> String? {
+        guard let pl = try? await appModel.client.send(
+            OptimizeRequest.backgroundProcessingRequest(server: server, token: token, identity: identity),
+            as: BackgroundProcessingPlaylist.self)
+        else { return nil }
+        return pl.key
+    }
+
+    private struct OptimizerQueueResponse: Decodable {
+        struct Container: Decodable {
+            let item: [Item]
+            enum CodingKeys: String, CodingKey { case item = "Item" }
+        }
+        struct Item: Decodable {
+            let title: String?
+            let status: Status?
+            enum CodingKeys: String, CodingKey { case title; case status = "Status" }
+        }
+        struct Status: Decodable {
+            let itemsSuccessfulCount: Int?
+            let itemsFailedCount: Int?
+            let state: String?
+            var isFailed: Bool {
+                (itemsFailedCount ?? 0) > 0 && (itemsSuccessfulCount ?? 0) == 0
+                    && state?.lowercased() == "complete"
+            }
+        }
+        let mediaContainer: Container
+        enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    }
+
+    private func optimizerQueueStatus(backgroundProcessingKey: String, queueTitle: String,
+                                      server: URL, token: String,
+                                      identity: ClientIdentity) async -> OptimizerQueueResponse.Status? {
+        let trimmed = backgroundProcessingKey.hasPrefix("/")
+            ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
+        let req = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
+                              queryItems: [],
+                              headers: PlexHeaders.standard(identity: identity, token: token))
+        guard let response = try? await appModel.client.send(req, as: OptimizerQueueResponse.self)
+        else { return nil }
+        return response.mediaContainer.item.last(where: { $0.title == queueTitle })?.status
     }
 }
 
