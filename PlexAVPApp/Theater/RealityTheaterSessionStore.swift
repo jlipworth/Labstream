@@ -40,18 +40,32 @@ final class RealityTheaterSessionStore {
         var next = configuration
         update(&next)
         configuration = next
+        logCurrentConfiguration(reason: "tuned")
+    }
+
+    func applyPreset(_ preset: RealityTheaterBaselinePreset) {
+        configuration = preset.configuration
+        logCurrentConfiguration(reason: "preset \(preset.displayName)")
+    }
+
+    func resetConfigurationToDefaults() {
+        configuration = .default
+        logCurrentConfiguration(reason: "reset defaults")
     }
 
     func markOpening() {
         phase = .opening
+        logCurrentConfiguration(reason: "opening")
     }
 
     func markOpen() {
         phase = .open
+        logCurrentConfiguration(reason: "opened")
     }
 
     func markClosed() {
         phase = hasPreparedPlayback ? .prepared : .inactive
+        logCurrentConfiguration(reason: "closed")
     }
 
     func dismissWithoutClearingPlayback() {
@@ -63,5 +77,11 @@ final class RealityTheaterSessionStore {
         controller = nil
         configuration = .default
         phase = .inactive
+    }
+
+    func logCurrentConfiguration(reason: String) {
+        #if DEBUG
+        print("[Theater Lab] \(reason): \(configuration.debugSummary); title=\(title ?? "none"); hasPlayer=\(player != nil)")
+        #endif
     }
 }

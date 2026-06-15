@@ -60,3 +60,38 @@ This slice creates a clean #12 boundary while keeping the product safe:
 - Validation: PMSKit tests, hygiene, and Vision Pro simulator build/run passed after rebasing
   on `origin/main` with downloads + URL-query hardening merged.
 
+
+## 2026-06-15 Theater Lab tuning update
+
+- Added an in-immersive DEBUG/developer Theater Lab panel for device testing:
+  - screen width, distance, and vertical offset sliders in meters;
+  - front/center/back seat presets;
+  - below-screen vs seat-rail controls placement;
+  - reset-to-defaults plus Apple-ish baseline buttons.
+- The lab prints `[Theater Lab]` lines for open, close, preset, reset, and tuning changes so a device pass can correlate screenshots/notes with exact values.
+- The active AVPlayer attachment path is preserved; tuning only moves/scales the RealityKit screen and markers around the existing SwiftUI `PlayerLayerView` attachment.
+- Shipping gates remain unchanged: `RealityTheaterFeature.isShippingEntryPointVisible == false`, and `CustomCinemaMode.isUserVisible == false`.
+
+## Practical Vision Pro device checklist for later today
+
+1. **Enable only the developer entry point**
+   - Launch a DEBUG build with `developerRealityKitTheaterEnabled=true` in app defaults.
+   - Confirm the old Custom Cinema button is still absent and only the developer `Theater Lab` button appears.
+2. **Open/close semantics**
+   - Start normal custom-player playback, open Theater Lab, close with the in-lab `Close Lab` button, then reopen and close with `Exit Theater Lab` in chrome.
+   - Verify playback continues after each open/close and no immersive space is orphaned.
+3. **Environment/full-immersion comparison**
+   - Repeat opening from Windowed, Mixed, and a 100% full Environment.
+   - Record whether Theater Lab preserves, exits, or visually fights the current Environment; compare this behavior against Apple's AVKit Cinema default if available in a reference app.
+4. **Apple-ish baseline comparison**
+   - Test `Apple-ish default` first, then `Apple-ish large/back`, then manual width/distance/vertical tweaks.
+   - For each comfortable value, capture the visible label and console `[Theater Lab]` line.
+5. **Video surface playback notes**
+   - While playing, pause/resume, scrub, skip ±10/30, and wait through at least one buffering/quality change if possible.
+   - Watch for black frames, detached audio, or the attachment failing to resize with the screen.
+6. **Controls reachability**
+   - Compare `Below screen` vs `Seat rail` controls placement from front/center/back.
+   - Record whether controls block subtitles, sit too low/high, or require uncomfortable reach.
+7. **Reset instructions**
+   - Press `Reset`; confirm values return to Apple-ish default (`4.8m`, `5.0m`, `0.25m`, center, below screen).
+   - Close and reopen; confirm the reset/tuned values are understandable and no shipping-visible state changed.
