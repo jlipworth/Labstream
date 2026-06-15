@@ -71,12 +71,21 @@ struct JellyfinPlaybackTests {
             server: server,
             identity: identity,
             token: "token-abc",
-            itemId: "movie-1")
+            itemId: "movie-1",
+            maxWidth: 1280,
+            maxHeight: 720,
+            audioBitrate: 256_000)
 
-        #expect(result.url == URL(string: "https://jellyfin.example.test/base/Videos/movie-1/master.m3u8?mediaSourceId=source-1&playSessionId=play-1"))
+        #expect(result.url == URL(string: "https://jellyfin.example.test/base/Videos/movie-1/master.m3u8?mediaSourceId=source-1&playSessionId=play-1&api_key=server-token&MaxWidth=1280&MaxHeight=720&AudioBitrate=256000"))
         #expect(result.playSessionId == "play-1")
         #expect(result.mediaSourceId == "source-1")
         #expect(result.playMethod == .transcode)
+        // Jellyfin HLS needs the server-generated URL token to flow into child playlists/segments;
+        // AVFoundation does not reliably apply custom headers to every HLS subresource.
+        #expect(result.url.query()?.contains("api_key=server-token") == true)
+        #expect(result.url.query()?.contains("MaxWidth=1280") == true)
+        #expect(result.url.query()?.contains("MaxHeight=720") == true)
+        #expect(result.url.query()?.contains("AudioBitrate=256000") == true)
         #expect(result.requiredHTTPHeaders["Authorization"]?.contains("Token=\"token-abc\"") == true)
         #expect(result.sourceMetadata.container == "mkv")
         #expect(result.sourceMetadata.width == 3840)

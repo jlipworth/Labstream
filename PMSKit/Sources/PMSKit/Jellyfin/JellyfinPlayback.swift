@@ -194,7 +194,10 @@ public enum JellyfinPlayback {
                                      identity: JellyfinClientIdentity,
                                      token: String,
                                      itemId: String,
-                                     preferredMediaSourceId: String? = nil) throws -> JellyfinPlaybackOpenResult {
+                                     preferredMediaSourceId: String? = nil,
+                                     maxWidth: Int? = nil,
+                                     maxHeight: Int? = nil,
+                                     audioBitrate: Int? = nil) throws -> JellyfinPlaybackOpenResult {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw JellyfinPlaybackError.missingPlaySessionId
         }
@@ -206,7 +209,16 @@ public enum JellyfinPlayback {
         }
 
         if let transcodingURL = source.transcodingURL, !transcodingURL.isEmpty {
-            let url = try streamURLWithoutURLToken(jellyfinURL(server: server, pathOrURLString: transcodingURL))
+            // Keep Jellyfin's generated HLS session URL intact. AVFoundation does not reliably
+            // propagate custom HTTP headers from the master playlist request to child playlists
+            // and segments; when the ApiKey is stripped, the master can load via headers but the
+            // child playlist is generated without token-bearing segment URLs, which fails in
+            // CoreMedia. Static/direct streams still use header auth below.
+            let rawURL = try jellyfinURL(server: server, pathOrURLString: transcodingURL)
+            let url = try appendTranscodeCaps(to: rawURL,
+                                              maxWidth: maxWidth,
+                                              maxHeight: maxHeight,
+                                              audioBitrate: audioBitrate)
             let method: JellyfinPlayMethod = source.supportsDirectStream && !source.supportsDirectPlay ? .directStream : .transcode
             return JellyfinPlaybackOpenResult(
                 url: url,
@@ -249,6 +261,38 @@ public enum JellyfinPlayback {
         var headers = source.requiredHTTPHeaders ?? [:]
         headers["Authorization"] = JellyfinAuth.authorizationHeader(identity: identity, token: token)
         return headers
+    }
+
+
+    private static func appendTranscodeCaps(to url: URL,
+                                            maxWidth: Int?,
+                                            maxHeight: Int?,
+                                            audioBitrate: Int?) throws -> URL {
+        guard maxWidth != nil || maxHeight != nil || audioBitrate != nil else { return url }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        var items = comps.queryItems ?? []
+        func replace(_ name: String, value: String) {
+            items.removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            items.append(URLQueryItem(name: name, value: value))
+        }
+        // Jellyfin's PlaybackInfo body ignores resolution/audio caps for this HLS path, but the
+        // generated master.m3u8 endpoint honors these query params and carries them through to
+        // child playlists/segments. Without them, a "3 Mbps · 720p" selection can still ask the
+        // server to transcode a 4K/HDR + TrueHD source at 1080p/448k audio, producing segments
+        // too slowly for AVFoundation's ~3s media-file timeout. Keep the high profiles uncapped
+        // so Atmos/high-quality audio remains available where the user explicitly picked it.
+        if let maxWidth, let maxHeight, maxWidth > 0, maxHeight > 0 {
+            replace("MaxWidth", value: String(maxWidth))
+            replace("MaxHeight", value: String(maxHeight))
+        }
+        if let audioBitrate, audioBitrate > 0 {
+            replace("AudioBitrate", value: String(audioBitrate))
+        }
+        comps.queryItems = items
+        guard let capped = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        return capped
     }
 
     private static func streamURLWithoutURLToken(_ url: URL) throws -> URL {

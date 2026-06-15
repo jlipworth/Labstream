@@ -1581,7 +1581,23 @@ final class PlaybackController {
     /// `UIHostingController`, outside that environment. The controller already
     /// holds the server + token, so it vends the URL directly instead.
     func chapterThumbnailURL(for imagePath: String?) -> URL? {
-        guard let imagePath, !imagePath.isEmpty, let server, let token else { return nil }
+        guard let imagePath, !imagePath.isEmpty else { return nil }
+
+        // Jellyfin chapters are carried through PMSKit's shared `Chapter.thumb` as a synthetic
+        // stable key. The player is the only place that has the resolved remote HLS URL, so it
+        // derives the server base here and asks Jellyfin's native chapter-image endpoint for a
+        // 16:9 thumbnail. Keep this purely an image URL translation; do not touch playback state.
+        if let jellyfin = parsedJellyfinChapterImagePath(imagePath),
+           let base = remoteStreamURL.flatMap(jellyfinServerBaseURL(from:)) {
+            return try? JellyfinLibrary.chapterImageURL(server: base,
+                                                        itemId: jellyfin.itemId,
+                                                        chapterIndex: jellyfin.index,
+                                                        tag: jellyfin.tag,
+                                                        width: 480,
+                                                        height: 270)
+        }
+
+        guard let server, let token else { return nil }
         guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
                                         resolvingAgainstBaseURL: false) else { return nil }
         PlexURLQueryEncoder.replaceQueryItems([
@@ -1592,6 +1608,34 @@ final class PlaybackController {
             .init(name: "upscale", value: "1"),
             .init(name: "X-Plex-Token", value: token),
         ], in: &comps)
+        return comps.url
+    }
+
+    private func parsedJellyfinChapterImagePath(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
+        guard let url = URL(string: imagePath),
+              url.scheme == "jellyfin",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return (parts[0], index, tag)
+    }
+
+    private func jellyfinServerBaseURL(from streamURL: URL) -> URL? {
+        guard var comps = URLComponents(url: streamURL, resolvingAgainstBaseURL: false) else { return nil }
+        let lowerPath = comps.percentEncodedPath.lowercased()
+        if let range = lowerPath.range(of: "/videos/") {
+            comps.percentEncodedPath = String(comps.percentEncodedPath[..<range.lowerBound])
+        } else if let range = lowerPath.range(of: "/items/") {
+            comps.percentEncodedPath = String(comps.percentEncodedPath[..<range.lowerBound])
+        } else {
+            comps.percentEncodedPath = ""
+        }
+        comps.percentEncodedQuery = nil
+        comps.fragment = nil
         return comps.url
     }
 
