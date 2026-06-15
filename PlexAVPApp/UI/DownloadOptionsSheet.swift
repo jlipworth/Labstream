@@ -1,10 +1,10 @@
 import SwiftUI
 import PMSKit
 
-/// Probe-first download sheet (offline-download redesign). On appear it runs the direct-play
-/// probe: if the WHOLE file direct-plays it offers a single "Download original — <size> · <res>"
-/// action (no quality picker); otherwise it offers the server's real optimize presets. If the
-/// probe fails / the server is unreachable, it falls back to offering the optimizer presets.
+/// Probe-first download sheet (offline-download redesign). On appear it checks whether the
+/// selected source can be downloaded directly *and* asks the server for its real optimizer
+/// presets. Optimizer presets are always shown: a source file may stream/direct-play but still be
+/// an offline-unplayable container (for example MKV), so "Original" is only an optional extra.
 /// Both routes converge on the same background-`URLSession` + validation pipeline.
 struct DownloadOptionsSheet: View {
     let item: MediaItem
@@ -15,15 +15,24 @@ struct DownloadOptionsSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
 
+    private struct OriginalOption: Equatable {
+        let sizeBytes: Int?
+        let resolution: String?
+    }
+
     private enum ProbeState: Equatable {
         case checking
-        case direct(sizeBytes: Int?, resolution: String?)
-        case optimize(presets: [String], probeFailed: Bool)
+        case ready(original: OriginalOption?, presets: [String], probeFailed: Bool,
+                   originalStreamableButOfflineUnsupported: Bool)
+    }
+
+    private enum DownloadSelection: Equatable {
+        case original
+        case optimize(String)
     }
 
     @State private var probeState: ProbeState = .checking
-    /// Chosen optimizer preset name (when not direct).
-    @State private var selectedPreset: String = "Optimized for TV"
+    @State private var selectedChoice: DownloadSelection?
 
     private var existingRecord: DownloadRecord? {
         downloadManager.records.first { $0.ratingKey == item.ratingKey }
@@ -38,11 +47,15 @@ struct DownloadOptionsSheet: View {
                     switch probeState {
                     case .checking:
                         SwiftUI.Section { Label("Checking compatibility…", systemImage: "wifi") }
-                    case let .direct(sizeBytes, resolution):
-                        directSection(sizeBytes: sizeBytes, resolution: resolution)
-                        infoSection
-                    case let .optimize(presets, probeFailed):
-                        optimizeSection(presets: presets, probeFailed: probeFailed)
+                    case let .ready(original, presets, probeFailed, unsupportedOriginal):
+                        if let original {
+                            directSection(option: original)
+                        }
+                        if unsupportedOriginal {
+                            originalUnsupportedSection
+                        }
+                        optimizeSection(presets: presets, probeFailed: probeFailed,
+                                        originalAvailable: original != nil)
                         infoSection
                     }
                 }
@@ -55,6 +68,7 @@ struct DownloadOptionsSheet: View {
                 if existingRecord == nil, probeState != .checking {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Download") { startDownload() }
+                            .disabled(selectedChoice == nil)
                     }
                 }
             }
@@ -67,22 +81,34 @@ struct DownloadOptionsSheet: View {
     private func runProbe() async {
         guard existingRecord == nil else { return }
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
-            probeState = .optimize(presets: defaultPresets, probeFailed: true)
+            let presets = defaultPresets
+            selectedChoice = .optimize(presets[0])
+            probeState = .ready(original: nil, presets: presets, probeFailed: true,
+                                originalStreamableButOfflineUnsupported: false)
             return
         }
-        let result = await downloadManager.directPlayProbe(
+
+        async let probeTask = downloadManager.directPlayProbe(
             for: item, server: server, token: token,
             mediaIndex: mediaIndex, partIndex: partIndex)
-        if result.direct {
-            let media = item.media?[safe: mediaIndex]
-            probeState = .direct(sizeBytes: result.part?.size,
-                                 resolution: DownloadManager.resolutionLabel(for: media))
-        } else {
-            // Try the server's real presets; fall back to the built-in names if unavailable.
-            let presets = await downloadManager.optimizePresetNames(server: server, token: token)
-            probeState = .optimize(presets: presets.isEmpty ? defaultPresets : presets,
-                                   probeFailed: false)
-        }
+        async let presetsTask = downloadManager.optimizePresetNames(server: server, token: token)
+
+        let probe = await probeTask
+        let fetchedPresets = await presetsTask
+        let presets = fetchedPresets.isEmpty ? defaultPresets : fetchedPresets
+        let media = item.media?[safe: mediaIndex]
+        let part = probe.part ?? media?.part[safe: partIndex]
+        let original = (probe.direct && DownloadManager.isLocallyPlayableOriginal(part: part))
+            ? OriginalOption(sizeBytes: part?.size,
+                             resolution: DownloadManager.resolutionLabel(for: media))
+            : nil
+        let unsupportedOriginal = probe.direct && original == nil
+
+        // Default to a server-rendered compatible copy when available. The direct probe says a
+        // stream can copy, not that the raw file container is a good offline asset.
+        selectedChoice = .optimize(presets.first ?? defaultPresets[0])
+        probeState = .ready(original: original, presets: presets, probeFailed: false,
+                            originalStreamableButOfflineUnsupported: unsupportedOriginal)
     }
 
     private var defaultPresets: [String] {
@@ -92,20 +118,44 @@ struct DownloadOptionsSheet: View {
     // MARK: - Sections
 
     @ViewBuilder
-    private func directSection(sizeBytes: Int?, resolution: String?) -> some View {
+    private func directSection(option: OriginalOption) -> some View {
+        SwiftUI.Section {
+            Button {
+                selectedChoice = .original
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.seal")
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Download original").foregroundStyle(.primary)
+                        Text(directDetail(sizeBytes: option.sizeBytes, resolution: option.resolution))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if selectedChoice == .original {
+                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Original")
+        } footer: {
+            Text("Downloads the source file without server transcoding. Use this only when you want the largest original file.")
+        }
+    }
+
+    private var originalUnsupportedSection: some View {
         SwiftUI.Section {
             Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Download original")
-                    Text(directDetail(sizeBytes: sizeBytes, resolution: resolution))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } icon: { Image(systemName: "checkmark.seal") }
-        } header: {
-            Text("Compatible")
-        } footer: {
-            Text("This file plays as-is on your headset, so it downloads at full original "
-                 + "quality without server transcoding.")
+                Text("The original can stream from Plex, but its file container may not play as an offline local file here. Use an optimized preset for a compatible offline copy.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } icon: {
+                Image(systemName: "info.circle")
+            }
         }
     }
 
@@ -119,16 +169,17 @@ struct DownloadOptionsSheet: View {
     }
 
     @ViewBuilder
-    private func optimizeSection(presets: [String], probeFailed: Bool) -> some View {
+    private func optimizeSection(presets: [String], probeFailed: Bool,
+                                 originalAvailable: Bool) -> some View {
         SwiftUI.Section {
             ForEach(presets, id: \.self) { preset in
                 Button {
-                    selectedPreset = preset
+                    selectedChoice = .optimize(preset)
                 } label: {
                     HStack {
                         Text(preset).foregroundStyle(.primary)
                         Spacer()
-                        if preset == selectedPreset {
+                        if selectedChoice == .optimize(preset) {
                             Image(systemName: "checkmark").foregroundStyle(.tint)
                         }
                     }
@@ -140,14 +191,17 @@ struct DownloadOptionsSheet: View {
             Text("Optimize on server")
         } footer: {
             Text(probeFailed
-                 ? "Couldn't check compatibility, so your server will render a compatible "
-                   + "version. Pick a preset."
-                 : "This file needs converting, so your server renders a compatible version. "
-                   + "Pick a preset.")
+                 ? "Couldn't check compatibility, so your server will render a compatible version. Pick a preset."
+                 : originalAvailable
+                    ? "Recommended for offline viewing: Plex renders a compatible copy using the selected preset."
+                    : "Your server renders a compatible offline version. Pick a preset.")
         }
         .onAppear {
-            if !presets.contains(selectedPreset), let first = presets.first {
-                selectedPreset = first
+            if case .optimize(let selected)? = selectedChoice, presets.contains(selected) {
+                return
+            }
+            if let first = presets.first {
+                selectedChoice = .optimize(first)
             }
         }
     }
@@ -199,11 +253,13 @@ struct DownloadOptionsSheet: View {
     // MARK: - Action
 
     private func startDownload() {
+        guard let selectedChoice else { return }
         let choice: DownloadManager.DownloadChoice
-        switch probeState {
-        case .direct: choice = .original
-        case .optimize: choice = .optimize(targetName: selectedPreset)
-        case .checking: return
+        switch selectedChoice {
+        case .original:
+            choice = .original
+        case .optimize(let preset):
+            choice = .optimize(targetName: preset)
         }
         Task { await downloadManager.download(item, choice: choice,
                                               mediaIndex: mediaIndex, partIndex: partIndex) }
