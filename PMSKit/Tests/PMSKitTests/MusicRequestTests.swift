@@ -204,7 +204,8 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let query = try #require(r.urlRequest().url?.query)
     #expect(query.contains("ratingCount%3E%3E=0"))
     #expect(query.contains("album.subformat!=Compilation,Live")
-            || query.contains("album.subformat%21=Compilation,Live"))
+            || query.contains("album.subformat%21=Compilation,Live")
+            || query.contains("album.subformat%21=Compilation%2CLive"))
 }
 
 // MARK: - Track stream URL
