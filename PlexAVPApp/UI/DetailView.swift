@@ -418,11 +418,13 @@ struct DetailView: View {
                                                                 .stopActiveEncoding(playSessionId: remote.playSessionId)
                                                         }
                                                     },
-                                                    remoteStreamReopener: { offsetMs, bitrateKbps in
+                                                    remoteStreamReopener: { request in
                                                         let result = try await JellyfinBrowseService(appModel: appModel)
                                                             .playbackOpen(item: playing,
-                                                                          maxVideoBitrateKbps: bitrateKbps,
-                                                                          resumeOffsetMs: offsetMs)
+                                                                          maxVideoBitrateKbps: request.bitrateKbps,
+                                                                          resumeOffsetMs: request.offsetMs,
+                                                                          audioStreamIndex: request.audioStreamIndex,
+                                                                          subtitleStreamIndex: request.subtitleStreamIndex)
                                                         return RemoteStreamOpenResult(
                                                             url: result.url,
                                                             headers: result.requiredHTTPHeaders,
@@ -537,8 +539,11 @@ struct DetailView: View {
         case .jellyfin:
             isResolvingPlayback = true
             do {
-                let result = try await JellyfinBrowseService(appModel: appModel)
-                    .playbackOpen(item: detailed, maxVideoBitrateKbps: maxVideoBitrateKbps)
+                let service = JellyfinBrowseService(appModel: appModel)
+                let playbackItem = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                playingItem = playbackItem
+                let result = try await service
+                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: maxVideoBitrateKbps)
                 remotePlayback = JellyfinRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,

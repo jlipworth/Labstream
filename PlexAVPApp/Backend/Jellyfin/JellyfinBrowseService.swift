@@ -175,7 +175,9 @@ struct JellyfinBrowseService {
 
     func playbackOpen(item: MediaItem,
                       maxVideoBitrateKbps: Int,
-                      resumeOffsetMs: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
+                      resumeOffsetMs: Int? = nil,
+                      audioStreamIndex: Int? = nil,
+                      subtitleStreamIndex: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
         let context = try context()
         let maxBitrateBps = maxVideoBitrateKbps <= 0 ? 200_000_000 : maxVideoBitrateKbps * 1_000
         let startTicks = (resumeOffsetMs ?? item.viewOffset).map { $0 * 10_000 }
@@ -185,7 +187,9 @@ struct JellyfinBrowseService {
                                                            itemId: item.ratingKey,
                                                            userId: context.userID,
                                                            startTimeTicks: startTicks,
-                                                           maxStreamingBitrate: maxBitrateBps)
+                                                           maxStreamingBitrate: maxBitrateBps,
+                                                           audioStreamIndex: audioStreamIndex,
+                                                           subtitleStreamIndex: subtitleStreamIndex)
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
         return try JellyfinPlayback.resolveStream(response: info,
                                                   server: context.server,

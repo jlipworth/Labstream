@@ -689,7 +689,7 @@ private struct CustomPlayerMenuPopover: View {
                 onSelect: { track in await controller.selectSubtitle(track) }
             )
         case .audio:
-            if controller.isStreaming {
+            if controller.supportsMetadataAudioSelection {
                 AudioStreamsTabView(
                     load: { controller.loadAudioStreamChoices() },
                     onSelect: { choice in await controller.selectAudioStream(choice) }
