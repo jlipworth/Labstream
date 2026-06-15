@@ -32,6 +32,7 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 /// states keep it visible while the viewer is acting on them.
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+    @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
 
@@ -228,6 +229,11 @@ struct CustomPlayerChrome: View {
                 cinemaButton
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(2)
+
+                realityTheaterDeveloperButton
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(2)
+
                 menuStrip
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(2)
@@ -376,6 +382,29 @@ struct CustomPlayerChrome: View {
             .buttonStyle(.bordered)
             .controlSize(.regular)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
+        }
+    }
+
+
+    @ViewBuilder private var realityTheaterDeveloperButton: some View {
+        if RealityTheaterFeature.isDeveloperEntryPointEnabled()
+            || RealityTheaterFeature.isShippingEntryPointVisible {
+            Button {
+                revealChrome(keepVisible: true)
+                Task { @MainActor in await toggleRealityTheaterMode() }
+            } label: {
+                Label(realityTheaterSession.phase == .open ? "Exit Theater Lab" : "Theater Lab",
+                      systemImage: realityTheaterSession.phase == .open
+                      ? "rectangle.on.rectangle.slash" : "theatermasks.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.headline.weight(.semibold))
+                    .frame(minWidth: 128)
+                    .padding(.horizontal, 8)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(realityTheaterSession.phase == .opening)
+            .help("Developer-only RealityKit theater prototype for #12")
         }
     }
 
@@ -606,6 +635,28 @@ struct CustomPlayerChrome: View {
             cinemaSession.presentationState = .inTransition
             await dismissImmersiveSpace()
         case .inTransition:
+            break
+        }
+    }
+
+
+    private func toggleRealityTheaterMode() async {
+        switch realityTheaterSession.phase {
+        case .inactive, .prepared:
+            realityTheaterSession.prepare(title: title, controller: controller)
+            realityTheaterSession.markOpening()
+            switch await openImmersiveSpace(id: RealityTheaterFeature.immersiveSpaceID) {
+            case .opened:
+                break
+            case .userCancelled, .error:
+                fallthrough
+            @unknown default:
+                realityTheaterSession.markClosed()
+            }
+        case .open:
+            realityTheaterSession.markOpening()
+            await dismissImmersiveSpace()
+        case .opening:
             break
         }
     }

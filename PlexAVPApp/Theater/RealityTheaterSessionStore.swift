@@ -54,6 +54,10 @@ final class RealityTheaterSessionStore {
         phase = hasPreparedPlayback ? .prepared : .inactive
     }
 
+    func dismissWithoutClearingPlayback() {
+        phase = .opening
+    }
+
     func clear() {
         title = nil
         controller = nil
