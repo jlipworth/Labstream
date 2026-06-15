@@ -248,9 +248,9 @@ public enum MusicRequest {
         guard var components = URLComponents(url: partURL, resolvingAgainstBaseURL: false) else {
             preconditionFailure("MusicRequest: part URL is not decomposable: \(partURL)")
         }
-        components.queryItems = [
+        PlexURLQueryEncoder.replaceQueryItems([
             .init(name: "X-Plex-Token", value: token),
-        ]
+        ], in: &components)
         guard let url = components.url else {
             preconditionFailure("MusicRequest: could not rebuild stream URL for part \(partKey)")
         }
