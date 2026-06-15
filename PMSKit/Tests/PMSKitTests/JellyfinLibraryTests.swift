@@ -190,14 +190,18 @@ struct JellyfinLibraryTests {
         let request = try JellyfinLibrary.downloadRequest(server: server,
                                                           token: "token-abc",
                                                           identity: identity,
-                                                          itemId: "item-1")
+                                                          itemId: "item-1",
+                                                          mediaSourceId: "source-1",
+                                                          container: "mp4")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query = components.queryItems ?? []
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
-        #expect(request.httpMethod == "GET")
-        #expect(components.path == "/base/Items/item-1/Download")
-        #expect(query.contains { $0.name == "api_key" } == false)
+        #expect(request.httpMethod == nil || request.httpMethod == "GET")
+        #expect(components.path == "/base/Videos/item-1/stream.mp4")
+        #expect(query["api_key"] == nil)
+        #expect(query["static"] == "true")
+        #expect(query["mediaSourceId"] == "source-1")
         #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }

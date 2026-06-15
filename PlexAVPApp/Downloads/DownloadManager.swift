@@ -225,8 +225,8 @@ public final class DownloadManager {
         }
     }
 
-    /// Jellyfin download entry point. Original downloads use Jellyfin's official
-    /// `/Items/{id}/Download` endpoint; optimized choices stream a server-rendered MP4 from the
+    /// Jellyfin download entry point. Original downloads use Jellyfin's static video stream
+    /// endpoint; optimized choices stream a server-rendered MP4 from the
     /// video transcoder with auth in headers. Both paths use the same background transfer +
     /// validation pipeline as Plex downloads.
     public func downloadJellyfin(_ item: MediaItem, choice: DownloadChoice,
@@ -263,10 +263,13 @@ public final class DownloadManager {
                 let ext = part?.container ?? media?.container ?? "mp4"
                 destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
+                let mediaSourceID = media.map { String($0.id) }
                 request = try JellyfinLibrary.downloadRequest(server: server,
                                                               token: token,
                                                               identity: identity,
-                                                              itemId: itemId)
+                                                              itemId: itemId,
+                                                              mediaSourceId: mediaSourceID,
+                                                              container: ext)
                 expectedBytes = part?.size
 
             case .optimize(let targetName):
