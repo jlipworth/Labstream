@@ -643,7 +643,9 @@ struct CustomPlayerChrome: View {
     private func toggleRealityTheaterMode() async {
         switch realityTheaterSession.phase {
         case .inactive, .prepared:
-            realityTheaterSession.prepare(title: title, controller: controller)
+            realityTheaterSession.prepare(title: title,
+                                          controller: controller,
+                                          configuration: realityTheaterSession.configuration)
             realityTheaterSession.markOpening()
             switch await openImmersiveSpace(id: RealityTheaterFeature.immersiveSpaceID) {
             case .opened:

@@ -7,9 +7,10 @@ import UIKit
 ///
 /// This is intentionally a theater-layout scaffold, not a shipping playback route. It proves that
 /// the app has a separate RealityKit scene/model boundary with screen, seat, and controls anchors;
-/// it does not wire a visible player-chrome button or claim device-ready Cinema behavior.
+/// it does not wire a visible shipping player-chrome button or claim device-ready Cinema behavior.
 struct RealityTheaterPrototypeView: View {
     @Environment(RealityTheaterSessionStore.self) private var session
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     var body: some View {
         let configuration = session.configuration
@@ -18,24 +19,174 @@ struct RealityTheaterPrototypeView: View {
             RealityTheaterScene(configuration: configuration,
                                 player: session.player,
                                 title: session.title ?? "Theater Lab")
-            prototypeBanner
-                .padding(.top, 30)
+            VStack(spacing: 12) {
+                prototypeBanner(configuration: configuration)
+                tuningPanel(configuration: configuration)
+            }
+            .padding(.top, 30)
         }
         .onAppear { session.markOpen() }
         .onDisappear { session.markClosed() }
     }
 
-    private var prototypeBanner: some View {
+    private func prototypeBanner(configuration: RealityTheaterConfiguration) -> some View {
         VStack(spacing: 6) {
-            Label("RealityKit Theater Prototype", systemImage: "theatermasks.fill")
+            Label("RealityKit Theater Lab", systemImage: "theatermasks.fill")
                 .font(.headline.weight(.semibold))
-            Text("Hidden for #12 device iteration — not a shipping Cinema button.")
+            Text("DEBUG/developer-only for #12 device comparison — not a shipping Cinema entry point.")
                 .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(configuration.debugSummary)
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .background(.ultraThinMaterial, in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func tuningPanel(configuration: RealityTheaterConfiguration) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center) {
+                Label("Manual tuning", systemImage: "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("Reset") { session.resetConfigurationToDefaults() }
+                    .buttonStyle(.bordered)
+                Button("Close Lab", systemImage: "xmark.circle") {
+                    Task { @MainActor in
+                        session.markOpening()
+                        await dismissImmersiveSpace()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            presetRow
+            metricSlider(title: "Width", value: widthBinding, range: RealityTheaterScreenConfiguration.widthRangeMeters, suffix: "m")
+            metricSlider(title: "Distance", value: distanceBinding, range: RealityTheaterScreenConfiguration.distanceRangeMeters, suffix: "m")
+            metricSlider(title: "Vertical", value: verticalOffsetBinding, range: RealityTheaterScreenConfiguration.verticalOffsetRangeMeters, suffix: "m")
+
+            HStack(spacing: 16) {
+                Picker("Seat", selection: seatBinding) {
+                    ForEach(RealityTheaterSeatPreset.allCases) { seat in
+                        Text(seat.displayName).tag(seat)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker("Controls", selection: controlsPlacementBinding) {
+                    ForEach(RealityTheaterControlsPlacement.allCases) { placement in
+                        Text(placement.displayName).tag(placement)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Open/close: open via the custom player Theater Lab button after setting `\(RealityTheaterFeature.developerDefaultsKey)=true`; close with this button or Exit Theater Lab in chrome.")
+                Text("Environment: compare from Windowed, Mixed, and 100% full Environment; note whether the app pulls you out of immersion.")
+                Text("Video surface: active AVPlayer attachment is \(session.player == nil ? "not present" : "present"); verify playback continues while tuning.")
+                Text("Controls: compare Below screen vs Seat rail reachability; reset returns to Apple-ish default.")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(width: 860)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            Text(session.phaseLabel)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(10)
+        }
+    }
+
+    private var presetRow: some View {
+        HStack(spacing: 10) {
+            Text("Baselines")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(RealityTheaterBaselinePreset.allCases) { preset in
+                Button(preset.displayName) { session.applyPreset(preset) }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func metricSlider(title: String,
+                              value: Binding<Double>,
+                              range: ClosedRange<Float>,
+                              suffix: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .frame(width: 68, alignment: .leading)
+            Slider(value: value, in: Double(range.lowerBound)...Double(range.upperBound), step: 0.05)
+            Text(String(format: "%.2f%@", value.wrappedValue, suffix))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 76, alignment: .trailing)
+        }
+    }
+
+    private var widthBinding: Binding<Double> {
+        Binding(get: { Double(session.configuration.screen.widthMeters) },
+                set: { newValue in
+                    session.updateConfiguration { configuration in
+                        configuration.screen = RealityTheaterScreenConfiguration(widthMeters: Float(newValue),
+                                                                                distanceMeters: configuration.screen.distanceMeters,
+                                                                                verticalOffsetMeters: configuration.screen.verticalOffsetMeters,
+                                                                                aspectRatio: configuration.screen.aspectRatio)
+                    }
+                })
+    }
+
+    private var distanceBinding: Binding<Double> {
+        Binding(get: { Double(session.configuration.screen.distanceMeters) },
+                set: { newValue in
+                    session.updateConfiguration { configuration in
+                        configuration.screen = RealityTheaterScreenConfiguration(widthMeters: configuration.screen.widthMeters,
+                                                                                distanceMeters: Float(newValue),
+                                                                                verticalOffsetMeters: configuration.screen.verticalOffsetMeters,
+                                                                                aspectRatio: configuration.screen.aspectRatio)
+                    }
+                })
+    }
+
+    private var verticalOffsetBinding: Binding<Double> {
+        Binding(get: { Double(session.configuration.screen.verticalOffsetMeters) },
+                set: { newValue in
+                    session.updateConfiguration { configuration in
+                        configuration.screen = RealityTheaterScreenConfiguration(widthMeters: configuration.screen.widthMeters,
+                                                                                distanceMeters: configuration.screen.distanceMeters,
+                                                                                verticalOffsetMeters: Float(newValue),
+                                                                                aspectRatio: configuration.screen.aspectRatio)
+                    }
+                })
+    }
+
+    private var seatBinding: Binding<RealityTheaterSeatPreset> {
+        Binding(get: { session.configuration.seat },
+                set: { newValue in session.updateConfiguration { $0.seat = newValue } })
+    }
+
+    private var controlsPlacementBinding: Binding<RealityTheaterControlsPlacement> {
+        Binding(get: { session.configuration.controlsPlacement },
+                set: { newValue in session.updateConfiguration { $0.controlsPlacement = newValue } })
+    }
+}
+
+private extension RealityTheaterSessionStore {
+    var phaseLabel: String {
+        switch phase {
+        case .inactive: "inactive"
+        case .prepared: "prepared"
+        case .opening: "transitioning"
+        case .open: "open"
+        }
     }
 }
 
@@ -98,13 +249,18 @@ private struct RealityTheaterPlayerAttachment: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(14)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Text(player == nil ? "AVPlayer attachment: missing" : "AVPlayer attachment: active")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(14)
         }
         .frame(width: 1280, height: 720)
         .background(.black)
@@ -154,7 +310,7 @@ private enum RealityTheaterEntityFactory {
                                        roughness: 0.8,
                                        isMetallic: false)]
         )
-        controlsRail.name = "reality-theater-controls-anchor"
+        controlsRail.name = "reality-theater-controls-anchor-\(configuration.controlsPlacement.rawValue)"
         controlsRail.position = configuration.controlsPosition
         root.addChild(controlsRail)
 
