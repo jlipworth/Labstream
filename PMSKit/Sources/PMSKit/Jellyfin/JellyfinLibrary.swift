@@ -340,6 +340,66 @@ public enum JellyfinLibrary {
         return get(url: url, token: token, identity: identity)
     }
 
+    public static func resumeItemsRequest(server: URL,
+                                          token: String,
+                                          identity: JellyfinClientIdentity,
+                                          userId: String,
+                                          parentId: String? = nil,
+                                          limit: Int = 20) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "userId", value: userId),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "includeItemTypes", value: "Movie,Episode"),
+            URLQueryItem(name: "fields", value: itemFields),
+            URLQueryItem(name: "enableUserData", value: "true"),
+            URLQueryItem(name: "enableImages", value: "true"),
+            URLQueryItem(name: "excludeActiveSessions", value: "false"),
+        ]
+        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
+        let url = try url(server: server, path: "/UserItems/Resume", queryItems: query)
+        return get(url: url, token: token, identity: identity)
+    }
+
+    public static func nextUpRequest(server: URL,
+                                     token: String,
+                                     identity: JellyfinClientIdentity,
+                                     userId: String,
+                                     parentId: String? = nil,
+                                     limit: Int = 20) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "userId", value: userId),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "fields", value: itemFields),
+            URLQueryItem(name: "enableUserData", value: "true"),
+            URLQueryItem(name: "enableImages", value: "true"),
+            URLQueryItem(name: "enableResumable", value: "true"),
+        ]
+        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
+        let url = try url(server: server, path: "/Shows/NextUp", queryItems: query)
+        return get(url: url, token: token, identity: identity)
+    }
+
+    public static func latestItemsRequest(server: URL,
+                                          token: String,
+                                          identity: JellyfinClientIdentity,
+                                          userId: String,
+                                          parentId: String? = nil,
+                                          includeItemTypes: String = "Movie,Episode",
+                                          limit: Int = 20) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "userId", value: userId),
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "includeItemTypes", value: includeItemTypes),
+            URLQueryItem(name: "fields", value: itemFields),
+            URLQueryItem(name: "enableUserData", value: "true"),
+            URLQueryItem(name: "enableImages", value: "true"),
+            URLQueryItem(name: "groupItems", value: "false"),
+        ]
+        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
+        let url = try url(server: server, path: "/Items/Latest", queryItems: query)
+        return get(url: url, token: token, identity: identity)
+    }
+
     public static func itemRequest(server: URL,
                                    token: String,
                                    identity: JellyfinClientIdentity,
@@ -421,12 +481,14 @@ public enum JellyfinLibrary {
         [
             URLQueryItem(name: "userId", value: userId),
             URLQueryItem(name: "includeItemTypes", value: "Movie,Series,Season,Episode"),
-            URLQueryItem(name: "fields", value: "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines"),
+            URLQueryItem(name: "fields", value: itemFields),
             URLQueryItem(name: "enableUserData", value: "true"),
             URLQueryItem(name: "sortBy", value: "SortName"),
             URLQueryItem(name: "sortOrder", value: "Ascending"),
         ]
     }
+
+    private static let itemFields = "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines"
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
         query.removeAll { $0.name == name }

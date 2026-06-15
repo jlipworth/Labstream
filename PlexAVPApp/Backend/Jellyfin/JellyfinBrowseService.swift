@@ -69,17 +69,71 @@ struct JellyfinBrowseService {
     func homeRails(for views: [JellyfinLibraryLink]) async throws -> [JellyfinHomeRail] {
         _ = try context()
         var rails: [JellyfinHomeRail] = []
+
+        let continueWatching = try? await resumeItems(limit: 20)
+        if let continueWatching, !continueWatching.isEmpty {
+            rails.append(JellyfinHomeRail(id: "continue-watching",
+                                          title: "Continue Watching",
+                                          items: continueWatching))
+        }
+
+        let nextUpItems = try? await nextUp(limit: 20)
+        if let nextUpItems, !nextUpItems.isEmpty {
+            rails.append(JellyfinHomeRail(id: "next-up",
+                                          title: "Next Up",
+                                          items: nextUpItems))
+        }
+
         for view in views.prefix(8) {
-            let items = (try? await items(parentId: view.id,
-                                          recursive: false,
-                                          limit: 20,
-                                          sortBy: "DateCreated",
-                                          sortOrder: "Descending")) ?? []
+            let items = (try? await latestItems(parentId: view.id,
+                                                includeItemTypes: latestItemTypes(for: view),
+                                                limit: 20)) ?? []
             if !items.isEmpty {
-                rails.append(JellyfinHomeRail(id: view.id, title: view.title, items: items))
+                rails.append(JellyfinHomeRail(id: "latest-\(view.id)",
+                                              title: "Recently Added \(view.title)",
+                                              items: items))
             }
         }
         return rails
+    }
+
+    func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
+        let context = try context()
+        let req = try JellyfinLibrary.resumeItemsRequest(server: context.server,
+                                                         token: context.token,
+                                                         identity: jellyfinIdentity,
+                                                         userId: context.userID,
+                                                         parentId: parentId,
+                                                         limit: limit)
+        let response = try await send(req, as: JellyfinItemsResponse.self)
+        return response.items.compactMap { $0.toMediaItem() }
+    }
+
+    func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
+        let context = try context()
+        let req = try JellyfinLibrary.nextUpRequest(server: context.server,
+                                                    token: context.token,
+                                                    identity: jellyfinIdentity,
+                                                    userId: context.userID,
+                                                    parentId: parentId,
+                                                    limit: limit)
+        let response = try await send(req, as: JellyfinItemsResponse.self)
+        return response.items.compactMap { $0.toMediaItem() }
+    }
+
+    func latestItems(parentId: String?,
+                     includeItemTypes: String = "Movie,Episode",
+                     limit: Int = 20) async throws -> [MediaItem] {
+        let context = try context()
+        let req = try JellyfinLibrary.latestItemsRequest(server: context.server,
+                                                         token: context.token,
+                                                         identity: jellyfinIdentity,
+                                                         userId: context.userID,
+                                                         parentId: parentId,
+                                                         includeItemTypes: includeItemTypes,
+                                                         limit: limit)
+        let response = try await send(req, as: [JellyfinBaseItemDto].self)
+        return response.compactMap { $0.toMediaItem() }
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
@@ -165,6 +219,17 @@ struct JellyfinBrowseService {
             throw ServiceError.http(http.statusCode)
         }
         return data
+    }
+}
+
+private func latestItemTypes(for view: JellyfinLibraryLink) -> String {
+    switch view.collectionType {
+    case "movies":
+        return "Movie"
+    case "tvshows":
+        return "Episode"
+    default:
+        return "Movie,Episode"
     }
 }
 
