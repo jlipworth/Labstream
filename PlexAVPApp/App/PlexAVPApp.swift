@@ -15,7 +15,7 @@ struct PlexAVPApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: CustomCinemaMode.mainWindowID) {
             ContentView()
                 .environment(customCinemaSession)
                 .environment(realityTheaterSession)
@@ -26,6 +26,7 @@ struct PlexAVPApp: App {
         // until real-device RealityKit theater behavior is proven.
         ImmersiveSpace(id: RealityTheaterFeature.immersiveSpaceID) {
             RealityTheaterPrototypeView()
+                .environment(customCinemaSession)
                 .environment(realityTheaterSession)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
@@ -33,7 +34,10 @@ struct PlexAVPApp: App {
         ImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             CustomCinemaScaffoldView()
                 .environment(customCinemaSession)
+                .environment(realityTheaterSession)
         }
-        .immersionStyle(selection: .constant(.mixed), in: .mixed)
+        .immersionStyle(selection: .constant(.full), in: .full)
+        .immersiveEnvironmentBehavior(.replace)
+        .immersiveContentBrightness(.dark)
     }
 }

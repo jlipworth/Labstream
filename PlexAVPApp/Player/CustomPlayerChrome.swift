@@ -35,6 +35,7 @@ struct CustomPlayerChrome: View {
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
 
     let controller: PlaybackController
     let title: String
@@ -635,7 +636,9 @@ struct CustomPlayerChrome: View {
             cinemaSession.presentationState = .inTransition
             switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             case .opened:
-                break
+                cinemaSession.shouldRestoreMainWindowOnDismiss = true
+                onClose?()
+                dismissWindow(id: CustomCinemaMode.mainWindowID)
             case .userCancelled, .error:
                 fallthrough
             @unknown default:

@@ -69,22 +69,29 @@ struct CustomPlayerView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        let isDetachedToCinema = cinemaSession.presentationState != .closed
 
-            PlayerLayerView(player: controller?.player)
+        ZStack {
+            (isDetachedToCinema ? Color.clear : Color.black)
                 .ignoresSafeArea()
 
-            if let controller {
-                CustomPlayerChrome(controller: controller,
-                                   title: item.title,
-                                   scrubState: $scrubState,
-                                   trickPlayProvider: trickPlayProvider,
-                                   isReconnecting: isReconnecting,
-                                   onRetry: { retry(controller) },
-                                   onClose: onClose,
-                                   allowsRealityTheater: allowsRealityTheater)
-            } else {
+            if !isDetachedToCinema {
+                PlayerLayerView(player: controller?.player)
+                    .ignoresSafeArea()
+
+                if let controller {
+                    CustomPlayerChrome(controller: controller,
+                                       title: item.title,
+                                       scrubState: $scrubState,
+                                       trickPlayProvider: trickPlayProvider,
+                                       isReconnecting: isReconnecting,
+                                       onRetry: { retry(controller) },
+                                       onClose: onClose,
+                                       allowsRealityTheater: allowsRealityTheater)
+                }
+            }
+
+            if controller == nil {
                 ProgressView()
                     .controlSize(.large)
                     .padding(28)
@@ -94,10 +101,12 @@ struct CustomPlayerView: View {
         .task(id: clockTaskID) { await runPlayer() }
         .task(id: isReconnecting) { await reconnectWatchdog() }
         .onDisappear {
-            controller?.stop()
-            cinemaSession.clear()
-            realityTheaterSession.clear()
-            Task { @MainActor in await dismissImmersiveSpace() }
+            if cinemaSession.presentationState == .closed {
+                controller?.stop()
+                cinemaSession.clear()
+                realityTheaterSession.clear()
+                Task { @MainActor in await dismissImmersiveSpace() }
+            }
         }
     }
 
