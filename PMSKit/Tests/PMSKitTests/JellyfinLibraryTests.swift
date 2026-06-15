@@ -75,6 +75,63 @@ struct JellyfinLibraryTests {
         #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode")
     }
 
+    @Test func resumeItemsRequestTargetsContinueWatching() throws {
+        let request = try JellyfinLibrary.resumeItemsRequest(server: server,
+                                                             token: "token-abc",
+                                                             identity: identity,
+                                                             userId: "user-1",
+                                                             parentId: "view-1",
+                                                             limit: 12)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/UserItems/Resume")
+        #expect(query["userId"] == "user-1")
+        #expect(query["parentId"] == "view-1")
+        #expect(query["limit"] == "12")
+        #expect(query["includeItemTypes"] == "Movie,Episode")
+        #expect(query["enableUserData"] == "true")
+        #expect(query["excludeActiveSessions"] == "false")
+    }
+
+    @Test func nextUpRequestTargetsShowsNextUp() throws {
+        let request = try JellyfinLibrary.nextUpRequest(server: server,
+                                                        token: "token-abc",
+                                                        identity: identity,
+                                                        userId: "user-1",
+                                                        limit: 10)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Shows/NextUp")
+        #expect(query["userId"] == "user-1")
+        #expect(query["limit"] == "10")
+        #expect(query["enableResumable"] == "true")
+        #expect(query["enableUserData"] == "true")
+    }
+
+    @Test func latestItemsRequestTargetsLatestMedia() throws {
+        let request = try JellyfinLibrary.latestItemsRequest(server: server,
+                                                             token: "token-abc",
+                                                             identity: identity,
+                                                             userId: "user-1",
+                                                             parentId: "view-1",
+                                                             includeItemTypes: "Movie",
+                                                             limit: 8)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Items/Latest")
+        #expect(query["userId"] == "user-1")
+        #expect(query["parentId"] == "view-1")
+        #expect(query["includeItemTypes"] == "Movie")
+        #expect(query["groupItems"] == "false")
+        #expect(query["enableUserData"] == "true")
+    }
+
     @Test func itemRequestTargetsSingleItem() throws {
         let request = try JellyfinLibrary.itemRequest(server: server, token: "token-abc", identity: identity, userId: "user-1", itemId: "item-1")
         let url = try #require(request.url)
