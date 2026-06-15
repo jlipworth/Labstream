@@ -53,10 +53,24 @@ required**.
 - [~] **Progress scrobble / mark-watched** — watch past ~90% → marked watched and leaves/refreshes
       Continue Watching; stop mid-way → reopening offers Resume at that offset.
 - [~] **Download integrity + progress** — ⏸️ awaiting final human check. Fresh download progresses
-      (no instant "unknown error"), %/bar climb with live speed/ETA/quality caption, completes, plays
-      offline. (Simulator uses a foreground URLSession — `nsurlsessiond` is unavailable there; device
-      keeps the background session.) Logs:
+      (no instant "unknown error"), %/bar climb with live speed + resolution caption, completes, plays
+      offline. Both paths now serve a STATIC file with a real Content-Length, so the % is server-
+      reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
+      unavailable there; device keeps the background session.) Logs:
       `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlex"'`
+- [ ] **Download dual path — DIRECT (offline-download redesign)** — open the download sheet on a
+      known-compatible title (the player would direct-play it): the sheet shows a single
+      "Download original — <size> · <res>" action (no quality picker). Downloading fetches the
+      original `Part.key` byte-for-byte; the row shows a real % and plays offline.
+- [ ] **Download dual path — OPTIMIZER (offline-download redesign, Phase-0-gated)** — open the sheet
+      on a known-incompatible title (forces a transcode): the sheet lists the server's real optimize
+      presets ("Optimized for TV", etc.). Choosing one triggers a server-side optimize, polls for the
+      rendered Part, then downloads it. ⚠️ The optimizer POST contract is NOT live-verified — run
+      `./scripts/live-optimize-probe.sh` (Phase 0) FIRST and reconcile `OptimizeRequest` to the real
+      shape before trusting this path. Optimizer logs persist at os.log `.error`:
+      `log show --predicate 'subsystem == "com.jlipworth.VisionPlex" AND category == "Downloads"'`
+- [ ] **Download sheet probe-failure fallback** — with the server briefly unreachable when the sheet
+      opens, it still offers the optimize presets (it must never dead-end on a probe failure).
 
 ## B. Player features
 
@@ -69,8 +83,9 @@ required**.
       countdown; autoplay advances at 0; Play Now is immediate; Cancel suppresses it; the finishing
       episode scrobbles before the swap; crosses season boundaries; last episode just stops.
 - [ ] **Offline metadata + poster + resume** — Offline library shows title/year/runtime/poster with
-      the network off; retry of a failed download keeps real metadata + chosen quality; kill the app
-      mid-download → relaunch reconnects or reconciles to failed/retryable.
+      the network off; retry of a failed download keeps real metadata and re-probes to pick the
+      correct path (direct vs optimize); kill the app mid-download → relaunch reconnects or
+      reconciles to failed/retryable.
 - [ ] **Audio session / interruptions (device-only)** — call/Siri pauses then resumes (only if it was
       playing); unplugging headphones pauses; backgrounding pauses and does NOT auto-resume; a manual
       pause is never overridden.

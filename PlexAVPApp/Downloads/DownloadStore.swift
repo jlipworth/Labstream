@@ -42,9 +42,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var thumb: String?
     /// The original Plex `art` (backdrop) path.
     public var art: String?
-    /// The quality the user chose at enqueue time, so `retry()` re-runs at the SAME
-    /// cap rather than always defaulting to 1080p. Stored as the enum raw value.
-    public var quality: String?
+    /// Human resolution label of the downloaded file (e.g. "1080p", "4K", "1920×1080"),
+    /// captured from the chosen `Media` at download time. Drives the offline caption.
+    /// Replaces the retired bitrate-cap `quality` marker (offline-download redesign).
+    public var resolutionLabel: String?
+    public var librarySectionID: Int?
+    public var librarySectionKey: String?
     public var mediaIndex: Int?
     public var partIndex: Int?
     /// Locally-cached poster path, relative to the Downloads base directory.
@@ -63,7 +66,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 tagline: String? = nil,
                 thumb: String? = nil,
                 art: String? = nil,
-                quality: String? = nil,
+                resolutionLabel: String? = nil,
+                librarySectionID: Int? = nil,
+                librarySectionKey: String? = nil,
                 mediaIndex: Int? = nil,
                 partIndex: Int? = nil,
                 posterRelativePath: String? = nil) {
@@ -80,7 +85,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.tagline = tagline
         self.thumb = thumb
         self.art = art
-        self.quality = quality
+        self.resolutionLabel = resolutionLabel
+        self.librarySectionID = librarySectionID
+        self.librarySectionKey = librarySectionKey
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
         self.posterRelativePath = posterRelativePath
@@ -101,7 +108,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
         thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
         art = try c.decodeIfPresent(String.self, forKey: .art)
-        quality = try c.decodeIfPresent(String.self, forKey: .quality)
+        resolutionLabel = try c.decodeIfPresent(String.self, forKey: .resolutionLabel)
+        librarySectionID = try c.decodeIfPresent(Int.self, forKey: .librarySectionID)
+        librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
         mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
         partIndex = try c.decodeIfPresent(Int.self, forKey: .partIndex)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
