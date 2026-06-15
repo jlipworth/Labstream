@@ -180,7 +180,6 @@ final class PlaybackDiagnostics {
         }
         return decision.generalDecisionText ?? "—"
     }
-    }
 
     /// Scrape the dynamic numbers from the current player item (call ~1s).
     func sample(player: AVPlayer) {

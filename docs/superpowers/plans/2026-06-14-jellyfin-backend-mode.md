@@ -4,7 +4,7 @@
 
 **Goal:** Implement a selectable Jellyfin backend mode with real Jellyfin login/session restore, Jellyfin library browsing, existing detail/player reuse, and Jellyfin active-encoding cleanup.
 
-**Architecture:** Keep Plex paths intact and add a small Jellyfin lane beside them. PMSKit owns tested Jellyfin request builders and JSON-to-`MediaItem` mapping; app code stores separate Jellyfin credentials, routes login/restore by `MediaBackendKind`, and uses `JellyfinBrowseService` plus the existing `PlayerView(remoteStreamURL:)` seam for browse/playback.
+**Architecture:** Keep Plex paths intact and add a small Jellyfin lane beside them. PMSKit owns tested Jellyfin request builders and JSON-to-`MediaItem` mapping; app code stores separate Jellyfin credentials, routes login/restore by `MediaBackendKind`, and uses `JellyfinBrowseService` plus the existing `CustomPlayerView with PlaybackController(remoteStreamURL:)` seam for browse/playback.
 
 **Tech Stack:** Swift 6.2, Swift Testing/XCTest in PMSKit, SwiftUI, Foundation URLSession, Keychain Services, AVKit existing player, visionOS simulator build.
 
@@ -21,7 +21,7 @@
 - Create `PlexAVPApp/Backend/Jellyfin/JellyfinBrowseService.swift`: app-side URLSession service for Jellyfin library/detail/playback/cleanup.
 - Modify `PlexAVPApp/UI/LoginView.swift`: backend picker and Jellyfin credential form.
 - Modify `PlexAVPApp/UI/HomeView.swift`, `LibraryGridView.swift`, `SearchView.swift`, `MusicLibraryView.swift`, `PosterImage.swift`, `DetailView.swift`, `SettingsView.swift`: branch UI/load/playback behavior by active backend while preserving Plex.
-- Modify `PlexAVPApp/Player/PlaybackController.swift` and `PlayerView.swift`: carry optional remote session stop callback for Jellyfin active encoding cleanup.
+- Modify `PlexAVPApp/Player/PlaybackController.swift` and `CustomPlayerView.swift`: carry optional remote session stop callback for Jellyfin active encoding cleanup.
 
 ## Task 1: PMSKit Jellyfin library and mapping layer
 
@@ -153,7 +153,7 @@ git commit -m "Add Jellyfin login UI and browse service (#35)"
 - Modify: `PlexAVPApp/Music/MusicLibraryView.swift`
 - Modify: `PlexAVPApp/UI/PosterImage.swift`
 - Modify: `PlexAVPApp/UI/DetailView.swift`
-- Modify: `PlexAVPApp/Player/PlayerView.swift`
+- Modify: `PlexAVPApp/Player/CustomPlayerView.swift`
 - Modify: `PlexAVPApp/Player/PlaybackController.swift`
 
 - [ ] **Step 1: Browse branch**
@@ -170,7 +170,7 @@ For Jellyfin, `HomeView` and `LibrariesView` load `JellyfinBrowseService.userVie
 
 - [ ] **Step 4: Playback branch**
 
-`DetailView` Jellyfin play calls service `playbackOpen`, presents `PlayerView(remoteStreamURL:...)`, and passes an `onStopRemoteSession` callback that deletes active encodings with the returned `playSessionId`.
+`DetailView` Jellyfin play calls service `playbackOpen`, presents `CustomPlayerView with PlaybackController(remoteStreamURL:...)`, and passes an `onStopRemoteSession` callback that deletes active encodings with the returned `playSessionId`.
 
 - [ ] **Step 5: Build verification**
 
@@ -181,7 +181,7 @@ Run the same `xcodebuild ... CODE_SIGNING_ALLOWED=NO -quiet` command.
 Run:
 
 ```bash
-git add PlexAVPApp/UI/HomeView.swift PlexAVPApp/UI/LibraryGridView.swift PlexAVPApp/UI/SearchView.swift PlexAVPApp/Music/MusicLibraryView.swift PlexAVPApp/UI/PosterImage.swift PlexAVPApp/UI/DetailView.swift PlexAVPApp/Player/PlayerView.swift PlexAVPApp/Player/PlaybackController.swift
+git add PlexAVPApp/UI/HomeView.swift PlexAVPApp/UI/LibraryGridView.swift PlexAVPApp/UI/SearchView.swift PlexAVPApp/Music/MusicLibraryView.swift PlexAVPApp/UI/PosterImage.swift PlexAVPApp/UI/DetailView.swift PlexAVPApp/Player/CustomPlayerView.swift PlexAVPApp/Player/PlaybackController.swift
 git commit -m "Wire Jellyfin browse and playback mode (#35)"
 ```
 
