@@ -71,6 +71,7 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
     public let communityRating: Double?
     public let taglines: [String]
     public let genres: [String]
+    public let chapters: [JellyfinChapterDto]
     public let mediaSources: [JellyfinItemMediaSourceDto]
     public let userData: JellyfinUserDataDto?
     public let imageTags: [String: String]
@@ -93,6 +94,7 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
         case communityRating = "CommunityRating"
         case taglines = "Taglines"
         case genres = "Genres"
+        case chapters = "Chapters"
         case mediaSources = "MediaSources"
         case userData = "UserData"
         case imageTags = "ImageTags"
@@ -117,6 +119,7 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
         communityRating = try c.decodeIfPresent(Double.self, forKey: .communityRating)
         taglines = try c.decodeIfPresent([String].self, forKey: .taglines) ?? []
         genres = try c.decodeIfPresent([String].self, forKey: .genres) ?? []
+        chapters = try c.decodeIfPresent([JellyfinChapterDto].self, forKey: .chapters) ?? []
         mediaSources = try c.decodeIfPresent([JellyfinItemMediaSourceDto].self, forKey: .mediaSources) ?? []
         userData = try c.decodeIfPresent(JellyfinUserDataDto.self, forKey: .userData)
         imageTags = try c.decodeIfPresent([String: String].self, forKey: .imageTags) ?? [:]
@@ -142,6 +145,7 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
             thumb: syntheticImagePath(type: .primary, tag: imageTags[JellyfinImageType.primary.rawValue]),
             art: syntheticImagePath(type: .backdrop, tag: backdropImageTags.first),
             media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
+            chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset) },
             rating: shouldExposeCommunityRating ? communityRating : nil,
             contentRating: officialRating,
             tagline: taglines.first,
@@ -176,6 +180,26 @@ public struct JellyfinBaseItemDto: Decodable, Sendable, Equatable, Identifiable 
     private func syntheticImagePath(type: JellyfinImageType, tag: String?) -> String? {
         guard let tag, !tag.isEmpty else { return nil }
         return "jellyfin://item/\(id)/\(type.rawValue)?tag=\(tag)"
+    }
+}
+
+public struct JellyfinChapterDto: Decodable, Sendable, Equatable {
+    public let startPositionTicks: Int?
+    public let name: String?
+    public let imageTag: String?
+
+    enum CodingKeys: String, CodingKey {
+        case startPositionTicks = "StartPositionTicks"
+        case name = "Name"
+        case imageTag = "ImageTag"
+    }
+
+    func toPlexChapter(index: Int) -> Chapter {
+        Chapter(id: index + 1,
+                tag: name,
+                startTimeOffset: startPositionTicks.map { $0 / 10_000 },
+                endTimeOffset: nil,
+                thumb: nil)
     }
 }
 
@@ -330,18 +354,22 @@ public enum JellyfinLibrary {
                                     userId: String,
                                     parentId: String? = nil,
                                     recursive: Bool = false,
+                                    startIndex: Int? = nil,
                                     limit: Int? = nil,
                                     searchTerm: String? = nil,
                                     sortBy: String = "SortName",
                                     sortOrder: String = "Ascending",
+                                    includeItemTypes: String = "Movie,Series,Season,Episode",
                                     filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(userId: userId)
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
         query.append(URLQueryItem(name: "recursive", value: recursive ? "true" : "false"))
+        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let searchTerm, !searchTerm.isEmpty {
             query.append(URLQueryItem(name: "searchTerm", value: searchTerm))
         }
+        replaceQueryItem(named: "includeItemTypes", with: includeItemTypes, in: &query)
         if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: filters.joined(separator: ","))) }
         replaceQueryItem(named: "sortBy", with: sortBy, in: &query)
         replaceQueryItem(named: "sortOrder", with: sortOrder, in: &query)
@@ -557,7 +585,7 @@ public enum JellyfinLibrary {
         ]
     }
 
-    private static let itemFields = "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines"
+    private static let itemFields = "Overview,Genres,MediaSources,People,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines,Chapters"
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
         query.removeAll { $0.name == name }
