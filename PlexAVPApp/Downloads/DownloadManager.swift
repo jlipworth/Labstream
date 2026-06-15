@@ -637,7 +637,7 @@ public final class DownloadManager {
                                                        token: token, identity: identity),
                status.isFailed {
                 downloadLog.error("optimizer-failed title=\(queueTitle, privacy: .public) failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
-                throw DownloadError.optimizeFailed("Plex optimizer job failed on the server.")
+                throw DownloadError.optimizeFailed("Plex server could not create an optimized version; optimized-version storage may be read-only.")
             }
             try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
         }
