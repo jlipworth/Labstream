@@ -293,6 +293,7 @@ struct JellyfinLibraryTests {
         #expect(media.videoCodec == "hevc")
         #expect(media.audioCodec == "aac")
         let part = try #require(media.part.first)
+        #expect(part.key == "jellyfin://item/movie-1/media/source-1")
         #expect(part.container == "mkv")
         #expect(part.videoStreams.first?.codec == "hevc")
         #expect(part.audioStreams.first?.displayTitle == "English AAC Stereo")
@@ -305,6 +306,7 @@ struct JellyfinLibraryTests {
           "Id": "episode-1",
           "Name": "Pilot",
           "Type": "Episode",
+          "CommunityRating": 1.0,
           "SeriesId": "series-1",
           "SeriesName": "A Show",
           "ParentId": "season-1",
@@ -316,6 +318,7 @@ struct JellyfinLibraryTests {
 
         let item = try #require(dto.toMediaItem())
         #expect(item.type == "episode")
+        #expect(item.rating == nil)
         #expect(item.grandparentRatingKey == "series-1")
         #expect(item.grandparentTitle == "A Show")
         #expect(item.parentRatingKey == "season-1")
