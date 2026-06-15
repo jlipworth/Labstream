@@ -263,7 +263,7 @@ public final class DownloadManager {
                 let ext = part?.container ?? media?.container ?? "mp4"
                 destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
-                let mediaSourceID = media.map { String($0.id) }
+                let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
                 request = try JellyfinLibrary.downloadRequest(server: server,
                                                               token: token,
                                                               identity: identity,
@@ -277,7 +277,7 @@ public final class DownloadManager {
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
-                let mediaSourceID = media.map { String($0.id) }
+                let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
                 let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
                     server, token, identity, itemId, mediaSourceID, profile)
                 request = transcodedRequest
@@ -748,6 +748,16 @@ public final class DownloadManager {
         // preflight is conservative without requiring a Content-Length from Jellyfin's stream.
         let totalBitrate = videoBitrateBps + 256_000
         return Int((Double(durationMs) / 1000.0) * Double(totalBitrate) / 8.0)
+    }
+
+    private static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
+        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
+        for key in keys.compactMap({ $0 }) {
+            guard let marker = key.range(of: "/media/") else { continue }
+            let source = String(key[marker.upperBound...])
+            if !source.isEmpty { return source }
+        }
+        return nil
     }
 
     private static func jellyfinTranscodedDownloadRequest(_ server: URL,
