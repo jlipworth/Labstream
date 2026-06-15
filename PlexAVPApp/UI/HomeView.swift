@@ -157,7 +157,7 @@ private struct HubRail: View {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
-                            PosterCell(item: item)
+                            RailMediaCell(item: item)
                         }
                         .cardLink()
                     }
@@ -169,6 +169,78 @@ private struct HubRail: View {
             // gotcha in docs/DEVELOPMENT.md).
             .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
             .scrollClipDisabled() // let hover-lifted posters breathe past the rail edge
+        }
+    }
+}
+
+/// Rail cell that respects the media artwork shape.
+///
+/// Movies/shows/seasons keep the canonical 2:3 poster card, but episode thumbs are
+/// screenshots. Rendering those screenshots through `PosterCell` asks the server for
+/// poster-sized artwork and then clips it into a poster frame, which makes TV rails look
+/// stretched/cropped. Episode rails use a 16:9 card like Apple/Plex episode shelves.
+struct RailMediaCell: View {
+    let item: MediaItem
+
+    var body: some View {
+        if item.kind == .episode {
+            EpisodeRailCell(item: item)
+        } else {
+            PosterCell(item: item)
+        }
+    }
+}
+
+private struct EpisodeRailCell: View {
+    let item: MediaItem
+
+    private let width: CGFloat = 252
+    private var height: CGFloat { width * 9.0 / 16.0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            PosterImage(path: item.thumb,
+                        width: width,
+                        height: height,
+                        cornerRadius: DS.Radius.poster)
+                .overlay(alignment: .bottom) { progressSliver }
+                .posterHover()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.grandparentTitle ?? item.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(episodeSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: width, alignment: .leading)
+    }
+
+    private var episodeSubtitle: String {
+        if let code = item.seasonEpisodeCode {
+            return "\(code) · \(item.title)"
+        }
+        return item.title
+    }
+
+    @ViewBuilder
+    private var progressSliver: some View {
+        if let offset = item.viewOffset, offset > 0,
+           let duration = item.duration, duration > 0 {
+            let fraction = min(1, max(0, Double(offset) / Double(duration)))
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.black.opacity(0.45))
+                    Capsule().fill(.tint)
+                        .frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 4)
+            .padding(.horizontal, DS.Space.sm)
+            .padding(.bottom, DS.Space.sm)
         }
     }
 }
