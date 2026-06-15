@@ -108,6 +108,22 @@ public final class DownloadManager {
         store.localURL(for: ratingKey)
     }
 
+    /// Store identity for the active backend. Filenames/rows are keyed by IDs, not titles, so
+    /// duplicate episode/movie names are safe. Jellyfin IDs are namespaced so they cannot collide
+    /// with a Plex ratingKey in the shared offline index.
+    public func recordKey(for item: MediaItem) -> String {
+        switch appModel.activeBackend {
+        case .plex:
+            return item.ratingKey
+        case .jellyfin:
+            return Self.jellyfinRecordKey(item.ratingKey)
+        }
+    }
+
+    fileprivate static func jellyfinRecordKey(_ itemId: String) -> String {
+        "jellyfin:\(itemId)"
+    }
+
     /// Run the download-time direct-play probe for `item` at the given media/part. Advertises
     /// the `.original` 200_000 kbps ceiling so a high-bitrate-but-compatible file still
     /// qualifies for a direct download — a cap must NEVER force a transcode verdict for
@@ -209,19 +225,17 @@ public final class DownloadManager {
         }
     }
 
-    /// Download a Jellyfin item through the official item download endpoint.
-    ///
-    /// Unlike the Plex path above, this deliberately uses authenticated request
-    /// headers instead of putting an `api_key` token in the URL. It currently saves
-    /// Jellyfin's original file/body; quality-selectable Jellyfin offline transcodes
-    /// should be added as a separate, explicit path once we know which Jellyfin
-    /// download/transcode contract is reliable on-device.
-    public func downloadJellyfinOriginal(_ item: MediaItem,
-                                         mediaIndex: Int = 0,
-                                         partIndex: Int = 0) async {
-        let ratingKey = item.ratingKey
-        guard appModel.jellyfinServerBaseURL != nil,
-              appModel.jellyfinAccessToken != nil,
+    /// Jellyfin download entry point. Original downloads use Jellyfin's official
+    /// `/Items/{id}/Download` endpoint; optimized choices stream a server-rendered MP4 from the
+    /// video transcoder with auth in headers. Both paths use the same background transfer +
+    /// validation pipeline as Plex downloads.
+    public func downloadJellyfin(_ item: MediaItem, choice: DownloadChoice,
+                                 mediaIndex: Int = 0,
+                                 partIndex: Int = 0) async {
+        let itemId = item.ratingKey
+        let ratingKey = Self.jellyfinRecordKey(itemId)
+        guard let server = appModel.jellyfinServerBaseURL,
+              let token = appModel.jellyfinAccessToken,
               appModel.jellyfinUserID != nil else {
             lastError[ratingKey] = .notAuthenticated
             return
@@ -233,24 +247,55 @@ public final class DownloadManager {
 
         let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
-        let ext = part?.container ?? media?.container ?? "mp4"
-        let destination = store.destinationURL(ratingKey: ratingKey,
-                                               ext: ext.isEmpty ? "mp4" : ext)
         let resolutionLabel = Self.resolutionLabel(for: media)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex)
+        let identity = JellyfinClientIdentity(client: appModel.identity.product,
+                                              device: appModel.identity.deviceName,
+                                              deviceId: appModel.identity.clientIdentifier,
+                                              version: appModel.identity.version)
+        var request: URLRequest
+        var destination: URL
+        var expectedBytes: Int?
+        do {
+            switch choice {
+            case .original:
+                let ext = part?.container ?? media?.container ?? "mp4"
+                destination = store.destinationURL(ratingKey: ratingKey,
+                                                   ext: ext.isEmpty ? "mp4" : ext)
+                request = try JellyfinLibrary.downloadRequest(server: server,
+                                                              token: token,
+                                                              identity: identity,
+                                                              itemId: itemId)
+                expectedBytes = part?.size
+
+            case .optimize(let targetName):
+                let profile = Self.jellyfinTranscodeProfile(named: targetName)
+                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+                expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                             videoBitrateBps: profile.videoBitrateBps)
+                let mediaSourceID = media.map { String($0.id) }
+                let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
+                    server, token, identity, itemId, mediaSourceID, profile)
+                request = transcodedRequest
+            }
+        } catch {
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+            return
+        }
+
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
         refreshRecords()
 
         do {
-            let request = try JellyfinBrowseService(appModel: appModel)
-                .downloadRequest(itemId: ratingKey)
             try session.start(ratingKey: ratingKey,
                               with: request,
                               to: destination,
-                              expectedBytes: part?.size)
+                              expectedBytes: expectedBytes)
             refreshRecords()
         } catch let error as DownloadError {
             lastError[ratingKey] = error
@@ -261,6 +306,12 @@ public final class DownloadManager {
             store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         }
+    }
+
+    public func downloadJellyfinOriginal(_ item: MediaItem,
+                                         mediaIndex: Int = 0,
+                                         partIndex: Int = 0) async {
+        await downloadJellyfin(item, choice: .original, mediaIndex: mediaIndex, partIndex: partIndex)
     }
 
     /// Whether a download already exists (completed or in-flight) for `ratingKey`.
@@ -667,6 +718,75 @@ public final class DownloadManager {
         customDownloadProfiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
     }
 
+    private struct JellyfinTranscodeProfile {
+        let videoBitrateBps: Int
+        let maxWidth: Int?
+        let maxHeight: Int?
+    }
+
+    private static func jellyfinTranscodeProfile(named name: String) -> JellyfinTranscodeProfile {
+        let settings = customDownloadProfile(named: name)?.settings
+        let bitrateKbps = settings?.maxVideoBitrateKbps ?? 8_000
+        let resolution = settings?.videoResolution
+        let dimensions = resolution?
+            .lowercased()
+            .split(separator: "x")
+            .compactMap { Int($0) }
+        let width = dimensions?.indices.contains(0) == true ? dimensions?[0] : nil
+        let height = dimensions?.indices.contains(1) == true ? dimensions?[1] : nil
+        return JellyfinTranscodeProfile(videoBitrateBps: bitrateKbps * 1_000,
+                                        maxWidth: width,
+                                        maxHeight: height)
+    }
+
+    private static func estimatedTranscodeBytes(durationMs: Int?, videoBitrateBps: Int) -> Int? {
+        guard let durationMs, durationMs > 0 else { return nil }
+        // Add a modest audio/container allowance to the selected video bitrate so the storage
+        // preflight is conservative without requiring a Content-Length from Jellyfin's stream.
+        let totalBitrate = videoBitrateBps + 256_000
+        return Int((Double(durationMs) / 1000.0) * Double(totalBitrate) / 8.0)
+    }
+
+    private static func jellyfinTranscodedDownloadRequest(_ server: URL,
+                                                          _ token: String,
+                                                          _ identity: JellyfinClientIdentity,
+                                                          _ itemId: String,
+                                                          _ mediaSourceId: String?,
+                                                          _ profile: JellyfinTranscodeProfile) -> URLRequest {
+        let base = server.appendingPathComponent("/Videos/\(itemId)/stream.mp4")
+        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        var query = [
+            URLQueryItem(name: "static", value: "false"),
+            URLQueryItem(name: "container", value: "mp4"),
+            URLQueryItem(name: "videoCodec", value: "h264"),
+            URLQueryItem(name: "audioCodec", value: "aac"),
+            URLQueryItem(name: "videoBitRate", value: String(profile.videoBitrateBps)),
+            URLQueryItem(name: "audioBitRate", value: "192000"),
+            URLQueryItem(name: "maxAudioChannels", value: "6"),
+            URLQueryItem(name: "allowVideoStreamCopy", value: "false"),
+            URLQueryItem(name: "allowAudioStreamCopy", value: "false"),
+            URLQueryItem(name: "enableAutoStreamCopy", value: "false"),
+            URLQueryItem(name: "breakOnNonKeyFrames", value: "false"),
+            URLQueryItem(name: "deviceId", value: identity.deviceId),
+        ]
+        if let mediaSourceId, !mediaSourceId.isEmpty {
+            query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
+        }
+        if let maxWidth = profile.maxWidth {
+            query.append(URLQueryItem(name: "maxWidth", value: String(maxWidth)))
+        }
+        if let maxHeight = profile.maxHeight {
+            query.append(URLQueryItem(name: "maxHeight", value: String(maxHeight)))
+        }
+        comps.queryItems = query
+        let url = comps.url!
+        var request = URLRequest(url: url)
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token),
+                         forHTTPHeaderField: "Authorization")
+        return request
+    }
+
     private static func dedup(_ names: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
@@ -904,10 +1024,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// confirm a matching in-progress record exists in the store.
     private static func ratingKey(for task: URLSessionTask, store: DownloadStore) -> String? {
         guard let url = task.originalRequest?.url,
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let path = comps.queryItems?.first(where: { $0.name == "path" })?.value else { return nil }
-        let key = (path as NSString).lastPathComponent
-        return store.records.contains(where: { $0.ratingKey == key }) ? key : nil
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        let candidates: [String]
+        if let path = comps.queryItems?.first(where: { $0.name == "path" })?.value {
+            candidates = [(path as NSString).lastPathComponent]
+        } else {
+            let parts = comps.path.split(separator: "/").map(String.init)
+            if let items = parts.firstIndex(of: "Items"), parts.indices.contains(items + 1) {
+                candidates = [parts[items + 1]]
+            } else if let videos = parts.firstIndex(of: "Videos"), parts.indices.contains(videos + 1) {
+                candidates = [parts[videos + 1]]
+            } else {
+                candidates = []
+            }
+        }
+        let expanded = candidates.flatMap { [$0, "jellyfin:\($0)"] }
+        return expanded.first { key in
+            store.records.contains(where: { $0.ratingKey == key })
+        }
     }
 
     /// Force the lazy background session to be created (and thus its delegate bound),

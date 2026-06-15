@@ -202,6 +202,34 @@ struct JellyfinLibraryTests {
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
 
+    @Test func transcodedDownloadRequestUsesHeaderAuthAndMp4Stream() throws {
+        let request = try JellyfinLibrary.transcodedDownloadRequest(server: server,
+                                                                    token: "token-abc",
+                                                                    identity: identity,
+                                                                    itemId: "item-1",
+                                                                    mediaSourceId: "source-1",
+                                                                    maxVideoBitrate: 4_000_000,
+                                                                    maxWidth: 1280,
+                                                                    maxHeight: 720)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(request.httpMethod == nil || request.httpMethod == "GET")
+        #expect(components.path == "/base/Videos/item-1/stream.mp4")
+        #expect(query["api_key"] == nil)
+        #expect(query["static"] == "false")
+        #expect(query["container"] == "mp4")
+        #expect(query["videoCodec"] == "h264")
+        #expect(query["audioCodec"] == "aac")
+        #expect(query["videoBitRate"] == "4000000")
+        #expect(query["maxWidth"] == "1280")
+        #expect(query["maxHeight"] == "720")
+        #expect(query["allowVideoStreamCopy"] == "false")
+        #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+    }
+
     @Test func mapsMovieDtoToMediaItem() throws {
         let response = try JSONDecoder().decode(JellyfinItemsResponse.self, from: Data(#"""
         {
