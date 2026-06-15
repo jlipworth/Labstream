@@ -45,11 +45,34 @@ struct JellyfinBrowseService {
 
     func items(parentId: String?,
                recursive: Bool = false,
+               startIndex: Int? = nil,
                limit: Int? = nil,
                searchTerm: String? = nil,
                sortBy: String = "SortName",
                sortOrder: String = "Ascending",
+               includeItemTypes: String = "Movie,Series,Season,Episode",
                filters: [String] = []) async throws -> [MediaItem] {
+        let page = try await itemsPage(parentId: parentId,
+                                       recursive: recursive,
+                                       startIndex: startIndex,
+                                       limit: limit,
+                                       searchTerm: searchTerm,
+                                       sortBy: sortBy,
+                                       sortOrder: sortOrder,
+                                       includeItemTypes: includeItemTypes,
+                                       filters: filters)
+        return page.items
+    }
+
+    func itemsPage(parentId: String?,
+                   recursive: Bool = false,
+                   startIndex: Int? = nil,
+                   limit: Int? = nil,
+                   searchTerm: String? = nil,
+                   sortBy: String = "SortName",
+                   sortOrder: String = "Ascending",
+                   includeItemTypes: String = "Movie,Series,Season,Episode",
+                   filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
         let req = try JellyfinLibrary.itemsRequest(server: context.server,
                                                    token: context.token,
@@ -57,13 +80,15 @@ struct JellyfinBrowseService {
                                                    userId: context.userID,
                                                    parentId: parentId,
                                                    recursive: recursive,
+                                                   startIndex: startIndex,
                                                    limit: limit,
                                                    searchTerm: searchTerm,
                                                    sortBy: sortBy,
                                                    sortOrder: sortOrder,
+                                                   includeItemTypes: includeItemTypes,
                                                    filters: filters)
         let response = try await send(req, as: JellyfinItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
     func homeRails(for views: [JellyfinLibraryLink]) async throws -> [JellyfinHomeRail] {

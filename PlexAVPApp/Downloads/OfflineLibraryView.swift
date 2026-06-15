@@ -47,7 +47,9 @@ public struct OfflineLibraryView: View {
             .navigationTitle("Offline")
         }
         .fullScreenCover(item: $playing) { record in
-            CustomPlayerView(localFile: record.localURL, item: offlineItem(from: record))
+            CustomPlayerView(localFile: record.localURL,
+                             item: offlineItem(from: record),
+                             onClose: { playing = nil })
         }
     }
 

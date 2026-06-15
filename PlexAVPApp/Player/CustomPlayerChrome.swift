@@ -309,7 +309,7 @@ struct CustomPlayerChrome: View {
 
     private var menuStrip: some View {
         HStack(spacing: 8) {
-            ForEach(CustomPlayerMenuKind.allCases) { menu in
+            ForEach(availableMenus) { menu in
                 Button {
                     openMenu(menu)
                 } label: {
@@ -321,6 +321,17 @@ struct CustomPlayerChrome: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
+            }
+        }
+    }
+
+    private var availableMenus: [CustomPlayerMenuKind] {
+        CustomPlayerMenuKind.allCases.filter { menu in
+            switch menu {
+            case .quality:
+                return controller.supportsQualityReload
+            case .subtitles, .audio, .chapters, .speed, .stats:
+                return true
             }
         }
     }
