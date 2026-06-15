@@ -421,10 +421,18 @@ public final class DownloadManager {
         refreshRecords()
 
         do {
-            try await triggerOptimize(item: item, targetName: targetName,
+            let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
+                                                         token: token, identity: identity) ?? item
+            let originalPartIDs = Set((sourceItem.media ?? item.media ?? []).flatMap { $0.part.map(\.id) })
+            guard !originalPartIDs.isEmpty else {
+                throw DownloadError.optimizeFailed("No source media parts found before optimize.")
+            }
+            try await triggerOptimize(item: sourceItem, targetName: targetName,
                                       server: server, token: token, identity: identity)
-            let part = try await pollForOptimizedPart(ratingKey: ratingKey, server: server,
-                                                      token: token, identity: identity)
+            let part = try await pollForOptimizedPart(ratingKey: ratingKey,
+                                                      originalPartIDs: originalPartIDs,
+                                                      server: server, token: token,
+                                                      identity: identity)
             let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
             let destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
@@ -600,24 +608,18 @@ public final class DownloadManager {
     /// the first part whose id is NOT in that original set is the optimized output.
     /// If the item had no media at all, we take the highest-id new part.
     private func pollForOptimizedPart(ratingKey: String,
+                                      originalPartIDs: Set<Int>,
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
-        let originalPartIDs = Set((appModelItemMedia(ratingKey) ?? []).flatMap { $0.part.map(\.id) })
         let deadline = Date().addingTimeInterval(optimizePollTimeout)
 
         while Date() < deadline {
-            let statusReq = OptimizeRequest.statusRequest(server: server, token: token,
-                                                          identity: identity, ratingKey: ratingKey)
-            if let response = try? await appModel.client.send(statusReq, as: MetadataResponse.self),
-               let metadata = response.mediaContainer.metadata.first {
+            if let metadata = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
+                                                          token: token, identity: identity) {
                 let allParts = (metadata.media ?? []).flatMap { $0.part }
                 if let newPart = allParts.first(where: { !originalPartIDs.contains($0.id) }) {
                     return newPart
-                }
-                // Fallback: if there was originally NO media, any part counts.
-                if originalPartIDs.isEmpty, let only = allParts.last {
-                    return only
                 }
             }
             try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
@@ -625,11 +627,13 @@ public final class DownloadManager {
         throw DownloadError.optimizeTimedOut
     }
 
-    /// Best-effort: the media we already had for this item (used to diff parts).
-    /// We don't cache full items here, so this returns nil and the poll treats all
-    /// discovered parts as candidates (taking the last). Kept as a seam so a future
-    /// caller can pass through the originally-loaded `MediaItem.media`.
-    private func appModelItemMedia(_ ratingKey: String) -> [Media]? { nil }
+    private func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
+                                       identity: ClientIdentity) async -> MediaItem? {
+        let statusReq = OptimizeRequest.statusRequest(server: server, token: token,
+                                                      identity: identity, ratingKey: ratingKey)
+        return (try? await appModel.client.send(statusReq, as: MetadataResponse.self))?
+            .mediaContainer.metadata.first
+    }
 }
 
 /// Wraps a background `URLSession` so transfers survive app suspension and
