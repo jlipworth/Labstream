@@ -95,3 +95,94 @@ This slice creates a clean #12 boundary while keeping the product safe:
 7. **Reset instructions**
    - Press `Reset`; confirm values return to Apple-ish default (`4.8m`, `5.0m`, `0.25m`, center, below screen).
    - Close and reopen; confirm the reset/tuned values are understandable and no shipping-visible state changed.
+
+## 2026-06-16 Vision Pro headset pass — black immersive custom-cinema findings
+
+Context: this was tested on a physical Apple Vision Pro from the `issue/12-custom-realitykit-theater`
+worktree after `main` had the Jellyfin merge. Testing used Plex playback, not Jellyfin. `devicectl`
+can install/launch/capture console logs on this host/device pairing, but screenshot/screen-record
+capabilities are not available, so visual feedback came from headset observation only.
+
+### What worked / what is promising
+
+- The cleanest visible direction so far is a **single active AVPlayer rendered as a RealityKit
+  `VideoMaterial` plane in a full black `ImmersiveSpace`**. This avoids the worst artifact from
+  earlier mixed-space attempts that placed a second black/window-like surface in front of the app.
+- Explicitly dismissing the main SwiftUI `WindowGroup` after the immersive space opens removed the
+  gray/windowed surface. Apple effectively requires another scene to be open before closing the
+  current window, so the open-immersive-then-dismiss-window order is important.
+- A large RealityKit video plane in a full black immersive scene is directionally acceptable to the
+  product owner, even though it is not Apple's private/system AVKit Cinema Environment.
+- Latest manually tested comfortable-ish direction: push the screen farther back and make it larger
+  than the initial pass. The local WIP ended around `width=9.4m`, `distance=6.25m`; vertical offset
+  was still being tuned upward because the viewer felt too high / looking down at the screen.
+
+### What did not work / should not ship
+
+- The old quick `CustomCinemaMode` button that only opened a SwiftUI/AVPlayerLayer immersive scene
+  remains conceptually wrong; it does not reproduce Apple's AVKit Cinema default and can pull the
+  viewer out of their current Environment.
+- Reusing AVKit's actual Cinema Environment appears tied to `AVPlayerViewController`/system chrome;
+  it is not viable for the current custom scrubber/menus without a separate system-player path.
+- Rendering two concurrent player surfaces is a non-starter. Cinema must move ownership of the
+  single active `AVPlayer`/renderer, not duplicate playback.
+- The current experimental window-dismiss exit is **not final UX**. Because entering cinema dismisses
+  the main app `WindowGroup`, reopening the window on exit can recreate the root UI and dump the user
+  at Home. That is better than Crown-killing the app, but it is not acceptable as the product exit
+  behavior.
+- SwiftUI `RealityView` attachments for Exit controls were not reliably visible/reachable on device
+  in the black immersive scene. Do not assume an attachment-based Exit affordance is sufficient until
+  it is proven on hardware.
+
+### Product requirements clarified during headset testing
+
+- Entering Cinema should make the normal window disappear; no gray/content/detail/player window may
+  remain in front of the theater surface.
+- Exit Cinema should return to the same playback/detail context, not perform a full app reload and
+  re-navigation from Home.
+- The screen should be farther back, large, and raised enough that the viewer is not looking down at
+  it from a “high seat” perspective.
+- Cinema can be a true black immersive environment if that is the only public-API path to a clean
+  non-artifacty custom-player theater.
+- Headset testing is required for every meaningful placement/control iteration; simulator is not
+  enough for #12.
+
+### Next architecture to implement before the next headset pass
+
+1. Introduce a persistent app-level `CinemaPlaybackSession` / coordinator that owns:
+   - active `PlaybackController` / `AVPlayer`;
+   - source item/title and selected media index;
+   - current playback time and whether normal player should be restored after cinema;
+   - original navigation/detail context where practical.
+2. Stop using “dismiss main window then reopen root window” as the normal exit mechanism. If the
+   window must be dismissed to hide gray UI, persist enough context to restore the same title/player
+   immediately on reopen.
+3. Make Exit a proven in-scene control:
+   - prefer a high-contrast RealityKit-native target or a very large attachment anchored directly on
+     the visible screen plane;
+   - log when the exit target is added and tapped;
+   - verify it can be seen and tapped from the headset before considering placement final.
+4. Keep the old hidden developer lab and the black custom-cinema path clearly separated in code until
+   one path is proven. Avoid merging a confusing mix of lab/prototype/product affordances.
+5. Once the exit/restore path is stable, reintroduce richer controls incrementally: pause/play first,
+   then scrubber, then quality/subs/audio/chapters/speed/stats.
+
+### Useful device commands / evidence from this pass
+
+- Device install/build worked with:
+  - destination id `00008142-001018591A09401C`
+  - CoreDevice id `73122E1D-7B2D-5EFD-AF40-F179D1978B5C`
+  - `DEVELOPMENT_TEAM=SUAJSL8UG9 CODE_SIGN_STYLE=Automatic`
+- Console launch pattern:
+  - `xcrun devicectl -t 3600 device process launch --device 73122E1D-7B2D-5EFD-AF40-F179D1978B5C --terminate-existing --console com.jlipworth.VisionPlex`
+- Representative log line from the best black immersive pass:
+  - `[Custom Cinema] black immersive opened: width 9.4m · distance 6.25m · vertical 1.65m; title=The Phoenician Scheme; hasPlayer=true`
+- `devicectl` screenshot/screen-record capabilities were unsupported on this host/device pairing, so
+  do not plan tomorrow's device pass around automated screenshots unless the tooling changes.
+
+### Merge guidance
+
+Do not merge the current local cinema WIP into `main` as-is. The useful outputs from tonight are the
+hardware findings and direction above. Tomorrow's non-headset work should continue from `main` and
+other worktrees; #12 should resume only when headset testing is available again or when implementing
+context-preserving architecture that can be reviewed without visual headset tuning.
