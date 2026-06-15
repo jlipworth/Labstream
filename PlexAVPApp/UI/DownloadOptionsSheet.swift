@@ -11,8 +11,8 @@ struct DownloadOptionsSheet: View {
     var mediaIndex: Int = 0
     var partIndex: Int = 0
 
-    @Environment(DownloadManager.self) private var downloadManager
     @Environment(AppModel.self) private var appModel
+    @Environment(DownloadManager.self) private var downloadManager
     @Environment(\.dismiss) private var dismiss
 
     private struct OriginalOption: Equatable {
@@ -35,7 +35,8 @@ struct DownloadOptionsSheet: View {
     @State private var selectedChoice: DownloadSelection?
 
     private var existingRecord: DownloadRecord? {
-        downloadManager.records.first { $0.ratingKey == item.ratingKey }
+        let key = downloadManager.recordKey(for: item)
+        return downloadManager.records.first { $0.ratingKey == key }
     }
 
     var body: some View {
@@ -80,6 +81,10 @@ struct DownloadOptionsSheet: View {
 
     private func runProbe() async {
         guard existingRecord == nil else { return }
+        if appModel.activeBackend == .jellyfin {
+            runJellyfinProbe()
+            return
+        }
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             let presets = defaultPresets
             selectedChoice = .optimize(presets[0])
@@ -111,10 +116,33 @@ struct DownloadOptionsSheet: View {
                             originalStreamableButOfflineUnsupported: unsupportedOriginal)
     }
 
+    private func runJellyfinProbe() {
+        let media = item.media?[safe: mediaIndex]
+        let part = media?.part[safe: partIndex]
+        let original = DownloadManager.isLocallyPlayableOriginal(part: part)
+            ? OriginalOption(sizeBytes: part?.size,
+                             resolution: DownloadManager.resolutionLabel(for: media))
+            : nil
+        let presets = jellyfinPresets
+        selectedChoice = .optimize(presets.first ?? "1080p 8 Mbps")
+        probeState = .ready(original: original,
+                            presets: presets,
+                            probeFailed: false,
+                            originalStreamableButOfflineUnsupported: original == nil)
+    }
+
     private var defaultPresets: [String] {
         [
             "Optimized for TV", "Optimized for Mobile", "Original Quality",
             "Original", "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
+            "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
+            "720p 2 Mbps", "480p 1.5 Mbps"
+        ]
+    }
+
+    private var jellyfinPresets: [String] {
+        [
+            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"
         ]
@@ -148,14 +176,14 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original")
         } footer: {
-            Text("Downloads the source file without server transcoding. Use this only when you want the largest original file.")
+            Text("Downloads the source file without server transcoding. Use this only when you want the largest original file and the container is locally playable.")
         }
     }
 
     private var originalUnsupportedSection: some View {
         SwiftUI.Section {
             Label {
-                Text("The original can stream from Plex, but its file container may not play as an offline local file here. Use an optimized preset for a compatible offline copy.")
+                Text("The original can stream, but its file container may not play as an offline local file here. Use an optimized preset for a compatible offline copy.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } icon: {
@@ -198,7 +226,7 @@ struct DownloadOptionsSheet: View {
             Text(probeFailed
                  ? "Couldn't check compatibility, so your server will render a compatible version. Pick a preset."
                  : originalAvailable
-                    ? "Recommended for offline viewing: Plex renders a compatible copy using the selected preset."
+                    ? "Recommended for offline viewing: your server renders a compatible copy using the selected preset."
                     : "Your server renders a compatible offline version. Pick a preset.")
         }
         .onAppear {
@@ -237,7 +265,7 @@ struct DownloadOptionsSheet: View {
                 Label("Download failed", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
                 Button {
-                    downloadManager.retry(ratingKey: item.ratingKey)
+                    retryDownload()
                     dismiss()
                 } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
             } else {
@@ -247,7 +275,7 @@ struct DownloadOptionsSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Button(role: .destructive) {
-                downloadManager.delete(ratingKey: item.ratingKey)
+                downloadManager.delete(ratingKey: downloadManager.recordKey(for: item))
                 dismiss()
             } label: {
                 Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
@@ -257,17 +285,41 @@ struct DownloadOptionsSheet: View {
 
     // MARK: - Action
 
+    private func retryDownload() {
+        if appModel.activeBackend == .jellyfin {
+            Task { await downloadManager.downloadJellyfin(item,
+                                                          choice: .optimize(targetName: "1080p 8 Mbps"),
+                                                          mediaIndex: mediaIndex,
+                                                          partIndex: partIndex) }
+        } else {
+            downloadManager.retry(ratingKey: item.ratingKey)
+        }
+    }
+
     private func startDownload() {
         guard let selectedChoice else { return }
-        let choice: DownloadManager.DownloadChoice
-        switch selectedChoice {
-        case .original:
-            choice = .original
-        case .optimize(let preset):
-            choice = .optimize(targetName: preset)
+        if appModel.activeBackend == .jellyfin {
+            let choice: DownloadManager.DownloadChoice
+            switch selectedChoice {
+            case .original:
+                choice = .original
+            case .optimize(let preset):
+                choice = .optimize(targetName: preset)
+            }
+            Task { await downloadManager.downloadJellyfin(item, choice: choice,
+                                                          mediaIndex: mediaIndex,
+                                                          partIndex: partIndex) }
+        } else {
+            let choice: DownloadManager.DownloadChoice
+            switch selectedChoice {
+            case .original:
+                choice = .original
+            case .optimize(let preset):
+                choice = .optimize(targetName: preset)
+            }
+            Task { await downloadManager.download(item, choice: choice,
+                                                  mediaIndex: mediaIndex, partIndex: partIndex) }
         }
-        Task { await downloadManager.download(item, choice: choice,
-                                              mediaIndex: mediaIndex, partIndex: partIndex) }
         dismiss()
     }
 }

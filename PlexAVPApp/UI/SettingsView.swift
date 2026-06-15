@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var clearedImageCache = false
     @State private var resetPlaybackPrefs = false
     @State private var copiedDiagnostics = false
+    @State private var switchingBackend: MediaBackendKind?
 
     /// Default bitrate cap for NEW playback sessions — the same key the custom player seeds each
     /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
@@ -31,6 +32,7 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            backendSection
             serverSection
             playbackSection
             storageSection
@@ -55,7 +57,51 @@ struct SettingsView: View {
         } header: {
             Text("Playback")
         } footer: {
-            Text("The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes.")
+            Text(playbackFooter)
+        }
+    }
+
+    private var playbackFooter: String {
+        switch appModel.activeBackend {
+        case .plex:
+            return "The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes."
+        case .jellyfin:
+            return "The quality new Jellyfin streams start at. Changing quality inside the player reopens the Jellyfin stream with the same cap."
+        }
+    }
+
+    // MARK: Backend
+
+    private var backendSection: some View {
+        SwiftUI.Section {
+            Picker("Media Backend", selection: Binding(
+                get: { appModel.activeBackend },
+                set: { backend in
+                    guard backend != appModel.activeBackend else { return }
+                    switchingBackend = backend
+                    Task {
+                        await authManager.switchBackend(backend)
+                        switchingBackend = nil
+                    }
+                })) {
+                    ForEach(MediaBackendKind.allCases) { backend in
+                        Text(backend.displayName).tag(backend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(switchingBackend != nil)
+
+            if let switchingBackend {
+                HStack {
+                    ProgressView()
+                    Text("Switching to \(switchingBackend.displayName)…")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Backend")
+        } footer: {
+            Text("Switching keeps Plex and Jellyfin credentials separate. If the selected backend has a saved session, VisionPlex reconnects automatically; otherwise it opens that backend’s sign-in flow.")
         }
     }
 
@@ -72,33 +118,52 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         SwiftUI.Section("Server") {
-            if let server = appModel.selectedServer {
-                LabeledContent("Name", value: server.name)
-                if let version = server.productVersion, !version.isEmpty {
-                    LabeledContent("Version", value: version)
+            switch appModel.activeBackend {
+            case .plex:
+                if let server = appModel.selectedServer {
+                    LabeledContent("Name", value: server.name)
+                    if let version = server.productVersion, !version.isEmpty {
+                        LabeledContent("Version", value: version)
+                    }
+                }
+                if let url = appModel.serverBaseURL {
+                    LabeledContent("Connection", value: url.absoluteString)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    connectionStatusRow
+                }
+                Button {
+                    Task {
+                        rediscovering = true
+                        try? await authManager.refreshServers()
+                        rediscovering = false
+                        connectionStatus = .unknown
+                    }
+                } label: {
+                    if rediscovering {
+                        ProgressView()
+                    } else {
+                        Label("Re-discover servers", systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(rediscovering)
+            case .jellyfin:
+                if let url = appModel.jellyfinServerBaseURL {
+                    LabeledContent("Connection", value: url.absoluteString)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let userID = appModel.jellyfinUserID {
+                    LabeledContent("User ID", value: userID)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Button {
+                    authManager.signOut()
+                } label: {
+                    Label("Sign in to a different Jellyfin server", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
-            if let url = appModel.serverBaseURL {
-                LabeledContent("Connection", value: url.absoluteString)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                connectionStatusRow
-            }
-            Button {
-                Task {
-                    rediscovering = true
-                    try? await authManager.refreshServers()
-                    rediscovering = false
-                    connectionStatus = .unknown
-                }
-            } label: {
-                if rediscovering {
-                    ProgressView()
-                } else {
-                    Label("Re-discover servers", systemImage: "arrow.clockwise")
-                }
-            }
-            .disabled(rediscovering)
         }
     }
 
@@ -270,7 +335,7 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 confirmingSignOut = true
             } label: {
-                Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                Label("Sign Out of \(appModel.activeBackend.displayName)", systemImage: "rectangle.portrait.and.arrow.right")
             }
             // Sign-out is genuinely disruptive — re-login is the plex.tv PIN dance —
             // so the destructive action gets a confirmation (#26).
