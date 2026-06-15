@@ -459,7 +459,8 @@ struct DetailView: View {
                                                                  device: appModel.identity.deviceName,
                                                                  deviceId: appModel.identity.clientIdentifier,
                                                                  version: appModel.identity.version)),
-                             onClose: { presentingPlayer = false })
+                             onClose: { presentingPlayer = false },
+                             allowsRealityTheater: false)
                 .id(remote.id)
                 .ignoresSafeArea()
         } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
@@ -497,7 +498,8 @@ struct DetailView: View {
                                                                                       identity: appModel.identity,
                                                                                       client: appModel.client),
                                  onClose: { presentingPlayer = false },
-                                 onRequestPlay: playNext)
+                                 onRequestPlay: playNext,
+                                 allowsRealityTheater: true)
             }
             // Rebuild the player + its PlaybackController cleanly whenever the playing
             // item changes (Up Next advance), so the outgoing controller is dismantled

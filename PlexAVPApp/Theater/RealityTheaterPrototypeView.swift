@@ -1,4 +1,5 @@
 import AVFoundation
+import PMSKit
 import RealityKit
 import SwiftUI
 import UIKit
@@ -17,8 +18,8 @@ struct RealityTheaterPrototypeView: View {
 
         ZStack(alignment: .top) {
             RealityTheaterScene(configuration: configuration,
-                                player: session.player,
-                                title: session.title ?? "Theater Lab")
+                                controller: session.controller,
+                                title: session.title ?? "Cinema")
             VStack(spacing: 12) {
                 prototypeBanner(configuration: configuration)
                 tuningPanel(configuration: configuration)
@@ -85,7 +86,7 @@ struct RealityTheaterPrototypeView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Open/close: open via the custom player Theater Lab button after setting `\(RealityTheaterFeature.developerDefaultsKey)=true`; close with this button or Exit Theater Lab in chrome.")
+                Text("Open/close: in DEBUG Plex playback, use the Cinema button in player chrome; close with this button or Exit Cinema in chrome.")
                 Text("Environment: compare from Windowed, Mixed, and 100% full Environment; note whether the app pulls you out of immersion.")
                 Text("Video surface: active AVPlayer attachment is \(session.player == nil ? "not present" : "present"); verify playback continues while tuning.")
                 Text("Controls: compare Below screen vs Seat rail reachability; reset returns to Apple-ish default.")
@@ -194,8 +195,10 @@ private struct RealityTheaterScene: View {
     private static let playerAttachmentID = "reality-theater-player-surface"
 
     let configuration: RealityTheaterConfiguration
-    let player: AVPlayer?
+    let controller: PlaybackController?
     let title: String
+
+    private var player: AVPlayer? { controller?.player }
 
     var body: some View {
         RealityView { content, attachments in
@@ -216,7 +219,7 @@ private struct RealityTheaterScene: View {
             }
         } attachments: {
             Attachment(id: Self.playerAttachmentID) {
-                RealityTheaterPlayerAttachment(player: player, title: title)
+                RealityTheaterPlayerAttachment(controller: controller, title: title)
             }
         }
         .id(configuration)
@@ -224,14 +227,25 @@ private struct RealityTheaterScene: View {
 }
 
 private struct RealityTheaterPlayerAttachment: View {
-    let player: AVPlayer?
+    let controller: PlaybackController?
     let title: String
+
+    @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
+
+    private var player: AVPlayer? { controller?.player }
 
     var body: some View {
         ZStack {
-            if let player {
+            if let controller, let player {
                 PlayerLayerView(player: player)
                     .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                CustomPlayerChrome(controller: controller,
+                                   title: title,
+                                   scrubState: $scrubState,
+                                   isReconnecting: false,
+                                   onRetry: { controller.retry() },
+                                   onClose: nil,
+                                   allowsRealityTheater: true)
             } else {
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .fill(.black)
@@ -265,6 +279,20 @@ private struct RealityTheaterPlayerAttachment: View {
         .frame(width: 1280, height: 720)
         .background(.black)
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .task(id: controller != nil) { await runTheaterClock() }
+    }
+
+    private func runTheaterClock() async {
+        guard let controller else { return }
+        await MainActor.run {
+            tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
+        }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(500))
+            await MainActor.run {
+                tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
+            }
+        }
     }
 }
 
