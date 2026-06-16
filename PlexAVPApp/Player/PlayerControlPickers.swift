@@ -19,7 +19,7 @@ struct QualityTabView: View {
     var onPick: (Int) -> Void
 
     /// Bitrate-cap ladder + labels live in `StreamingQuality` (#21), shared with the Settings
-    /// "Streaming quality" default picker so the two surfaces can never drift apart.
+    /// "Default Quality" picker so the two surfaces can never drift apart.
     private let options = StreamingQuality.ladder
 
     var body: some View {

@@ -147,7 +147,7 @@ required**.
             (user-accepted). Check it isn't unbearable on track/episode rows, where the old
             chip highlight sat inset inside the material card.
 - [ ] **Direct play via "Direct Play / Maximum" (GH #7 Step 3; quality-picker driven, replaces the
-      old Direct Stream toggle + #31 headroom gate)** — set Streaming quality (Settings or the
+      old Direct Stream toggle + #31 headroom gate)** — set Default Quality (Settings or the
       in-player Quality tab) to **"Direct Play / Maximum"**, then play an HEVC/AC3-or-AAC title and
       read the log: it logs `Direct Play / Maximum — PMS will copy video; committing direct-play
       start.m3u8` — then verify on the server that NO software video transcode is running
@@ -217,7 +217,7 @@ required**.
       - [ ] **Quality reload / audio switch still resume at the playhead** (regression — these
             share the same direct rebuild path and reset the rebuild budget).
 - [ ] **Default streaming quality in Settings (GH #21)** — Settings now has a Playback section
-      with a "Streaming quality" picker (same ladder as the in-player Quality tab, same
+      with a "Default Quality" picker (same ladder as the in-player Quality tab, same
       persisted key). Verify: pick e.g. 4 Mbps in Settings → open a title → player's Quality
       tab shows 4 Mbps checked; change quality in-player → Settings reflects it.
 - [~] **Library A–Z rail + true-length scroll (GH #23)** — Wave 5 video-library pass:
@@ -227,7 +227,7 @@ required**.
       grids 200 items at a time and pre-sizes placeholders from PMS `totalSize`; the rail uses
       PMS `/firstCharacter` counts.
 - [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
-  - About: Version matches the bundle marketing version + build; visionOS row sane;
+  - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; visionOS row sane;
     Client row says "VisionPlex on Apple Vision Pro" (NO client identifier shown).
   - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
     the connection scheme only — no token, client identifier, hostname, or full URL.
@@ -485,7 +485,7 @@ device testing showed it is not equivalent to Apple's AVKit Cinema Environment._
 
 ### Settings
 - [x] Settings → Playback no longer shows the "Custom player fallback" toggle.
-- [x] Streaming quality picker present and functional; it lists both "Maximum (transcoded)" and "Direct Play / Maximum" at the top (no separate Direct Stream toggle).
+- [x] Default Quality picker present and functional; it lists both "Maximum (transcoded)" and "Direct Play / Maximum" at the top (no separate Direct Stream toggle).
 
 ### Regression
 - [x] No reference to the old AVKit player anywhere in the UI.
@@ -561,7 +561,7 @@ These reproduced on the headset but NOT in the simulator, so sim verification is
 ## E. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
-  direct-play `start.m3u8` when Streaming quality is "Direct Play / Maximum" and PMS can copy the
+  direct-play `start.m3u8` when Default Quality is "Direct Play / Maximum" and PMS can copy the
   source (see the "Direct play via Direct Play / Maximum" item in §A). Still subject to the
   **CRITICAL `Safari` client-profile constraint** — needs the live headset pass to confirm no
   regression in resume-priming / `subtitles=auto`.
