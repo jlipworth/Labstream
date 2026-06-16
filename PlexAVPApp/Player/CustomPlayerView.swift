@@ -15,6 +15,7 @@ struct CustomPlayerView: View {
 
     private let item: MediaItem
     private let controllerFactory: @MainActor () -> PlaybackController
+    private let trickPlayProvider: (any TrickPlayThumbnailProviding)?
     private let onClose: (() -> Void)?
     private let onRequestPlay: ((MediaItem) -> Void)?
 
@@ -25,10 +26,12 @@ struct CustomPlayerView: View {
 
     init(item: MediaItem,
          controllerFactory: @escaping @MainActor () -> PlaybackController,
+         trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          onClose: (() -> Void)? = nil,
          onRequestPlay: ((MediaItem) -> Void)? = nil) {
         self.item = item
         self.controllerFactory = controllerFactory
+        self.trickPlayProvider = trickPlayProvider
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
         _scrubState = State(initialValue: PlaybackScrubState(durationMs: item.duration ?? 0,
@@ -55,6 +58,7 @@ struct CustomPlayerView: View {
                                          identity: identity,
                                          client: client)
                   },
+                  trickPlayProvider: nil,
                   onClose: onClose,
                   onRequestPlay: nil)
     }
@@ -70,6 +74,7 @@ struct CustomPlayerView: View {
                 CustomPlayerChrome(controller: controller,
                                    title: item.title,
                                    scrubState: $scrubState,
+                                   trickPlayProvider: trickPlayProvider,
                                    isReconnecting: isReconnecting,
                                    onRetry: { retry(controller) },
                                    onClose: onClose)

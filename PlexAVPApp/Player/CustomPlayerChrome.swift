@@ -38,6 +38,7 @@ struct CustomPlayerChrome: View {
     let controller: PlaybackController
     let title: String
     @Binding var scrubState: PlaybackScrubState
+    let trickPlayProvider: (any TrickPlayThumbnailProviding)?
     let isReconnecting: Bool
     let onRetry: () -> Void
     let onClose: (() -> Void)?
@@ -49,16 +50,23 @@ struct CustomPlayerChrome: View {
     @State private var bandwidthToast: BandwidthMismatchToastModel?
     @State private var bandwidthToastTask: Task<Void, Never>?
     @State private var lastBandwidthToastDate: Date?
+    @State private var trickPlayPreviewTask: Task<Void, Never>?
+    @State private var trickPlayPreviewImage: UIImage?
+    @State private var trickPlayPreviewTimeMs: Int?
+    @State private var trickPlayPreviewLoading = false
+    @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
 
     init(controller: PlaybackController,
          title: String,
          scrubState: Binding<PlaybackScrubState>,
+         trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          isReconnecting: Bool,
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?) {
         self.controller = controller
         self.title = title
         _scrubState = scrubState
+        self.trickPlayProvider = trickPlayProvider
         self.isReconnecting = isReconnecting
         self.onRetry = onRetry
         self.onClose = onClose
@@ -158,6 +166,7 @@ struct CustomPlayerChrome: View {
         .onDisappear {
             hideTask?.cancel()
             bandwidthToastTask?.cancel()
+            trickPlayPreviewTask?.cancel()
         }
         .onChange(of: controller.transport.isPaused) { _, _ in scheduleChromeHideIfNeeded() }
         .onChange(of: controller.playbackError.isFailed) { _, _ in
@@ -212,6 +221,12 @@ struct CustomPlayerChrome: View {
                 menuStrip
             }
 
+            if scrubState.isDragging, trickPlayProvider != nil {
+                trickPlayPreview
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             HStack(spacing: 16) {
                 Button(action: {
                     revealChrome()
@@ -244,6 +259,48 @@ struct CustomPlayerChrome: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+
+    @ViewBuilder private var trickPlayPreview: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.regularMaterial)
+                if let trickPlayPreviewImage {
+                    Image(uiImage: trickPlayPreviewImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .transition(.opacity)
+                } else if trickPlayPreviewLoading {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .overlay { ShimmerView() }
+                } else {
+                    Image(systemName: "film")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 190, height: 107)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
+            }
+
+            Text(format(ms: trickPlayPreviewTimeMs ?? scrubState.displayedPositionMs))
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.thinMaterial, in: Capsule())
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(radius: 16)
+        .allowsHitTesting(false)
+        .accessibilityLabel("Scrub preview")
     }
 
     private var skipControls: some View {
@@ -440,6 +497,7 @@ struct CustomPlayerChrome: View {
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
+            updateTrickPlayPreview()
         }
     }
 
@@ -447,12 +505,56 @@ struct CustomPlayerChrome: View {
         if editing {
             revealChrome(keepVisible: true)
             scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
+            updateTrickPlayPreview()
         } else if let target = scrubState.commit() {
             controller.performUserSeek(toMs: target)
+            clearTrickPlayPreview()
             revealChrome()
         } else {
+            clearTrickPlayPreview()
             revealChrome()
         }
+    }
+
+    private func updateTrickPlayPreview() {
+        guard let provider = trickPlayProvider,
+              scrubState.isDragging,
+              let targetMs = scrubState.draftPositionMs else {
+            clearTrickPlayPreview()
+            return
+        }
+
+        if let cached = trickPlayImageCache.nearestImage(to: targetMs, toleranceMs: 15_000) {
+            trickPlayPreviewTask?.cancel()
+            trickPlayPreviewImage = cached.image
+            trickPlayPreviewTimeMs = cached.timeMs
+            trickPlayPreviewLoading = false
+            return
+        }
+
+        trickPlayPreviewLoading = true
+        trickPlayPreviewTimeMs = targetMs
+        trickPlayPreviewTask?.cancel()
+        trickPlayPreviewTask = Task {
+            let thumbnail = await provider.thumbnail(nearMs: targetMs)
+            guard !Task.isCancelled else { return }
+            let decoded = thumbnail.flatMap { UIImage(data: $0.imageData) }
+            await MainActor.run {
+                guard scrubState.isDragging, scrubState.draftPositionMs == targetMs else { return }
+                trickPlayPreviewLoading = false
+                guard let thumbnail, let decoded else { return }
+                trickPlayImageCache.insert(decoded, for: thumbnail.timeMs)
+                trickPlayPreviewImage = decoded
+                trickPlayPreviewTimeMs = thumbnail.timeMs
+            }
+        }
+    }
+
+    private func clearTrickPlayPreview() {
+        trickPlayPreviewTask?.cancel()
+        trickPlayPreviewLoading = false
+        trickPlayPreviewImage = nil
+        trickPlayPreviewTimeMs = nil
     }
 
     private func performRelativeSkip(seconds: Int) {
