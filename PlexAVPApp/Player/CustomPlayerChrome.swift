@@ -35,7 +35,6 @@ struct CustomPlayerChrome: View {
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
-    @Environment(\.dismissWindow) private var dismissWindow
 
     let controller: PlaybackController
     let title: String
@@ -636,9 +635,11 @@ struct CustomPlayerChrome: View {
             cinemaSession.presentationState = .inTransition
             switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             case .opened:
-                cinemaSession.shouldRestoreMainWindowOnDismiss = true
-                onClose?()
-                dismissWindow(id: CustomCinemaMode.mainWindowID)
+                // Do not dismiss/reopen the WindowGroup or call `onClose` here. The immersive
+                // route keeps the same `PlaybackController` alive and detaches the windowed layer
+                // while RealityKit owns presentation; earlier window lifecycle restore hacks caused
+                // Home-screen returns and duplicate audio on device.
+                break
             case .userCancelled, .error:
                 fallthrough
             @unknown default:
@@ -646,7 +647,9 @@ struct CustomPlayerChrome: View {
             }
         case .open:
             cinemaSession.presentationState = .inTransition
+            cinemaSession.stopAndClearForImmersiveExit()
             await dismissImmersiveSpace()
+            cinemaSession.clear()
         case .inTransition:
             break
         }
