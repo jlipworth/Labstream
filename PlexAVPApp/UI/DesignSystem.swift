@@ -10,6 +10,25 @@ import SwiftUI
 /// the whole app from one file and guarantees Home, Libraries, Search and Detail
 /// stay visually in lock-step. Nothing here changes behaviour: it is pure layout.
 enum DS {
+    /// Shared brand palette sampled from the VisionPlex mark. Keep these in one
+    /// place so the welcome screen, icon previews, and any future empty states
+    /// use the same identity instead of slightly different blues/ambers.
+    enum Brand {
+        static let blue = Color(red: 0.00, green: 0.64, blue: 1.00)
+        static let amber = Color(red: 1.00, green: 0.72, blue: 0.20)
+        static let coral = Color(red: 1.00, green: 0.27, blue: 0.29)
+        static let deepTeal = Color(red: 0.03, green: 0.28, blue: 0.34)
+        static let midnight = Color(red: 0.02, green: 0.09, blue: 0.13)
+
+        static var iconPlateGradient: LinearGradient {
+            LinearGradient(colors: [
+                Color(red: 0.18, green: 0.49, blue: 0.58),
+                deepTeal,
+                midnight
+            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+    }
+
     /// 8-pt spacing scale. Using named steps (instead of raw 8/16/24…) makes intent
     /// readable at the call site and keeps vertical/horizontal rhythm consistent.
     enum Space {
