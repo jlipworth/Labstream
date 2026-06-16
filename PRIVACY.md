@@ -1,6 +1,6 @@
 # VisionPlex — Privacy Policy
 
-_Last updated: 2026-06-11_
+_Last updated: 2026-06-16_
 
 VisionPlex is a personal media client for Apple Vision Pro that connects to a
 Plex Media Server **that you choose and control**. It is designed to collect as
@@ -26,6 +26,23 @@ little as possible.
 - **Offline downloads** you choose to make are stored in the app's private
   container on your device and can be deleted at any time from within the app or
   by removing the app.
+- **Opt-in diagnostics** are off by default. If you enable diagnostic logging in
+  Settings, VisionPlex keeps recent app events in a bounded local ring buffer so
+  you can copy a bug-report summary after reproducing a problem. This diagnostic
+  report is user-initiated only and is not uploaded automatically.
+
+## Diagnostic reports
+
+When you tap **Copy diagnostic report**, VisionPlex includes safe app/server
+version information, the selected quality setting, a recent playback snapshot
+when available, and recent redacted events. The diagnostics API and report
+renderer are designed to omit sensitive values such as Plex tokens, client
+identifiers, hostnames/IP addresses, full URLs, usernames, library paths,
+filenames, and media titles.
+
+Diagnostic logging does not add analytics, developer telemetry, remote log
+upload, or background reporting. The report leaves your device only if you
+choose to paste or attach it somewhere.
 
 ## Data shared with Plex
 
