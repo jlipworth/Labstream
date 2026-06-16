@@ -55,7 +55,10 @@ struct LoginView: View {
             case .authenticated:
                 // Token arrived via polling — close the web sheet so it doesn't
                 // linger over the now-authenticated app.
+                working = false
                 webAuth.cancel()
+            case .awaitingJellyfinQuickConnect:
+                working = false
             default:
                 break
             }
@@ -207,7 +210,17 @@ struct LoginView: View {
         }
     }
 
+    @ViewBuilder
     private var jellyfinLoginForm: some View {
+        switch authManager.state {
+        case .awaitingJellyfinQuickConnect(let code):
+            jellyfinQuickConnectWaiting(code: code)
+        default:
+            jellyfinCredentialsForm
+        }
+    }
+
+    private var jellyfinCredentialsForm: some View {
         VStack(spacing: DS.Space.md) {
             TextField("https://jellyfin.example.com", text: $jellyfinServer)
                 .textInputAutocapitalization(.never)
@@ -216,6 +229,25 @@ struct LoginView: View {
                 .keyboardType(.URL)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
+
+            Button {
+                Task { await startJellyfinQuickConnect() }
+            } label: {
+                if working {
+                    ProgressView()
+                } else {
+                    Label("Sign in with Quick Connect", systemImage: "link.badge.plus")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(working)
+
+            Text("Or use username and password.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             TextField("Username", text: $jellyfinUsername)
                 .textInputAutocapitalization(.never)
@@ -243,6 +275,44 @@ struct LoginView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(working)
+        }
+    }
+
+    private func jellyfinQuickConnectWaiting(code: String) -> some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Enter this code in Jellyfin")
+                    .font(.title3.weight(.semibold))
+                Text("In an already signed-in Jellyfin app or web UI, open Quick Connect and enter the code.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            HStack(spacing: DS.Space.md) {
+                ForEach(Array(code.enumerated()), id: \.offset) { _, character in
+                    Text(String(character))
+                        .font(.system(size: 44, weight: .semibold, design: .monospaced))
+                        .frame(width: 64, height: 82)
+                        .background(.thinMaterial, in: codeCellShape)
+                        .overlay(codeCellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                }
+            }
+            .padding(.vertical, DS.Space.xs)
+
+            HStack(spacing: DS.Space.sm) {
+                ProgressView()
+                Text("Waiting for authorization…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Use username and password instead") {
+                authManager.cancelCurrentAuthorization()
+                working = false
+            }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -305,6 +375,20 @@ struct LoginView: View {
         await authManager.loginToJellyfin(server: server,
                                           username: username,
                                           password: jellyfinPassword)
+        working = false
+    }
+
+    private func startJellyfinQuickConnect() async {
+        errorMessage = nil
+        let server: URL
+        do {
+            server = try JellyfinServerURL.normalized(jellyfinServer)
+        } catch {
+            errorMessage = "Enter a valid Jellyfin server URL."
+            return
+        }
+        working = true
+        await authManager.startJellyfinQuickConnect(server: server)
         working = false
     }
 }

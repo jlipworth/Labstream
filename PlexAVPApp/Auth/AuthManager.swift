@@ -19,6 +19,7 @@ final class AuthManager {
     enum State: Equatable {
         case idle
         case awaitingAuthorization(code: String, url: URL)
+        case awaitingJellyfinQuickConnect(code: String)
         case authenticated
         case failed(String)
     }
@@ -31,12 +32,17 @@ final class AuthManager {
     /// Poll cadence and ceiling for the PIN flow.
     private let pollInterval: Duration = .seconds(1)
     private let pollTimeout: Duration = .seconds(300)
+    /// Jellyfin's SDK guidance recommends refreshing Quick Connect state about
+    /// every 5 seconds while the user authorizes the displayed code.
+    private let jellyfinQuickConnectPollInterval: Duration = .seconds(5)
+    private let jellyfinQuickConnectPollTimeout: Duration = .seconds(300)
     private var pollTask: Task<Void, Never>?
     /// PINs being polled for the current login attempt (#16): the non-strong
     /// "link" PIN (its 4-char code is shown for plex.tv/link) and the strong
     /// PIN (its long code backs the in-headset web-auth URL). Whichever the
     /// user completes authorizes first; both clear when the attempt ends.
     private var activePinIDs: Set<Int> = []
+    private var activeJellyfinQuickConnectAttemptID: UUID?
 
     init(appModel: AppModel, keychain: KeychainStore = KeychainStore()) {
         self.appModel = appModel
@@ -232,18 +238,7 @@ final class AuthManager {
                 }
             }
             let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
-            guard let token = result.accessToken, !token.isEmpty,
-                  let userID = result.user?.id, !userID.isEmpty else {
-                throw JellyfinAuthError.missingCredentials
-            }
-            keychain.jellyfinServerURLString = server.absoluteString
-            keychain.jellyfinAccessToken = token
-            keychain.jellyfinUserID = userID
-            keychain.jellyfinServerID = result.serverId
-            appModel.jellyfinServerBaseURL = server
-            appModel.jellyfinAccessToken = token
-            appModel.jellyfinUserID = userID
-            appModel.jellyfinServerID = result.serverId
+            try persistJellyfinAuthentication(result, server: server)
             state = .authenticated
         } catch JellyfinAuthError.unauthorized {
             state = .failed("Invalid Jellyfin username or password.")
@@ -254,6 +249,156 @@ final class AuthManager {
         } catch {
             state = .failed("Couldn’t reach Jellyfin server.")
         }
+    }
+
+    func startJellyfinQuickConnect(server: URL) async {
+        cancelPendingLogin()
+        appModel.activeBackend = .jellyfin
+        keychain.selectedBackend = .jellyfin
+        state = .idle
+
+        do {
+            if let enabled = try await jellyfinQuickConnectEnabled(server: server), enabled == false {
+                state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
+                return
+            }
+
+            let request = JellyfinAuth.initiateQuickConnectRequest(server: server,
+                                                                   identity: jellyfinIdentity)
+            let data = try await jellyfinData(for: request, disabledMeansUnauthorized: true)
+            let result = try JSONDecoder().decode(JellyfinQuickConnectResult.self, from: data)
+            guard let code = result.code, !code.isEmpty,
+                  let secret = result.secret, !secret.isEmpty else {
+                throw JellyfinAuthError.missingCredentials
+            }
+
+            let attemptID = UUID()
+            activeJellyfinQuickConnectAttemptID = attemptID
+            state = .awaitingJellyfinQuickConnect(code: code)
+            pollTask = Task { await pollJellyfinQuickConnect(server: server,
+                                                             secret: secret,
+                                                             attemptID: attemptID) }
+        } catch JellyfinAuthError.quickConnectDisabled {
+            state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
+        } catch JellyfinAuthError.unauthorized {
+            state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
+        } catch JellyfinAuthError.http(let status) {
+            state = .failed("Jellyfin Quick Connect failed (HTTP \(status)).")
+        } catch JellyfinAuthError.missingCredentials {
+            state = .failed("Jellyfin did not return a Quick Connect code. Use username and password instead.")
+        } catch {
+            state = .failed("Couldn’t reach Jellyfin server.")
+        }
+    }
+
+    func cancelCurrentAuthorization() {
+        cancelPendingLogin()
+        state = .idle
+    }
+
+    private func jellyfinQuickConnectEnabled(server: URL) async throws -> Bool? {
+        let request = JellyfinAuth.quickConnectEnabledRequest(server: server,
+                                                              identity: jellyfinIdentity)
+        let data = try await jellyfinData(for: request, disabledMeansUnauthorized: false)
+        return try JSONDecoder().decode(Bool.self, from: data)
+    }
+
+    private func pollJellyfinQuickConnect(server: URL, secret: String, attemptID: UUID) async {
+        let deadline = ContinuousClock.now.advanced(by: jellyfinQuickConnectPollTimeout)
+        while ContinuousClock.now < deadline {
+            try? await Task.sleep(for: jellyfinQuickConnectPollInterval)
+            if Task.isCancelled { return }
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+
+            do {
+                let request = try JellyfinAuth.quickConnectStateRequest(server: server,
+                                                                        secret: secret,
+                                                                        identity: jellyfinIdentity)
+                let data = try await jellyfinData(for: request, disabledMeansUnauthorized: false)
+                let result = try JSONDecoder().decode(JellyfinQuickConnectResult.self, from: data)
+                guard result.authenticated else { continue }
+                do {
+                    try await finishJellyfinQuickConnect(server: server, secret: secret, attemptID: attemptID)
+                } catch JellyfinAuthError.http(let status) {
+                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+                    activeJellyfinQuickConnectAttemptID = nil
+                    pollTask = nil
+                    state = .failed("Jellyfin Quick Connect sign-in failed (HTTP \(status)). Use username and password instead.")
+                } catch JellyfinAuthError.missingCredentials {
+                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+                    activeJellyfinQuickConnectAttemptID = nil
+                    pollTask = nil
+                    state = .failed("Jellyfin did not return a usable session. Use username and password instead.")
+                } catch {
+                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+                    activeJellyfinQuickConnectAttemptID = nil
+                    pollTask = nil
+                    state = .failed("Jellyfin Quick Connect sign-in failed. Use username and password instead.")
+                }
+                return
+            } catch JellyfinAuthError.http(404) {
+                guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+                activeJellyfinQuickConnectAttemptID = nil
+                pollTask = nil
+                state = .failed("Jellyfin Quick Connect code expired or was cancelled. Try again or use username and password.")
+                return
+            } catch {
+                // Transient network/server errors can happen while the user is
+                // still authorizing. Keep polling until the deadline.
+                continue
+            }
+        }
+
+        guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+        activeJellyfinQuickConnectAttemptID = nil
+        pollTask = nil
+        state = .failed("Jellyfin Quick Connect timed out. Try again or use username and password.")
+    }
+
+    private func finishJellyfinQuickConnect(server: URL, secret: String, attemptID: UUID) async throws {
+        guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+        let request = try JellyfinAuth.authenticateWithQuickConnectRequest(server: server,
+                                                                          secret: secret,
+                                                                          identity: jellyfinIdentity)
+        let data = try await jellyfinData(for: request, disabledMeansUnauthorized: false)
+        let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
+        try persistJellyfinAuthentication(result, server: server)
+        activeJellyfinQuickConnectAttemptID = nil
+        pollTask = nil
+        state = .authenticated
+    }
+
+    private func persistJellyfinAuthentication(_ result: JellyfinAuthenticationResult, server: URL) throws {
+        guard let token = result.accessToken, !token.isEmpty,
+              let userID = result.user?.id, !userID.isEmpty else {
+            throw JellyfinAuthError.missingCredentials
+        }
+        keychain.jellyfinServerURLString = server.absoluteString
+        keychain.jellyfinAccessToken = token
+        keychain.jellyfinUserID = userID
+        keychain.jellyfinServerID = result.serverId
+        appModel.jellyfinServerBaseURL = server
+        appModel.jellyfinAccessToken = token
+        appModel.jellyfinUserID = userID
+        appModel.jellyfinServerID = result.serverId
+    }
+
+    private func jellyfinData(for request: URLRequest, disabledMeansUnauthorized: Bool) async throws -> Data {
+        let (data, response) = try await Self.jellyfinSession.data(for: request)
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 200..<300:
+                break
+            case 401, 403:
+                if disabledMeansUnauthorized {
+                    throw JellyfinAuthError.quickConnectDisabled
+                }
+                throw JellyfinAuthError.unauthorized
+            default:
+                throw JellyfinAuthError.http(http.statusCode)
+            }
+        }
+        return data
     }
 
     /// Run resource discovery and select the best server/connection.
@@ -390,6 +535,7 @@ final class AuthManager {
         pollTask?.cancel()
         pollTask = nil
         activePinIDs = []
+        activeJellyfinQuickConnectAttemptID = nil
     }
 
     private var jellyfinIdentity: JellyfinClientIdentity {
@@ -410,6 +556,7 @@ final class AuthManager {
 
 private enum JellyfinAuthError: Error {
     case unauthorized
+    case quickConnectDisabled
     case http(Int)
     case missingCredentials
 }
