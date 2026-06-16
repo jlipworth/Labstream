@@ -16,6 +16,11 @@ import PMSKit
 /// foreground that ships as the visionOS app-icon Front layer. The full wordmark
 /// stays out of the circular icon crop, while the sign-in screen pairs the mark
 /// with a native SwiftUI VisionPlex title treatment.
+private enum JellyfinSignInMethod: Equatable {
+    case quickConnect
+    case credentials
+}
+
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -28,6 +33,7 @@ struct LoginView: View {
     @State private var jellyfinServer = ""
     @State private var jellyfinUsername = ""
     @State private var jellyfinPassword = ""
+    @State private var jellyfinSignInMethod: JellyfinSignInMethod?
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
@@ -126,6 +132,7 @@ struct LoginView: View {
                 errorMessage = nil
                 working = false
                 webAuth.cancel()
+                jellyfinSignInMethod = nil
                 authManager.selectBackend(backend)
             })) {
                 ForEach(MediaBackendKind.allCases) { backend in
@@ -220,6 +227,7 @@ struct LoginView: View {
         }
     }
 
+    @ViewBuilder
     private var jellyfinCredentialsForm: some View {
         VStack(spacing: DS.Space.md) {
             TextField("https://jellyfin.example.com", text: $jellyfinServer)
@@ -230,25 +238,90 @@ struct LoginView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
-            Button {
-                Task { await startJellyfinQuickConnect() }
-            } label: {
-                if working {
+            switch jellyfinSignInMethod {
+            case nil:
+                jellyfinMethodChooser
+            case .quickConnect:
+                jellyfinQuickConnectStart
+            case .credentials:
+                jellyfinUsernamePasswordForm
+            }
+        }
+    }
+
+    private var jellyfinMethodChooser: some View {
+        VStack(spacing: DS.Space.sm) {
+            Text("Choose how to sign in.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: DS.Space.sm) {
+                Button {
+                    jellyfinSignInMethod = .quickConnect
+                    Task { await startJellyfinQuickConnect() }
+                } label: {
+                    Label("Quick Connect", systemImage: "link.badge.plus")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(working || !hasJellyfinServerInput)
+
+                Button {
+                    errorMessage = nil
+                    jellyfinSignInMethod = .credentials
+                } label: {
+                    Label("Username / Password", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.bordered)
+                .disabled(working || !hasJellyfinServerInput)
+            }
+            .frame(maxWidth: 340)
+
+            if !hasJellyfinServerInput {
+                Text("Enter your Jellyfin server URL first.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var jellyfinQuickConnectStart: some View {
+        VStack(spacing: DS.Space.sm) {
+            if working {
+                HStack(spacing: DS.Space.sm) {
                     ProgressView()
-                } else {
-                    Label("Sign in with Quick Connect", systemImage: "link.badge.plus")
+                    Text("Starting Quick Connect…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Button {
+                    Task { await startJellyfinQuickConnect() }
+                } label: {
+                    Label("Start Quick Connect", systemImage: "link.badge.plus")
                         .font(.title3.weight(.semibold))
                         .padding(.horizontal, DS.Space.lg)
                         .padding(.vertical, DS.Space.xs)
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(!hasJellyfinServerInput)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(working)
 
-            Text("Or use username and password.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Button("Choose a different sign-in method") {
+                errorMessage = nil
+                working = false
+                authManager.cancelCurrentAuthorization()
+                jellyfinSignInMethod = nil
+            }
+            .buttonStyle(.bordered)
+        }
+    }
 
+    private var jellyfinUsernamePasswordForm: some View {
+        VStack(spacing: DS.Space.md) {
             TextField("Username", text: $jellyfinUsername)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -275,6 +348,13 @@ struct LoginView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(working)
+
+            Button("Choose a different sign-in method") {
+                errorMessage = nil
+                working = false
+                jellyfinSignInMethod = nil
+            }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -310,10 +390,15 @@ struct LoginView: View {
 
             Button("Use username and password instead") {
                 authManager.cancelCurrentAuthorization()
+                jellyfinSignInMethod = .credentials
                 working = false
             }
             .buttonStyle(.bordered)
         }
+    }
+
+    private var hasJellyfinServerInput: Bool {
+        !jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var codeCellShape: RoundedRectangle {
