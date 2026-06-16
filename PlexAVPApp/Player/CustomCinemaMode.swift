@@ -34,21 +34,16 @@ enum CustomCinemaMode {
         SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters)
     }
 
-    static let controlsAttachmentID = "custom-cinema-controls-rail"
-    static let controlsWidthPoints: CGFloat = 520
-    static let controlsPhysicalWidthMeters: Float = 1.85
-    static var controlsScale: Float { controlsPhysicalWidthMeters / Float(controlsWidthPoints) }
+    static let videoPlaneName = "custom-cinema-video-plane"
+    static let emptyPlaneName = "custom-cinema-empty-plane"
+    static let controlsRootName = "custom-cinema-native-controls"
+    static let playPauseButtonName = "custom-cinema-play-pause-button"
+    static let exitButtonName = "custom-cinema-exit-button"
+
     static var controlsPosition: SIMD3<Float> {
-        SIMD3<Float>(0, verticalOffsetMeters - (screenHeightMeters / 2.0) - 0.38, -screenDistanceMeters + 0.08)
+        SIMD3<Float>(0, verticalOffsetMeters - (screenHeightMeters / 2.0) - 0.38, -screenDistanceMeters + 0.18)
     }
 }
-
-/// Marker component for the visible video plane so a targeted spatial tap can reveal controls.
-///
-/// The gesture target is the VideoMaterial plane itself, not a transparent overlay in front of
-/// playback. That keeps the reveal affordance from reintroducing the black-screen/occlusion risk
-/// seen during earlier invisible-plane experiments.
-private struct CustomCinemaRevealTargetComponent: Component {}
 
 @Observable
 @MainActor
@@ -97,9 +92,10 @@ final class CustomCinemaSessionStore {
 /// Minimal black immersive theater surface for the custom player.
 ///
 /// This intentionally does NOT host `PlayerLayerView` or the full `CustomPlayerChrome`. It renders
-/// the active `AVPlayer` as a RealityKit `VideoMaterial` plane, then reveals a small SwiftUI
-/// attachment rail only after a targeted tap on that visible plane. The rail is not a window
-/// lifecycle restore hack; it stays inside the immersive space and owns deliberate playback exit.
+/// the active `AVPlayer` as a RealityKit `VideoMaterial` plane and uses native RealityKit button
+/// entities for controls. SwiftUI `RealityView` attachments were tried on device and did not appear
+/// reliably in this black immersive scene; native entities are less pretty, but they avoid both the
+/// attachment visibility failure and the earlier window-reopen duplicate-audio failure.
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
@@ -108,24 +104,21 @@ struct CustomCinemaScaffoldView: View {
     @State private var controlsHideTask: Task<Void, Never>?
 
     var body: some View {
-        RealityView { content, attachments in
-            content.add(Self.makeRoot(player: session.player))
-            updateControlsAttachment(in: content, attachments: attachments)
-        } update: { content, attachments in
+        RealityView { content in
+            content.add(Self.makeRoot(player: session.player,
+                                      controlsVisible: controlsVisible,
+                                      isPaused: session.controller?.transport.isPaused ?? true))
+        } update: { content in
             content.entities.removeAll(where: { $0.name == "custom-cinema-root" })
-            content.add(Self.makeRoot(player: session.player))
-            updateControlsAttachment(in: content, attachments: attachments)
-        } attachments: {
-            Attachment(id: CustomCinemaMode.controlsAttachmentID) {
-                CustomCinemaControlsRail(title: session.title ?? "Cinema",
-                                         controller: session.controller,
-                                         onTogglePlayback: togglePlayback,
-                                         onExit: exitCinema)
-            }
+            content.add(Self.makeRoot(player: session.player,
+                                      controlsVisible: controlsVisible,
+                                      isPaused: session.controller?.transport.isPaused ?? true))
         }
-        .gesture(SpatialTapGesture()
-            .targetedToEntity(where: .has(CustomCinemaRevealTargetComponent.self))
-            .onEnded { _ in revealControls() })
+        .gesture(SpatialTapGesture().targetedToAnyEntity().onEnded { value in
+            Task { @MainActor in
+                handleTap(on: value.entity.name)
+            }
+        })
         .preferredSurroundingsEffect(.ultraDark)
         .onAppear {
             print("[Custom Cinema] black immersive opened: width \(CustomCinemaMode.screenWidthMeters)m · distance \(CustomCinemaMode.screenDistanceMeters)m · vertical \(CustomCinemaMode.verticalOffsetMeters)m; title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
@@ -141,6 +134,24 @@ struct CustomCinemaScaffoldView: View {
         }
     }
 
+    @MainActor
+    private func handleTap(on entityName: String) {
+        switch entityName {
+        case CustomCinemaMode.videoPlaneName, CustomCinemaMode.emptyPlaneName:
+            print("[Custom Cinema] video plane tapped; revealing native controls")
+            revealControls()
+        case CustomCinemaMode.playPauseButtonName:
+            print("[Custom Cinema] native play/pause tapped")
+            togglePlayback()
+        case CustomCinemaMode.exitButtonName:
+            print("[Custom Cinema] native exit tapped")
+            exitCinema()
+        default:
+            break
+        }
+    }
+
+    @MainActor
     private func revealControls() {
         guard session.hasActivePlayer else { return }
         controlsVisible = true
@@ -152,6 +163,7 @@ struct CustomCinemaScaffoldView: View {
         }
     }
 
+    @MainActor
     private func togglePlayback() {
         guard let controller = session.controller else { return }
         if controller.transport.isPaused {
@@ -162,6 +174,7 @@ struct CustomCinemaScaffoldView: View {
         revealControls()
     }
 
+    @MainActor
     private func exitCinema() {
         controlsHideTask?.cancel()
         controlsVisible = false
@@ -172,23 +185,8 @@ struct CustomCinemaScaffoldView: View {
         }
     }
 
-    private func updateControlsAttachment(in content: RealityViewContent,
-                                          attachments: RealityViewAttachments) {
-        guard let controls = attachments.entity(for: CustomCinemaMode.controlsAttachmentID) else { return }
-        guard controlsVisible, session.hasActivePlayer else {
-            controls.removeFromParent()
-            return
-        }
-        controls.name = CustomCinemaMode.controlsAttachmentID
-        controls.position = CustomCinemaMode.controlsPosition
-        controls.scale = SIMD3<Float>(repeating: CustomCinemaMode.controlsScale)
-        if controls.parent == nil {
-            content.add(controls)
-        }
-    }
-
     @MainActor
-    private static func makeRoot(player: AVPlayer?) -> Entity {
+    private static func makeRoot(player: AVPlayer?, controlsVisible: Bool, isPaused: Bool) -> Entity {
         let root = Entity()
         root.name = "custom-cinema-root"
 
@@ -198,14 +196,14 @@ struct CustomCinemaScaffoldView: View {
             screen = ModelEntity(mesh: .generatePlane(width: CustomCinemaMode.screenWidthMeters,
                                                       height: CustomCinemaMode.screenHeightMeters),
                                  materials: [material])
-            screen.name = "custom-cinema-video-plane"
+            screen.name = CustomCinemaMode.videoPlaneName
         } else {
             screen = ModelEntity(mesh: .generatePlane(width: CustomCinemaMode.screenWidthMeters,
                                                       height: CustomCinemaMode.screenHeightMeters),
                                  materials: [SimpleMaterial(color: .black,
                                                             roughness: 1.0,
                                                             isMetallic: false)])
-            screen.name = "custom-cinema-empty-plane"
+            screen.name = CustomCinemaMode.emptyPlaneName
         }
         screen.position = CustomCinemaMode.screenPosition
         // The visible screen is also the reveal target. Collision is intentionally attached to
@@ -217,54 +215,76 @@ struct CustomCinemaScaffoldView: View {
                          height: CustomCinemaMode.screenHeightMeters,
                          depth: 0.04)
         ]))
-        screen.components.set(CustomCinemaRevealTargetComponent())
         root.addChild(screen)
+
+        if controlsVisible {
+            root.addChild(makeControlsRail(isPaused: isPaused))
+        }
+
         return root
     }
-}
 
-private struct CustomCinemaControlsRail: View {
-    let title: String
-    let controller: PlaybackController?
-    let onTogglePlayback: () -> Void
-    let onExit: () -> Void
+    private static func makeControlsRail(isPaused: Bool) -> Entity {
+        let root = Entity()
+        root.name = CustomCinemaMode.controlsRootName
+        root.position = CustomCinemaMode.controlsPosition
 
-    private var isPaused: Bool { controller?.transport.isPaused ?? true }
+        let back = ModelEntity(mesh: .generateBox(width: 1.62,
+                                                  height: 0.28,
+                                                  depth: 0.025,
+                                                  cornerRadius: 0.12),
+                               materials: [UnlitMaterial(color: UIColor(white: 0.03, alpha: 0.55))])
+        back.name = "custom-cinema-controls-background"
+        root.addChild(back)
 
-    var body: some View {
-        HStack(spacing: 14) {
-            Text(title)
-                .font(.headline.weight(.semibold))
-                .lineLimit(1)
-                .frame(maxWidth: 220, alignment: .leading)
+        let play = makeButton(name: CustomCinemaMode.playPauseButtonName,
+                              label: isPaused ? "Play" : "Pause",
+                              x: -0.37,
+                              width: 0.54,
+                              color: UIColor(white: 0.16, alpha: 0.72))
+        root.addChild(play)
 
-            Button(action: onTogglePlayback) {
-                Label(isPaused ? "Play" : "Pause",
-                      systemImage: isPaused ? "play.fill" : "pause.fill")
-                    .labelStyle(.titleAndIcon)
-                    .frame(minWidth: 92)
-            }
-            .buttonStyle(.bordered)
-            .disabled(controller == nil)
+        let exit = makeButton(name: CustomCinemaMode.exitButtonName,
+                              label: "Exit",
+                              x: 0.42,
+                              width: 0.50,
+                              color: UIColor(red: 0.46, green: 0.08, blue: 0.08, alpha: 0.76))
+        root.addChild(exit)
 
-            Button(role: .destructive, action: onExit) {
-                Label("Exit Cinema", systemImage: "xmark.circle.fill")
-                    .labelStyle(.titleAndIcon)
-                    .frame(minWidth: 132)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(controller == nil)
-        }
-        .font(.subheadline.weight(.semibold))
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .frame(width: CustomCinemaMode.controlsWidthPoints)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1)
-        }
-        .shadow(radius: 18)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Cinema controls")
+        return root
+    }
+
+    private static func makeButton(name: String, label: String, x: Float, width: Float, color: UIColor) -> Entity {
+        let root = Entity()
+        root.name = "\(name)-root"
+        root.position = SIMD3<Float>(x, 0, 0.035)
+
+        let height: Float = 0.18
+        let depth: Float = 0.035
+        let button = ModelEntity(mesh: .generateBox(width: width,
+                                                    height: height,
+                                                    depth: depth,
+                                                    cornerRadius: height / 2),
+                                 materials: [UnlitMaterial(color: color)])
+        button.name = name
+        button.components.set(InputTargetComponent())
+        button.components.set(CollisionComponent(shapes: [.generateBox(width: width, height: height, depth: depth)]))
+        root.addChild(button)
+
+        let textMesh = MeshResource.generateText(label,
+                                                 extrusionDepth: 0.002,
+                                                 font: .systemFont(ofSize: 0.060, weight: .semibold),
+                                                 containerFrame: CGRect(x: -CGFloat(width) / 2,
+                                                                        y: -0.028,
+                                                                        width: CGFloat(width),
+                                                                        height: 0.08),
+                                                 alignment: .center,
+                                                 lineBreakMode: .byClipping)
+        let text = ModelEntity(mesh: textMesh, materials: [UnlitMaterial(color: UIColor(white: 1, alpha: 0.92))])
+        text.name = "\(name)-label"
+        text.position = SIMD3<Float>(0, -0.022, 0.025)
+        root.addChild(text)
+
+        return root
     }
 }
