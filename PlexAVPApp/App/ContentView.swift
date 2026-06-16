@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 import PMSKit
 
@@ -57,9 +58,21 @@ struct ContentView: View {
             }
         }
         .task {
+            // Register the live state objects for out-of-app entry points (App
+            // Intents, Spotlight) BEFORE restoring, so an intent that launched the
+            // app can await `ensureBrowseReady()` against the real instances.
+            SystemEntryRouter.shared.register(appModel: appModel, authManager: authManager)
             guard isRestoring else { return }
             await authManager.restoreSession()
             isRestoring = false
+        }
+        // A Spotlight result was tapped: stash the ratingKey with the router. If
+        // we're still on the restore splash the route waits there until RootView
+        // mounts and consumes it (single-window: no second scene is ever opened).
+        .onContinueUserActivity(CSSearchableItemActionType) { activity in
+            guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+                  !id.isEmpty else { return }
+            SystemEntryRouter.shared.open(ratingKey: SpotlightIndexer.ratingKey(from: id), autoPlay: false)
         }
         // Sign-out: the music player outlives RootView, so without this music would
         // keep playing over the login screen with stale credentials (#17).

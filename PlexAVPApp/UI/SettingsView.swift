@@ -5,7 +5,7 @@ import PMSKit
 /// Settings tab (#26): server info + reachability, default streaming quality, playback-pref
 /// reset, download storage usage, maintenance, About/diagnostics, and sign out.
 ///
-/// The "Streaming quality" picker (#21) and the in-player Quality tab are two views of the
+/// The "Default Quality" picker (#21) and the in-player Quality tab are two views of the
 /// SAME persisted `@AppStorage("maxVideoBitrateKbps")` key and share one ladder
 /// (`StreamingQuality`): this picker sets the cap new playback sessions start at, while the
 /// in-player tab additionally reloads the live stream — a pick in either place is reflected
@@ -52,7 +52,7 @@ struct SettingsView: View {
                     Text(StreamingQuality.label(kbps: option.kbps)).tag(option.kbps)
                 }
             } label: {
-                Label("Streaming quality", systemImage: "slider.horizontal.3")
+                Label("Default Quality", systemImage: "slider.horizontal.3")
             }
         } header: {
             Text("Playback")
@@ -251,7 +251,15 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         SwiftUI.Section("About") {
-            LabeledContent("Version", value: "\(Self.appVersion) (\(Self.appBuild))")
+            LabeledContent("Version", value: Self.appVersion)
+            LabeledContent("Build", value: Self.appBuild)
+            if let slug = Self.buildSlug {
+                LabeledContent("Build ID", value: slug)
+                    .textSelection(.enabled)
+            }
+            if let builtAt = Self.buildDateUTC {
+                LabeledContent("Built", value: builtAt)
+            }
             LabeledContent("visionOS", value: ProcessInfo.processInfo.operatingSystemVersionString)
             // Product/device name exactly as sent to Plex. NEVER the client identifier —
             // it's treated as a secret in this repo.
@@ -277,11 +285,21 @@ struct SettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
     }
 
+    private static var buildSlug: String? {
+        Bundle.main.object(forInfoDictionaryKey: "VisionPlexBuildSlug") as? String
+    }
+
+    private static var buildDateUTC: String? {
+        Bundle.main.object(forInfoDictionaryKey: "VisionPlexBuildDateUTC") as? String
+    }
+
     /// Bug-report blob. Includes versions, server name/version, and the connection SCHEME
     /// only — never the token, client identifier, or full connection URL/hostname.
     private var diagnosticsText: String {
         var lines = [
             "\(appModel.identity.product) \(Self.appVersion) (\(Self.appBuild))",
+            "Build ID: \(Self.buildSlug ?? "unknown")",
+            "Built: \(Self.buildDateUTC ?? "unknown")",
             "visionOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Device: \(appModel.identity.deviceName)",
         ]
@@ -320,7 +338,7 @@ struct SettingsView: View {
                 Button("Reset", role: .destructive) {
                     // Clears speed + subtitle/audio-language keys (single source of truth in
                     // PlaybackController). Deliberately leaves `maxVideoBitrateKbps` alone —
-                    // the Streaming quality picker owns it.
+                    // the Default Quality picker owns it.
                     let defaults = UserDefaults.standard
                     for key in PlaybackController.persistedPreferenceKeys {
                         defaults.removeObject(forKey: key)
@@ -329,7 +347,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Clears the remembered playback speed and subtitle/audio language. Streaming quality is unaffected.")
+                Text("Clears the remembered playback speed and subtitle/audio language. Default Quality is unaffected.")
             }
 
             Button(role: .destructive) {

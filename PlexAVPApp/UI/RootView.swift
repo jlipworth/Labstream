@@ -16,6 +16,9 @@ struct RootView: View {
     /// Music tab's navigation path, lifted here so Now Playing's "go to
     /// artist/album" (which lives in a sheet, outside the stack) can push into it.
     @State private var musicPath = NavigationPath()
+    /// Home tab's navigation path, lifted here so system entries (App Intents,
+    /// Spotlight results — #24) can push a DetailView from outside the stack.
+    @State private var homePath = NavigationPath()
 
     enum AppTab: Hashable {
         case home, libraries, search, music, offline, settings
@@ -24,7 +27,7 @@ struct RootView: View {
     var body: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                NavigationStack { HomeView() }
+                NavigationStack(path: $homePath) { HomeView() }
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
                 NavigationStack { LibrariesView() }
@@ -62,9 +65,88 @@ struct RootView: View {
                 musicPath.append(item)
             }
         }
+        // System entries from App Intents / Spotlight (#24): same pattern as the
+        // music navigation request above — observe the router, land on Home, push.
+        .onChange(of: SystemEntryRouter.shared.pending) { _, route in
+            guard let route else { return }
+            handleSystemEntry(route)
+        }
+        .task {
+            // Consume a route that arrived BEFORE RootView mounted (cold launch
+            // from an intent/Spotlight: it was set while the restore splash was up).
+            if let route = SystemEntryRouter.shared.pending {
+                handleSystemEntry(route)
+            }
+        }
         .environment(appModel)
         .environment(downloadManager)
         .environment(musicPlayer)
+    }
+
+    // MARK: - System entries (App Intents / Spotlight, #24)
+
+    /// Perform one system-entry route: land on Home, resolve the target to a full
+    /// `MediaItem`, and push its DetailView. For "play" requests on a container
+    /// (show/season) the tested `EpisodeResolver` walks down to the first episode
+    /// so "Play <show>" actually plays something. Single-window by design: the
+    /// player then presents as DetailView's `.fullScreenCover`, never a new scene.
+    private func handleSystemEntry(_ route: SystemEntryRouter.Route) {
+        let router = SystemEntryRouter.shared
+        router.pending = nil
+        selection = .home
+        // Pop home to root first so repeated intents don't stack stale details.
+        homePath = NavigationPath()
+        Task { @MainActor in
+            guard let server = appModel.serverBaseURL,
+                  let token = appModel.serverToken else { return }
+            let identity = appModel.identity
+            let client = appModel.client
+
+            // Resolve the target to a full item. Spotlight hits and Play/Open
+            // intents arrive as a bare ratingKey and are fetched fresh here;
+            // `.item` is reserved for callers that JUST fetched the metadata
+            // (Continue Watching), so no snapshot can grow stale in between.
+            var item: MediaItem?
+            switch route.target {
+            case .item(let given):
+                item = given
+            case .ratingKey(let ratingKey):
+                let req = BrowseAPI.metadata(server: server, token: token,
+                                             identity: identity, ratingKey: ratingKey)
+                item = (try? await client.send(req, as: MetadataResponse.self))?
+                    .mediaContainer.metadata.first
+            }
+            // Unresolvable (deleted item, stale index from another server): the
+            // route quietly degrades to just foregrounding Home.
+            guard var item else { return }
+
+            var autoPlay = route.autoPlay
+            if autoPlay, item.isContainer {
+                // "Play <show/season>": drill to the first episode leaf. Explicitly
+                // @Sendable (capturing only Sendable values) so the closure may
+                // cross from the main actor into the nonisolated resolver.
+                let loadChildren: @Sendable (String) async throws -> [MediaItem] = { ratingKey in
+                    let req = BrowseAPI.children(server: server, token: token,
+                                                 identity: identity, ratingKey: ratingKey)
+                    return try await client.send(req, as: MetadataResponse.self)
+                        .mediaContainer.metadata
+                }
+                let leaf = try? await EpisodeResolver.resolveLeaf(from: item,
+                                                                  loadChildren: loadChildren)
+                if let leaf {
+                    item = leaf
+                } else {
+                    autoPlay = false // fall back to opening the container browser
+                }
+            }
+
+            if autoPlay, item.isPlayableLeaf, !item.isMusic {
+                // Arm the handshake BEFORE pushing; DetailView consumes it in its
+                // `.task` and presents the player.
+                router.requestAutoPlay(forRatingKey: item.ratingKey)
+            }
+            homePath.append(item)
+        }
     }
 }
 
@@ -116,6 +198,15 @@ enum BrowseAPI {
         PlexRequest(url: server.appendingPathComponent("/hubs"),
                     method: "GET",
                     queryItems: [.init(name: "count", value: "20")],
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `GET /library/onDeck` — the global Continue Watching / On Deck list (the
+    /// movies/episodes with a resume point). Drives the Continue Watching intent
+    /// and the Shortcuts parameter suggestions (#24).
+    static func onDeck(server: URL, token: String, identity: ClientIdentity) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/library/onDeck"),
+                    method: "GET",
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
