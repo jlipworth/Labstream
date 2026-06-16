@@ -61,7 +61,7 @@ struct ContentView: View {
             // Register the live state objects for out-of-app entry points (App
             // Intents, Spotlight) BEFORE restoring, so an intent that launched the
             // app can await `ensureBrowseReady()` against the real instances.
-            DeepLinkRouter.shared.register(appModel: appModel, authManager: authManager)
+            SystemEntryRouter.shared.register(appModel: appModel, authManager: authManager)
             guard isRestoring else { return }
             await authManager.restoreSession()
             isRestoring = false
@@ -72,7 +72,7 @@ struct ContentView: View {
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
             guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                   !id.isEmpty else { return }
-            DeepLinkRouter.shared.open(ratingKey: SpotlightIndexer.ratingKey(from: id), autoPlay: false)
+            SystemEntryRouter.shared.open(ratingKey: SpotlightIndexer.ratingKey(from: id), autoPlay: false)
         }
         // Sign-out: the music player outlives RootView, so without this music would
         // keep playing over the login screen with stale credentials (#17).

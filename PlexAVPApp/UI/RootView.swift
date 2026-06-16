@@ -16,7 +16,7 @@ struct RootView: View {
     /// Music tab's navigation path, lifted here so Now Playing's "go to
     /// artist/album" (which lives in a sheet, outside the stack) can push into it.
     @State private var musicPath = NavigationPath()
-    /// Home tab's navigation path, lifted here so deep links (App Intents,
+    /// Home tab's navigation path, lifted here so system entries (App Intents,
     /// Spotlight results — #24) can push a DetailView from outside the stack.
     @State private var homePath = NavigationPath()
 
@@ -65,17 +65,17 @@ struct RootView: View {
                 musicPath.append(item)
             }
         }
-        // Deep links from App Intents / Spotlight (#24): same pattern as the music
-        // navigation request above — observe the router, land on Home, push.
-        .onChange(of: DeepLinkRouter.shared.pending) { _, route in
+        // System entries from App Intents / Spotlight (#24): same pattern as the
+        // music navigation request above — observe the router, land on Home, push.
+        .onChange(of: SystemEntryRouter.shared.pending) { _, route in
             guard let route else { return }
-            handleDeepLink(route)
+            handleSystemEntry(route)
         }
         .task {
             // Consume a route that arrived BEFORE RootView mounted (cold launch
             // from an intent/Spotlight: it was set while the restore splash was up).
-            if let route = DeepLinkRouter.shared.pending {
-                handleDeepLink(route)
+            if let route = SystemEntryRouter.shared.pending {
+                handleSystemEntry(route)
             }
         }
         .environment(appModel)
@@ -83,15 +83,15 @@ struct RootView: View {
         .environment(musicPlayer)
     }
 
-    // MARK: - Deep links (App Intents / Spotlight, #24)
+    // MARK: - System entries (App Intents / Spotlight, #24)
 
-    /// Perform one router route: land on Home, resolve the target to a full
+    /// Perform one system-entry route: land on Home, resolve the target to a full
     /// `MediaItem`, and push its DetailView. For "play" requests on a container
     /// (show/season) the tested `EpisodeResolver` walks down to the first episode
     /// so "Play <show>" actually plays something. Single-window by design: the
     /// player then presents as DetailView's `.fullScreenCover`, never a new scene.
-    private func handleDeepLink(_ route: DeepLinkRouter.Route) {
-        let router = DeepLinkRouter.shared
+    private func handleSystemEntry(_ route: SystemEntryRouter.Route) {
+        let router = SystemEntryRouter.shared
         router.pending = nil
         selection = .home
         // Pop home to root first so repeated intents don't stack stale details.
