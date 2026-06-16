@@ -487,6 +487,8 @@ public struct Part: Decodable, Sendable, Identifiable {
     public let file: String?
     public let size: Int?
     public let container: String?
+    /// Plex `Part.indexes` advertises trick-play indexes such as `sd` when a BIF endpoint is available.
+    public let indexes: String?
     /// Per-part media tracks (`Stream` elements): video, audio and subtitle tracks.
     /// PMS only emits these on full metadata requests (and often only the selected
     /// streams unless `includeStreams`/extended params are sent), so this is optional
@@ -501,6 +503,7 @@ public struct Part: Decodable, Sendable, Identifiable {
         case file
         case size
         case container
+        case indexes
         case streams = "Stream"
     }
 
@@ -510,6 +513,7 @@ public struct Part: Decodable, Sendable, Identifiable {
                 file: String? = nil,
                 size: Int? = nil,
                 container: String? = nil,
+                indexes: String? = nil,
                 streams: [Stream]? = nil) {
         self.id = id
         self.key = key
@@ -517,6 +521,7 @@ public struct Part: Decodable, Sendable, Identifiable {
         self.file = file
         self.size = size
         self.container = container
+        self.indexes = indexes
         self.streams = streams
     }
 
@@ -526,6 +531,15 @@ public struct Part: Decodable, Sendable, Identifiable {
     public var audioStreams: [Stream] { (streams ?? []).filter { $0.kind == .audio } }
     /// Subtitle tracks on this part (`streamType == 3`), in PMS order.
     public var subtitleStreams: [Stream] { (streams ?? []).filter { $0.kind == .subtitle } }
+
+    /// True when Plex says `/library/parts/{id}/indexes/sd` should be available.
+    public var hasStandardDefinitionBIFIndex: Bool {
+        guard let indexes else { return false }
+        return indexes
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .contains("sd")
+    }
 }
 
 /// The kind of a media `Stream`, derived from PMS's numeric `streamType`.

@@ -451,6 +451,14 @@ struct DetailView: View {
                                                     },
                                                     maxVideoBitrateKbps: maxVideoBitrateKbps)
                              },
+                             trickPlayProvider: JellyfinTrickPlayThumbnailProvider(
+                                item: playing,
+                                server: appModel.jellyfinServerBaseURL,
+                                token: appModel.jellyfinAccessToken,
+                                identity: JellyfinClientIdentity(client: appModel.identity.product,
+                                                                 device: appModel.identity.deviceName,
+                                                                 deviceId: appModel.identity.clientIdentifier,
+                                                                 version: appModel.identity.version)),
                              onClose: { presentingPlayer = false })
                 .id(remote.id)
                 .ignoresSafeArea()
@@ -482,6 +490,12 @@ struct DetailView: View {
                                                         mediaIndex: mediaIndex,
                                                         machineIdentifier: machineIdentifier)
                                  },
+                                 trickPlayProvider: PlexBIFTrickPlayThumbnailProvider(item: playing,
+                                                                                      mediaIndex: mediaIndex,
+                                                                                      server: server,
+                                                                                      token: token,
+                                                                                      identity: appModel.identity,
+                                                                                      client: appModel.client),
                                  onClose: { presentingPlayer = false },
                                  onRequestPlay: playNext)
             }
