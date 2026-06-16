@@ -186,3 +186,53 @@ Do not merge the current local cinema WIP into `main` as-is. The useful outputs 
 hardware findings and direction above. Tomorrow's non-headset work should continue from `main` and
 other worktrees; #12 should resume only when headset testing is available again or when implementing
 context-preserving architecture that can be reviewed without visual headset tuning.
+
+## 2026-06-16 follow-up pass — placement improved, controls remain open
+
+After rebasing the branch onto current `main`, the branch was built, installed, and launched on the
+physical Apple Vision Pro again. The ignored local `Signing.local.xcconfig` had to be copied into
+this worktree so `DEVELOPMENT_TEAM=XXXXXXXXXX` was applied for device signing.
+
+### Placement / immersion adjustments made
+
+- The visible custom-cinema path is still `CustomCinemaMode`, not the hidden RealityKit lab path.
+  Earlier tuning accidentally changed only the RealityKit lab defaults; the headset test was using
+  the custom-cinema scaffold.
+- The custom-cinema screen was lowered substantially and pushed farther back:
+  - `screenDistanceMeters = 7.0`
+  - `verticalOffsetMeters = 0.65`
+- The owner confirmed this placement is "much better" than the previous high placement.
+- Both immersive spaces now request:
+  - full immersion,
+  - replacement immersive environment behavior,
+  - dark immersive content brightness,
+  - hidden upper-limb visibility.
+
+### Controls direction clarified
+
+Do **not** add an always-visible floating Exit button just to solve escape. It makes the theater feel
+less immersive and is not the desired product direction.
+
+Instead, the next controls slice should focus on an immersive-mode control model:
+
+1. Controls are hidden by default while the viewer is watching.
+2. A deliberate interaction reveals them temporarily, likely gaze/pinch/tap on the screen plane or a
+   large invisible/low-distraction hit region near the screen.
+3. Revealed controls should auto-hide after a short idle timeout.
+4. The first revealed control set should be small and reliable:
+   - Play/Pause,
+   - Exit Cinema,
+   - optionally ±10s after the reveal behavior is proven.
+5. Controls should be anchored below the screen or near a seat rail, but not permanently over the
+   movie image.
+6. Exit must be reliable from inside the immersive space and should return to the prior playback
+   context, not reload the app from Home.
+
+### Open headset observations
+
+- The hands/upper-limb hiding request needs retesting after applying `.upperLimbVisibility(.hidden)`
+  to both immersive spaces. If real hands are still visible, investigate whether the currently opened
+  scene path supports upper-limb hiding on this OS/version, or whether another system overlay / mixed
+  immersion path is still active.
+- Controls are still the major blocker for #12. The current minimal controls are not the final
+  interaction model and should be treated as a debug scaffold only.
