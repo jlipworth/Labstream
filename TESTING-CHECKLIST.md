@@ -539,6 +539,12 @@ These reproduced on the headset but NOT in the simulator, so sim verification is
 
 ## D. System integration (GH #24 — App Intents + Spotlight slice)
 
+**Simulator limitation (2026-06-16):** Vision Pro simulator build/run works, but we could not
+reliably reach a usable system search / Shortcuts invocation surface from the simulator. Treat
+these as hardware/manual-system tests, not simulator merge blockers. Simulator validation for
+this slice is: app builds, App Intents metadata extraction succeeds, app launches, Settings/About
+shows the stamped Build ID, and normal in-app browsing still works.
+
 - [ ] **Shortcuts: Play Media (GH #24)** — Shortcuts app → new shortcut → search "VisionPlex" →
       **Play Media**. Tapping the "Title" parameter should suggest the On Deck list and allow
       free-text search of the library (music never appears, per #15). Running the shortcut
