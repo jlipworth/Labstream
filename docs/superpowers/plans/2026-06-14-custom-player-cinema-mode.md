@@ -4,9 +4,14 @@
 
 ## Current truth
 
-- The default AVKit player still gets Apple's Cinema Environment through `AVPlayerViewController.experienceController`.
-- The experimental custom player is `AVPlayerLayer` + SwiftUI chrome.
-- The branch now wires a custom Cinema Mode path: the active custom-player session publishes its title and `AVPlayer` into `CustomCinemaSessionStore`, and the registered `ImmersiveSpace` renders that same player on a theater-style surface without reviving the old window -> fullscreen -> cinema animation hack.
+- The AVKit `AVPlayerViewController` path has been deleted; the custom player is now the only
+  player (`AVPlayerLayer` + SwiftUI chrome).
+- The temporary custom Cinema Mode path still exists as a scaffold: the active custom-player
+  session publishes its title and `AVPlayer` into `CustomCinemaSessionStore`, and the registered
+  `ImmersiveSpace` can render that same player on a theater-style surface.
+- Device testing showed that scaffold is not equivalent to Apple's AVKit Cinema Environment, so
+  `CustomCinemaMode.isUserVisible = false` hides the button from shipping chrome. Issue #12 now
+  owns the proper RealityKit theater path; see `2026-06-15-issue12-realitykit-theater.md`.
 
 ## Direction
 
@@ -36,4 +41,10 @@ Use as many Apple parts as possible while keeping the playback backend neutral:
 
 ## Cinema follow-up note
 
-Apple's polished Cinema Environment is currently available to the app through `AVPlayerViewController.experienceController` on the default AVKit path. The custom player intentionally uses `AVPlayerLayer` so it can own chrome and scrubber behavior; directly reusing `AVExperienceController` would mean re-entering the old AVKit player path. The current testable custom Cinema path therefore uses a visionOS `ImmersiveSpace` plus the same active `AVPlayer` and custom scrubber/chrome. A later hybrid can be explored, but it must not sacrifice the custom scrubber or reintroduce the three-mode AVKit behavior.
+Apple's polished Cinema Environment was available only through the old `AVPlayerViewController`
+path. The custom player intentionally uses `AVPlayerLayer` so it can own chrome and scrubber
+behavior; directly reusing `AVExperienceController` would mean re-entering the deleted AVKit
+player path. The current custom Cinema scaffold therefore uses a visionOS `ImmersiveSpace` plus
+the same active `AVPlayer` and custom scrubber/chrome, but it remains hidden because hardware
+testing showed poor full-Environment behavior. Future visible theater work should happen through
+the separate #12 RealityKit scaffold instead of re-exposing this button.
