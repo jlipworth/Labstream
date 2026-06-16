@@ -37,7 +37,9 @@ enum CustomCinemaMode {
     static let videoPlaneName = "custom-cinema-video-plane"
     static let emptyPlaneName = "custom-cinema-empty-plane"
     static let controlsRootName = "custom-cinema-native-controls"
+    static let rewindButtonName = "custom-cinema-rewind-30-button"
     static let playPauseButtonName = "custom-cinema-play-pause-button"
+    static let forwardButtonName = "custom-cinema-forward-30-button"
     static let exitButtonName = "custom-cinema-exit-button"
 
     static var controlsPosition: SIMD3<Float> {
@@ -154,9 +156,15 @@ struct CustomCinemaScaffoldView: View {
         case CustomCinemaMode.videoPlaneName, CustomCinemaMode.emptyPlaneName:
             print("[Custom Cinema] video plane tapped; revealing native controls")
             revealControls()
+        case CustomCinemaMode.rewindButtonName:
+            print("[Custom Cinema] native rewind 30 tapped")
+            seekRelative(seconds: -30)
         case CustomCinemaMode.playPauseButtonName:
             print("[Custom Cinema] native play/pause tapped")
             togglePlayback()
+        case CustomCinemaMode.forwardButtonName:
+            print("[Custom Cinema] native forward 30 tapped")
+            seekRelative(seconds: 30)
         case CustomCinemaMode.exitButtonName:
             print("[Custom Cinema] native exit tapped")
             exitCinema()
@@ -185,6 +193,13 @@ struct CustomCinemaScaffoldView: View {
         } else {
             controller.player.pause()
         }
+        revealControls()
+    }
+
+    @MainActor
+    private func seekRelative(seconds: Int) {
+        guard let controller = session.controller else { return }
+        controller.performRelativeUserSeek(bySeconds: seconds)
         revealControls()
     }
 
@@ -246,7 +261,7 @@ struct CustomCinemaScaffoldView: View {
         root.name = CustomCinemaMode.controlsRootName
         root.position = CustomCinemaMode.controlsPosition
 
-        let back = ModelEntity(mesh: .generateBox(width: 1.62,
+        let back = ModelEntity(mesh: .generateBox(width: 2.25,
                                                   height: 0.28,
                                                   depth: 0.025,
                                                   cornerRadius: 0.12),
@@ -254,16 +269,30 @@ struct CustomCinemaScaffoldView: View {
         back.name = "custom-cinema-controls-background"
         root.addChild(back)
 
+        let rewind = makeButton(name: CustomCinemaMode.rewindButtonName,
+                                label: "-30",
+                                x: -0.72,
+                                width: 0.42,
+                                color: UIColor(white: 0.12, alpha: 0.58))
+        root.addChild(rewind)
+
         let play = makeButton(name: CustomCinemaMode.playPauseButtonName,
                               label: isPaused ? "Play" : "Pause",
-                              x: -0.37,
+                              x: -0.20,
                               width: 0.54,
                               color: UIColor(white: 0.12, alpha: 0.58))
         root.addChild(play)
 
+        let forward = makeButton(name: CustomCinemaMode.forwardButtonName,
+                                 label: "+30",
+                                 x: 0.36,
+                                 width: 0.42,
+                                 color: UIColor(white: 0.12, alpha: 0.58))
+        root.addChild(forward)
+
         let exit = makeButton(name: CustomCinemaMode.exitButtonName,
                               label: "Exit",
-                              x: 0.42,
+                              x: 0.88,
                               width: 0.50,
                               color: UIColor(red: 0.34, green: 0.05, blue: 0.05, alpha: 0.62))
         root.addChild(exit)
