@@ -66,16 +66,126 @@ actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
-/// Jellyfin-aware seam placeholder.
+/// Jellyfin image-tile trick-play provider.
 ///
-/// Jellyfin can expose trick-play-style images only when the server has generated preview assets
-/// for a library item. The exact low-pressure sprite/tile endpoint should be wired here later;
-/// for now this provider makes Jellyfin playback explicitly and gracefully unavailable without
-/// falling back to chapter images or creating playback-stream requests during scrubbing.
-struct JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
-    // TODO(#4 Jellyfin parity): implement against Jellyfin preview thumbnail/sprite endpoints once
-    // generated trick-play availability can be detected cheaply per item/media source.
-    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? { nil }
+/// Jellyfin exposes generated trickplay as an image-only HLS playlist plus 10x10 JPEG tile sheets.
+/// This provider loads the playlist once, fetches only the sheet needed for the current scrub
+/// target, crops the relevant tile, and returns that JPEG without touching playback streams.
+actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private let itemId: String
+    private let mediaSourceId: String
+    private let server: URL
+    private let token: String
+    private let identity: JellyfinClientIdentity
+    private let width: Int
+    private let session: URLSession
+
+    private var loadedPlaylist: JellyfinTrickPlayPlaylist?
+    private var playlistTask: Task<JellyfinTrickPlayPlaylist?, Never>?
+    private var tileImages: [String: UIImage] = [:]
+    private var tileOrder: [String] = []
+    private let tileCacheLimit = 4
+
+    init?(item: MediaItem,
+          server: URL?,
+          token: String?,
+          identity: JellyfinClientIdentity,
+          width: Int = 320,
+          session: URLSession = .shared) {
+        guard let server, let token, !token.isEmpty else { return nil }
+        self.itemId = item.ratingKey
+        self.mediaSourceId = Self.mediaSourceId(from: item) ?? item.ratingKey
+        self.server = server
+        self.token = token
+        self.identity = identity
+        self.width = width
+        self.session = session
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard let playlist = await playlist(), let frame = playlist.frame(nearMs: targetMs) else { return nil }
+        guard let sheet = await tileImage(for: frame.tile) else { return nil }
+        guard let cropped = crop(sheet: sheet, frame: frame),
+              let data = cropped.jpegData(compressionQuality: 0.82) else { return nil }
+        return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
+    }
+
+    private func playlist() async -> JellyfinTrickPlayPlaylist? {
+        if let loadedPlaylist { return loadedPlaylist }
+        if playlistTask == nil {
+            let server = server, token = token, identity = identity, itemId = itemId, mediaSourceId = mediaSourceId, width = width, session = session
+            playlistTask = Task {
+                do {
+                    let req = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
+                                                                           token: token,
+                                                                           identity: identity,
+                                                                           itemId: itemId,
+                                                                           mediaSourceId: mediaSourceId,
+                                                                           width: width)
+                    let (data, response) = try await session.data(for: req)
+                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                          let text = String(data: data, encoding: .utf8) else { return nil }
+                    return try JellyfinTrickPlayPlaylistParser.parse(text)
+                } catch {
+                    return nil
+                }
+            }
+        }
+        let value = await playlistTask?.value
+        loadedPlaylist = value ?? nil
+        return value ?? nil
+    }
+
+    private func tileImage(for tile: JellyfinTrickPlayTile) async -> UIImage? {
+        if let cached = tileImages[tile.uri] { return cached }
+        do {
+            let req = try JellyfinLibrary.trickPlayTileRequest(server: server,
+                                                               token: token,
+                                                               identity: identity,
+                                                               itemId: itemId,
+                                                               mediaSourceId: mediaSourceId,
+                                                               width: width,
+                                                               tileURI: tile.uri)
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let image = UIImage(data: data) else { return nil }
+            insertTile(image, for: tile.uri)
+            return image
+        } catch {
+            return nil
+        }
+    }
+
+    private func insertTile(_ image: UIImage, for uri: String) {
+        if tileImages[uri] == nil { tileOrder.append(uri) }
+        tileImages[uri] = image
+        while tileOrder.count > tileCacheLimit, let oldest = tileOrder.first {
+            tileOrder.removeFirst()
+            tileImages[oldest] = nil
+        }
+    }
+
+    private nonisolated func crop(sheet: UIImage, frame: JellyfinTrickPlayFrame) -> UIImage? {
+        guard let cgImage = sheet.cgImage else { return nil }
+        let scaleX = CGFloat(cgImage.width) / CGFloat(frame.tile.columns * frame.tile.tileWidth)
+        let scaleY = CGFloat(cgImage.height) / CGFloat(frame.tile.rows * frame.tile.tileHeight)
+        let rect = CGRect(x: CGFloat(frame.column * frame.tile.tileWidth) * scaleX,
+                          y: CGFloat(frame.row * frame.tile.tileHeight) * scaleY,
+                          width: CGFloat(frame.tile.tileWidth) * scaleX,
+                          height: CGFloat(frame.tile.tileHeight) * scaleY).integral
+        guard let cropped = cgImage.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.imageOrientation)
+    }
+
+    private static func mediaSourceId(from item: MediaItem) -> String? {
+        guard let key = item.media?.first?.part.first?.key,
+              let url = URL(string: key),
+              url.scheme == "jellyfin",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "media" else { return nil }
+        return parts[2]
+    }
 }
 
 @MainActor

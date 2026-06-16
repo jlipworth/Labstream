@@ -28,6 +28,135 @@ public struct UnavailableTrickPlayThumbnailProvider: TrickPlayThumbnailProviding
     public func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? { nil }
 }
 
+public struct JellyfinTrickPlayTile: Equatable, Sendable {
+    public let uri: String
+    public let startMs: Int
+    public let durationMs: Int
+    public let tileDurationMs: Int
+    public let tileWidth: Int
+    public let tileHeight: Int
+    public let columns: Int
+    public let rows: Int
+
+    public init(uri: String,
+                startMs: Int,
+                durationMs: Int,
+                tileDurationMs: Int,
+                tileWidth: Int,
+                tileHeight: Int,
+                columns: Int,
+                rows: Int) {
+        self.uri = uri
+        self.startMs = max(0, startMs)
+        self.durationMs = max(1, durationMs)
+        self.tileDurationMs = max(1, tileDurationMs)
+        self.tileWidth = max(1, tileWidth)
+        self.tileHeight = max(1, tileHeight)
+        self.columns = max(1, columns)
+        self.rows = max(1, rows)
+    }
+
+    public var frameCapacity: Int { columns * rows }
+
+    public func frameIndex(nearMs targetMs: Int) -> Int {
+        let localMs = min(max(0, targetMs - startMs), max(0, durationMs - 1))
+        return min(frameCapacity - 1, localMs / tileDurationMs)
+    }
+
+    public func frameTimeMs(frameIndex: Int) -> Int {
+        startMs + min(max(0, frameIndex), frameCapacity - 1) * tileDurationMs
+    }
+}
+
+public struct JellyfinTrickPlayFrame: Equatable, Sendable {
+    public let tile: JellyfinTrickPlayTile
+    public let frameIndex: Int
+
+    public var timeMs: Int { tile.frameTimeMs(frameIndex: frameIndex) }
+    public var column: Int { frameIndex % tile.columns }
+    public var row: Int { frameIndex / tile.columns }
+}
+
+public struct JellyfinTrickPlayPlaylist: Equatable, Sendable {
+    public let tiles: [JellyfinTrickPlayTile]
+
+    public init(tiles: [JellyfinTrickPlayTile]) {
+        self.tiles = tiles.sorted { $0.startMs < $1.startMs }
+    }
+
+    public func frame(nearMs targetMs: Int) -> JellyfinTrickPlayFrame? {
+        guard !tiles.isEmpty else { return nil }
+        let clamped = max(0, targetMs)
+        let tile = tiles.last { $0.startMs <= clamped } ?? tiles[0]
+        return JellyfinTrickPlayFrame(tile: tile, frameIndex: tile.frameIndex(nearMs: clamped))
+    }
+}
+
+public enum JellyfinTrickPlayPlaylistParserError: Error, Equatable, Sendable {
+    case empty
+}
+
+/// Parser for Jellyfin's image-only trickplay HLS playlist. Jellyfin emits tile sheets as
+/// `#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10` followed by a relative JPEG URI.
+/// `EXTINF` covers the duration represented by the sheet, while `DURATION` is the per-frame
+/// spacing inside that sheet.
+public enum JellyfinTrickPlayPlaylistParser {
+    public static func parse(_ text: String) throws -> JellyfinTrickPlayPlaylist {
+        var currentStartMs = 0
+        var pendingDurationMs: Int?
+        var pendingTiles: (width: Int, height: Int, columns: Int, rows: Int, durationMs: Int)?
+        var tiles: [JellyfinTrickPlayTile] = []
+
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("#EXTINF:") {
+                pendingDurationMs = parseEXTINF(line)
+            } else if line.hasPrefix("#EXT-X-TILES:") {
+                pendingTiles = parseTiles(line)
+            } else if line.hasPrefix("#") {
+                continue
+            } else if let durationMs = pendingDurationMs, let tileMeta = pendingTiles {
+                tiles.append(JellyfinTrickPlayTile(uri: line,
+                                                   startMs: currentStartMs,
+                                                   durationMs: durationMs,
+                                                   tileDurationMs: tileMeta.durationMs,
+                                                   tileWidth: tileMeta.width,
+                                                   tileHeight: tileMeta.height,
+                                                   columns: tileMeta.columns,
+                                                   rows: tileMeta.rows))
+                currentStartMs += durationMs
+                pendingDurationMs = nil
+                pendingTiles = nil
+            }
+        }
+
+        guard !tiles.isEmpty else { throw JellyfinTrickPlayPlaylistParserError.empty }
+        return JellyfinTrickPlayPlaylist(tiles: tiles)
+    }
+
+    private static func parseEXTINF(_ line: String) -> Int? {
+        let raw = line.dropFirst("#EXTINF:".count).split(separator: ",", maxSplits: 1).first ?? ""
+        guard let seconds = Double(raw.trimmingCharacters(in: .whitespaces)) else { return nil }
+        return max(1, Int((seconds * 1000).rounded()))
+    }
+
+    private static func parseTiles(_ line: String) -> (width: Int, height: Int, columns: Int, rows: Int, durationMs: Int)? {
+        let payload = line.dropFirst("#EXT-X-TILES:".count)
+        var values: [String: String] = [:]
+        for part in payload.split(separator: ",") {
+            let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
+            if pair.count == 2 { values[pair[0].uppercased()] = pair[1] }
+        }
+        guard let resolution = values["RESOLUTION"]?.split(separator: "x").compactMap({ Int($0) }),
+              resolution.count == 2,
+              let layout = values["LAYOUT"]?.split(separator: "x").compactMap({ Int($0) }),
+              layout.count == 2,
+              let durationSeconds = values["DURATION"].flatMap(Double.init) else { return nil }
+        return (resolution[0], resolution[1], layout[0], layout[1], max(1, Int((durationSeconds * 1000).rounded())))
+    }
+}
+
 public enum TrickPlayRequest {
     /// Plex BIF endpoint for the requested Part. `quality` is usually `sd` when the Part's
     /// `indexes` attribute advertises `sd`.
