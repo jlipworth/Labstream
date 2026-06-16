@@ -451,7 +451,14 @@ struct DetailView: View {
                                                     },
                                                     maxVideoBitrateKbps: maxVideoBitrateKbps)
                              },
-                             trickPlayProvider: JellyfinTrickPlayThumbnailProvider(),
+                             trickPlayProvider: JellyfinTrickPlayThumbnailProvider(
+                                item: playing,
+                                server: appModel.jellyfinServerBaseURL,
+                                token: appModel.jellyfinAccessToken,
+                                identity: JellyfinClientIdentity(client: appModel.identity.product,
+                                                                 device: appModel.identity.deviceName,
+                                                                 deviceId: appModel.identity.clientIdentifier,
+                                                                 version: appModel.identity.version)),
                              onClose: { presentingPlayer = false })
                 .id(remote.id)
                 .ignoresSafeArea()

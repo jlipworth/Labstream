@@ -570,6 +570,52 @@ public enum JellyfinLibrary {
         return try url(server: server, path: "/Items/\(itemId)/Images/Chapter/\(chapterIndex)", queryItems: query)
     }
 
+
+    public static func trickPlayPlaylistRequest(server: URL,
+                                                token: String,
+                                                identity: JellyfinClientIdentity,
+                                                itemId: String,
+                                                mediaSourceId: String,
+                                                width: Int = 320) throws -> URLRequest {
+        let url = try url(server: server,
+                          path: "/Videos/\(itemId)/Trickplay/\(width)/tiles.m3u8",
+                          queryItems: [URLQueryItem(name: "MediaSourceId", value: mediaSourceId)])
+        var req = authenticatedRequest(url: url, token: token, identity: identity)
+        req.setValue("application/x-mpegURL,application/vnd.apple.mpegurl,*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
+    public static func trickPlayTileRequest(server: URL,
+                                            token: String,
+                                            identity: JellyfinClientIdentity,
+                                            itemId: String,
+                                            mediaSourceId: String,
+                                            width: Int = 320,
+                                            tileURI: String) throws -> URLRequest {
+        let basePath = "/Videos/\(itemId)/Trickplay/\(width)/"
+        let rawURL: URL
+        if let absolute = URL(string: tileURI), absolute.scheme != nil {
+            rawURL = absolute
+        } else {
+            rawURL = try url(server: server, path: basePath + tileURI, queryItems: [])
+        }
+        guard var comps = URLComponents(url: rawURL, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        // Jellyfin playlists often include ApiKey in tile URIs. Drop it and use the normal
+        // MediaBrowser auth header instead so secrets do not linger in app-visible URLs.
+        var query = comps.queryItems ?? []
+        query.removeAll { $0.name.caseInsensitiveCompare("ApiKey") == .orderedSame }
+        if !query.contains(where: { $0.name.caseInsensitiveCompare("MediaSourceId") == .orderedSame }) {
+            query.append(URLQueryItem(name: "MediaSourceId", value: mediaSourceId))
+        }
+        comps.queryItems = query.isEmpty ? nil : query
+        guard let url = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        var req = authenticatedRequest(url: url, token: token, identity: identity)
+        req.setValue("image/jpeg,*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
     public static func activeEncodingStopRequest(server: URL,
                                                  token: String,
                                                  identity: JellyfinClientIdentity,
