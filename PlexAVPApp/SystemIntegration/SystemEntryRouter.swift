@@ -14,8 +14,8 @@ import PMSKit
 /// actual navigation.
 @MainActor
 @Observable
-final class DeepLinkRouter {
-    static let shared = DeepLinkRouter()
+final class SystemEntryRouter {
+    static let shared = SystemEntryRouter()
 
     /// One navigation request from an intent or a Spotlight result.
     ///
@@ -85,18 +85,16 @@ final class DeepLinkRouter {
 
     /// "Play X" intents need DetailView to start playback once it's on screen.
     /// RootView arms this right before pushing the item; DetailView consumes it
-    /// from its `.task`. Time-boxed so an arm whose push somehow never landed can't
-    /// surprise-autoplay a manual visit to the same item minutes later.
-    private var autoPlayArm: (ratingKey: String, armedAt: ContinuousClock.Instant)?
+    /// from its `.task`. The pure one-shot/time-box behavior lives in PMSKit so it
+    /// stays covered by tests instead of being hidden in SwiftUI side effects.
+    private var autoPlayGate = PendingAutoPlayGate()
 
     func requestAutoPlay(forRatingKey ratingKey: String) {
-        autoPlayArm = (ratingKey, .now)
+        autoPlayGate.arm(ratingKey: ratingKey)
     }
 
     func consumeAutoPlay(for ratingKey: String) -> Bool {
-        guard let arm = autoPlayArm, arm.ratingKey == ratingKey else { return false }
-        autoPlayArm = nil
-        return arm.armedAt.duration(to: .now) < .seconds(30)
+        autoPlayGate.consume(ratingKey: ratingKey)
     }
 
     // MARK: - Session readiness (for intents)
