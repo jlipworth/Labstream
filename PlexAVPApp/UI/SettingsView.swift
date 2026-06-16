@@ -315,6 +315,15 @@ struct SettingsView: View {
 
     // MARK: Account
 
+    private var signOutConfirmationMessage: String {
+        switch appModel.activeBackend {
+        case .plex:
+            return "Signing back in requires authorizing this device with plex.tv again."
+        case .jellyfin:
+            return "Signing back in requires connecting to your Jellyfin server again."
+        }
+    }
+
     private var accountSection: some View {
         SwiftUI.Section {
             // Reset lives down here next to Sign Out: both are rarely-used, destructive-ish
@@ -355,10 +364,10 @@ struct SettingsView: View {
             } label: {
                 Label("Sign Out of \(appModel.activeBackend.displayName)", systemImage: "rectangle.portrait.and.arrow.right")
             }
-            // Sign-out is genuinely disruptive — re-login is the plex.tv PIN dance —
-            // so the destructive action gets a confirmation (#26).
+            // Sign-out is genuinely disruptive, so the destructive action gets
+            // a backend-specific confirmation (#26/#37).
             .confirmationDialog(
-                "Sign out of Plex?",
+                "Sign out of \(appModel.activeBackend.displayName)?",
                 isPresented: $confirmingSignOut,
                 titleVisibility: .visible
             ) {
@@ -367,7 +376,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Signing back in requires authorizing this device with plex.tv again.")
+                Text(signOutConfirmationMessage)
             }
         }
     }
