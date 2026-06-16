@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 /// Best-effort CoreSpotlight indexing of library items as they're browsed
 /// (issue #24): Home hubs and library grid pages feed batches here, so anything
-/// the user has seen becomes findable in system search and deep-links back into
+/// the user has seen becomes findable in system search and routes back into
 /// its DetailView (handled via `onContinueUserActivity` in ContentView).
 ///
 /// Deliberate choices:
@@ -17,11 +17,10 @@ import UniformTypeIdentifiers
 ///     in-app routes, but these App Intents/deep links target video DetailView.
 ///   - `uniqueIdentifier` includes a non-secret server namespace plus ratingKey so
 ///     a result indexed on one server cannot accidentally open the same ratingKey on
-///     another. The router strips that namespace before fetching metadata.
+///     another. PMSKit owns the parser so the namespace-stripping behavior is unit-tested.
 enum SpotlightIndexer {
     /// Single domain for everything we index, so sign-out can wipe it in one call.
     static let domainIdentifier = "com.jlipworth.VisionPlex.media"
-    private static let identifierSeparator = "|"
 
     /// Queue a batch for indexing. Fire-and-forget: indexing is a nicety and must
     /// never affect browse, so failures are only logged.
@@ -50,9 +49,7 @@ enum SpotlightIndexer {
     /// Recover the Plex ratingKey from a CoreSpotlight identifier. Identifiers from
     /// older builds were bare ratingKeys, so keep accepting them for compatibility.
     static func ratingKey(from searchableIdentifier: String) -> String {
-        searchableIdentifier.split(separator: identifierSeparator, maxSplits: 1, omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? searchableIdentifier
+        MediaSearchIdentifier.ratingKey(from: searchableIdentifier)
     }
 
     private static func searchableItem(for item: MediaItem, server: URL) -> CSSearchableItem? {
@@ -73,15 +70,7 @@ enum SpotlightIndexer {
     }
 
     private static func searchableIdentifier(for item: MediaItem, server: URL) -> String {
-        "\(serverNamespace(server))\(identifierSeparator)\(item.ratingKey)"
-    }
-
-    private static func serverNamespace(_ server: URL) -> String {
-        let host = server.host(percentEncoded: false) ?? server.host ?? server.absoluteString
-        if let port = server.port {
-            return "\(host):\(port)"
-        }
-        return host
+        MediaSearchIdentifier.make(ratingKey: item.ratingKey, server: server)
     }
 
     private static func contentType(for item: MediaItem) -> UTType {

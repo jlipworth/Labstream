@@ -59,8 +59,8 @@ struct MediaItemEntity: AppEntity {
 struct MediaItemEntityQuery: EntityStringQuery {
     @MainActor
     func entities(for identifiers: [String]) async throws -> [MediaItemEntity] {
-        guard await DeepLinkRouter.shared.ensureBrowseReady(),
-              let ctx = DeepLinkRouter.shared.browseContext else { return [] }
+        guard await SystemEntryRouter.shared.ensureBrowseReady(),
+              let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         var found: [MediaItemEntity] = []
         for ratingKey in identifiers {
             let req = BrowseAPI.metadata(server: ctx.server, token: ctx.token,
@@ -75,8 +75,8 @@ struct MediaItemEntityQuery: EntityStringQuery {
 
     @MainActor
     func entities(matching string: String) async throws -> [MediaItemEntity] {
-        guard await DeepLinkRouter.shared.ensureBrowseReady(),
-              let ctx = DeepLinkRouter.shared.browseContext else { return [] }
+        guard await SystemEntryRouter.shared.ensureBrowseReady(),
+              let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         let req = BrowseAPI.search(server: ctx.server, token: ctx.token,
                                    identity: ctx.identity, query: string)
         guard let resp = try? await ctx.client.send(req, as: HubsResponse.self) else { return [] }
@@ -93,8 +93,8 @@ struct MediaItemEntityQuery: EntityStringQuery {
     /// someone is most likely to ask Siri to play.
     @MainActor
     func suggestedEntities() async throws -> [MediaItemEntity] {
-        guard await DeepLinkRouter.shared.ensureBrowseReady(),
-              let ctx = DeepLinkRouter.shared.browseContext else { return [] }
+        guard await SystemEntryRouter.shared.ensureBrowseReady(),
+              let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
         guard let resp = try? await ctx.client.send(req, as: MetadataResponse.self) else { return [] }
         return resp.mediaContainer.metadata

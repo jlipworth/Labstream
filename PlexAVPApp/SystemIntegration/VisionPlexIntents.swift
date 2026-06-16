@@ -6,7 +6,7 @@ import PMSKit
 // Three minimal intents: Play (foreground + autoplay), Open (foreground + detail
 // page), and Resume Continue Watching (no parameter — the top On Deck item).
 // All of them run IN the app process (`openAppWhenRun`) because playback lives in
-// the single window's `.fullScreenCover`; navigation goes through `DeepLinkRouter`.
+// the single window's `.fullScreenCover`; navigation goes through `SystemEntryRouter`.
 
 /// User-facing intent failures. Every case reads as a complete sentence — this is
 /// the text Siri speaks / Shortcuts shows when the intent can't proceed.
@@ -39,7 +39,7 @@ struct PlayMediaIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let router = DeepLinkRouter.shared
+        let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady() else { throw VisionPlexIntentError.notSignedIn }
         // Route by ratingKey, not the snapshot: RootView re-fetches authoritative
         // metadata (and resolves a show/season container down to an episode leaf).
@@ -63,7 +63,7 @@ struct OpenMediaIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let router = DeepLinkRouter.shared
+        let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady() else { throw VisionPlexIntentError.notSignedIn }
         router.open(ratingKey: item.id, autoPlay: false)
         return .result(dialog: "Opening \(item.title) in VisionPlex.")
@@ -78,7 +78,7 @@ struct ResumeContinueWatchingIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let router = DeepLinkRouter.shared
+        let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady(),
               let ctx = router.browseContext else { throw VisionPlexIntentError.notSignedIn }
         let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
