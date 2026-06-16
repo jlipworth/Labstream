@@ -23,6 +23,29 @@ final class BIFParserTests: XCTestCase {
         XCTAssertEqual(index.frame(nearMs: 99_000)?.timeMs, 20_000)
     }
 
+    func testParsesPlexStyleZeroIntervalTimestampsAsSeconds() throws {
+        let jpegA = Data([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9])
+        let jpegB = Data([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x01, 0xff, 0xd9])
+        let jpegC = Data([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x02, 0xff, 0xd9])
+        let data = makeBIF(intervalMs: 0,
+                           frames: [
+                               (timestamp: 0, payload: jpegA),
+                               (timestamp: 2, payload: jpegB),
+                               (timestamp: 4, payload: jpegC),
+                           ])
+
+        let index = try BIFParser.parse(data)
+
+        // Real Plex `index-sd.bif` files observed from PMS can store interval=0 while using
+        // timestamp rows 0, 2, 4... for two-second frame spacing. Treat zero interval as the
+        // BIF default 1000ms multiplier so timestamps remain seconds, not raw milliseconds.
+        XCTAssertEqual(index.frameIntervalMs, 1_000)
+        XCTAssertEqual(index.frames.map(\.timeMs), [0, 2_000, 4_000])
+        XCTAssertEqual(index.frame(nearMs: 2_600)?.timeMs, 2_000)
+        XCTAssertEqual(index.frame(nearMs: 3_600)?.timeMs, 4_000)
+        XCTAssertEqual(index.frames.first?.data.prefix(4), Data([0xff, 0xd8, 0xff, 0xe0]))
+    }
+
     func testRejectsTruncatedIndexTable() {
         let data = Data([0x89, 0x42, 0x49, 0x46, 0x0D, 0x0A, 0x1A, 0x0A])
             + littleEndian(0)
