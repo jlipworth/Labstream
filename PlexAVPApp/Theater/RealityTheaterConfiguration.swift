@@ -41,8 +41,8 @@ enum RealityTheaterFeature {
 /// perceived size/distance instead of opaque SwiftUI frame points.
 struct RealityTheaterScreenConfiguration: Equatable, Hashable, Sendable {
     static let defaultWidthMeters: Float = 4.8
-    static let defaultDistanceMeters: Float = 5.0
-    static let defaultVerticalOffsetMeters: Float = 0.25
+    static let defaultDistanceMeters: Float = 5.6
+    static let defaultVerticalOffsetMeters: Float = 0.08
 
     static let widthRangeMeters: ClosedRange<Float> = 2.4...7.2
     static let distanceRangeMeters: ClosedRange<Float> = 2.8...8.0
@@ -129,20 +129,20 @@ enum RealityTheaterBaselinePreset: String, CaseIterable, Equatable, Hashable, Id
         switch self {
         case .appleDefaultish:
             RealityTheaterConfiguration(screen: RealityTheaterScreenConfiguration(widthMeters: 4.8,
-                                                                                 distanceMeters: 5.0,
-                                                                                 verticalOffsetMeters: 0.25),
+                                                                                 distanceMeters: 5.6,
+                                                                                 verticalOffsetMeters: 0.08),
                                        seat: .center,
                                        controlsPlacement: .belowScreen)
         case .appleLargeBackRow:
             RealityTheaterConfiguration(screen: RealityTheaterScreenConfiguration(widthMeters: 6.2,
-                                                                                 distanceMeters: 6.5,
-                                                                                 verticalOffsetMeters: 0.32),
+                                                                                 distanceMeters: 7.0,
+                                                                                 verticalOffsetMeters: 0.15),
                                        seat: .back,
                                        controlsPlacement: .seatRail)
         case .frontRowDebug:
             RealityTheaterConfiguration(screen: RealityTheaterScreenConfiguration(widthMeters: 3.4,
-                                                                                 distanceMeters: 3.2,
-                                                                                 verticalOffsetMeters: 0.12),
+                                                                                 distanceMeters: 3.8,
+                                                                                 verticalOffsetMeters: -0.05),
                                        seat: .front,
                                        controlsPlacement: .seatRail)
         }

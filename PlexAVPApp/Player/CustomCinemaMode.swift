@@ -28,8 +28,8 @@ enum CustomCinemaMode {
     static let controlsAttachmentID = "custom-cinema-minimal-controls"
     static let emergencyExitAttachmentID = "custom-cinema-emergency-exit"
     static let screenWidthMeters: Float = 9.4
-    static let screenDistanceMeters: Float = 6.25
-    static let verticalOffsetMeters: Float = 2.25
+    static let screenDistanceMeters: Float = 7.0
+    static let verticalOffsetMeters: Float = 0.65
     static let aspectRatio: Float = 16.0 / 9.0
 
     static var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
