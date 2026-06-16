@@ -1,7 +1,7 @@
 import Foundation
 
 /// The app's single bitrate-cap ladder (#21), shared by the in-player Quality tab and the
-/// Settings "Streaming quality" default picker so the two surfaces can never drift apart —
+/// Settings "Default Quality" picker so the two surfaces can never drift apart —
 /// both read/write the same persisted `maxVideoBitrateKbps` key, and a value picked in one
 /// always resolves a checkmark in the other.
 ///

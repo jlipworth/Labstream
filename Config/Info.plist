@@ -19,6 +19,14 @@
 		<string>com.apple.corespotlightitem</string>
 	</array>
 
+	<!-- Internal build traceability: defaults to "dev" from build settings, and
+	     agent/CI builds can override with `scripts/build-version-args.sh` without
+	     rewriting project files. -->
+	<key>VisionPlexBuildSlug</key>
+	<string>$(VISIONPLEX_BUILD_SLUG)</string>
+	<key>VisionPlexBuildDateUTC</key>
+	<string>$(VISIONPLEX_BUILD_DATE_UTC)</string>
+
 	<!-- Export compliance (#appstore): the app uses only standard HTTPS/TLS
 	     (exempt encryption), so declare non-exempt encryption = NO. This skips
 	     the per-upload export-compliance question in App Store Connect. -->
