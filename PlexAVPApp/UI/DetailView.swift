@@ -451,6 +451,7 @@ struct DetailView: View {
                                                     },
                                                     maxVideoBitrateKbps: maxVideoBitrateKbps)
                              },
+                             trickPlayProvider: JellyfinTrickPlayThumbnailProvider(),
                              onClose: { presentingPlayer = false })
                 .id(remote.id)
                 .ignoresSafeArea()
@@ -482,6 +483,12 @@ struct DetailView: View {
                                                         mediaIndex: mediaIndex,
                                                         machineIdentifier: machineIdentifier)
                                  },
+                                 trickPlayProvider: PlexBIFTrickPlayThumbnailProvider(item: playing,
+                                                                                      mediaIndex: mediaIndex,
+                                                                                      server: server,
+                                                                                      token: token,
+                                                                                      identity: appModel.identity,
+                                                                                      client: appModel.client),
                                  onClose: { presentingPlayer = false },
                                  onRequestPlay: playNext)
             }
