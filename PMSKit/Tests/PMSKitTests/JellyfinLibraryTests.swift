@@ -185,6 +185,74 @@ struct JellyfinLibraryTests {
         #expect(query["fillHeight"] == "270")
     }
 
+
+    @Test func trickPlayPlaylistRequestUsesHeaderAuthAndMediaSource() throws {
+        let request = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
+                                                                   token: "token-abc",
+                                                                   identity: identity,
+                                                                   itemId: "item-1",
+                                                                   mediaSourceId: "source-1",
+                                                                   width: 320)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Videos/item-1/Trickplay/320/tiles.m3u8")
+        #expect(query["MediaSourceId"] == "source-1")
+        #expect(query["ApiKey"] == nil)
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+        #expect(request.value(forHTTPHeaderField: "Accept")?.contains("mpegURL") == true)
+    }
+
+    @Test func trickPlayTileRequestStripsPlaylistApiKeyAndKeepsMediaSource() throws {
+        let request = try JellyfinLibrary.trickPlayTileRequest(server: server,
+                                                               token: "token-abc",
+                                                               identity: identity,
+                                                               itemId: "item-1",
+                                                               mediaSourceId: "source-1",
+                                                               width: 320,
+                                                               tileURI: "4.jpg?MediaSourceId=source-1&ApiKey=secret")
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Videos/item-1/Trickplay/320/4.jpg")
+        #expect(query["MediaSourceId"] == "source-1")
+        #expect(query["ApiKey"] == nil)
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+        #expect(request.value(forHTTPHeaderField: "Accept")?.contains("image/jpeg") == true)
+    }
+
+    @Test func parsesJellyfinTrickPlayPlaylistAndFindsFrame() throws {
+        let playlist = try JellyfinTrickPlayPlaylistParser.parse(#"""
+        #EXTM3U
+        #EXT-X-IMAGES-ONLY
+        #EXTINF:1000,
+        #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10
+        0.jpg?MediaSourceId=source-1&ApiKey=secret
+        #EXTINF:50,
+        #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10
+        1.jpg?MediaSourceId=source-1&ApiKey=secret
+        #EXT-X-ENDLIST
+        """#)
+
+        #expect(playlist.tiles.count == 2)
+        #expect(playlist.tiles[0].startMs == 0)
+        #expect(playlist.tiles[0].durationMs == 1_000_000)
+        #expect(playlist.tiles[0].tileDurationMs == 10_000)
+        #expect(playlist.tiles[0].columns == 10)
+        #expect(playlist.tiles[0].rows == 10)
+        let frame = try #require(playlist.frame(nearMs: 125_000))
+        #expect(frame.tile.uri.hasPrefix("0.jpg"))
+        #expect(frame.frameIndex == 12)
+        #expect(frame.column == 2)
+        #expect(frame.row == 1)
+        #expect(frame.timeMs == 120_000)
+        let final = try #require(playlist.frame(nearMs: 1_020_000))
+        #expect(final.tile.uri.hasPrefix("1.jpg"))
+        #expect(final.frameIndex == 2)
+    }
+
     @Test func activeEncodingStopTargetsDeviceAndSession() throws {
         let request = try JellyfinLibrary.activeEncodingStopRequest(server: server, token: "token-abc", identity: identity, deviceId: "device-123", playSessionId: "play-1")
         let url = try #require(request.url)
