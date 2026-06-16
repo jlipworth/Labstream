@@ -29,7 +29,10 @@ struct PlexAVPApp: App {
                 .environment(customCinemaSession)
                 .environment(realityTheaterSession)
         }
-        .immersionStyle(selection: .constant(.mixed), in: .mixed)
+        .immersionStyle(selection: .constant(.full), in: .full)
+        .immersiveEnvironmentBehavior(.replace)
+        .immersiveContentBrightness(.dark)
+        .upperLimbVisibility(.hidden)
 
         ImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             CustomCinemaScaffoldView()
@@ -39,5 +42,6 @@ struct PlexAVPApp: App {
         .immersionStyle(selection: .constant(.full), in: .full)
         .immersiveEnvironmentBehavior(.replace)
         .immersiveContentBrightness(.dark)
+        .upperLimbVisibility(.hidden)
     }
 }
