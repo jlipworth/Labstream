@@ -16,6 +16,11 @@ import PMSKit
 /// foreground that ships as the visionOS app-icon Front layer. The full wordmark
 /// stays out of the circular icon crop, while the sign-in screen pairs the mark
 /// with a native SwiftUI VisionPlex title treatment.
+private enum JellyfinSignInMethod: Equatable {
+    case quickConnect
+    case credentials
+}
+
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -28,6 +33,7 @@ struct LoginView: View {
     @State private var jellyfinServer = ""
     @State private var jellyfinUsername = ""
     @State private var jellyfinPassword = ""
+    @State private var jellyfinSignInMethod: JellyfinSignInMethod?
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
@@ -55,7 +61,10 @@ struct LoginView: View {
             case .authenticated:
                 // Token arrived via polling — close the web sheet so it doesn't
                 // linger over the now-authenticated app.
+                working = false
                 webAuth.cancel()
+            case .awaitingJellyfinQuickConnect:
+                working = false
             default:
                 break
             }
@@ -123,6 +132,7 @@ struct LoginView: View {
                 errorMessage = nil
                 working = false
                 webAuth.cancel()
+                jellyfinSignInMethod = nil
                 authManager.selectBackend(backend)
             })) {
                 ForEach(MediaBackendKind.allCases) { backend in
@@ -207,7 +217,18 @@ struct LoginView: View {
         }
     }
 
+    @ViewBuilder
     private var jellyfinLoginForm: some View {
+        switch authManager.state {
+        case .awaitingJellyfinQuickConnect(let code):
+            jellyfinQuickConnectWaiting(code: code)
+        default:
+            jellyfinCredentialsForm
+        }
+    }
+
+    @ViewBuilder
+    private var jellyfinCredentialsForm: some View {
         VStack(spacing: DS.Space.md) {
             TextField("https://jellyfin.example.com", text: $jellyfinServer)
                 .textInputAutocapitalization(.never)
@@ -217,6 +238,90 @@ struct LoginView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
+            switch jellyfinSignInMethod {
+            case nil:
+                jellyfinMethodChooser
+            case .quickConnect:
+                jellyfinQuickConnectStart
+            case .credentials:
+                jellyfinUsernamePasswordForm
+            }
+        }
+    }
+
+    private var jellyfinMethodChooser: some View {
+        VStack(spacing: DS.Space.sm) {
+            Text("Choose how to sign in.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: DS.Space.sm) {
+                Button {
+                    jellyfinSignInMethod = .quickConnect
+                    Task { await startJellyfinQuickConnect() }
+                } label: {
+                    Label("Quick Connect", systemImage: "link.badge.plus")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(working || !hasJellyfinServerInput)
+
+                Button {
+                    errorMessage = nil
+                    jellyfinSignInMethod = .credentials
+                } label: {
+                    Label("Username / Password", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.bordered)
+                .disabled(working || !hasJellyfinServerInput)
+            }
+            .frame(maxWidth: 340)
+
+            if !hasJellyfinServerInput {
+                Text("Enter your Jellyfin server URL first.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var jellyfinQuickConnectStart: some View {
+        VStack(spacing: DS.Space.sm) {
+            if working {
+                HStack(spacing: DS.Space.sm) {
+                    ProgressView()
+                    Text("Starting Quick Connect…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Button {
+                    Task { await startJellyfinQuickConnect() }
+                } label: {
+                    Label("Start Quick Connect", systemImage: "link.badge.plus")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!hasJellyfinServerInput)
+            }
+
+            Button("Choose a different sign-in method") {
+                errorMessage = nil
+                working = false
+                authManager.cancelCurrentAuthorization()
+                jellyfinSignInMethod = nil
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var jellyfinUsernamePasswordForm: some View {
+        VStack(spacing: DS.Space.md) {
             TextField("Username", text: $jellyfinUsername)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -243,7 +348,57 @@ struct LoginView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(working)
+
+            Button("Choose a different sign-in method") {
+                errorMessage = nil
+                working = false
+                jellyfinSignInMethod = nil
+            }
+            .buttonStyle(.bordered)
         }
+    }
+
+    private func jellyfinQuickConnectWaiting(code: String) -> some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Enter this code in Jellyfin")
+                    .font(.title3.weight(.semibold))
+                Text("In an already signed-in Jellyfin app or web UI, open Quick Connect and enter the code.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            HStack(spacing: DS.Space.md) {
+                ForEach(Array(code.enumerated()), id: \.offset) { _, character in
+                    Text(String(character))
+                        .font(.system(size: 44, weight: .semibold, design: .monospaced))
+                        .frame(width: 64, height: 82)
+                        .background(.thinMaterial, in: codeCellShape)
+                        .overlay(codeCellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                }
+            }
+            .padding(.vertical, DS.Space.xs)
+
+            HStack(spacing: DS.Space.sm) {
+                ProgressView()
+                Text("Waiting for authorization…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Use username and password instead") {
+                authManager.cancelCurrentAuthorization()
+                jellyfinSignInMethod = .credentials
+                working = false
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var hasJellyfinServerInput: Bool {
+        !jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var codeCellShape: RoundedRectangle {
@@ -305,6 +460,20 @@ struct LoginView: View {
         await authManager.loginToJellyfin(server: server,
                                           username: username,
                                           password: jellyfinPassword)
+        working = false
+    }
+
+    private func startJellyfinQuickConnect() async {
+        errorMessage = nil
+        let server: URL
+        do {
+            server = try JellyfinServerURL.normalized(jellyfinServer)
+        } catch {
+            errorMessage = "Enter a valid Jellyfin server URL."
+            return
+        }
+        working = true
+        await authManager.startJellyfinQuickConnect(server: server)
         working = false
     }
 }
