@@ -35,6 +35,20 @@ version (Settings):
 
 <https://github.com/jlipworth/VisionPlex/issues>
 
+For hard-to-reproduce playback, download, or music issues, you can include a
+local diagnostic report:
+
+1. Open **Settings ▸ Diagnostics**.
+2. Turn on **Enable diagnostic logging**.
+3. Reproduce the problem once.
+4. Tap **Copy diagnostic report** and paste it into the issue.
+5. Turn diagnostic logging off again if you no longer need it.
+
+Diagnostics are opt-in, stored in a bounded local ring buffer, and exported only
+when you tap the copy button. The report intentionally omits sensitive values
+such as tokens, client identifiers, hostnames/IP addresses, full URLs, usernames,
+library paths, filenames, and media titles.
+
 ## Privacy
 
 See [PRIVACY.md](PRIVACY.md). VisionPlex collects no data and sends nothing to

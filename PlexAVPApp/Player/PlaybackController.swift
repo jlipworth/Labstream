@@ -205,6 +205,8 @@ final class PlaybackController {
     private var bufferingObservation: NSKeyValueObservation?
     private var didEndObserver: NSObjectProtocol?
     private var diagnosticsTimer: Timer?
+    private var lastDiagnosticSnapshotUptime: TimeInterval = 0
+    private var lastDiagnosticTimeControlStatus: AVPlayer.TimeControlStatus?
     private var failedToEndObserver: NSObjectProtocol?
     /// Watchdog for a stalled stream (#8 hardening). HLS network loss frequently manifests as a
     /// PERMANENT stall — the player sits in `.waitingToPlayAtSpecifiedRate` with an empty buffer
@@ -244,6 +246,7 @@ final class PlaybackController {
     private var finalTargetSettleTask: Task<Void, Never>?
     private var activeFinalTargetRebuildGeneration: Int?
     private static let finalTargetSettleNanos: UInt64 = 500_000_000
+    private static let diagnosticSnapshotIntervalSeconds: TimeInterval = 15
     /// Offset we most recently primed via `start.m3u8?offset=...`; suppress nearby programmatic
     /// resume seeks so a rebuild does not immediately schedule another rebuild.
     private var lastPrimedOffsetMs = 0
@@ -543,6 +546,12 @@ final class PlaybackController {
     func start() {
         guard !started else { return }
         started = true
+        var fields: [String: DiagnosticFieldValue] = [
+            "path_mode": .label(localFile != nil ? "local_file" : (remoteStreamURL != nil ? "remote_stream" : "plex_stream")),
+            "initial_resume": .millisecondsBucket(initialResumeMsOverride ?? item.viewOffset),
+        ]
+        fields.merge(sourceDiagnosticFields()) { _, new in new }
+        recordPlaybackDiagnostic("playback.session_start", fields: fields)
         if let localFile {
             loadLocalFile(localFile)
         } else if let remoteStreamURL {
@@ -563,6 +572,11 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        maybeRecordDiagnosticSnapshot(force: true)
+        recordPlaybackDiagnostic("playback.session_stop", fields: [
+            "resume": .millisecondsBucket(currentResumeMs),
+            "sent_transcode_stop": .bool(sentTranscodeStop),
+        ])
         playbackTask?.cancel()
         playbackTask = nil
         upNextTask?.cancel()
@@ -1107,6 +1121,11 @@ final class PlaybackController {
     func reload(bitrateKbps: Int) {
         guard supportsQualityReload else { return }
         guard bitrateKbps != maxVideoBitrateKbps else { return }
+        recordPlaybackDiagnostic("playback.quality_change", fields: [
+            "from_quality": .label(StreamingQuality.label(kbps: maxVideoBitrateKbps)),
+            "to_quality": .label(StreamingQuality.label(kbps: bitrateKbps)),
+            "resume": .millisecondsBucket(currentResumeMs),
+        ])
         maxVideoBitrateKbps = bitrateKbps
         // Snapshot position so we can resume where the viewer was.
         let resumeMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
@@ -1132,6 +1151,10 @@ final class PlaybackController {
     func retry() {
         guard isStreaming || remoteStreamReopener != nil else { return }
         let resumeMs = currentResumeMs
+        recordPlaybackDiagnostic("playback.retry", fields: [
+            "resume": .millisecondsBucket(resumeMs),
+            "uses_remote_reopener": .bool(remoteStreamReopener != nil),
+        ])
         finalTargetRebuildPolicy.reset()
         playbackError.clear()
         removeObservers()
@@ -1162,8 +1185,16 @@ final class PlaybackController {
 
         if isWithinLoadedRanges(seconds: seconds) {
             cancelPendingFinalTargetRebuild()
+            recordPlaybackDiagnostic("playback.user_seek", fields: [
+                "seek_mode": .label("native_buffered"),
+                "target": .millisecondsBucket(clamped),
+            ])
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
         } else {
+            recordPlaybackDiagnostic("playback.user_seek", fields: [
+                "seek_mode": .label("server_rebuild"),
+                "target": .millisecondsBucket(clamped),
+            ])
             scheduleFinalTargetRebuild(toMs: clamped)
         }
     }
@@ -1210,6 +1241,7 @@ final class PlaybackController {
         let freshClient = recoveryControlClient()
         client = freshClient
         timeline.useClient(freshClient)
+        recordPlaybackDiagnostic("playback.recovery_client_swapped")
         NSLog("PlaybackController: switched Retry control-plane requests to a fresh recovery URLSession")
     }
 
@@ -1278,6 +1310,9 @@ final class PlaybackController {
             // session, so superseded jobs can't pile up and OOM the server. Persisted so a
             // restart storm is diagnosable from the log after the fact.
             playbackLog.notice("transcode: stopping previous job before in-place restart")
+            recordTranscodeDiagnostic("transcode.stop_previous", fields: [
+                "reason": .label("in_place_restart"),
+            ])
             await stopPreviousTranscode(server: server, token: token)
             guard !Task.isCancelled, generation == playbackGeneration else { return }
         }
@@ -1308,6 +1343,19 @@ final class PlaybackController {
                                          burnSubtitleStreamID: nil,
                                          startOffsetSeconds: offsetSeconds)
 
+        var requestFields: [String: DiagnosticFieldValue] = [
+            "requested_cap_kbps": .int(requestedCap),
+            "selected_quality": .label(StreamingQuality.label(kbps: maxVideoBitrateKbps)),
+            "resume": .millisecondsBucket(resumeMs),
+            "start_offset": .secondsBucket(offsetSeconds.map(Double.init)),
+            "part_index": .int(0),
+            "profile": .label("visionos-hls"),
+            "stop_previous": .bool(stoppingPreviousTranscode),
+        ]
+        requestFields.merge(sourceDiagnosticFields()) { _, new in new }
+        recordPlaybackDiagnostic("playback.start_streaming", fields: requestFields)
+        recordTranscodeDiagnostic("transcode.request", fields: requestFields)
+
         var decision: DecisionResponse?
         var streamURL = transcode.startM3U8URL()
         // This build decides afresh whether it commits to direct play, so disarm any prior
@@ -1328,6 +1376,9 @@ final class PlaybackController {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 if probe.savesVideoEncode {
                     NSLog("PlaybackController: Direct Play / Maximum — PMS will copy video; committing direct-play start.m3u8")
+                    var fields = decisionDiagnosticFields(probe)
+                    fields["probe_result"] = .label("commit_direct_play")
+                    recordTranscodeDiagnostic("transcode.direct_play_probe", fields: fields)
                     decision = probe
                     streamURL = transcode.directPlayStartM3U8URL()
                     // Arm the playback-time fallback: PMS agreed to copy, but the resulting HLS
@@ -1341,10 +1392,17 @@ final class PlaybackController {
                     logDirectPlayDecision(transcode: transcode, probe: probe)
                     #endif
                 } else {
+                    var fields = decisionDiagnosticFields(probe)
+                    fields["probe_result"] = .label("fallback_to_transcode")
+                    recordTranscodeDiagnostic("transcode.direct_play_probe", fields: fields)
                     NSLog("PlaybackController: Direct Play / Maximum — PMS cannot copy video; using maximum transcode")
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
+                recordTranscodeDiagnostic("transcode.direct_play_probe_failed", fields: [
+                    "error": .error(error),
+                    "fallback": .label("maximum_transcode"),
+                ])
                 NSLog("PlaybackController: direct-play probe failed (%@); using maximum transcode", String(describing: error))
             }
         }
@@ -1354,11 +1412,17 @@ final class PlaybackController {
                 let response = try await client.send(transcode.decisionRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 decision = response
+                recordTranscodeDiagnostic("transcode.decision", fields: decisionDiagnosticFields(response))
                 if case .unsupported = response.decision {
+                    recordTranscodeDiagnostic("transcode.unsupported", fields: decisionDiagnosticFields(response))
                     NSLog("PlaybackController: transcode decision unsupported: %@", String(describing: response.generalDecisionText))
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
+                recordTranscodeDiagnostic("transcode.decision_failed", fields: [
+                    "error": .error(error),
+                    "fallback": .label("attempt_start_m3u8"),
+                ])
                 NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", String(describing: error))
             }
         }
@@ -1368,6 +1432,15 @@ final class PlaybackController {
                                 decision: decision,
                                 server: server,
                                 targetBitrateKbps: maxVideoBitrateKbps)
+        var selectedFields: [String: DiagnosticFieldValue] = [
+            "stream_url_shape": .urlShape(streamURL),
+            "direct_play_fallback_armed": .bool(directPlayFallbackArmed),
+            "decision_present": .bool(decision != nil),
+        ]
+        if let decision {
+            selectedFields.merge(decisionDiagnosticFields(decision)) { _, new in new }
+        }
+        recordPlaybackDiagnostic("playback.stream_selected", fields: selectedFields)
 
         let asset = AVURLAsset(url: streamURL)
         let playerItem = AVPlayerItem(asset: asset)
@@ -1420,6 +1493,12 @@ final class PlaybackController {
                                 server: nil,
                                 targetBitrateKbps: 0)
         diagnostics.connectionHost = "Local file"
+        var fields: [String: DiagnosticFieldValue] = [
+            "path_mode": .label("local_file"),
+            "stream_url_shape": .urlShape(url),
+        ]
+        fields.merge(sourceDiagnosticFields()) { _, new in new }
+        recordPlaybackDiagnostic("playback.start_path", fields: fields)
 
         let asset = AVURLAsset(url: url)
         let playerItem = AVPlayerItem(asset: asset)
@@ -1440,6 +1519,15 @@ final class PlaybackController {
                                             playMethod: remotePlayMethod)
         }
         diagnostics.connectionHost = url.host ?? "Remote stream"
+        var fields: [String: DiagnosticFieldValue] = [
+            "path_mode": .label("remote_stream"),
+            "stream_url_shape": .urlShape(url),
+            "play_method": .label(remotePlayMethod?.rawValue),
+            "headers_present": .bool(!headers.isEmpty),
+        ]
+        fields.merge(sourceDiagnosticFields()) { _, new in new }
+        fields.merge(jellyfinSourceDiagnosticFields(remoteSourceMetadata)) { _, new in new }
+        recordPlaybackDiagnostic("playback.start_path", fields: fields)
 
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
         let asset = AVURLAsset(url: url, options: options)
@@ -1683,6 +1771,10 @@ final class PlaybackController {
         // Done for both streaming and local-file paths so the player shows the real title.
         attachExternalMetadata(to: playerItem)
         player.replaceCurrentItem(with: playerItem)
+        recordPlaybackDiagnostic("playback.item_loaded", fields: [
+            "resume": .millisecondsBucket(resumeOffsetMs),
+            "preferred_forward_buffer_seconds": .int(Int(playerItem.preferredForwardBufferDuration)),
+        ])
         installObservers(for: playerItem, resumeOffsetMs: resumeOffsetMs)
         startDiagnosticsSampling()
         player.play()
@@ -1697,6 +1789,7 @@ final class PlaybackController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.diagnostics.sample(player: self.player)
+                self.maybeRecordDiagnosticSnapshot()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -1713,6 +1806,10 @@ final class PlaybackController {
             Task { @MainActor in
                 switch pItem.status {
                 case .readyToPlay:
+                    self.recordPlaybackDiagnostic("playback.item_status", fields: [
+                        "status": .label("readyToPlay"),
+                        "duration": .secondsBucket(pItem.duration.seconds),
+                    ])
                     // Gate timeline/scrobble heartbeats until we actually have content +
                     // a real duration (P8 #11) so we don't post duration=0/time≈0.
                     let durSecs = pItem.duration.seconds
@@ -1743,7 +1840,12 @@ final class PlaybackController {
                         }
                         self.didSeek = true
                     }
+                    self.maybeRecordDiagnosticSnapshot(force: true)
                 case .failed:
+                    self.recordPlaybackDiagnostic("playback.item_status", fields: [
+                        "status": .label("failed"),
+                        "error": .error(pItem.error),
+                    ])
                     self.handlePlaybackFailure(pItem.error)
                 default:
                     break
@@ -1761,6 +1863,9 @@ final class PlaybackController {
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor in
                 guard let self else { return }
+                self.recordPlaybackDiagnostic("playback.failed_to_end", fields: [
+                    "error": .error(error),
+                ])
                 self.handlePlaybackFailure(error)
             }
         }
@@ -1808,10 +1913,17 @@ final class PlaybackController {
         // Fire on play/pause transitions.
         rateObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
             guard let self else { return }
+            let status = avPlayer.timeControlStatus
             Task { @MainActor in
-                let paused = avPlayer.timeControlStatus == .paused
+                let paused = status == .paused
                 self.timeline.report(state: paused ? .paused : .playing, force: true)
                 self.transport.set(paused: paused)
+                if self.lastDiagnosticTimeControlStatus != status {
+                    self.lastDiagnosticTimeControlStatus = status
+                    self.recordPlaybackDiagnostic("playback.time_control_status", fields: [
+                        "status": .label(Self.timeControlStatusLabel(status)),
+                    ])
+                }
             }
         }
 
@@ -1857,6 +1969,10 @@ final class PlaybackController {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                self.maybeRecordDiagnosticSnapshot(force: true)
+                self.recordPlaybackDiagnostic("playback.ended", fields: [
+                    "resume": .millisecondsBucket(self.currentResumeMs),
+                ])
                 self.timeline.report(state: .stopped, force: true)
                 self.timeline.scrobble()
                 // Play-to-end with a resolved, un-cancelled next item: autoplay it (#15).
@@ -2085,6 +2201,11 @@ final class PlaybackController {
             directPlayFallbackArmed = false
             suppressDirectPlayProbe = true
             let resumeMs = currentResumeMs
+            recordTranscodeDiagnostic("transcode.direct_play_runtime_fallback", fields: [
+                "error": .error(error),
+                "resume": .millisecondsBucket(resumeMs),
+                "fallback": .label("maximum_transcode"),
+            ])
             NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to maximum transcode",
                   String(describing: error))
             finalTargetRebuildPolicy.reset()
@@ -2097,6 +2218,9 @@ final class PlaybackController {
         // don't surface over it. `suppressDirectPlayProbe` stays set until that rebuild's
         // `startStreaming` consumes it, well before any new item could fail.
         if suppressDirectPlayProbe { return }
+        recordPlaybackDiagnostic("playback.player_failure", fields: [
+            "error": .error(error),
+        ])
         NSLog("PlaybackController: playback failed, surfacing to UI (%@)",
               String(describing: error))
         surfaceFailure(error)
@@ -2115,6 +2239,11 @@ final class PlaybackController {
             finalTargetRebuildPolicy.cancelRebuild(generation: activeFinalTargetRebuildGeneration)
             self.activeFinalTargetRebuildGeneration = nil
         }
+        maybeRecordDiagnosticSnapshot(force: true)
+        recordPlaybackDiagnostic("playback.failure_surfaced", fields: [
+            "error": .error(error),
+            "resume": .millisecondsBucket(currentResumeMs),
+        ])
         player.pause()
         playbackError.set(error)
     }
@@ -2127,6 +2256,9 @@ final class PlaybackController {
     /// Retry/Close overlay every other failure uses. Idempotent.
     func surfaceReconnectTimeout() {
         guard !playbackError.isFailed else { return }
+        recordPlaybackDiagnostic("playback.reconnect_watchdog_fired", fields: [
+            "resume": .millisecondsBucket(currentResumeMs),
+        ])
         NSLog("PlaybackController: reconnect watchdog timed out, surfacing failure (#33)")
         surfaceFailure(ReconnectTimeoutError())
     }
@@ -2142,6 +2274,9 @@ final class PlaybackController {
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
         guard stallWatchdog == nil, !playbackError.isFailed else { return }
+        recordPlaybackDiagnostic("playback.stall_watchdog_armed", fields: [
+            "timeout_seconds": .int(Int(stallTimeoutSeconds)),
+        ])
         let timer = Timer(timeInterval: stallTimeoutSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleStallTimeout()
@@ -2153,6 +2288,9 @@ final class PlaybackController {
 
     /// Cancel the stall watchdog (genuine resume, teardown, or retry).
     private func cancelStallWatchdog() {
+        if stallWatchdog != nil {
+            recordPlaybackDiagnostic("playback.stall_watchdog_cancelled")
+        }
         stallWatchdog?.invalidate()
         stallWatchdog = nil
     }
@@ -2174,11 +2312,16 @@ final class PlaybackController {
         guard !playbackError.isFailed, let current = player.currentItem else { return }
         guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
               !current.isPlaybackLikelyToKeepUp else { return }
+        var fields = runtimeSnapshotFields()
+        fields["keep_up"] = .bool(current.isPlaybackLikelyToKeepUp)
         if let underlying = current.error {
+            fields["error"] = .error(underlying)
+            recordPlaybackDiagnostic("playback.stall_watchdog_fired", fields: fields)
             NSLog("PlaybackController: stream stalled, surfacing failure (%@)",
                   String(describing: underlying))
             surfaceFailure(underlying)
         } else {
+            recordPlaybackDiagnostic("playback.stall_watchdog_fired", fields: fields)
             NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
             surfaceFailure(NSError(
                 domain: "PlexAVPApp.Playback", code: -1001,
@@ -2263,6 +2406,11 @@ final class PlaybackController {
         didStopRemoteSession = true
         priorStop?()
         playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")
+        recordPlaybackDiagnostic("playback.remote_reopen", fields: [
+            "target": .millisecondsBucket(offsetMs),
+            "quality": .label(StreamingQuality.label(kbps: bitrateKbps)),
+            "stopped_prior_session": .bool(priorStop != nil),
+        ])
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -2282,6 +2430,10 @@ final class PlaybackController {
                 self.didStopRemoteSession = false
                 self.loadRemoteStream(reopened.url, headers: reopened.headers, resumeOffsetMs: offsetMs)
             } catch {
+                self.recordPlaybackDiagnostic("playback.remote_reopen_failed", fields: [
+                    "error": .error(error),
+                    "target": .millisecondsBucket(offsetMs),
+                ])
                 NSLog("PlaybackController: remote stream reopen failed (%@)", String(describing: error))
                 self.surfaceFailure(NSError(
                     domain: "PlexAVPApp.Playback", code: -1004,
@@ -2296,12 +2448,25 @@ final class PlaybackController {
                                                      now: ProcessInfo.processInfo.systemUptime) {
         case .start(let generation, let offsetMs):
             lastPrimedOffsetMs = offsetMs
+            recordPlaybackDiagnostic("playback.seek_rebuild_start", fields: [
+                "target": .millisecondsBucket(offsetMs),
+                "generation": .int(generation),
+            ])
             removeObservers()
             beginStreaming(resumeOffsetMsOverride: offsetMs,
                            finalTargetRebuildGeneration: generation)
         case .alreadyRebuilding:
+            recordPlaybackDiagnostic("playback.seek_rebuild_deferred", fields: [
+                "reason": .label("already_rebuilding"),
+                "target": .millisecondsBucket(targetMs),
+            ])
             break
         case .deferred(let remaining):
+            recordPlaybackDiagnostic("playback.seek_rebuild_deferred", fields: [
+                "reason": .label("cooldown"),
+                "remaining_seconds": .double(remaining),
+                "target": .millisecondsBucket(targetMs),
+            ])
             finalTargetSettleTask?.cancel()
             finalTargetSettleTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(remaining))
@@ -2311,6 +2476,9 @@ final class PlaybackController {
                 self.beginFinalTargetRebuild(toMs: target)
             }
         case .escalate:
+            recordPlaybackDiagnostic("playback.seek_rebuild_escalated", fields: [
+                "target": .millisecondsBucket(targetMs),
+            ])
             surfaceFailure(NSError(
                 domain: "PlexAVPApp.Playback", code: -1002,
                 userInfo: [NSLocalizedDescriptionKey:
@@ -2321,6 +2489,143 @@ final class PlaybackController {
     private func cancelPendingFinalTargetRebuild() {
         finalTargetSettleTask?.cancel()
         finalTargetSettleTask = nil
+    }
+
+    // MARK: - Opt-in diagnostic event helpers
+
+    private func recordPlaybackDiagnostic(_ name: String,
+                                          fields: [String: DiagnosticFieldValue] = [:]) {
+        AppDiagnostics.record(.playback, name, fields: diagnosticFields(fields))
+    }
+
+    private func recordTranscodeDiagnostic(_ name: String,
+                                           fields: [String: DiagnosticFieldValue] = [:]) {
+        AppDiagnostics.record(.transcode, name, fields: diagnosticFields(fields))
+    }
+
+    private func diagnosticFields(_ fields: [String: DiagnosticFieldValue]) -> [String: DiagnosticFieldValue] {
+        var merged: [String: DiagnosticFieldValue] = [
+            "session": .identifier(sessionID),
+            "item_type": .label(item.type),
+            "media_index": .int(mediaIndex),
+            "quality_label": .label(StreamingQuality.label(kbps: maxVideoBitrateKbps)),
+            "quality_kbps": .int(maxVideoBitrateKbps),
+        ]
+        merged.merge(fields) { _, new in new }
+        return merged
+    }
+
+    private func sourceDiagnosticFields() -> [String: DiagnosticFieldValue] {
+        let media = item.media.flatMap { mediaItems -> Media? in
+            if mediaItems.indices.contains(mediaIndex) { return mediaItems[mediaIndex] }
+            return mediaItems.first
+        }
+        let part = media?.part.first
+        var fields: [String: DiagnosticFieldValue] = [
+            "source_container": .label(media?.container ?? part?.container),
+            "source_video_codec": .label(media?.videoCodec ?? part?.videoStreams.first?.codec),
+            "source_audio_codec": .label(media?.audioCodec ?? part?.audioStreams.first?.codec),
+            "source_bitrate_kbps": .int(media?.bitrate ?? 0),
+            "duration": .millisecondsBucket(media?.duration ?? item.duration),
+            "part_index": .int(0),
+            "subtitle_mode": .label((part?.subtitleStreams.isEmpty == false) ? "available" : "none"),
+        ]
+        if let width = media?.width, let height = media?.height {
+            fields["source_resolution"] = .label("\(width)x\(height)")
+        }
+        if let channels = part?.audioStreams.first?.channels {
+            fields["source_audio_channels"] = .int(channels)
+        }
+        return fields
+    }
+
+    private func jellyfinSourceDiagnosticFields(_ source: JellyfinPlaybackSourceMetadata?) -> [String: DiagnosticFieldValue] {
+        guard let source else { return [:] }
+        var fields: [String: DiagnosticFieldValue] = [
+            "source_container": .label(source.container),
+            "source_video_codec": .label(source.videoCodec),
+            "source_audio_codec": .label(source.audioCodec),
+            "source_bitrate_kbps": .int(source.bitrate ?? 0),
+        ]
+        if let width = source.width, let height = source.height {
+            fields["source_resolution"] = .label("\(width)x\(height)")
+        }
+        return fields
+    }
+
+    private func decisionDiagnosticFields(_ decision: DecisionResponse) -> [String: DiagnosticFieldValue] {
+        var fields: [String: DiagnosticFieldValue] = [
+            "pms_decision_mode": .label(Self.decisionModeLabel(decision)),
+            "saves_video_encode": .bool(decision.savesVideoEncode),
+            "plays_whole_file_directly": .bool(decision.playsWholeFileDirectly),
+            "part_decision": .label(decision.partDecision),
+            "video_decision": .label(decision.videoDecision),
+            "audio_decision": .label(decision.audioDecision),
+        ]
+        if let code = decision.generalDecisionCode {
+            fields["general_decision_code"] = .int(code)
+        }
+        if let code = decision.mdeDecisionCode {
+            fields["mde_decision_code"] = .int(code)
+        }
+        if let text = decision.generalDecisionText {
+            fields["general_decision_text"] = .text(text)
+        }
+        if let text = decision.mdeDecisionText {
+            fields["mde_decision_text"] = .text(text)
+        }
+        return fields
+    }
+
+    private static func decisionModeLabel(_ decision: DecisionResponse) -> String {
+        switch decision.decision {
+        case .directPlay:
+            return "direct_play"
+        case .transcode:
+            return "transcode"
+        case .unsupported:
+            return "unsupported"
+        }
+    }
+
+    private func runtimeSnapshotFields() -> [String: DiagnosticFieldValue] {
+        [
+            "target_bitrate_kbps": .int(diagnostics.targetBitrateKbps),
+            "target_bitrate_label": .label(diagnostics.targetBitrateLabel),
+            "source_bitrate_kbps": .int(diagnostics.sourceBitrateKbps),
+            "observed_bitrate_kbps": .double(diagnostics.observedBitrateKbps),
+            "indicated_bitrate_kbps": .double(diagnostics.indicatedBitrateKbps),
+            "required_bitrate_kbps": .double(diagnostics.requiredBitrateKbps),
+            "buffer_ahead_seconds": .double(diagnostics.bufferedAheadSeconds),
+            "likely_to_keep_up": .bool(diagnostics.likelyToKeepUp),
+            "stall_count": .int(diagnostics.stalls),
+            "dropped_frames": .int(diagnostics.droppedFrames),
+            "is_transcoding": .bool(diagnostics.isTranscoding),
+            "decision_summary": .text(diagnostics.decisionText),
+        ]
+    }
+
+    private func maybeRecordDiagnosticSnapshot(force: Bool = false) {
+        guard AppDiagnostics.isEnabled else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastDiagnosticSnapshotUptime >= Self.diagnosticSnapshotIntervalSeconds else {
+            return
+        }
+        lastDiagnosticSnapshotUptime = now
+        recordPlaybackDiagnostic("playback.snapshot", fields: runtimeSnapshotFields())
+    }
+
+    private static func timeControlStatusLabel(_ status: AVPlayer.TimeControlStatus) -> String {
+        switch status {
+        case .paused:
+            return "paused"
+        case .waitingToPlayAtSpecifiedRate:
+            return "waiting"
+        case .playing:
+            return "playing"
+        @unknown default:
+            return "unknown"
+        }
     }
 
 }
