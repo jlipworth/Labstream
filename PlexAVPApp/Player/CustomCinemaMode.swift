@@ -37,7 +37,6 @@ enum CustomCinemaMode {
     static let videoPlaneName = "custom-cinema-video-plane"
     static let emptyPlaneName = "custom-cinema-empty-plane"
     static let controlsRootName = "custom-cinema-native-controls"
-    static let revealButtonName = "custom-cinema-reveal-controls-button"
     static let playPauseButtonName = "custom-cinema-play-pause-button"
     static let exitButtonName = "custom-cinema-exit-button"
 
@@ -155,9 +154,6 @@ struct CustomCinemaScaffoldView: View {
         case CustomCinemaMode.videoPlaneName, CustomCinemaMode.emptyPlaneName:
             print("[Custom Cinema] video plane tapped; revealing native controls")
             revealControls()
-        case CustomCinemaMode.revealButtonName:
-            print("[Custom Cinema] native controls reveal tapped")
-            revealControls()
         case CustomCinemaMode.playPauseButtonName:
             print("[Custom Cinema] native play/pause tapped")
             togglePlayback()
@@ -240,23 +236,9 @@ struct CustomCinemaScaffoldView: View {
 
         if controlsVisible {
             root.addChild(makeControlsRail(isPaused: isPaused))
-        } else {
-            root.addChild(makeRevealButton())
         }
 
         return root
-    }
-
-    private static func makeRevealButton() -> Entity {
-        let reveal = makeButton(name: CustomCinemaMode.revealButtonName,
-                                label: "Controls",
-                                x: 0,
-                                width: 0.62,
-                                color: UIColor(white: 0.03, alpha: 0.34))
-        reveal.name = "custom-cinema-reveal-controls-root"
-        reveal.position = CustomCinemaMode.controlsPosition
-        reveal.scale = SIMD3<Float>(repeating: 0.78)
-        return reveal
     }
 
     private static func makeControlsRail(isPaused: Bool) -> Entity {
