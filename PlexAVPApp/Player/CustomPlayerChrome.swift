@@ -216,9 +216,21 @@ struct CustomPlayerChrome: View {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
-                Spacer()
+                    .truncationMode(.tail)
+                    // Long episode/movie titles should never compress the menu pills.
+                    // Cap the title region and give the action cluster layout priority
+                    // so buttons keep stable tap targets on narrower player widths.
+                    .frame(maxWidth: 420, alignment: .leading)
+                    .accessibilityLabel(title)
+
+                Spacer(minLength: 12)
+
                 cinemaButton
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(2)
                 menuStrip
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(2)
             }
 
             if scrubState.isDragging, trickPlayProvider != nil {
