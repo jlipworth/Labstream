@@ -35,6 +35,7 @@ struct CustomPlayerChrome: View {
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
 
     let controller: PlaybackController
     let title: String
@@ -635,10 +636,11 @@ struct CustomPlayerChrome: View {
             cinemaSession.presentationState = .inTransition
             switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             case .opened:
-                // Keep the WindowGroup alive for now. This leaves the windowed player available
-                // behind Cinema (and lets Crown return to it), while avoiding the previous
-                // dismiss/reopen restore hack that caused Home-screen returns and duplicate audio.
-                break
+                // Detach the normal player window after the immersive surface is open so its
+                // translucent pane does not sit in front of Cinema. This is not the failed restore
+                // hack: the immersive Exit control stops/clears playback before reopening the app.
+                onClose?()
+                dismissWindow(id: CustomCinemaMode.mainWindowID)
             case .userCancelled, .error:
                 fallthrough
             @unknown default:
