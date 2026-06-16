@@ -20,8 +20,8 @@ enum CustomCinemaMode {
     /// The custom-player "Cinema" scene is visible while we iterate on a black true-immersive
     /// theater route.
     ///
-    /// This deliberately stays as only the proven video plane. Immersive controls are being
-    /// explored on a separate branch so this branch remains safe for headset testing.
+    /// This branch starts from the proven video plane and adds only a hidden, intentional
+    /// in-immersive control rail for issue #12 headset testing.
     static let isUserVisible = true
 
     static let screenWidthMeters: Float = 9.4
@@ -33,7 +33,22 @@ enum CustomCinemaMode {
     static var screenPosition: SIMD3<Float> {
         SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters)
     }
+
+    static let controlsAttachmentID = "custom-cinema-controls-rail"
+    static let controlsWidthPoints: CGFloat = 520
+    static let controlsPhysicalWidthMeters: Float = 1.85
+    static var controlsScale: Float { controlsPhysicalWidthMeters / Float(controlsWidthPoints) }
+    static var controlsPosition: SIMD3<Float> {
+        SIMD3<Float>(0, verticalOffsetMeters - (screenHeightMeters / 2.0) - 0.38, -screenDistanceMeters + 0.08)
+    }
 }
+
+/// Marker component for the visible video plane so a targeted spatial tap can reveal controls.
+///
+/// The gesture target is the VideoMaterial plane itself, not a transparent overlay in front of
+/// playback. That keeps the reveal affordance from reintroducing the black-screen/occlusion risk
+/// seen during earlier invisible-plane experiments.
+private struct CustomCinemaRevealTargetComponent: Component {}
 
 @Observable
 @MainActor
@@ -47,7 +62,6 @@ final class CustomCinemaSessionStore {
     var title: String?
     var controller: PlaybackController?
     var presentationState: PresentationState = .closed
-    var shouldRestoreMainWindowOnDismiss = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
@@ -57,31 +71,61 @@ final class CustomCinemaSessionStore {
         self.controller = controller
     }
 
+    /// Called by the in-immersive Exit Cinema control.
+    ///
+    /// This deliberately tears down the active playback session before the immersive space is
+    /// dismissed, and it does not call `openWindow`, `dismissWindow`, or the player `onClose`
+    /// restore path. Earlier experiments used window dismissal/reopen as a preserve-and-restore
+    /// hack and produced Home-screen restore bugs plus duplicate audio on device. The control rail
+    /// owns a clean stop/clear boundary instead: one AVPlayer session enters Cinema, and that same
+    /// session is stopped before leaving Cinema.
+    func stopAndClearForImmersiveExit() {
+        let activeController = controller
+        title = nil
+        controller = nil
+        presentationState = .inTransition
+        activeController?.stop()
+    }
+
     func clear() {
         title = nil
         controller = nil
         presentationState = .closed
-        shouldRestoreMainWindowOnDismiss = false
     }
 }
 
 /// Minimal black immersive theater surface for the custom player.
 ///
 /// This intentionally does NOT host `PlayerLayerView` or the full `CustomPlayerChrome`. It renders
-/// the active `AVPlayer` as a RealityKit `VideoMaterial` plane and nothing else. Controls are being
-/// designed on a separate branch because the temporary button/window-restore experiments created
-/// unsafe duplicate-playback states on device.
+/// the active `AVPlayer` as a RealityKit `VideoMaterial` plane, then reveals a small SwiftUI
+/// attachment rail only after a targeted tap on that visible plane. The rail is not a window
+/// lifecycle restore hack; it stays inside the immersive space and owns deliberate playback exit.
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+
+    @State private var controlsVisible = false
+    @State private var controlsHideTask: Task<Void, Never>?
 
     var body: some View {
-        RealityView { content in
+        RealityView { content, attachments in
             content.add(Self.makeRoot(player: session.player))
-        } update: { content in
+            updateControlsAttachment(in: content, attachments: attachments)
+        } update: { content, attachments in
             content.entities.removeAll(where: { $0.name == "custom-cinema-root" })
             content.add(Self.makeRoot(player: session.player))
+            updateControlsAttachment(in: content, attachments: attachments)
+        } attachments: {
+            Attachment(id: CustomCinemaMode.controlsAttachmentID) {
+                CustomCinemaControlsRail(title: session.title ?? "Cinema",
+                                         controller: session.controller,
+                                         onTogglePlayback: togglePlayback,
+                                         onExit: exitCinema)
+            }
         }
+        .gesture(SpatialTapGesture()
+            .targetedToEntity(where: .has(CustomCinemaRevealTargetComponent.self))
+            .onEnded { _ in revealControls() })
         .preferredSurroundingsEffect(.ultraDark)
         .onAppear {
             print("[Custom Cinema] black immersive opened: width \(CustomCinemaMode.screenWidthMeters)m · distance \(CustomCinemaMode.screenDistanceMeters)m · vertical \(CustomCinemaMode.verticalOffsetMeters)m; title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
@@ -89,10 +133,57 @@ struct CustomCinemaScaffoldView: View {
         }
         .onDisappear {
             print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
-            reopenMainWindowIfNeeded()
+            controlsHideTask?.cancel()
+            controlsVisible = false
             if session.presentationState != .closed {
                 session.presentationState = .closed
             }
+        }
+    }
+
+    private func revealControls() {
+        guard session.hasActivePlayer else { return }
+        controlsVisible = true
+        controlsHideTask?.cancel()
+        controlsHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            controlsVisible = false
+        }
+    }
+
+    private func togglePlayback() {
+        guard let controller = session.controller else { return }
+        if controller.transport.isPaused {
+            controller.player.play()
+        } else {
+            controller.player.pause()
+        }
+        revealControls()
+    }
+
+    private func exitCinema() {
+        controlsHideTask?.cancel()
+        controlsVisible = false
+        session.stopAndClearForImmersiveExit()
+        Task { @MainActor in
+            await dismissImmersiveSpace()
+            session.clear()
+        }
+    }
+
+    private func updateControlsAttachment(in content: RealityViewContent,
+                                          attachments: RealityViewAttachments) {
+        guard let controls = attachments.entity(for: CustomCinemaMode.controlsAttachmentID) else { return }
+        guard controlsVisible, session.hasActivePlayer else {
+            controls.removeFromParent()
+            return
+        }
+        controls.name = CustomCinemaMode.controlsAttachmentID
+        controls.position = CustomCinemaMode.controlsPosition
+        controls.scale = SIMD3<Float>(repeating: CustomCinemaMode.controlsScale)
+        if controls.parent == nil {
+            content.add(controls)
         }
     }
 
@@ -117,13 +208,63 @@ struct CustomCinemaScaffoldView: View {
             screen.name = "custom-cinema-empty-plane"
         }
         screen.position = CustomCinemaMode.screenPosition
+        // The visible screen is also the reveal target. Collision is intentionally attached to
+        // this rendered plane instead of a separate transparent rectangle so taps cannot be
+        // intercepted by an invisible occluder in front of the movie.
+        screen.components.set(InputTargetComponent())
+        screen.components.set(CollisionComponent(shapes: [
+            .generateBox(width: CustomCinemaMode.screenWidthMeters,
+                         height: CustomCinemaMode.screenHeightMeters,
+                         depth: 0.04)
+        ]))
+        screen.components.set(CustomCinemaRevealTargetComponent())
         root.addChild(screen)
         return root
     }
+}
 
-    private func reopenMainWindowIfNeeded() {
-        guard session.shouldRestoreMainWindowOnDismiss else { return }
-        session.shouldRestoreMainWindowOnDismiss = false
-        openWindow(id: CustomCinemaMode.mainWindowID)
+private struct CustomCinemaControlsRail: View {
+    let title: String
+    let controller: PlaybackController?
+    let onTogglePlayback: () -> Void
+    let onExit: () -> Void
+
+    private var isPaused: Bool { controller?.transport.isPaused ?? true }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+                .frame(maxWidth: 220, alignment: .leading)
+
+            Button(action: onTogglePlayback) {
+                Label(isPaused ? "Play" : "Pause",
+                      systemImage: isPaused ? "play.fill" : "pause.fill")
+                    .labelStyle(.titleAndIcon)
+                    .frame(minWidth: 92)
+            }
+            .buttonStyle(.bordered)
+            .disabled(controller == nil)
+
+            Button(role: .destructive, action: onExit) {
+                Label("Exit Cinema", systemImage: "xmark.circle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .frame(minWidth: 132)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(controller == nil)
+        }
+        .font(.subheadline.weight(.semibold))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .frame(width: CustomCinemaMode.controlsWidthPoints)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        }
+        .shadow(radius: 18)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Cinema controls")
     }
 }
