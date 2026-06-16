@@ -635,10 +635,9 @@ struct CustomPlayerChrome: View {
             cinemaSession.presentationState = .inTransition
             switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             case .opened:
-                // Do not dismiss/reopen the WindowGroup or call `onClose` here. The immersive
-                // route keeps the same `PlaybackController` alive and detaches the windowed layer
-                // while RealityKit owns presentation; earlier window lifecycle restore hacks caused
-                // Home-screen returns and duplicate audio on device.
+                // Keep the WindowGroup alive for now. This leaves the windowed player available
+                // behind Cinema (and lets Crown return to it), while avoiding the previous
+                // dismiss/reopen restore hack that caused Home-screen returns and duplicate audio.
                 break
             case .userCancelled, .error:
                 fallthrough
