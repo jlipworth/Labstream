@@ -639,6 +639,7 @@ struct CustomPlayerChrome: View {
                 // Detach the normal player window after the immersive surface is open so its
                 // translucent pane does not sit in front of Cinema. This is not the failed restore
                 // hack: the immersive Exit control stops/clears playback before reopening the app.
+                cinemaSession.markMainWindowDetached()
                 onClose?()
                 dismissWindow(id: CustomCinemaMode.mainWindowID)
             case .userCancelled, .error:

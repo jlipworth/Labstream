@@ -57,6 +57,7 @@ final class CustomCinemaSessionStore {
     var title: String?
     var controller: PlaybackController?
     var presentationState: PresentationState = .closed
+    var shouldReopenMainWindowOnDismiss = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
@@ -74,6 +75,10 @@ final class CustomCinemaSessionStore {
     /// Home-screen bugs plus duplicate audio on device. The control rail owns a clean stop/clear
     /// boundary instead: one AVPlayer session enters Cinema, and that same session is stopped
     /// before leaving Cinema.
+    func markMainWindowDetached() {
+        shouldReopenMainWindowOnDismiss = true
+    }
+
     func stopAndClearForImmersiveExit() {
         let activeController = controller
         title = nil
@@ -86,6 +91,7 @@ final class CustomCinemaSessionStore {
         title = nil
         controller = nil
         presentationState = .closed
+        shouldReopenMainWindowOnDismiss = false
     }
 }
 
@@ -127,10 +133,16 @@ struct CustomCinemaScaffoldView: View {
             controlsVisible = session.hasActivePlayer
         }
         .onDisappear {
-            print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
+            print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer); reopenMain=\(session.shouldReopenMainWindowOnDismiss)")
             controlsHideTask?.cancel()
             controlsVisible = false
-            if session.presentationState != .closed {
+            if session.shouldReopenMainWindowOnDismiss {
+                // Covers system/Crown immersive dismissal after the player WindowGroup was
+                // detached. Stop playback first so returning to Home never leaves hidden audio.
+                session.stopAndClearForImmersiveExit()
+                openWindow(id: CustomCinemaMode.mainWindowID)
+                session.clear()
+            } else if session.presentationState != .closed {
                 session.presentationState = .closed
             }
         }
@@ -185,8 +197,10 @@ struct CustomCinemaScaffoldView: View {
         session.stopAndClearForImmersiveExit()
         Task { @MainActor in
             await dismissImmersiveSpace()
+            if session.shouldReopenMainWindowOnDismiss {
+                openWindow(id: CustomCinemaMode.mainWindowID)
+            }
             session.clear()
-            openWindow(id: CustomCinemaMode.mainWindowID)
         }
     }
 
