@@ -32,8 +32,10 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 /// states keep it visible while the viewer is acting on them.
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+    @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
 
     let controller: PlaybackController
     let title: String
@@ -42,6 +44,7 @@ struct CustomPlayerChrome: View {
     let isReconnecting: Bool
     let onRetry: () -> Void
     let onClose: (() -> Void)?
+    let allowsRealityTheater: Bool
 
     @State private var chromeVisible = true
     @State private var hideTask: Task<Void, Never>?
@@ -62,7 +65,8 @@ struct CustomPlayerChrome: View {
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          isReconnecting: Bool,
          onRetry: @escaping () -> Void,
-         onClose: (() -> Void)?) {
+         onClose: (() -> Void)?,
+         allowsRealityTheater: Bool = false) {
         self.controller = controller
         self.title = title
         _scrubState = scrubState
@@ -70,6 +74,7 @@ struct CustomPlayerChrome: View {
         self.isReconnecting = isReconnecting
         self.onRetry = onRetry
         self.onClose = onClose
+        self.allowsRealityTheater = allowsRealityTheater
         _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
     }
 
@@ -228,6 +233,11 @@ struct CustomPlayerChrome: View {
                 cinemaButton
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(2)
+
+                realityTheaterDeveloperButton
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(2)
+
                 menuStrip
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(2)
@@ -343,6 +353,9 @@ struct CustomPlayerChrome: View {
     }
 
     @ViewBuilder private var cinemaButton: some View {
+        // This is only the hidden Wave-2/Wave-3 AVPlayerLayer-in-ImmersiveSpace scaffold.
+        // Issue #12's RealityKit theater has a separate feature/session boundary and must not
+        // become visible here until device-ready behavior is proven.
         if !CustomCinemaMode.isUserVisible {
             EmptyView()
         } else if cinemaSession.presentationState == .open {
@@ -374,6 +387,36 @@ struct CustomPlayerChrome: View {
             .controlSize(.regular)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
         }
+    }
+
+
+    @ViewBuilder private var realityTheaterDeveloperButton: some View {
+        if allowsRealityTheater
+            && (RealityTheaterFeature.isDeviceTestingEntryPointVisible
+                || RealityTheaterFeature.isDeveloperEntryPointEnabled()
+                || RealityTheaterFeature.isShippingEntryPointVisible) {
+            Button {
+                revealChrome(keepVisible: true)
+                Task { @MainActor in await toggleRealityTheaterMode() }
+            } label: {
+                Label(realityTheaterSession.phase == .open ? "Exit Cinema" : "Cinema",
+                      systemImage: realityTheaterSession.phase == .open
+                      ? "rectangle.on.rectangle.slash" : "theatermasks.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.headline.weight(.semibold))
+                    .frame(minWidth: realityTheaterButtonMinWidth)
+                    .padding(.horizontal, 8)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(realityTheaterSession.phase == .opening)
+            .help("RealityKit cinema prototype for #12 headset testing")
+        }
+    }
+
+
+    private var realityTheaterButtonMinWidth: CGFloat {
+        realityTheaterSession.phase == .open ? 128 : CustomPlayerMenuKind.quality.minChromeWidth
     }
 
     private var menuStrip: some View {
@@ -593,7 +636,12 @@ struct CustomPlayerChrome: View {
             cinemaSession.presentationState = .inTransition
             switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             case .opened:
-                break
+                // Detach the normal player window after the immersive surface is open so its
+                // translucent pane does not sit in front of Cinema. This is not the failed restore
+                // hack: the immersive Exit control stops/clears playback before reopening the app.
+                cinemaSession.markMainWindowDetached()
+                onClose?()
+                dismissWindow(id: CustomCinemaMode.mainWindowID)
             case .userCancelled, .error:
                 fallthrough
             @unknown default:
@@ -601,8 +649,34 @@ struct CustomPlayerChrome: View {
             }
         case .open:
             cinemaSession.presentationState = .inTransition
+            cinemaSession.stopAndClearForImmersiveExit()
             await dismissImmersiveSpace()
+            cinemaSession.clear()
         case .inTransition:
+            break
+        }
+    }
+
+
+    private func toggleRealityTheaterMode() async {
+        switch realityTheaterSession.phase {
+        case .inactive, .prepared:
+            realityTheaterSession.prepare(title: title,
+                                          controller: controller,
+                                          configuration: realityTheaterSession.configuration)
+            realityTheaterSession.markOpening()
+            switch await openImmersiveSpace(id: RealityTheaterFeature.immersiveSpaceID) {
+            case .opened:
+                break
+            case .userCancelled, .error:
+                fallthrough
+            @unknown default:
+                realityTheaterSession.markClosed()
+            }
+        case .open:
+            realityTheaterSession.markOpening()
+            await dismissImmersiveSpace()
+        case .opening:
             break
         }
     }

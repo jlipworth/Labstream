@@ -11,6 +11,7 @@ import UIKit
 /// seek weirdness that motivated the switch.
 struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+    @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
     private let item: MediaItem
@@ -18,6 +19,7 @@ struct CustomPlayerView: View {
     private let trickPlayProvider: (any TrickPlayThumbnailProviding)?
     private let onClose: (() -> Void)?
     private let onRequestPlay: ((MediaItem) -> Void)?
+    private let allowsRealityTheater: Bool
 
     @State private var controller: PlaybackController?
     @State private var scrubState: PlaybackScrubState
@@ -28,12 +30,14 @@ struct CustomPlayerView: View {
          controllerFactory: @escaping @MainActor () -> PlaybackController,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          onClose: (() -> Void)? = nil,
-         onRequestPlay: ((MediaItem) -> Void)? = nil) {
+         onRequestPlay: ((MediaItem) -> Void)? = nil,
+         allowsRealityTheater: Bool = false) {
         self.item = item
         self.controllerFactory = controllerFactory
         self.trickPlayProvider = trickPlayProvider
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
+        self.allowsRealityTheater = allowsRealityTheater
         _scrubState = State(initialValue: PlaybackScrubState(durationMs: item.duration ?? 0,
                                                             livePositionMs: item.viewOffset ?? 0))
     }
@@ -60,25 +64,34 @@ struct CustomPlayerView: View {
                   },
                   trickPlayProvider: nil,
                   onClose: onClose,
-                  onRequestPlay: nil)
+                  onRequestPlay: nil,
+                  allowsRealityTheater: true)
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        let isDetachedToCinema = cinemaSession.presentationState != .closed
 
-            PlayerLayerView(player: controller?.player)
+        ZStack {
+            (isDetachedToCinema ? Color.clear : Color.black)
                 .ignoresSafeArea()
 
-            if let controller {
-                CustomPlayerChrome(controller: controller,
-                                   title: item.title,
-                                   scrubState: $scrubState,
-                                   trickPlayProvider: trickPlayProvider,
-                                   isReconnecting: isReconnecting,
-                                   onRetry: { retry(controller) },
-                                   onClose: onClose)
-            } else {
+            if !isDetachedToCinema {
+                PlayerLayerView(player: controller?.player)
+                    .ignoresSafeArea()
+
+                if let controller {
+                    CustomPlayerChrome(controller: controller,
+                                       title: item.title,
+                                       scrubState: $scrubState,
+                                       trickPlayProvider: trickPlayProvider,
+                                       isReconnecting: isReconnecting,
+                                       onRetry: { retry(controller) },
+                                       onClose: onClose,
+                                       allowsRealityTheater: allowsRealityTheater)
+                }
+            }
+
+            if controller == nil {
                 ProgressView()
                     .controlSize(.large)
                     .padding(28)
@@ -88,9 +101,12 @@ struct CustomPlayerView: View {
         .task(id: clockTaskID) { await runPlayer() }
         .task(id: isReconnecting) { await reconnectWatchdog() }
         .onDisappear {
-            controller?.stop()
-            cinemaSession.clear()
-            Task { @MainActor in await dismissImmersiveSpace() }
+            if cinemaSession.presentationState == .closed {
+                controller?.stop()
+                cinemaSession.clear()
+                realityTheaterSession.clear()
+                Task { @MainActor in await dismissImmersiveSpace() }
+            }
         }
     }
 
