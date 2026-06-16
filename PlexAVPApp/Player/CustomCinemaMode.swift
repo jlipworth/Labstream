@@ -100,7 +100,7 @@ struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
 
-    @State private var controlsVisible = false
+    @State private var controlsVisible = true
     @State private var controlsHideTask: Task<Void, Never>?
 
     var body: some View {
@@ -123,6 +123,7 @@ struct CustomCinemaScaffoldView: View {
         .onAppear {
             print("[Custom Cinema] black immersive opened: width \(CustomCinemaMode.screenWidthMeters)m · distance \(CustomCinemaMode.screenDistanceMeters)m · vertical \(CustomCinemaMode.verticalOffsetMeters)m; title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
             session.presentationState = .open
+            controlsVisible = session.hasActivePlayer
         }
         .onDisappear {
             print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
@@ -157,9 +158,11 @@ struct CustomCinemaScaffoldView: View {
         controlsVisible = true
         controlsHideTask?.cancel()
         controlsHideTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
+            // Diagnostic branch: keep controls visible so headset testing can separate native
+            // RealityKit control rendering from the currently unreliable video-plane reveal tap.
+            try? await Task.sleep(for: .seconds(60))
             guard !Task.isCancelled else { return }
-            controlsVisible = false
+            controlsVisible = session.hasActivePlayer
         }
     }
 
