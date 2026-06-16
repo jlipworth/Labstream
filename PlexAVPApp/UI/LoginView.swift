@@ -12,11 +12,10 @@ import PMSKit
 ///      close the web sheet if one is open (`webAuth.cancel()`). ContentView
 ///      then switches to `RootView` when `appModel.isAuthenticated` flips.
 ///
-/// Visual language (#18): the welcome card follows the branding brainstorm's
-/// "blue cinema glow" direction — the logo tile sits in a cool-blue/warm-amber
-/// ambience that echoes the stripe colors of the mark, and "Plex" in the title
-/// picks up the wordmark's amber. Brand colors are local constants on purpose:
-/// no new catalog assets while #19's transparent glyph is in flight.
+/// Visual language (#18/#19): the welcome card now uses the same mark-only
+/// foreground that ships as the visionOS app-icon Front layer. The full wordmark
+/// stays out of the circular icon crop, while the sign-in screen pairs the mark
+/// with a native SwiftUI VisionPlex title treatment.
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -30,11 +29,6 @@ struct LoginView: View {
     @State private var jellyfinUsername = ""
     @State private var jellyfinPassword = ""
 
-    /// Brand accents sampled from the VisionPlex artwork (mark stripe blue
-    /// ≈ #00A3FF, wordmark amber ≈ #FFB833).
-    private static let brandBlue = Color(red: 0.00, green: 0.64, blue: 1.00)
-    private static let brandAmber = Color(red: 1.00, green: 0.72, blue: 0.20)
-
     var body: some View {
         VStack(spacing: DS.Space.xl) {
             header
@@ -42,15 +36,15 @@ struct LoginView: View {
             backendPicker
 
             content
-                .padding(.top, DS.Space.sm)
 
             if let errorMessage {
                 errorBanner(errorMessage)
             }
         }
-        .padding(DS.Space.xxxl + DS.Space.md)
-        .frame(maxWidth: 620)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .padding(.horizontal, DS.Space.xxxl)
+        .padding(.vertical, DS.Space.xxl)
+        .frame(maxWidth: 560)
+        .background(loginPanelBackground)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: authManager.state) { _, newValue in
             switch newValue {
@@ -72,51 +66,54 @@ struct LoginView: View {
         }
     }
 
-    // MARK: - Header (logo tile + title + tagline)
+    // MARK: - Header (logo tile + title)
 
-    /// App-icon-style logo tile in a two-tone brand ambience. The old flat tint
-    /// circle read as placeholder; this echoes the artwork's own palette — a cool
-    /// glow up-leading, a warm one down-trailing — kept subtle under the glass.
+    /// App-icon-style brand lockup. The mark is the same transparent logo-only
+    /// artwork used by the icon foreground, deliberately avoiding the wordmark in
+    /// the cropped app icon while still presenting the VisionPlex name on screen.
     private var header: some View {
-        VStack(spacing: DS.Space.xl) {
-            ZStack {
-                Circle()
-                    .fill(Self.brandBlue.opacity(0.20))
-                    .frame(width: 150, height: 150)
-                    .blur(radius: 36)
-                    .offset(x: -36, y: -26)
-                Circle()
-                    .fill(Self.brandAmber.opacity(0.16))
-                    .frame(width: 150, height: 150)
-                    .blur(radius: 36)
-                    .offset(x: 36, y: 30)
-                // Single swap point for #19's transparent `VisionPlexGlyph` asset.
-                Image("VisionPlexLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 132, height: 132)
-                    .clipShape(logoTileShape)
-                    .overlay(logoTileShape.strokeBorder(.white.opacity(0.12), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 10)
-            }
+        VStack(spacing: DS.Space.md) {
+            brandMark
 
-            VStack(spacing: DS.Space.md) {
-                Text("Vision\(Text("Plex").foregroundStyle(Self.brandAmber))")
-                    .font(.extraLargeTitle.bold())
-
-                Text(appModel.activeBackend == .plex
-                     ? "Your whole Plex library, in your space."
-                     : "Your Jellyfin library, in your space.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 520)
+            HStack(spacing: 0) {
+                Text("Vision")
+                Text("Plex")
+                    .foregroundStyle(DS.Brand.amber)
             }
+            .font(.largeTitle.bold())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("VisionPlex")
         }
     }
 
+    private var loginPanelBackground: some View {
+        RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+            .fill(Color.black.opacity(0.58))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+            )
+    }
+
+    private var brandMark: some View {
+        ZStack {
+            logoTileShape
+                .fill(DS.Brand.iconPlateGradient)
+            logoTileShape
+                .strokeBorder(.white.opacity(0.14), lineWidth: 0.75)
+
+            Image("VisionPlexGlyph")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 78, height: 78)
+        }
+        .frame(width: 112, height: 112)
+        .shadow(color: .black.opacity(0.32), radius: 14, x: 0, y: 8)
+    }
+
     private var logoTileShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: DS.Radius.card + 8, style: .continuous)
+        RoundedRectangle(cornerRadius: DS.Radius.card + 14, style: .continuous)
     }
 
     private var backendPicker: some View {
@@ -156,7 +153,7 @@ struct LoginView: View {
             // the background the whole time; the in-headset browser is opt-in.
             VStack(spacing: DS.Space.lg) {
                 VStack(spacing: DS.Space.xs) {
-                    Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(Self.brandAmber))")
+                    Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
                         .font(.title3)
                     Text("on your phone, tablet, or computer")
                         .font(.callout)
@@ -190,7 +187,7 @@ struct LoginView: View {
                 .buttonStyle(.bordered)
             }
         default:
-            VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.md) {
                 Button {
                     Task { await startLogin() }
                 } label: {
@@ -202,41 +199,34 @@ struct LoginView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(working)
 
-                Text("Signing in shows a short code you can enter from any device — no typing in the headset.")
+                Text("Uses a code at plex.tv/link.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
             }
         }
     }
 
     private var jellyfinLoginForm: some View {
-        VStack(spacing: DS.Space.lg) {
-            VStack(spacing: DS.Space.xs) {
-                Text("Sign in to Jellyfin")
-                    .font(.title3.weight(.semibold))
-                Text("Enter your server URL and Jellyfin account credentials.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-
+        VStack(spacing: DS.Space.md) {
             TextField("https://jellyfin.example.com", text: $jellyfinServer)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.URL)
                 .keyboardType(.URL)
+                .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
             TextField("Username", text: $jellyfinUsername)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.username)
+                .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
             SecureField("Password", text: $jellyfinPassword)
                 .textContentType(.password)
+                .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
             Button {
