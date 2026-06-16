@@ -69,11 +69,11 @@ final class CustomCinemaSessionStore {
     /// Called by the in-immersive Exit Cinema control.
     ///
     /// This deliberately tears down the active playback session before the immersive space is
-    /// dismissed, and it does not call `openWindow`, `dismissWindow`, or the player `onClose`
-    /// restore path. Earlier experiments used window dismissal/reopen as a preserve-and-restore
-    /// hack and produced Home-screen restore bugs plus duplicate audio on device. The control rail
-    /// owns a clean stop/clear boundary instead: one AVPlayer session enters Cinema, and that same
-    /// session is stopped before leaving Cinema.
+    /// dismissed. It may reopen the normal app window after playback has stopped, but it does not
+    /// try to preserve or rehydrate the same player window. Earlier restore hacks caused
+    /// Home-screen bugs plus duplicate audio on device. The control rail owns a clean stop/clear
+    /// boundary instead: one AVPlayer session enters Cinema, and that same session is stopped
+    /// before leaving Cinema.
     func stopAndClearForImmersiveExit() {
         let activeController = controller
         title = nil
@@ -99,6 +99,7 @@ final class CustomCinemaSessionStore {
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    @Environment(\.openWindow) private var openWindow
 
     @State private var controlsVisible = true
     @State private var controlsHideTask: Task<Void, Never>?
@@ -185,6 +186,7 @@ struct CustomCinemaScaffoldView: View {
         Task { @MainActor in
             await dismissImmersiveSpace()
             session.clear()
+            openWindow(id: CustomCinemaMode.mainWindowID)
         }
     }
 
