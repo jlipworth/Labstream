@@ -37,6 +37,7 @@ enum CustomCinemaMode {
     static let videoPlaneName = "custom-cinema-video-plane"
     static let emptyPlaneName = "custom-cinema-empty-plane"
     static let controlsRootName = "custom-cinema-native-controls"
+    static let revealButtonName = "custom-cinema-reveal-controls-button"
     static let playPauseButtonName = "custom-cinema-play-pause-button"
     static let exitButtonName = "custom-cinema-exit-button"
 
@@ -107,7 +108,7 @@ struct CustomCinemaScaffoldView: View {
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
 
-    @State private var controlsVisible = true
+    @State private var controlsVisible = false
     @State private var controlsHideTask: Task<Void, Never>?
 
     var body: some View {
@@ -130,7 +131,7 @@ struct CustomCinemaScaffoldView: View {
         .onAppear {
             print("[Custom Cinema] black immersive opened: width \(CustomCinemaMode.screenWidthMeters)m · distance \(CustomCinemaMode.screenDistanceMeters)m · vertical \(CustomCinemaMode.verticalOffsetMeters)m; title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
             session.presentationState = .open
-            controlsVisible = session.hasActivePlayer
+            controlsVisible = false
         }
         .onDisappear {
             print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer); reopenMain=\(session.shouldReopenMainWindowOnDismiss)")
@@ -154,6 +155,9 @@ struct CustomCinemaScaffoldView: View {
         case CustomCinemaMode.videoPlaneName, CustomCinemaMode.emptyPlaneName:
             print("[Custom Cinema] video plane tapped; revealing native controls")
             revealControls()
+        case CustomCinemaMode.revealButtonName:
+            print("[Custom Cinema] native controls reveal tapped")
+            revealControls()
         case CustomCinemaMode.playPauseButtonName:
             print("[Custom Cinema] native play/pause tapped")
             togglePlayback()
@@ -171,11 +175,9 @@ struct CustomCinemaScaffoldView: View {
         controlsVisible = true
         controlsHideTask?.cancel()
         controlsHideTask = Task { @MainActor in
-            // Diagnostic branch: keep controls visible so headset testing can separate native
-            // RealityKit control rendering from the currently unreliable video-plane reveal tap.
-            try? await Task.sleep(for: .seconds(60))
+            try? await Task.sleep(for: .seconds(6))
             guard !Task.isCancelled else { return }
-            controlsVisible = session.hasActivePlayer
+            controlsVisible = false
         }
     }
 
@@ -238,9 +240,23 @@ struct CustomCinemaScaffoldView: View {
 
         if controlsVisible {
             root.addChild(makeControlsRail(isPaused: isPaused))
+        } else {
+            root.addChild(makeRevealButton())
         }
 
         return root
+    }
+
+    private static func makeRevealButton() -> Entity {
+        let reveal = makeButton(name: CustomCinemaMode.revealButtonName,
+                                label: "Controls",
+                                x: 0,
+                                width: 0.62,
+                                color: UIColor(white: 0.03, alpha: 0.34))
+        reveal.name = "custom-cinema-reveal-controls-root"
+        reveal.position = CustomCinemaMode.controlsPosition
+        reveal.scale = SIMD3<Float>(repeating: 0.78)
+        return reveal
     }
 
     private static func makeControlsRail(isPaused: Bool) -> Entity {
@@ -252,7 +268,7 @@ struct CustomCinemaScaffoldView: View {
                                                   height: 0.28,
                                                   depth: 0.025,
                                                   cornerRadius: 0.12),
-                               materials: [UnlitMaterial(color: UIColor(white: 0.03, alpha: 0.55))])
+                               materials: [UnlitMaterial(color: UIColor(white: 0.03, alpha: 0.38))])
         back.name = "custom-cinema-controls-background"
         root.addChild(back)
 
@@ -260,14 +276,14 @@ struct CustomCinemaScaffoldView: View {
                               label: isPaused ? "Play" : "Pause",
                               x: -0.37,
                               width: 0.54,
-                              color: UIColor(white: 0.16, alpha: 0.72))
+                              color: UIColor(white: 0.12, alpha: 0.58))
         root.addChild(play)
 
         let exit = makeButton(name: CustomCinemaMode.exitButtonName,
                               label: "Exit",
                               x: 0.42,
                               width: 0.50,
-                              color: UIColor(red: 0.46, green: 0.08, blue: 0.08, alpha: 0.76))
+                              color: UIColor(red: 0.34, green: 0.05, blue: 0.05, alpha: 0.62))
         root.addChild(exit)
 
         return root
