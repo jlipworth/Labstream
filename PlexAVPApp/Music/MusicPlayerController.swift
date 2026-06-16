@@ -660,6 +660,10 @@ final class MusicPlayerController {
     /// a later track reaches `.readyToPlay`.
     private func handleTrackFailure(_ error: Error?) {
         let title = current?.title ?? "track"
+        AppDiagnostics.record(.music, "music.item_failed", fields: [
+            "error": .error(error),
+            "has_current_track": .bool(current != nil),
+        ])
         if let error {
             NSLog("MusicPlayerController: item failed (%@)", String(describing: error))
         }

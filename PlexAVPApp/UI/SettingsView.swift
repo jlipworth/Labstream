@@ -29,6 +29,8 @@ struct SettingsView: View {
     /// Default bitrate cap for NEW playback sessions — the same key the custom player seeds each
     /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
     @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
+    /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
+    @AppStorage(AppDiagnostics.enabledDefaultsKey) private var diagnosticLoggingEnabled = false
 
     var body: some View {
         Form {
@@ -37,6 +39,7 @@ struct SettingsView: View {
             playbackSection
             storageSection
             maintenanceSection
+            diagnosticsSection
             aboutSection
             accountSection
         }
@@ -249,6 +252,38 @@ struct SettingsView: View {
 
     // MARK: About
 
+    private var diagnosticsSection: some View {
+        SwiftUI.Section {
+            Toggle(isOn: Binding(
+                get: { diagnosticLoggingEnabled },
+                set: { enabled in
+                    AppDiagnostics.setEnabled(enabled)
+                    diagnosticLoggingEnabled = enabled
+                })) {
+                    Label("Enable diagnostic logging", systemImage: "ladybug")
+                }
+
+            Button {
+                UIPasteboard.general.string = diagnosticReportText
+                copiedDiagnostics = true
+                AppDiagnostics.record(.settingsUI, "diagnostics.report_copied", fields: [
+                    "events_in_buffer": .int(AppDiagnostics.events().count),
+                    "logging_enabled": .bool(diagnosticLoggingEnabled),
+                ])
+            } label: {
+                if copiedDiagnostics {
+                    Label("Copied diagnostic report", systemImage: "checkmark")
+                } else {
+                    Label("Copy diagnostic report", systemImage: "doc.on.doc")
+                }
+            }
+        } header: {
+            Text("Diagnostics")
+        } footer: {
+            Text("Logging is off by default. When enabled, VisionPlex keeps a bounded local ring buffer for bug reports. Reports are copied only when you tap the button, and sensitive values are omitted.")
+        }
+    }
+
     private var aboutSection: some View {
         SwiftUI.Section("About") {
             LabeledContent("Version", value: Self.appVersion)
@@ -264,16 +299,6 @@ struct SettingsView: View {
             // Product/device name exactly as sent to Plex. NEVER the client identifier —
             // it's treated as a secret in this repo.
             LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")
-            Button {
-                UIPasteboard.general.string = diagnosticsText
-                copiedDiagnostics = true
-            } label: {
-                if copiedDiagnostics {
-                    Label("Copied", systemImage: "checkmark")
-                } else {
-                    Label("Copy diagnostics", systemImage: "doc.on.doc")
-                }
-            }
         }
     }
 
@@ -293,24 +318,44 @@ struct SettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "VisionPlexBuildDateUTC") as? String
     }
 
-    /// Bug-report blob. Includes versions, server name/version, and the connection SCHEME
-    /// only — never the token, client identifier, or full connection URL/hostname.
-    private var diagnosticsText: String {
-        var lines = [
-            "\(appModel.identity.product) \(Self.appVersion) (\(Self.appBuild))",
-            "Build ID: \(Self.buildSlug ?? "unknown")",
-            "Built: \(Self.buildDateUTC ?? "unknown")",
-            "visionOS \(ProcessInfo.processInfo.operatingSystemVersionString)",
-            "Device: \(appModel.identity.deviceName)",
-        ]
-        if let server = appModel.selectedServer {
+    /// Bug-report blob. Includes versions, server name/version, selected quality, and the
+    /// connection SCHEME only — never tokens, client identifiers, URLs/hosts, media titles,
+    /// filenames, usernames, or library paths.
+    private var diagnosticReportText: String {
+        AppDiagnostics.report(context: DiagnosticReportContext(
+            product: appModel.identity.product,
+            appVersion: Self.appVersion,
+            appBuild: Self.appBuild,
+            buildID: Self.buildSlug,
+            builtAt: Self.buildDateUTC,
+            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+            deviceName: appModel.identity.deviceName,
+            backend: appModel.activeBackend.displayName,
+            server: diagnosticServerLine,
+            connectionScheme: diagnosticConnectionScheme,
+            selectedQuality: StreamingQuality.label(kbps: maxVideoBitrateKbps),
+            loggingEnabled: diagnosticLoggingEnabled
+        ))
+    }
+
+    private var diagnosticServerLine: String? {
+        switch appModel.activeBackend {
+        case .plex:
+            guard let server = appModel.selectedServer else { return nil }
             let version = server.productVersion.map { " \($0)" } ?? ""
-            lines.append("Server: \(server.name)\(version)")
+            return "\(server.name)\(version)"
+        case .jellyfin:
+            return "Jellyfin"
         }
-        if let scheme = appModel.serverBaseURL?.scheme {
-            lines.append("Connection scheme: \(scheme)")
+    }
+
+    private var diagnosticConnectionScheme: String? {
+        switch appModel.activeBackend {
+        case .plex:
+            return appModel.serverBaseURL?.scheme
+        case .jellyfin:
+            return appModel.jellyfinServerBaseURL?.scheme
         }
-        return lines.joined(separator: "\n")
     }
 
     // MARK: Account

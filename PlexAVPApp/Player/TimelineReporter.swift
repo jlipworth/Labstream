@@ -95,6 +95,12 @@ final class TimelineReporter {
         Task {
             do { try await client.send(req) }
             catch {
+                AppDiagnostics.record(.timeline, "timeline.send_failed", fields: [
+                    "state": .label(state.rawValue),
+                    "position": .millisecondsBucket(currentMs),
+                    "duration": .millisecondsBucket(durationMs),
+                    "error": .error(error),
+                ])
                 NSLog("TimelineReporter: timeline send failed (%@)", String(describing: error))
             }
         }
@@ -111,6 +117,9 @@ final class TimelineReporter {
         Task {
             do { try await client.send(req) }
             catch {
+                AppDiagnostics.record(.timeline, "timeline.scrobble_failed", fields: [
+                    "error": .error(error),
+                ])
                 NSLog("TimelineReporter: scrobble send failed (%@)", String(describing: error))
             }
         }

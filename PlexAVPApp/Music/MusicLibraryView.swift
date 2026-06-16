@@ -439,6 +439,10 @@ private struct MusicTrackRail: View {
             let index = full.firstIndex { $0.ratingKey == tapped.ratingKey } ?? 0
             player.play(tracks: full, startingAt: index)
         } catch {
+            AppDiagnostics.record(.music, "music.recently_played_replay_failed", fields: [
+                "error": .error(error),
+                "candidate_count": .int(tracks.count),
+            ])
             NSLog("[VP] recently-played replay failed: %@", String(describing: error))
         }
     }

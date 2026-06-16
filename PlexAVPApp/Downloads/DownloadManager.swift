@@ -172,10 +172,20 @@ public final class DownloadManager {
                          mediaIndex: Int = 0, partIndex: Int = 0) async {
         let ratingKey = item.ratingKey
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
+            recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
+                "backend": .label("Plex"),
+                "reason": .label("not_authenticated"),
+            ])
             lastError[ratingKey] = .notAuthenticated
             return
         }
-        guard !activeJobs.contains(ratingKey) else { return }
+        guard !activeJobs.contains(ratingKey) else {
+            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("already_active"),
+            ])
+            return
+        }
         activeJobs.insert(ratingKey)
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
@@ -184,6 +194,13 @@ public final class DownloadManager {
         let resolutionLabel = Self.resolutionLabel(for: chosenMedia)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex)
+        recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
+            item: item,
+            choice: choice,
+            backend: "Plex",
+            mediaIndex: mediaIndex,
+            partIndex: partIndex
+        ))
         // D5: cache the poster locally (best-effort) so artwork shows offline. A fetch
         // failure is not a download failure — it just leaves the row without a poster.
         cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
@@ -192,6 +209,11 @@ public final class DownloadManager {
         switch choice {
         case .original:
             guard let part = chosenMedia?.part[safe: partIndex] else {
+                recordDownloadDiagnostic("downloads.start_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Plex"),
+                    "reason": .label("no_media_part"),
+                ])
                 lastError[ratingKey] = .transferFailed("No media part to download.")
                 return
             }
@@ -206,14 +228,31 @@ public final class DownloadManager {
             // The original file is a STATIC GET with a real Content-Length + valid moov atom.
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
             do {
+                recordDownloadDiagnostic("downloads.start", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Plex"),
+                    "choice": .label("original"),
+                    "url_shape": .urlShape(url),
+                    "expected_bytes": .bytes(part.size),
+                ])
                 try session.start(ratingKey: ratingKey, from: url, to: destination,
                                   expectedBytes: part.size)
                 refreshRecords()
             } catch let error as DownloadError {
+                recordDownloadDiagnostic("downloads.start_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Plex"),
+                    "error": .label(String(describing: error)),
+                ])
                 lastError[ratingKey] = error
                 store.setStatus(ratingKey: ratingKey, .failed)
                 refreshRecords()
             } catch {
+                recordDownloadDiagnostic("downloads.start_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Plex"),
+                    "error": .error(error),
+                ])
                 lastError[ratingKey] = .transferFailed(String(describing: error))
                 store.setStatus(ratingKey: ratingKey, .failed)
                 refreshRecords()
@@ -237,10 +276,21 @@ public final class DownloadManager {
         guard let server = appModel.jellyfinServerBaseURL,
               let token = appModel.jellyfinAccessToken,
               appModel.jellyfinUserID != nil else {
+            recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
+                "backend": .label("Jellyfin"),
+                "reason": .label("not_authenticated"),
+            ])
             lastError[ratingKey] = .notAuthenticated
             return
         }
-        guard !activeJobs.contains(ratingKey) else { return }
+        guard !activeJobs.contains(ratingKey) else {
+            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Jellyfin"),
+                "reason": .label("already_active"),
+            ])
+            return
+        }
         activeJobs.insert(ratingKey)
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
@@ -250,6 +300,13 @@ public final class DownloadManager {
         let resolutionLabel = Self.resolutionLabel(for: media)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex)
+        recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
+            item: item,
+            choice: choice,
+            backend: "Jellyfin",
+            mediaIndex: mediaIndex,
+            partIndex: partIndex
+        ))
         let identity = JellyfinClientIdentity(client: appModel.identity.product,
                                               device: appModel.identity.deviceName,
                                               deviceId: appModel.identity.clientIdentifier,
@@ -283,6 +340,11 @@ public final class DownloadManager {
                 request = transcodedRequest
             }
         } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Jellyfin"),
+                "error": .error(error),
+            ])
             lastError[ratingKey] = .transferFailed(String(describing: error))
             store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
@@ -295,16 +357,33 @@ public final class DownloadManager {
         refreshRecords()
 
         do {
+            recordDownloadDiagnostic("downloads.start", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Jellyfin"),
+                "choice": .label(Self.diagnosticChoiceLabel(choice)),
+                "url_shape": .urlShape(request.url),
+                "expected_bytes": .bytes(expectedBytes),
+            ])
             try session.start(ratingKey: ratingKey,
                               with: request,
                               to: destination,
                               expectedBytes: expectedBytes)
             refreshRecords()
         } catch let error as DownloadError {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Jellyfin"),
+                "error": .label(String(describing: error)),
+            ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Jellyfin"),
+                "error": .error(error),
+            ])
             lastError[ratingKey] = .transferFailed(String(describing: error))
             store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
@@ -329,6 +408,9 @@ public final class DownloadManager {
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
     public func retry(ratingKey: String) {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        recordDownloadDiagnostic("downloads.retry", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
         lastError[ratingKey] = nil
         let metadata = record.metadata
         let item = metadata?.makeMediaItem()
@@ -366,10 +448,56 @@ public final class DownloadManager {
 
     /// Delete a download and its backing file.
     public func delete(ratingKey: String) {
+        recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
         session.cancel(ratingKey: ratingKey)
         store.remove(ratingKey: ratingKey)
         lastError[ratingKey] = nil
         refreshRecords()
+    }
+
+    private func recordDownloadDiagnostic(_ name: String,
+                                          fields: [String: DiagnosticFieldValue] = [:]) {
+        AppDiagnostics.record(.downloads, name, fields: fields)
+    }
+
+    private func downloadDiagnosticFields(item: MediaItem,
+                                          choice: DownloadChoice,
+                                          backend: String,
+                                          mediaIndex: Int,
+                                          partIndex: Int) -> [String: DiagnosticFieldValue] {
+        let media = item.media.flatMap { mediaItems -> Media? in
+            if mediaItems.indices.contains(mediaIndex) { return mediaItems[mediaIndex] }
+            return mediaItems.first
+        }
+        let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first
+        var fields: [String: DiagnosticFieldValue] = [
+            "download_id": .identifier(recordKey(for: item)),
+            "backend": .label(backend),
+            "choice": .label(Self.diagnosticChoiceLabel(choice)),
+            "item_type": .label(item.type),
+            "media_index": .int(mediaIndex),
+            "part_index": .int(partIndex),
+            "source_container": .label(media?.container ?? part?.container),
+            "source_video_codec": .label(media?.videoCodec ?? part?.videoStreams.first?.codec),
+            "source_audio_codec": .label(media?.audioCodec ?? part?.audioStreams.first?.codec),
+            "source_bitrate_kbps": .int(media?.bitrate ?? 0),
+            "expected_bytes": .bytes(part?.size),
+        ]
+        if let width = media?.width, let height = media?.height {
+            fields["source_resolution"] = .label("\(width)x\(height)")
+        }
+        return fields
+    }
+
+    private static func diagnosticChoiceLabel(_ choice: DownloadChoice) -> String {
+        switch choice {
+        case .original:
+            return "original"
+        case .optimize(let targetName):
+            return "optimize:\(targetName)"
+        }
     }
 
     private func refreshRecords() {
@@ -522,6 +650,10 @@ public final class DownloadManager {
                                             server: URL, token: String) async {
         let ratingKey = item.ratingKey
         let identity = appModel.identity
+        recordDownloadDiagnostic("downloads.optimize_start", fields: [
+            "download_id": .identifier(ratingKey),
+            "target": .label(targetName),
+        ])
         // Seed a 0% record so the UI shows the job immediately while we set up the optimize.
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
@@ -555,14 +687,32 @@ public final class DownloadManager {
                                         metadata: metadata))
             refreshRecords()
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
+            recordDownloadDiagnostic("downloads.start", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "choice": .label("optimize"),
+                "target": .label(targetName),
+                "url_shape": .urlShape(url),
+                "expected_bytes": .bytes(part.size),
+            ])
             try session.start(ratingKey: ratingKey, from: url, to: destination,
                               expectedBytes: part.size)
             refreshRecords()
         } catch let error as DownloadError {
+            recordDownloadDiagnostic("downloads.optimize_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "target": .label(targetName),
+                "error": .label(String(describing: error)),
+            ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
         } catch {
+            recordDownloadDiagnostic("downloads.optimize_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "target": .label(targetName),
+                "error": .error(error),
+            ])
             lastError[ratingKey] = .transferFailed(String(describing: error))
             store.setStatus(ratingKey: ratingKey, .failed)
             refreshRecords()
@@ -864,7 +1014,12 @@ public final class DownloadManager {
                                                        queueTitle: queueTitle, server: server,
                                                        token: token, identity: identity),
                status.isFailed {
-                downloadLog.error("optimizer-failed title=\(queueTitle, privacy: .public) failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
+                downloadLog.error("optimizer-failed failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
+                recordDownloadDiagnostic("downloads.optimize_status_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "failed_count": .int(status.itemsFailedCount ?? -1),
+                    "successful_count": .int(status.itemsSuccessfulCount ?? -1),
+                ])
                 throw DownloadError.optimizeFailed("Plex server could not create an optimized version; optimized-version storage may be read-only.")
             }
             try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
@@ -950,6 +1105,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var retryCounts: [String: Int] = [:]
     /// Last UI refresh per ratingKey; progress callbacks can arrive many times per second.
     private var lastProgressNotify: [String: Date] = [:]
+    /// Progress milestones already mirrored to the diagnostics ring buffer per task.
+    private var loggedProgressMilestones: [Int: Set<Int>] = [:]
     private let maxTransientRetries = 3
     private let progressNotifyInterval: TimeInterval = 0.5
     private let lock = NSLock()
@@ -1091,15 +1248,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if let free = try? fileManager
             .attributesOfFileSystem(forPath: store.directory.path)[.systemFreeSize] as? Int64,
            free < required {
+            AppDiagnostics.record(.downloads, "downloads.transfer_start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("storage_full"),
+                "required_bytes": .bytes(Int(required)),
+                "free_bytes": .bytes(Int(free)),
+            ])
             throw DownloadManager.DownloadError.storageFull
         }
         let task = urlSession.downloadTask(with: request)
         lock.lock()
         retryCounts[ratingKey] = 0
         lastProgressNotify[ratingKey] = nil
+        loggedProgressMilestones[task.taskIdentifier] = []
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
         downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(request.url?.path ?? "nil", privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.transfer_start", fields: [
+            "download_id": .identifier(ratingKey),
+            "url_shape": .urlShape(request.url),
+            "expected_bytes": .bytes(expectedBytes),
+            "has_expected_bytes": .bool(expectedBytes != nil),
+        ])
         task.resume()
     }
 
@@ -1119,6 +1289,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// Cancel any in-flight transfer for a ratingKey.
     func cancel(ratingKey: String) {
+        AppDiagnostics.record(.downloads, "downloads.cancel_requested", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
         urlSession.getAllTasks { tasks in
             self.lock.lock()
             let ids = self.inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key)
@@ -1146,10 +1319,34 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // streamed without a Content-Length (so we estimate progress in the UI instead).
         if firstCallback {
             downloadLog.info("first-progress ratingKey=\(entry.ratingKey, privacy: .public) expectedBytes=\(totalBytesExpectedToWrite, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.progress_first", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "expected_bytes": .bytes(totalBytesExpectedToWrite > 0 ? Int(totalBytesExpectedToWrite) : nil),
+                "has_expected_bytes": .bool(totalBytesExpectedToWrite > 0),
+            ])
         }
         let progress = totalBytesExpectedToWrite > 0
             ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
             : 0
+        if totalBytesExpectedToWrite > 0 {
+            let percent = Int((progress * 100).rounded(.down))
+            var reached: [Int] = []
+            lock.lock()
+            var logged = loggedProgressMilestones[downloadTask.taskIdentifier, default: []]
+            for milestone in [25, 50, 75, 100] where percent >= milestone && !logged.contains(milestone) {
+                logged.insert(milestone)
+                reached.append(milestone)
+            }
+            loggedProgressMilestones[downloadTask.taskIdentifier] = logged
+            lock.unlock()
+            for milestone in reached {
+                AppDiagnostics.record(.downloads, "downloads.progress_milestone", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "percent": .int(milestone),
+                    "bytes_written": .bytes(Int(totalBytesWritten)),
+                ])
+            }
+        }
         store.updateProgress(ratingKey: entry.ratingKey,
                              bytes: Int(totalBytesWritten),
                              progress: progress)
@@ -1167,6 +1364,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // delete the bad file so a retry starts clean.
         func fail(_ reason: String) {
             downloadLog.error("invalid-download ratingKey=\(entry.ratingKey, privacy: .public) reason=\(reason, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "reason": .text(reason),
+            ])
             try? fileManager.removeItem(at: entry.destination)
             clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
@@ -1177,6 +1378,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let httpStatus = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
         let mime = (downloadTask.response as? HTTPURLResponse)?.mimeType ?? "nil"
         downloadLog.info("finished-transfer ratingKey=\(entry.ratingKey, privacy: .public) http=\(httpStatus, privacy: .public) mime=\(mime, privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.transfer_finished", fields: [
+            "download_id": .identifier(entry.ratingKey),
+            "http_status": .int(httpStatus),
+            "http_status_class": .label(httpStatus > 0 ? "\(httpStatus / 100)xx" : "unknown"),
+            "mime": .label(mime),
+        ])
 
         // 1. HTTP status — Plex returns 200 for a real file body.
         if let http = downloadTask.response as? HTTPURLResponse {
@@ -1210,6 +1417,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? fileManager.removeItem(at: entry.destination)
             try fileManager.moveItem(at: location, to: entry.destination)
         } catch {
+            AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "error": .error(error),
+            ])
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(String(describing: error)))
             onChange?()
@@ -1242,10 +1453,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if playable {
                 // Validated: mark explicitly complete (D2) so a relaunch trusts it.
                 downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
+                AppDiagnostics.record(.downloads, "downloads.complete", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "bytes": .bytes(bytes),
+                ])
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
                 downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=not-playable bytes=\(bytes, privacy: .public)")
+                AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("not_playable"),
+                    "bytes": .bytes(bytes),
+                ])
                 try? self.fileManager.removeItem(at: destination)
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .failed)
@@ -1261,6 +1481,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let entry = inflight.removeValue(forKey: task.taskIdentifier)
         loggedExpectation.remove(task.taskIdentifier)
+        loggedProgressMilestones.removeValue(forKey: task.taskIdentifier)
         lock.unlock()
         guard let entry, let error else { return }
         let nsError = error as NSError
@@ -1271,12 +1492,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.transfer_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "error": .error(error),
+                "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+            ])
             clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
         } else {
             clearRetryCount(ratingKey: entry.ratingKey)
             downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.cancelled", fields: [
+                "download_id": .identifier(entry.ratingKey),
+            ])
         }
         onChange?()
     }
@@ -1323,8 +1552,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let retryTask = urlSession.downloadTask(withResumeData: resumeData)
         lock.lock()
         inflight[retryTask.taskIdentifier] = entry
+        loggedProgressMilestones[retryTask.taskIdentifier] = []
         lock.unlock()
         downloadLog.error("transfer-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.transfer_retry", fields: [
+            "download_id": .identifier(entry.ratingKey),
+            "attempt": .int(nextAttempt),
+            "error": .error(error),
+            "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+        ])
         retryTask.resume()
         onChange?()
         return true
