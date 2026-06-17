@@ -338,8 +338,10 @@ public enum JellyfinPlayback {
             replace("MaxHeight", value: String(maxHeight))
         }
         if let audioBitrate, audioBitrate > 0 {
+            replace("AudioCodec", value: "aac")
             replace("AudioBitrate", value: String(audioBitrate))
             replace("TranscodingMaxAudioChannels", value: "6")
+            replace("AllowAudioStreamCopy", value: "false")
         }
         if let audioStreamIndex, audioStreamIndex >= 0 {
             replace("AudioStreamIndex", value: String(audioStreamIndex))
@@ -392,7 +394,7 @@ public enum JellyfinPlayback {
                     "Container": "mp4",
                     "Protocol": "hls",
                     "VideoCodec": "h264",
-                    "AudioCodec": "aac,ac3,eac3",
+                    "AudioCodec": "aac",
                     "Context": "Streaming",
                     "MinSegments": 2,
                     "BreakOnNonKeyFrames": false,
