@@ -156,6 +156,8 @@ final class PlaybackController {
     /// Mutable: the in-player quality menu rebuilds the stream at a new cap via
     /// `reload(bitrateKbps:)`. `0` is the sentinel for "Maximum / Original" (no cap).
     private(set) var maxVideoBitrateKbps: Int
+    private let qualityDefaultsKey: String
+    var qualityPreferenceDefaultsKey: String { qualityDefaultsKey }
 
     /// Per-playback transcode session id (also reused as the timeline session).
     private let sessionID = "plex-avp-" + UUID().uuidString
@@ -460,6 +462,7 @@ final class PlaybackController {
          identity: ClientIdentity,
          client: PlexClient,
          maxVideoBitrateKbps: Int = 8000,
+         qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps,
          mediaIndex: Int = 0,
          machineIdentifier: String? = nil,
          initialResumeMsOverride: Int? = nil) {
@@ -476,6 +479,7 @@ final class PlaybackController {
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.qualityDefaultsKey = qualityDefaultsKey
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
         self.initialResumeMsOverride = initialResumeMsOverride
@@ -488,7 +492,8 @@ final class PlaybackController {
          item: MediaItem,
          identity: ClientIdentity,
          client: PlexClient,
-         maxVideoBitrateKbps: Int = 8000) {
+         maxVideoBitrateKbps: Int = 8000,
+         qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = localFile
         self.identity = identity
@@ -502,6 +507,7 @@ final class PlaybackController {
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.qualityDefaultsKey = qualityDefaultsKey
         // A local file is already one concrete version on disk; no version selection.
         self.mediaIndex = 0
         // Offline playback has no server session to build a play queue against.
@@ -524,7 +530,8 @@ final class PlaybackController {
          playMethod: JellyfinPlayMethod? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
          remoteStreamReopener: RemoteStreamReopener? = nil,
-         maxVideoBitrateKbps: Int = 0) {
+         maxVideoBitrateKbps: Int = 0,
+         qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = nil
         self.remoteStreamURL = remoteStreamURL
@@ -538,6 +545,7 @@ final class PlaybackController {
         self.server = nil
         self.token = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.qualityDefaultsKey = qualityDefaultsKey
         // A backend-resolved URL is already one concrete stream.
         self.mediaIndex = 0
         // Non-Plex playback has no Plex play queue to resolve against.
@@ -2153,7 +2161,7 @@ final class PlaybackController {
                 self.timeline.scrobble()
                 // Play-to-end with a resolved, un-cancelled next item: autoplay it (#15).
                 // `advanceToNextItem` re-flushes timeline/scrobble idempotently.
-                if self.upNext.nextItem != nil, !self.upNext.isCancelled {
+                if self.upNext.nextItem != nil, !self.upNext.isCancelled, self.autoPlayUpNextEnabled {
                     self.advanceToNextItem()
                 } else {
                     self.player.pause()
@@ -2216,7 +2224,16 @@ final class PlaybackController {
                 && seconds < max(range.startSeconds, range.endSeconds - skipMarkerTailSeconds)
         }
         if let match {
-            skipMarker.set(kind: match.kind, seekTargetSeconds: match.endSeconds)
+            let mode = skipMode(for: match.kind)
+            switch mode {
+            case .disabled:
+                skipMarker.clear()
+            case .manual:
+                skipMarker.set(kind: match.kind, seekTargetSeconds: match.endSeconds)
+            case .automatic:
+                performUserSeek(toMs: Int(match.endSeconds * 1000))
+                skipMarker.clear()
+            }
         } else if skipMarker.active != nil {
             skipMarker.clear()
         }
@@ -2238,7 +2255,23 @@ final class PlaybackController {
     private let upNextTailSeconds: Double = 30
 
     /// Countdown (seconds) shown on the Up Next card before it autoplays the next item.
-    private let upNextCountdownStart = 10
+    private var upNextCountdownStart: Int {
+        if UserDefaults.standard.object(forKey: PlaybackPreferences.Keys.upNextCountdownSeconds) == nil {
+            return PlaybackPreferences.defaultUpNextCountdownSeconds
+        }
+        return UserDefaults.standard.integer(forKey: PlaybackPreferences.Keys.upNextCountdownSeconds)
+    }
+
+    private var autoPlayUpNextEnabled: Bool {
+        if UserDefaults.standard.object(forKey: PlaybackPreferences.Keys.autoPlayUpNext) == nil { return true }
+        return UserDefaults.standard.bool(forKey: PlaybackPreferences.Keys.autoPlayUpNext)
+    }
+
+    private func skipMode(for kind: SkipMarkerState.Kind) -> PlaybackPreferences.SkipMode {
+        let key = kind == .intro ? PlaybackPreferences.Keys.skipIntroMode : PlaybackPreferences.Keys.skipCreditsMode
+        let raw = UserDefaults.standard.string(forKey: key) ?? PlaybackPreferences.SkipMode.manual.rawValue
+        return PlaybackPreferences.SkipMode(rawValue: raw) ?? .manual
+    }
 
     /// The most recent integer second at which the countdown was ticked, so the 0.5s marker
     /// observer only decrements once per wall-clock second (it fires twice per second).
@@ -2296,7 +2329,7 @@ final class PlaybackController {
     /// while shown. At zero (or on play-to-end) it advances, unless the user cancelled.
     private func updateUpNext(at seconds: Double) {
         // Nothing to show if there's no resolved next item or the user dismissed it.
-        guard upNext.nextItem != nil, !upNext.isCancelled else { return }
+        guard upNext.nextItem != nil, !upNext.isCancelled, autoPlayUpNextEnabled else { return }
         guard seconds.isFinite else { return }
 
         let durSecs = player.currentItem?.duration.seconds ?? 0
@@ -2317,7 +2350,12 @@ final class PlaybackController {
 
         // Inside the window: show the card and start/continue the countdown.
         if !upNext.isShown {
-            upNext.show(countdown: upNextCountdownStart)
+            let countdown = max(0, upNextCountdownStart)
+            if countdown == 0 {
+                advanceToNextItem()
+                return
+            }
+            upNext.show(countdown: countdown)
             upNextLastCountdownSecond = Int(seconds)
             return
         }

@@ -15,6 +15,8 @@ struct DownloadOptionsSheet: View {
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
+
     private struct OriginalOption: Equatable {
         let sizeBytes: Int?
         let resolution: String?
@@ -57,6 +59,7 @@ struct DownloadOptionsSheet: View {
                         }
                         optimizeSection(presets: presets, probeFailed: probeFailed,
                                         originalAvailable: original != nil)
+                        storageLimitSection
                         infoSection
                     }
                 }
@@ -69,7 +72,7 @@ struct DownloadOptionsSheet: View {
                 if existingRecord == nil, probeState != .checking {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Download") { startDownload() }
-                            .disabled(selectedChoice == nil)
+                            .disabled(selectedChoice == nil || selectedStorageLimitMessage != nil)
                     }
                 }
             }
@@ -109,9 +112,7 @@ struct DownloadOptionsSheet: View {
             : nil
         let unsupportedOriginal = probe.direct && original == nil
 
-        // Default to a server-rendered compatible copy when available. The direct probe says a
-        // stream can copy, not that the raw file container is a good offline asset.
-        selectedChoice = .optimize(presets.first ?? defaultPresets[0])
+        selectedChoice = preferredSelection(originalAvailable: original != nil, presets: presets)
         probeState = .ready(original: original, presets: presets, probeFailed: false,
                             originalStreamableButOfflineUnsupported: unsupportedOriginal)
     }
@@ -124,7 +125,7 @@ struct DownloadOptionsSheet: View {
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
         let presets = jellyfinPresets
-        selectedChoice = .optimize(presets.first ?? "1080p 8 Mbps")
+        selectedChoice = preferredSelection(originalAvailable: original != nil, presets: presets)
         probeState = .ready(original: original,
                             presets: presets,
                             probeFailed: false,
@@ -233,9 +234,7 @@ struct DownloadOptionsSheet: View {
             if case .optimize(let selected)? = selectedChoice, presets.contains(selected) {
                 return
             }
-            if let first = presets.first {
-                selectedChoice = .optimize(first)
-            }
+            selectedChoice = preferredSelection(originalAvailable: false, presets: presets)
         }
     }
 
@@ -246,6 +245,45 @@ struct DownloadOptionsSheet: View {
                      + "is off, resuming when it's worn again.")
                     .font(.footnote).foregroundStyle(.secondary)
             } icon: { Image(systemName: "wifi") }
+        }
+    }
+
+
+    @ViewBuilder
+    private var storageLimitSection: some View {
+        if let message = selectedStorageLimitMessage {
+            SwiftUI.Section {
+                Label {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "internaldrive.fill.badge.exclamationmark")
+                }
+            }
+        }
+    }
+
+    private var selectedStorageLimitMessage: String? {
+        guard let selectedChoice else { return nil }
+        return downloadManager.storageLimitMessage(adding: downloadManager.estimatedBytes(
+            for: item, choice: managerChoice(for: selectedChoice),
+            mediaIndex: mediaIndex, partIndex: partIndex))
+    }
+
+    private func preferredSelection(originalAvailable: Bool, presets: [String]) -> DownloadSelection? {
+        if defaultDownloadQuality == "Original", originalAvailable { return .original }
+        if presets.contains(defaultDownloadQuality) { return .optimize(defaultDownloadQuality) }
+        if let match = presets.first(where: { $0.localizedCaseInsensitiveContains(defaultDownloadQuality) }) {
+            return .optimize(match)
+        }
+        return presets.first.map { .optimize($0) }
+    }
+
+    private func managerChoice(for selection: DownloadSelection) -> DownloadManager.DownloadChoice {
+        switch selection {
+        case .original: return .original
+        case .optimize(let preset): return .optimize(targetName: preset)
         }
     }
 
@@ -299,24 +337,12 @@ struct DownloadOptionsSheet: View {
     private func startDownload() {
         guard let selectedChoice else { return }
         if appModel.activeBackend == .jellyfin {
-            let choice: DownloadManager.DownloadChoice
-            switch selectedChoice {
-            case .original:
-                choice = .original
-            case .optimize(let preset):
-                choice = .optimize(targetName: preset)
-            }
+            let choice = managerChoice(for: selectedChoice)
             Task { await downloadManager.downloadJellyfin(item, choice: choice,
                                                           mediaIndex: mediaIndex,
                                                           partIndex: partIndex) }
         } else {
-            let choice: DownloadManager.DownloadChoice
-            switch selectedChoice {
-            case .original:
-                choice = .original
-            case .optimize(let preset):
-                choice = .optimize(targetName: preset)
-            }
+            let choice = managerChoice(for: selectedChoice)
             Task { await downloadManager.download(item, choice: choice,
                                                   mediaIndex: mediaIndex, partIndex: partIndex) }
         }
