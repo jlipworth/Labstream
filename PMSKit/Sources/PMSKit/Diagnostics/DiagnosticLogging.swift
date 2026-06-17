@@ -309,7 +309,11 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable {
               let string = String(data: data, encoding: .utf8) else {
             return #"{"category":"Diagnostics","name":"render_failed"}"#
         }
-        return DiagnosticRedactor.redact(string)
+        // Field names and string field values are sanitized/redacted when the event is created.
+        // Running the free-form redactor over the whole JSON line would also inspect JSON keys
+        // and event names, which can falsely replace long safe identifiers such as
+        // `plays_whole_file_directly` with `[token]`.
+        return string
     }
 
     public var summaryLine: String {

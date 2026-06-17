@@ -75,4 +75,26 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertFalse(report.contains("start.m3u8?"))
         XCTAssertTrue(report.contains("\"media_title\":\"[omitted]\""))
     }
+
+    func testJSONLineDoesNotRedactSafeLongKeysOrEventNamesAsTokens() {
+        let streamURL = URL(string: "https://plex.internal:32400/video/:/transcode/universal/start.m3u8?X-Plex-Token=secret")
+        let event = DiagnosticEvent(category: .playback,
+                                    name: "playback.stall_watchdog_cancelled",
+                                    fields: [
+                                        "plays_whole_file_directly": .bool(false),
+                                        "stall_watchdog_timeout_seconds": .int(15),
+                                        "stream_url_shape": .urlShape(streamURL)
+                                    ])
+
+        let line = event.jsonLine()
+
+        XCTAssertTrue(line.contains("playback.stall_watchdog_cancelled"))
+        XCTAssertTrue(line.contains("plays_whole_file_directly"))
+        XCTAssertTrue(line.contains("stall_watchdog_timeout_seconds"))
+        XCTAssertTrue(line.contains("stream_url_shape"))
+        XCTAssertFalse(line.contains("[token]"))
+        XCTAssertFalse(line.contains("plex.internal"))
+        XCTAssertFalse(line.contains("secret"))
+    }
+
 }
