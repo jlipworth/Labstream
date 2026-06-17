@@ -8,17 +8,20 @@ import PMSKit
 struct RemoteStreamOpenResult {
     let url: URL
     let headers: [String: String]
+    let playSessionId: String?
     let sourceMetadata: JellyfinPlaybackSourceMetadata?
     let playMethod: JellyfinPlayMethod?
     let onStop: (() -> Void)?
 
     init(url: URL,
          headers: [String: String],
+         playSessionId: String? = nil,
          sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
          playMethod: JellyfinPlayMethod? = nil,
          onStop: (() -> Void)? = nil) {
         self.url = url
         self.headers = headers
+        self.playSessionId = playSessionId
         self.sourceMetadata = sourceMetadata
         self.playMethod = playMethod
         self.onStop = onStop
@@ -136,6 +139,7 @@ final class PlaybackController {
     private var remoteHTTPHeaders: [String: String]
     private var remoteSourceMetadata: JellyfinPlaybackSourceMetadata?
     private var remotePlayMethod: JellyfinPlayMethod?
+    private var remotePlaySessionId: String?
     private var onStopRemoteSession: (() -> Void)?
     private let remoteStreamReopener: RemoteStreamReopener?
     private var didStopRemoteSession = false
@@ -476,6 +480,7 @@ final class PlaybackController {
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
+        self.remotePlaySessionId = nil
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
@@ -504,6 +509,7 @@ final class PlaybackController {
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
+        self.remotePlaySessionId = nil
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
@@ -526,6 +532,7 @@ final class PlaybackController {
          identity: ClientIdentity,
          client: PlexClient,
          httpHeaders: [String: String] = [:],
+         remotePlaySessionId: String? = nil,
          sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
          playMethod: JellyfinPlayMethod? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
@@ -536,6 +543,7 @@ final class PlaybackController {
         self.localFile = nil
         self.remoteStreamURL = remoteStreamURL
         self.remoteHTTPHeaders = httpHeaders
+        self.remotePlaySessionId = remotePlaySessionId
         self.remoteSourceMetadata = sourceMetadata
         self.remotePlayMethod = playMethod
         self.onStopRemoteSession = onStopRemoteSession
@@ -2615,17 +2623,28 @@ final class PlaybackController {
 
     private func reopenRemoteStream(offsetMs: Int, bitrateKbps: Int) {
         guard let remoteStreamReopener else { return }
+        playbackTask?.cancel()
+        playbackGeneration += 1
+        let generation = playbackGeneration
         lastPrimedOffsetMs = offsetMs
         let priorStop = didStopRemoteSession ? nil : onStopRemoteSession
-        didStopRemoteSession = true
-        priorStop?()
+        let priorPlaySessionId = remotePlaySessionId
+        // Detach the old AVPlayerItem before asking Jellyfin for a replacement stream. The
+        // simulator logs for #43 showed AVPlayer surfacing NSURLErrorDomain -1008 immediately
+        // after we deleted the active Jellyfin encoding during a seek/reopen; stale init/segment
+        // loads can outlive observer teardown. Replacing the item first stops those resource
+        // loads from racing with the new playlist.
+        removeObservers()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
         playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")
         recordPlaybackDiagnostic("playback.remote_reopen", fields: [
             "target": .millisecondsBucket(offsetMs),
             "quality": .label(StreamingQuality.label(kbps: bitrateKbps)),
-            "stopped_prior_session": .bool(priorStop != nil),
+            "detached_prior_item": .bool(true),
+            "deferred_prior_session_stop": .bool(priorStop != nil),
         ])
-        Task { @MainActor [weak self] in
+        playbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let request = RemoteStreamReopenRequest(offsetMs: offsetMs,
@@ -2633,7 +2652,12 @@ final class PlaybackController {
                                                         audioStreamIndex: audioStreamIDOverride,
                                                         subtitleStreamIndex: subtitleStreamIndexOverride)
                 let reopened = try await remoteStreamReopener(request)
+                guard !Task.isCancelled, generation == self.playbackGeneration else {
+                    reopened.onStop?()
+                    return
+                }
                 self.remoteHTTPHeaders = reopened.headers
+                self.remotePlaySessionId = reopened.playSessionId
                 if let sourceMetadata = reopened.sourceMetadata {
                     self.remoteSourceMetadata = sourceMetadata
                 }
@@ -2643,7 +2667,18 @@ final class PlaybackController {
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false
                 self.loadRemoteStream(reopened.url, headers: reopened.headers, resumeOffsetMs: offsetMs)
+                let samePlaySession = priorPlaySessionId != nil && priorPlaySessionId == reopened.playSessionId
+                if samePlaySession {
+                    self.recordPlaybackDiagnostic("playback.remote_stop_skipped", fields: [
+                        "reason": .label("same_play_session"),
+                    ])
+                } else {
+                    self.scheduleDeferredRemoteSessionStop(priorStop,
+                                                           reason: "after_reopen_item_detached",
+                                                           delaySeconds: 2.0)
+                }
             } catch {
+                guard !Task.isCancelled, generation == self.playbackGeneration else { return }
                 self.recordPlaybackDiagnostic("playback.remote_reopen_failed", fields: [
                     "error": .error(error),
                     "target": .millisecondsBucket(offsetMs),
@@ -2653,7 +2688,27 @@ final class PlaybackController {
                     domain: "PlexAVPApp.Playback", code: -1004,
                     userInfo: [NSLocalizedDescriptionKey:
                         "Couldn't reopen the stream at that position. Tap Retry or try a lower quality setting."]))
+                self.didStopRemoteSession = true
+                self.onStopRemoteSession = nil
+                self.remotePlaySessionId = nil
+                self.scheduleDeferredRemoteSessionStop(priorStop,
+                                                       reason: "reopen_failed_after_detach",
+                                                       delaySeconds: 2.0)
             }
+        }
+    }
+
+    private func scheduleDeferredRemoteSessionStop(_ stop: (() -> Void)?,
+                                                   reason: String,
+                                                   delaySeconds: TimeInterval) {
+        guard let stop else { return }
+        recordPlaybackDiagnostic("playback.remote_stop_deferred", fields: [
+            "reason": .label(reason),
+            "delay_seconds": .double(delaySeconds),
+        ])
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delaySeconds))
+            stop()
         }
     }
 
