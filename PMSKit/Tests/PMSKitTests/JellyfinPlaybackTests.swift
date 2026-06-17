@@ -47,6 +47,7 @@ struct JellyfinPlaybackTests {
         let hlsProfile = try #require(transcodeProfiles.first)
         #expect(hlsProfile["Container"] as? String == "mp4")
         #expect(hlsProfile["Protocol"] as? String == "hls")
+        #expect(hlsProfile["AudioCodec"] as? String == "aac")
         #expect(hlsProfile["BreakOnNonKeyFrames"] as? Bool == false)
     }
 
@@ -68,7 +69,7 @@ struct JellyfinPlaybackTests {
             "SupportsDirectPlay": false,
             "SupportsDirectStream": false,
             "SupportsTranscoding": true,
-            "TranscodingUrl": "/Videos/movie-1/master.m3u8?MediaSourceId=source-1&PlaySessionId=play-1&api_key=server-token&AudioStreamIndex=2&VideoBitrate=88000000&AudioBitrate=448000&SegmentContainer=ts&BreakOnNonKeyFrames=True",
+            "TranscodingUrl": "/Videos/movie-1/master.m3u8?MediaSourceId=source-1&PlaySessionId=play-1&api_key=server-token&AudioStreamIndex=2&VideoBitrate=88000000&AudioCodec=ac3&AudioBitrate=448000&AllowAudioStreamCopy=true&SegmentContainer=ts&BreakOnNonKeyFrames=True",
             "TranscodingSubProtocol": "hls",
             "TranscodingContainer": "ts"
           }]
@@ -99,15 +100,19 @@ struct JellyfinPlaybackTests {
         #expect(query["VideoBitrate"] == "3000000")
         #expect(query["MaxWidth"] == "1280")
         #expect(query["MaxHeight"] == "720")
+        #expect(query["AudioCodec"] == "aac")
         #expect(query["AudioBitrate"] == "256000")
         #expect(query["TranscodingMaxAudioChannels"] == "6")
+        #expect(query["AllowAudioStreamCopy"] == "false")
         #expect(query["AudioStreamIndex"] == "4")
         #expect(query["StartTimeTicks"] == "27000000000")
         #expect(query["SegmentContainer"] == "mp4")
         #expect(query["BreakOnNonKeyFrames"] == "false")
         #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioStreamIndex") == .orderedSame }.count == 1)
         #expect(queryItems.filter { $0.name.caseInsensitiveCompare("VideoBitrate") == .orderedSame }.count == 1)
+        #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioCodec") == .orderedSame }.count == 1)
         #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioBitrate") == .orderedSame }.count == 1)
+        #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AllowAudioStreamCopy") == .orderedSame }.count == 1)
         #expect(result.playSessionId == "play-1")
         #expect(result.mediaSourceId == "source-1")
         #expect(result.playMethod == .transcode)
