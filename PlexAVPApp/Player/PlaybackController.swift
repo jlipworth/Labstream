@@ -225,6 +225,12 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    /// User transport intent, independent of AVPlayer's transient loading state.
+    ///
+    /// During initial HLS priming AVPlayer sits in `.waitingToPlayAtSpecifiedRate`, so a quick
+    /// tap on Pause can otherwise be lost or undone by the later `.readyToPlay` rate reapply.
+    /// Keep the user intent here and honor it once the item becomes ready (#40).
+    private var userWantsPaused = false
 
     /// Playback-time direct-play fallback (Direct Play / Maximum). PMS can agree to copy the
     /// video (`savesVideoEncode`) yet hand back an HLS rendition AVFoundation can't actually
@@ -1102,9 +1108,46 @@ final class PlaybackController {
     private func applyPlaybackSpeed() {
         let speed = playbackSpeed
         player.defaultRate = speed
-        if player.timeControlStatus != .paused {
+        if player.timeControlStatus != .paused, !userWantsPaused {
             player.rate = speed
         }
+    }
+
+    // MARK: - User transport intent (#40)
+
+    /// Toggle play/pause through the controller instead of talking directly to `AVPlayer`.
+    ///
+    /// This preserves a pause request made while the item is still loading/priming and makes the
+    /// chrome switch to Play immediately, even before AVPlayer reports `.paused`.
+    func togglePlayback() {
+        if transport.showsPausedControl {
+            requestPlay()
+        } else {
+            requestPause()
+        }
+    }
+
+    func requestPause() {
+        userWantsPaused = true
+        player.pause()
+        buffering.set(false)
+        transport.setPauseRequested(true)
+        timeline.report(state: .paused, force: true)
+        recordPlaybackDiagnostic("playback.pause_requested", fields: [
+            "status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
+            "item_ready": .bool(player.currentItem?.status == .readyToPlay),
+        ])
+    }
+
+    func requestPlay() {
+        userWantsPaused = false
+        transport.setPauseRequested(false)
+        recordPlaybackDiagnostic("playback.play_requested", fields: [
+            "status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
+            "item_ready": .bool(player.currentItem?.status == .readyToPlay),
+        ])
+        player.play()
+        applyPlaybackSpeed()
     }
 
     // MARK: - Quality / bitrate reload
@@ -1777,7 +1820,12 @@ final class PlaybackController {
         ])
         installObservers(for: playerItem, resumeOffsetMs: resumeOffsetMs)
         startDiagnosticsSampling()
-        player.play()
+        if userWantsPaused {
+            player.pause()
+            transport.set(paused: true)
+        } else {
+            player.play()
+        }
     }
 
     /// Poll the player's access/error logs ~1s for the Stats overlay. A repeating
@@ -1826,7 +1874,17 @@ final class PlaybackController {
                     // Reapply the persisted playback speed (R5). A fresh item / Quality reload
                     // resets the player's rate to 1.0, so re-push the user's choice now that the
                     // item is ready — without this a reload would silently drop back to 1.0×.
-                    self.applyPlaybackSpeed()
+                    if self.userWantsPaused {
+                        self.player.pause()
+                        self.buffering.set(false)
+                        self.transport.set(paused: true)
+                        self.transport.setPauseRequested(false)
+                        self.recordPlaybackDiagnostic("playback.pause_intent_honored", fields: [
+                            "status": .label("readyToPlay"),
+                        ])
+                    } else {
+                        self.applyPlaybackSpeed()
+                    }
                     // Resume seek, exactly once (didSeek). Offset priming is the fast
                     // path; this is the CLIENT-SIDE FALLBACK (P2 #9): if PMS didn't honor
                     // `#EXT-X-START` and we're sitting at ~0 while a resume was requested,
@@ -1915,9 +1973,12 @@ final class PlaybackController {
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
-                let paused = status == .paused
+                let paused = status == .paused || self.userWantsPaused
                 self.timeline.report(state: paused ? .paused : .playing, force: true)
                 self.transport.set(paused: paused)
+                if paused || status == .playing {
+                    self.transport.setPauseRequested(false)
+                }
                 if self.lastDiagnosticTimeControlStatus != status {
                     self.lastDiagnosticTimeControlStatus = status
                     self.recordPlaybackDiagnostic("playback.time_control_status", fields: [
@@ -1936,7 +1997,7 @@ final class PlaybackController {
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
-                let isStalled = (status == .waitingToPlayAtSpecifiedRate)
+                let isStalled = (status == .waitingToPlayAtSpecifiedRate && !self.userWantsPaused)
                 self.buffering.set(isStalled)
                 // Stall watchdog (#8 hardening): a network-loss stall often never flips
                 // item.status to .failed, so arm a timeout while the player is starved and
@@ -2703,10 +2764,24 @@ final class BufferingState {
 final class TransportState {
     /// True exactly while `timeControlStatus == .paused`.
     private(set) var isPaused = false
+    /// True after the user taps Pause while AVPlayer is still loading/priming and before KVO
+    /// catches up to `.paused`. The chrome should present Play immediately in this state.
+    private(set) var pauseRequested = false
+
+    var showsPausedControl: Bool {
+        isPaused || pauseRequested
+    }
 
     /// Set the paused flag. Idempotent so duplicate KVO callbacks don't churn the observable.
     func set(paused: Bool) {
         if isPaused != paused { isPaused = paused }
+        if paused {
+            pauseRequested = false
+        }
+    }
+
+    func setPauseRequested(_ value: Bool) {
+        if pauseRequested != value { pauseRequested = value }
     }
 }
 
