@@ -40,9 +40,17 @@ struct JellyfinPlaybackTests {
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "VisionPlex")
         #expect(profile["MaxStreamingBitrate"] as? Int == 8_000_000)
+        let directProfiles = try #require(profile["DirectPlayProfiles"] as? [[String: Any]])
+        let mpegTSProfile = try #require(directProfiles.first { $0["Container"] as? String == "mpegts" })
+        #expect(mpegTSProfile["VideoCodec"] as? String == "h264")
+        let transcodeProfiles = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
+        let hlsProfile = try #require(transcodeProfiles.first)
+        #expect(hlsProfile["Container"] as? String == "mp4")
+        #expect(hlsProfile["Protocol"] as? String == "hls")
+        #expect(hlsProfile["BreakOnNonKeyFrames"] as? Bool == false)
     }
 
-    @Test func resolvesServerRelativeTranscodingURLFromPlaybackInfo() throws {
+    @Test func resolvesServerRelativeTranscodingURLFromPlaybackInfoWithStableHLSOverrides() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-1",
@@ -54,12 +62,13 @@ struct JellyfinPlaybackTests {
             "ETag": "tag-1",
             "MediaStreams": [
               { "Index": 0, "Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2160 },
-              { "Index": 1, "Type": "Audio", "Codec": "eac3", "DisplayTitle": "English EAC3 5.1", "Channels": 6 }
+              { "Index": 2, "Type": "Audio", "Codec": "truehd", "Language": "eng", "DisplayTitle": "English TrueHD Atmos 7.1", "IsDefault": true, "Channels": 8 },
+              { "Index": 4, "Type": "Audio", "Codec": "ac3", "Language": "eng", "DisplayTitle": "English AC3 5.1", "Channels": 6 }
             ],
             "SupportsDirectPlay": false,
             "SupportsDirectStream": false,
             "SupportsTranscoding": true,
-            "TranscodingUrl": "/Videos/movie-1/master.m3u8?mediaSourceId=source-1&playSessionId=play-1&api_key=server-token",
+            "TranscodingUrl": "/Videos/movie-1/master.m3u8?MediaSourceId=source-1&PlaySessionId=play-1&api_key=server-token&AudioStreamIndex=2&VideoBitrate=88000000&AudioBitrate=448000&SegmentContainer=ts&BreakOnNonKeyFrames=True",
             "TranscodingSubProtocol": "hls",
             "TranscodingContainer": "ts"
           }]
@@ -72,11 +81,33 @@ struct JellyfinPlaybackTests {
             identity: identity,
             token: "token-abc",
             itemId: "movie-1",
+            startTimeTicks: 27_000_000_000,
+            maxVideoBitrate: 3_000_000,
             maxWidth: 1280,
             maxHeight: 720,
             audioBitrate: 256_000)
 
-        #expect(result.url == URL(string: "https://jellyfin.example.test/base/Videos/movie-1/master.m3u8?mediaSourceId=source-1&playSessionId=play-1&api_key=server-token&MaxWidth=1280&MaxHeight=720&AudioBitrate=256000"))
+        let components = try #require(URLComponents(url: result.url, resolvingAgainstBaseURL: false))
+        let queryItems = components.queryItems ?? []
+        let query = Dictionary(uniqueKeysWithValues: queryItems.map { ($0.name, $0.value ?? "") })
+        #expect(result.url.scheme == "https")
+        #expect(result.url.host == "jellyfin.example.test")
+        #expect(components.path == "/base/Videos/movie-1/master.m3u8")
+        #expect(query["MediaSourceId"] == "source-1")
+        #expect(query["PlaySessionId"] == "play-1")
+        #expect(query["api_key"] == "server-token")
+        #expect(query["VideoBitrate"] == "3000000")
+        #expect(query["MaxWidth"] == "1280")
+        #expect(query["MaxHeight"] == "720")
+        #expect(query["AudioBitrate"] == "256000")
+        #expect(query["TranscodingMaxAudioChannels"] == "6")
+        #expect(query["AudioStreamIndex"] == "4")
+        #expect(query["StartTimeTicks"] == "27000000000")
+        #expect(query["SegmentContainer"] == "mp4")
+        #expect(query["BreakOnNonKeyFrames"] == "false")
+        #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioStreamIndex") == .orderedSame }.count == 1)
+        #expect(queryItems.filter { $0.name.caseInsensitiveCompare("VideoBitrate") == .orderedSame }.count == 1)
+        #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioBitrate") == .orderedSame }.count == 1)
         #expect(result.playSessionId == "play-1")
         #expect(result.mediaSourceId == "source-1")
         #expect(result.playMethod == .transcode)
@@ -91,8 +122,48 @@ struct JellyfinPlaybackTests {
         #expect(result.sourceMetadata.width == 3840)
         #expect(result.sourceMetadata.height == 2160)
         #expect(result.sourceMetadata.videoCodec == "hevc")
-        #expect(result.sourceMetadata.audioCodec == "eac3")
+        #expect(result.sourceMetadata.audioCodec == "ac3")
         #expect(result.sourceMetadata.bitrate == 8200)
+    }
+
+    @Test func explicitAudioStreamIndexWinsOverCompatibleAudioFallback() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-1",
+          "MediaSources": [{
+            "Id": "source-1",
+            "Container": "mkv",
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2160 },
+              { "Index": 2, "Type": "Audio", "Codec": "truehd", "Language": "eng", "DisplayTitle": "English TrueHD Atmos 7.1", "IsDefault": true, "Channels": 8 },
+              { "Index": 4, "Type": "Audio", "Codec": "ac3", "Language": "eng", "DisplayTitle": "English AC3 5.1", "Channels": 6 }
+            ],
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": false,
+            "SupportsTranscoding": true,
+            "TranscodingUrl": "/Videos/movie-1/master.m3u8?MediaSourceId=source-1&PlaySessionId=play-1&api_key=server-token&AudioStreamIndex=4",
+            "TranscodingSubProtocol": "hls",
+            "TranscodingContainer": "ts"
+          }]
+        }
+        """#.utf8))
+
+        let result = try JellyfinPlayback.resolveStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: "token-abc",
+            itemId: "movie-1",
+            maxVideoBitrate: 3_000_000,
+            maxWidth: 1280,
+            maxHeight: 720,
+            audioBitrate: 256_000,
+            audioStreamIndex: 2)
+
+        let components = try #require(URLComponents(url: result.url, resolvingAgainstBaseURL: false))
+        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(query["AudioStreamIndex"] == "2")
+        #expect(result.sourceMetadata.audioCodec == "truehd")
     }
 
     @Test func buildsStaticVideoStreamURLWhenNoTranscodingURLIsNeeded() throws {
