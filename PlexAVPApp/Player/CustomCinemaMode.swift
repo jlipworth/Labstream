@@ -188,11 +188,7 @@ struct CustomCinemaScaffoldView: View {
     @MainActor
     private func togglePlayback() {
         guard let controller = session.controller else { return }
-        if controller.transport.isPaused {
-            controller.player.play()
-        } else {
-            controller.player.pause()
-        }
+        controller.togglePlayback()
         revealControls()
     }
 
