@@ -13,6 +13,7 @@ final class KeychainStore {
     static let tokenKey = "token"
     static let clientIdentifierKey = "clientIdentifier"
     static let selectedBackendKey = "selectedBackend"
+    static let selectedPlexServerIDKey = "selectedPlexServerID"
     static let jellyfinServerURLKey = "jellyfinServerURL"
     static let jellyfinAccessTokenKey = "jellyfinAccessToken"
     static let jellyfinUserIDKey = "jellyfinUserID"
@@ -135,6 +136,11 @@ final class KeychainStore {
     var selectedBackend: MediaBackendKind {
         get { read(Self.selectedBackendKey).flatMap(MediaBackendKind.init(rawValue:)) ?? .plex }
         set { save(newValue.rawValue, for: Self.selectedBackendKey) }
+    }
+
+    var selectedPlexServerID: String? {
+        get { read(Self.selectedPlexServerIDKey) }
+        set { setOptional(newValue, for: Self.selectedPlexServerIDKey) }
     }
 
     var jellyfinServerURLString: String? {

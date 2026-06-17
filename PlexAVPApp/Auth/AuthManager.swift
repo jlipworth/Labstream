@@ -97,6 +97,7 @@ final class AuthManager {
         guard let saved = keychain.token else { return false }
         appModel.token = saved
         do {
+            await refreshPlexAccountProfile()
             try await refreshServers()
             state = .authenticated
             return true
@@ -207,6 +208,7 @@ final class AuthManager {
         }
         appModel.token = token
         do {
+            await refreshPlexAccountProfile()
             try await refreshServers()
             activePinIDs = []
             pollTask = nil
@@ -404,9 +406,6 @@ final class AuthManager {
     /// Run resource discovery and select the best server/connection.
     func refreshServers() async throws {
         guard let accountToken = appModel.token else { throw PlexError.unauthorized }
-        appModel.selectedServer = nil
-        appModel.serverToken = nil
-        appModel.serverBaseURL = nil
         let req = ResourceDiscovery.resourcesRequest(token: accountToken, identity: appModel.identity)
         let resources = try await appModel.client.send(req, as: ResourcesResponse.self)
 
@@ -414,22 +413,76 @@ final class AuthManager {
         let servers = resources.devices.filter {
             ($0.provides ?? "").contains("server")
         }
-        let chosen = servers.first { !$0.connections.isEmpty } ?? servers.first
-        guard let server = chosen else { throw PlexError.serverUnreachable }
+        let preferredID = keychain.selectedPlexServerID
+            ?? appModel.selectedServer?.clientIdentifier
+        appModel.plexServers = servers
+        appModel.selectedServer = nil
+        appModel.serverToken = nil
+        appModel.serverBaseURL = nil
+
+        let candidates: [PlexDevice]
+        if let preferredID, let preferred = servers.first(where: { $0.clientIdentifier == preferredID }) {
+            candidates = [preferred] + servers.filter { $0.clientIdentifier != preferredID }
+        } else {
+            candidates = servers
+        }
+
+        for server in candidates {
+            do {
+                try await applyPlexServerSelection(server, persist: preferredID == nil || preferredID != server.clientIdentifier)
+                return
+            } catch PlexError.serverUnreachable {
+                continue
+            }
+        }
+        throw PlexError.serverUnreachable
+    }
+
+    /// Select a Plex server from Settings and persist that server identity for future launches.
+    func selectPlexServer(id serverID: String) async throws {
+        guard let server = appModel.plexServers.first(where: { $0.clientIdentifier == serverID }) else {
+            throw PlexError.serverUnreachable
+        }
+        try await applyPlexServerSelection(server, persist: true)
+    }
+
+    /// Fetch non-secret Plex account display metadata for Settings. Failure is non-fatal:
+    /// browsing and playback are server-token driven, and Settings can show "Unavailable".
+    func refreshPlexAccountProfile() async {
+        guard let token = appModel.token else {
+            appModel.plexAccountProfile = nil
+            return
+        }
+        do {
+            let req = PlexAccount.profileRequest(token: token, identity: appModel.identity)
+            appModel.plexAccountProfile = try await appModel.client.send(req, as: PlexAccountProfile.self)
+        } catch {
+            appModel.plexAccountProfile = nil
+        }
+    }
+
+    private func applyPlexServerSelection(_ server: PlexDevice, persist: Bool) async throws {
+        guard let accountToken = appModel.token else { throw PlexError.unauthorized }
         let serverToken = server.accessToken ?? accountToken
 
         // A server advertises every interface as a "local" connection, including
-        // unreachable container/VPN ones (e.g. a Docker 10.42.x.x bridge). Probe
-        // candidates in priority order and use the first that actually answers;
-        // only fall back to the static best pick if none respond.
+        // unreachable container/VPN ones (e.g. a Docker 10.42.x.x bridge) and, in
+        // some setups, stale/reverse-proxy URLs that can answer as a different
+        // Plex server. Probe candidates in priority order and require `/identity`
+        // to return this server's machine identifier before accepting a URL.
         let ranked = ResourceDiscovery.rankedConnections(server.connections)
-        let url = await firstReachable(ranked, token: serverToken)
-            ?? ResourceDiscovery.bestConnection(server.connections).flatMap { URL(string: $0.uri) }
-        guard let url else { throw PlexError.serverUnreachable }
+        guard let url = await firstReachable(ranked,
+                                             token: serverToken,
+                                             expectedMachineIdentifier: server.clientIdentifier) else {
+            throw PlexError.serverUnreachable
+        }
 
         appModel.selectedServer = server
         appModel.serverToken = serverToken
         appModel.serverBaseURL = url
+        if persist {
+            keychain.selectedPlexServerID = server.clientIdentifier
+        }
     }
 
     /// Short-timeout session used only for connection reachability probes.
@@ -443,8 +496,14 @@ final class AuthManager {
 
     /// Probe every candidate connection in parallel by hitting `<uri>/identity`
     /// and return the highest-priority one (lowest index in `ranked`) that
-    /// responds with a 2xx within the timeout. Returns nil if none answer.
-    private func firstReachable(_ ranked: [PlexConnection], token: String) async -> URL? {
+    /// responds with a 2xx within the timeout. When `expectedMachineIdentifier`
+    /// is supplied, the identity payload must also identify that exact Plex
+    /// server; this prevents selecting a stale/reverse-proxy URL that answers as
+    /// some other server and then browsing the wrong libraries. Returns nil if
+    /// no candidate matches.
+    private func firstReachable(_ ranked: [PlexConnection],
+                                token: String,
+                                expectedMachineIdentifier: String?) async -> URL? {
         await withTaskGroup(of: (Int, URL)?.self) { group in
             for (index, conn) in ranked.enumerated() {
                 guard let base = URL(string: conn.uri) else { continue }
@@ -453,10 +512,15 @@ final class AuthManager {
                     req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
                     req.setValue("application/json", forHTTPHeaderField: "Accept")
                     do {
-                        let (_, resp) = try await Self.probeSession.data(for: req)
-                        if let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                            return (index, base)
+                        let (data, resp) = try await Self.probeSession.data(for: req)
+                        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                            return nil
                         }
+                        if let expectedMachineIdentifier,
+                           Self.plexMachineIdentifier(in: data) != expectedMachineIdentifier {
+                            return nil
+                        }
+                        return (index, base)
                     } catch { /* unreachable / timed out */ }
                     return nil
                 }
@@ -467,6 +531,23 @@ final class AuthManager {
             }
             return best?.1
         }
+    }
+
+    nonisolated private static func plexMachineIdentifier(in data: Data) -> String? {
+        guard let body = String(data: data, encoding: .utf8) else { return nil }
+        let patterns = [
+            #"machineIdentifier\s*=\s*[\"']([^\"']+)"#,
+            #"\"machineIdentifier\"\s*:\s*\"([^\"]+)"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(body.startIndex..<body.endIndex, in: body)
+            guard let match = regex.firstMatch(in: body, range: range),
+                  match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: body) else { continue }
+            return String(body[valueRange])
+        }
+        return nil
     }
 
     /// One-shot reachability check of the CURRENTLY selected connection, for the Settings
@@ -480,12 +561,30 @@ final class AuthManager {
         req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         do {
-            let (_, resp) = try await Self.probeSession.data(for: req)
-            guard let http = resp as? HTTPURLResponse else { return false }
-            return (200..<300).contains(http.statusCode)
+            let (data, resp) = try await Self.probeSession.data(for: req)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return false
+            }
+            guard let expectedMachineIdentifier = appModel.selectedServer?.clientIdentifier else {
+                return true
+            }
+            return Self.plexMachineIdentifier(in: data) == expectedMachineIdentifier
         } catch {
             return false
         }
+    }
+
+    /// One-shot reachability check for a discovered Plex server. Used by the Settings picker
+    /// to show healthy/unreachable state without exposing candidate connection URLs.
+    func probePlexServer(id serverID: String) async -> Bool {
+        guard let server = appModel.plexServers.first(where: { $0.clientIdentifier == serverID }),
+              let accountToken = appModel.token else {
+            return false
+        }
+        let serverToken = server.accessToken ?? accountToken
+        return await firstReachable(ResourceDiscovery.rankedConnections(server.connections),
+                                    token: serverToken,
+                                    expectedMachineIdentifier: server.clientIdentifier) != nil
     }
 
     /// Clear all auth state and return to login. Call on sign-out or any 401.
@@ -505,6 +604,7 @@ final class AuthManager {
 
     private func signOutPlex() {
         keychain.token = nil
+        keychain.selectedPlexServerID = nil
         clearRuntimeState(for: .plex)
     }
 
@@ -522,7 +622,9 @@ final class AuthManager {
             appModel.token = nil
             appModel.serverToken = nil
             appModel.selectedServer = nil
+            appModel.plexServers = []
             appModel.serverBaseURL = nil
+            appModel.plexAccountProfile = nil
         case .jellyfin:
             appModel.jellyfinServerBaseURL = nil
             appModel.jellyfinAccessToken = nil

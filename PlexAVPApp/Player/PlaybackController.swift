@@ -297,16 +297,16 @@ final class PlaybackController {
     /// a SwiftUI view — and any future settings UI share one source of truth.
     private enum SubtitlePrefKey {
         /// BCP-47 / ISO language code of the user's last chosen subtitle track (e.g. "en").
-        static let language = "preferredSubtitleLanguage"
+        static let language = PlaybackPreferenceKeys.preferredSubtitleLanguage
         /// `true` once the user has explicitly chosen "Off"; suppresses auto-select.
-        static let off = "subtitlesOff"
+        static let off = PlaybackPreferenceKeys.subtitlesOff
     }
 
     /// `@AppStorage`-style key for the persisted audio-language preference (#3). Mirrors
     /// `SubtitlePrefKey`, but there is no "Off" — a video always plays some soundtrack.
     private enum AudioPrefKey {
         /// BCP-47 / ISO language code of the user's last chosen audio track (e.g. "en").
-        static let language = "preferredAudioLanguage"
+        static let language = PlaybackPreferenceKeys.preferredAudioLanguage
     }
 
     /// Every UserDefaults key this controller persists across sessions, for the Settings
@@ -317,6 +317,8 @@ final class PlaybackController {
         SubtitlePrefKey.language,
         SubtitlePrefKey.off,
         AudioPrefKey.language,
+        PlaybackPreferenceKeys.subtitleAutoSelectMode,
+        PlaybackPreferenceKeys.subtitleBurnMode,
     ]
 
     /// Resume target (ms) for the current item, retained so the status observer can do a
@@ -773,7 +775,14 @@ final class PlaybackController {
         // the one-shot gate yet — leave the HLS default and let a future pick start fresh.
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
         let savedLang = defaults.string(forKey: SubtitlePrefKey.language)
-        guard wantsOff || (savedLang?.isEmpty == false) else { return }
+        let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferenceKeys.subtitleAutoSelectMode) ?? "")
+            ?? .manual
+        guard wantsOff || (mode != .manual && savedLang?.isEmpty == false) else { return }
+
+        if mode == .foreignAudio && !sourceAudioIsForeign(toPreferredLanguage: defaults) {
+            didApplySavedSubtitle = true
+            return
+        }
 
         // Load the legible group once. If the HLS carries no legible renditions, there's
         // nothing to apply on this item — mark applied so we don't re-probe each readyToPlay.
@@ -960,6 +969,108 @@ final class PlaybackController {
         }
         didApplyAudioPreference = true
     }
+
+    private func selectedBurnSubtitleStreamIDForCurrentPreferences() -> Int? {
+        let defaults = UserDefaults.standard
+        let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferenceKeys.subtitleBurnMode) ?? "")
+            ?? .automatic
+        guard burnMode != .automatic else { return nil }
+
+        let autoMode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferenceKeys.subtitleAutoSelectMode) ?? "")
+            ?? .manual
+        guard autoMode != .manual else { return nil }
+        if autoMode == .foreignAudio && !sourceAudioIsForeign(toPreferredLanguage: defaults) {
+            return nil
+        }
+
+        guard let part = sourcePartForCurrentMedia(),
+              !part.subtitleStreams.isEmpty else {
+            return nil
+        }
+
+        let preferredSubtitle = defaults.string(forKey: SubtitlePrefKey.language)
+        let stream = preferredSubtitle.flatMap { preferred in
+            part.subtitleStreams.first { Self.languageMatches(languageTag: $0.languageTag,
+                                                              languageCode: $0.languageCode,
+                                                              language: $0.language,
+                                                              preferredLanguage: preferred) }
+        } ?? (burnMode == .always ? part.subtitleStreams.first : nil)
+        guard let stream else { return nil }
+
+        switch burnMode {
+        case .automatic:
+            return nil
+        case .imageFormatsOnly:
+            return Self.isImageSubtitleCodec(stream.codec) ? stream.id : nil
+        case .always:
+            return stream.id
+        }
+    }
+
+    private func sourceAudioIsForeign(toPreferredLanguage defaults: UserDefaults) -> Bool {
+        let preferredAudio = defaults.string(forKey: AudioPrefKey.language)
+            ?? Locale.current.language.languageCode?.identifier
+        guard let preferredAudio, !preferredAudio.isEmpty,
+              let part = sourcePartForCurrentMedia(),
+              let sourceAudio = part.audioStreams.first(where: { $0.selected == true })
+                ?? part.audioStreams.first(where: { $0.isDefault == true })
+                ?? part.audioStreams.first else {
+            return false
+        }
+        return !Self.languageMatches(languageTag: sourceAudio.languageTag,
+                                     languageCode: sourceAudio.languageCode,
+                                     language: sourceAudio.language,
+                                     preferredLanguage: preferredAudio)
+    }
+
+    private func sourcePartForCurrentMedia() -> Part? {
+        let media = item.media.flatMap { mediaItems -> Media? in
+            if mediaItems.indices.contains(mediaIndex) { return mediaItems[mediaIndex] }
+            return mediaItems.first
+        }
+        return media?.part.first
+    }
+
+    private static func isImageSubtitleCodec(_ codec: String?) -> Bool {
+        guard let codec = codec?.lowercased() else { return false }
+        return codec.contains("pgs")
+            || codec.contains("vobsub")
+            || codec.contains("dvd")
+            || codec.contains("hdmv")
+            || codec.contains("image")
+    }
+
+    private static func languageMatches(languageTag: String?,
+                                        languageCode: String?,
+                                        language: String?,
+                                        preferredLanguage: String) -> Bool {
+        let preferred = normalizedLanguageCodes(for: preferredLanguage)
+        guard !preferred.isEmpty else { return false }
+        let candidates = [languageTag, languageCode, language]
+            .compactMap { $0 }
+            .flatMap { normalizedLanguageCodes(for: $0) }
+        return candidates.contains { preferred.contains($0) }
+    }
+
+    private static func normalizedLanguageCodes(for raw: String) -> Set<String> {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return [] }
+        let base = value.split(separator: "-").first.map(String.init) ?? value
+        var codes: Set<String> = [value, base]
+        if let twoLetter = iso639ThreeToTwo[base] {
+            codes.insert(twoLetter)
+        }
+        if let localized = Locale.current.localizedString(forLanguageCode: base)?.lowercased() {
+            codes.insert(localized)
+        }
+        return codes
+    }
+
+    private static let iso639ThreeToTwo: [String: String] = [
+        "eng": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
+        "ita": "it", "por": "pt", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh",
+        "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi",
+    ]
 
     /// Apply an audio selection chosen in the Audio tab. A soft switch on the live `AVPlayerItem`
     /// — no reload. Persists the choice (language code) so it's reapplied to the next item, and
@@ -1374,6 +1485,7 @@ final class PlaybackController {
         let resumeMs = resumeOffsetMsOverride ?? item.viewOffset
 
         let offsetSeconds: Int? = if let resumeMs, resumeMs > 0 { resumeMs / 1000 } else { nil }
+        let burnSubtitleStreamID = selectedBurnSubtitleStreamIDForCurrentPreferences()
 
         let transcode = TranscodeRequest(server: server,
                                          token: token,
@@ -1383,7 +1495,7 @@ final class PlaybackController {
                                          sessionID: sessionID,
                                          mediaIndex: mediaIndex,
                                          partIndex: 0,
-                                         burnSubtitleStreamID: nil,
+                                         burnSubtitleStreamID: burnSubtitleStreamID,
                                          startOffsetSeconds: offsetSeconds)
 
         var requestFields: [String: DiagnosticFieldValue] = [
@@ -1394,6 +1506,9 @@ final class PlaybackController {
             "part_index": .int(0),
             "profile": .label("visionos-hls"),
             "stop_previous": .bool(stoppingPreviousTranscode),
+            "subtitle_auto_select": .label(UserDefaults.standard.string(forKey: PlaybackPreferenceKeys.subtitleAutoSelectMode) ?? SubtitleAutoSelectMode.manual.rawValue),
+            "subtitle_burn_mode": .label(UserDefaults.standard.string(forKey: PlaybackPreferenceKeys.subtitleBurnMode) ?? SubtitleBurnMode.automatic.rawValue),
+            "burning_subtitles": .bool(burnSubtitleStreamID != nil),
         ]
         requestFields.merge(sourceDiagnosticFields()) { _, new in new }
         recordPlaybackDiagnostic("playback.start_streaming", fields: requestFields)
@@ -1413,7 +1528,7 @@ final class PlaybackController {
         // below. Every capped rung — including "Maximum (transcoded)" — skips the probe and
         // transcodes. The user picks the path by picking the quality; there is no separate
         // toggle or pre-flight bandwidth gate (#31 superseded).
-        if maxVideoBitrateKbps <= 0, !skipDirectPlayProbe {
+        if maxVideoBitrateKbps <= 0, !skipDirectPlayProbe, burnSubtitleStreamID == nil {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }

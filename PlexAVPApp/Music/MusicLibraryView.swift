@@ -14,8 +14,9 @@ struct MusicLibraryView: View {
     @State private var loadState: HomeView.LoadState = .idle
     /// Key of the section the user is browsing (only meaningful with 2+ sections).
     @State private var selectedSectionKey: String?
-    /// The server the current sections were loaded from (pop-back no-op guard).
-    @State private var loadedServer: URL?
+    /// Server identity the current sections were loaded from (pop-back no-op guard).
+    /// Includes selected Plex server id because multiple servers can share the same base URL.
+    @State private var loadedIdentity: String?
 
     var body: some View {
         if appModel.activeBackend == .jellyfin {
@@ -62,9 +63,13 @@ struct MusicLibraryView: View {
         .navigationDestination(for: MediaItem.self) { item in
             musicDestination(for: item, sectionKey: selectedSection?.key)
         }
-        .task(id: appModel.serverBaseURL) { await load() }
+        .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
         }
+    }
+
+    private var loadIdentity: String {
+        "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
     }
 
     /// The section to browse: the explicit selection, else the first music section.
@@ -77,7 +82,8 @@ struct MusicLibraryView: View {
         // this guard the reload tears down MusicHomeView and resets the pivot/scroll
         // state the user is popping back TO (live bug: Back always landed on a fresh
         // Home pivot). Only pull-to-refresh and a real server change refetch.
-        if !force, loadedServer == appModel.serverBaseURL, case .loaded = loadState { return }
+        let activeIdentity = loadIdentity
+        if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No reachable Plex server selected.")
             return
@@ -88,7 +94,7 @@ struct MusicLibraryView: View {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
             sections = resp.mediaContainer.directory.filter(\.isMusic)
             if selectedSectionKey == nil { selectedSectionKey = sections.first?.key }
-            loadedServer = server
+            loadedIdentity = activeIdentity
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
