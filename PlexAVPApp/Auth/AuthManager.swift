@@ -419,6 +419,7 @@ final class AuthManager {
         appModel.selectedServer = nil
         appModel.serverToken = nil
         appModel.serverBaseURL = nil
+        appModel.selectedServerConnectionIsLocal = false
 
         let candidates: [PlexDevice]
         if let preferredID, let preferred = servers.first(where: { $0.clientIdentifier == preferredID }) {
@@ -471,15 +472,16 @@ final class AuthManager {
         // Plex server. Probe candidates in priority order and require `/identity`
         // to return this server's machine identifier before accepting a URL.
         let ranked = ResourceDiscovery.rankedConnections(server.connections)
-        guard let url = await firstReachable(ranked,
-                                             token: serverToken,
-                                             expectedMachineIdentifier: server.clientIdentifier) else {
+        guard let selectedConnection = await firstReachable(ranked,
+                                                            token: serverToken,
+                                                            expectedMachineIdentifier: server.clientIdentifier) else {
             throw PlexError.serverUnreachable
         }
 
         appModel.selectedServer = server
         appModel.serverToken = serverToken
-        appModel.serverBaseURL = url
+        appModel.serverBaseURL = selectedConnection.url
+        appModel.selectedServerConnectionIsLocal = selectedConnection.isLocal
         if persist {
             keychain.selectedPlexServerID = server.clientIdentifier
         }
@@ -503,10 +505,11 @@ final class AuthManager {
     /// no candidate matches.
     private func firstReachable(_ ranked: [PlexConnection],
                                 token: String,
-                                expectedMachineIdentifier: String?) async -> URL? {
-        await withTaskGroup(of: (Int, URL)?.self) { group in
+                                expectedMachineIdentifier: String?) async -> (url: URL, isLocal: Bool)? {
+        await withTaskGroup(of: (Int, URL, Bool)?.self) { group in
             for (index, conn) in ranked.enumerated() {
                 guard let base = URL(string: conn.uri) else { continue }
+                let isLocal = conn.local
                 group.addTask {
                     var req = URLRequest(url: base.appendingPathComponent("identity"))
                     req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
@@ -520,16 +523,17 @@ final class AuthManager {
                            Self.plexMachineIdentifier(in: data) != expectedMachineIdentifier {
                             return nil
                         }
-                        return (index, base)
+                        return (index, base, isLocal)
                     } catch { /* unreachable / timed out */ }
                     return nil
                 }
             }
-            var best: (Int, URL)?
+            var best: (Int, URL, Bool)?
             for await result in group {
                 if let r = result, best == nil || r.0 < best!.0 { best = r }
             }
-            return best?.1
+            guard let best else { return nil }
+            return (best.1, best.2)
         }
     }
 
@@ -625,6 +629,7 @@ final class AuthManager {
             appModel.plexServers = []
             appModel.serverBaseURL = nil
             appModel.plexAccountProfile = nil
+            appModel.selectedServerConnectionIsLocal = false
         case .jellyfin:
             appModel.jellyfinServerBaseURL = nil
             appModel.jellyfinAccessToken = nil

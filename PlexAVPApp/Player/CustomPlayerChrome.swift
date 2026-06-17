@@ -121,11 +121,10 @@ struct CustomPlayerChrome: View {
                         .padding(.bottom, 18)
                 }
 
-                if let marker = controller.skipMarker.active, shouldShowChrome {
+                if let marker = controller.skipMarker.active {
                     HStack {
                         Spacer()
                         Button {
-                            revealChrome()
                             controller.skipCurrentMarker()
                         } label: {
                             Label(marker.kind.label, systemImage: marker.kind.systemImage)
@@ -167,6 +166,7 @@ struct CustomPlayerChrome: View {
         }
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
+        .animation(.easeInOut(duration: 0.18), value: controller.skipMarker.active != nil)
         .onAppear { revealChrome() }
         .onDisappear {
             hideTask?.cancel()
@@ -878,7 +878,7 @@ private struct CustomPlayerMenuPopover: View {
             QualityTabView(state: menuState) { kbps in
                 controller.reload(bitrateKbps: kbps)
                 menuState.selectedBitrateKbps = kbps
-                UserDefaults.standard.set(kbps, forKey: "maxVideoBitrateKbps")
+                PlaybackPreferences.setQualityKbps(kbps, forDefaultsKey: controller.qualityPreferenceDefaultsKey)
                 onClose()
             }
         case .subtitles:

@@ -3,14 +3,8 @@ import UIKit
 import UniformTypeIdentifiers
 import PMSKit
 
-/// Settings tab (#26): server info + reachability, default streaming quality, playback-pref
-/// reset, download storage usage, maintenance, About/diagnostics, and sign out.
-///
-/// The "Default Quality" picker (#21) and the in-player Quality tab are two views of the
-/// SAME persisted `@AppStorage("maxVideoBitrateKbps")` key and share one ladder
-/// (`StreamingQuality`): this picker sets the cap new playback sessions start at, while the
-/// in-player tab additionally reloads the live stream — a pick in either place is reflected
-/// in the other.
+/// Settings tab (#26/#47-#49): server info + reachability, playback experience controls,
+/// local/remote quality caps, download defaults/storage, maintenance, diagnostics, and sign out.
 struct SettingsView: View {
     let authManager: AuthManager
 
@@ -22,6 +16,8 @@ struct SettingsView: View {
     @State private var checkingPlexServers = false
     @State private var confirmingSignOut = false
     @State private var confirmingReset = false
+    @State private var confirmingRemoveAllDownloads = false
+    @State private var confirmingRemoveCompletedDownloads = false
     @State private var connectionStatus: ConnectionStatus = .unknown
     @State private var plexServerStatuses: [String: ConnectionStatus] = [:]
     /// Transient "done" feedback for the one-shot maintenance/About actions.
@@ -33,9 +29,15 @@ struct SettingsView: View {
     @State private var diagnosticExportDocument = DiagnosticReportDocument()
     @State private var switchingBackend: MediaBackendKind?
 
-    /// Default bitrate cap for NEW playback sessions — the same key the custom player seeds each
-    /// session from and the in-player Quality tab persists to. 8 Mbps default per spec.
-    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
+    @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
+    @AppStorage(PlaybackPreferences.Keys.remoteQualityKbps) private var remoteMaxVideoBitrateKbps = PlaybackPreferences.defaultRemoteQualityKbps
+    @AppStorage(PlaybackPreferences.Keys.autoPlayUpNext) private var autoPlayUpNext = true
+    @AppStorage(PlaybackPreferences.Keys.upNextCountdownSeconds) private var upNextCountdownSeconds = PlaybackPreferences.defaultUpNextCountdownSeconds
+    @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
+    @AppStorage(PlaybackPreferences.Keys.skipIntroMode) private var skipIntroModeRaw = PlaybackPreferences.SkipMode.manual.rawValue
+    @AppStorage(PlaybackPreferences.Keys.skipCreditsMode) private var skipCreditsModeRaw = PlaybackPreferences.SkipMode.manual.rawValue
+    @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
+    @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
     @AppStorage(AppDiagnostics.enabledDefaultsKey) private var diagnosticLoggingEnabled = false
     @AppStorage(PlaybackPreferenceKeys.preferredAudioLanguage) private var preferredAudioLanguage = ""
@@ -55,6 +57,11 @@ struct SettingsView: View {
             accountSection
         }
         .navigationTitle("Settings")
+        .onAppear {
+            PlaybackPreferences.migrateLegacyQualityIfNeeded()
+            homeMaxVideoBitrateKbps = PlaybackPreferences.qualityKbps(forDefaultsKey: PlaybackPreferences.Keys.homeQualityKbps)
+            remoteMaxVideoBitrateKbps = PlaybackPreferences.qualityKbps(forDefaultsKey: PlaybackPreferences.Keys.remoteQualityKbps)
+        }
         .fileExporter(isPresented: $exportingDiagnostics,
                       document: diagnosticExportDocument,
                       contentType: .plainText,
@@ -65,12 +72,47 @@ struct SettingsView: View {
 
     private var playbackSection: some View {
         SwiftUI.Section {
-            Picker(selection: $maxVideoBitrateKbps) {
-                ForEach(StreamingQuality.ladder) { option in
-                    Text(StreamingQuality.label(kbps: option.kbps)).tag(option.kbps)
-                }
+            Picker(selection: $homeMaxVideoBitrateKbps) {
+                qualityRows
             } label: {
-                Label("Default Quality", systemImage: "slider.horizontal.3")
+                Label("Home / Local Quality", systemImage: "house")
+            }
+            .onChange(of: homeMaxVideoBitrateKbps) { _, newValue in
+                PlaybackPreferences.setQualityKbps(newValue, forDefaultsKey: PlaybackPreferences.Keys.homeQualityKbps)
+            }
+
+            Picker(selection: $remoteMaxVideoBitrateKbps) {
+                qualityRows
+            } label: {
+                Label("Internet / Remote Quality", systemImage: "globe")
+            }
+            .onChange(of: remoteMaxVideoBitrateKbps) { _, newValue in
+                PlaybackPreferences.setQualityKbps(newValue, forDefaultsKey: PlaybackPreferences.Keys.remoteQualityKbps)
+            }
+
+            Toggle(isOn: $autoPlayUpNext) {
+                Label("Auto Play Up Next", systemImage: "forward.end")
+            }
+
+            Picker("Up Next Countdown", selection: $upNextCountdownSeconds) {
+                ForEach([0, 5, 10, 15, 30, 60], id: \.self) { seconds in
+                    Text(seconds == 0 ? "Immediate" : "\(seconds)s").tag(seconds)
+                }
+            }
+            .disabled(!autoPlayUpNext)
+
+            Picker("Rewind on Resume", selection: $resumeRewindSeconds) {
+                ForEach([0, 5, 10, 15, 30, 60], id: \.self) { seconds in
+                    Text(seconds == 0 ? "None" : "\(seconds)s").tag(seconds)
+                }
+            }
+
+            Picker("Skip Intro", selection: skipIntroModeBinding) {
+                skipModeRows
+            }
+
+            Picker("Skip Credits", selection: skipCreditsModeBinding) {
+                skipModeRows
             }
 
             Picker(selection: $preferredAudioLanguage) {
@@ -119,14 +161,37 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var qualityRows: some View {
+        ForEach(StreamingQuality.ladder) { option in
+            Text(StreamingQuality.label(kbps: option.kbps)).tag(option.kbps)
+        }
+    }
+
+    @ViewBuilder
+    private var skipModeRows: some View {
+        ForEach(PlaybackPreferences.SkipMode.allCases) { mode in
+            Text(mode.label).tag(mode.rawValue)
+        }
+    }
+
+    private var skipIntroModeBinding: Binding<String> {
+        Binding(get: { skipIntroModeRaw }, set: { skipIntroModeRaw = $0 })
+    }
+
+    private var skipCreditsModeBinding: Binding<String> {
+        Binding(get: { skipCreditsModeRaw }, set: { skipCreditsModeRaw = $0 })
+    }
+
     private var playbackFooter: String {
+        let active = "Current \(appModel.activeStreamingQualityScopeLabel) cap: \(StreamingQuality.label(kbps: appModel.activeStreamingQualityKbps))."
         switch appModel.activeBackend {
         case .plex:
             let subtitleMode = SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual
             let burnMode = SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic
-            return "The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \(subtitleMode.help) \(burnMode.help)"
+            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. \(subtitleMode.help) \(burnMode.help)"
         case .jellyfin:
-            return "The quality new Jellyfin streams start at. Changing quality inside the player reopens the Jellyfin stream with the same cap."
+            return active + " Jellyfin currently uses the Internet/Remote cap. Skip modes are honored when marker data exists."
         }
     }
 
@@ -342,18 +407,77 @@ struct SettingsView: View {
     // MARK: Storage
 
     private var storageSection: some View {
-        SwiftUI.Section("Downloads") {
+        SwiftUI.Section {
+            Picker(selection: $defaultDownloadQuality) {
+                Text("Original when available").tag("Original")
+                ForEach(downloadQualityPresets, id: \.self) { preset in
+                    Text(preset).tag(preset)
+                }
+            } label: {
+                Label("Default Quality", systemImage: "arrow.down.circle")
+            }
+
+            Picker(selection: $downloadStorageLimitBytes) {
+                ForEach(DownloadStorageLimit.options) { option in
+                    Text(option.label).tag(option.bytes)
+                }
+            } label: {
+                Label("Storage Limit", systemImage: "internaldrive")
+            }
+
             LabeledContent {
                 Text("\(downloadManager.records.count)")
             } label: {
-                Label("Items", systemImage: "arrow.down.circle")
+                Label("Items", systemImage: "tray.full")
             }
             LabeledContent {
                 Text(formattedStorage)
             } label: {
-                Label("Storage used", systemImage: "internaldrive")
+                Label("Storage used", systemImage: "externaldrive")
             }
+
+            if downloadManager.records.contains(where: { $0.isComplete }) {
+                Button(role: .destructive) {
+                    confirmingRemoveCompletedDownloads = true
+                } label: {
+                    Label("Remove completed downloads", systemImage: "trash")
+                }
+            }
+
+            if !downloadManager.records.isEmpty {
+                Button(role: .destructive) {
+                    confirmingRemoveAllDownloads = true
+                } label: {
+                    Label("Remove all downloads", systemImage: "trash.slash")
+                }
+            }
+        } header: {
+            Text("Downloads")
+        } footer: {
+            Text("Download quality is the default for new downloads; Original still appears only when feasible. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically.")
         }
+        .confirmationDialog("Remove completed downloads?", isPresented: $confirmingRemoveCompletedDownloads, titleVisibility: .visible) {
+            Button("Remove Completed", role: .destructive) {
+                downloadManager.deleteCompletedDownloads()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Remove all downloads?", isPresented: $confirmingRemoveAllDownloads, titleVisibility: .visible) {
+            Button("Remove All", role: .destructive) {
+                downloadManager.deleteAllDownloads()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cancels active transfers and removes downloaded files from this device.")
+        }
+    }
+
+    private var downloadQualityPresets: [String] {
+        [
+            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
+            "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
+            "720p 2 Mbps", "480p 1.5 Mbps"
+        ]
     }
 
     private var formattedStorage: String {
@@ -480,7 +604,7 @@ struct SettingsView: View {
             backend: appModel.activeBackend.displayName,
             server: diagnosticServerLine,
             connectionScheme: diagnosticConnectionScheme,
-            selectedQuality: StreamingQuality.label(kbps: maxVideoBitrateKbps),
+            selectedQuality: "Home: \(StreamingQuality.label(kbps: homeMaxVideoBitrateKbps)); Remote: \(StreamingQuality.label(kbps: remoteMaxVideoBitrateKbps))",
             loggingEnabled: diagnosticLoggingEnabled
         ))
     }
@@ -571,8 +695,8 @@ struct SettingsView: View {
             ) {
                 Button("Reset", role: .destructive) {
                     // Clears speed + subtitle/audio-language keys (single source of truth in
-                    // PlaybackController). Deliberately leaves `maxVideoBitrateKbps` alone —
-                    // the Default Quality picker owns it.
+                    // PlaybackController). Deliberately leaves quality/up-next/download defaults
+                    // alone because their Settings controls own them.
                     let defaults = UserDefaults.standard
                     for key in PlaybackController.persistedPreferenceKeys {
                         defaults.removeObject(forKey: key)
@@ -581,7 +705,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Clears the remembered playback speed and subtitle/audio language. Default Quality is unaffected.")
+                Text("Clears the remembered playback speed and subtitle/audio language. Quality, Up Next, skip, and download defaults are unaffected.")
             }
 
             Button(role: .destructive) {
