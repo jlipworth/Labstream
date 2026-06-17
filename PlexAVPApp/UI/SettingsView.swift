@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import PMSKit
 
 /// Settings tab (#26): server info + reachability, default streaming quality, playback-pref
@@ -24,6 +25,9 @@ struct SettingsView: View {
     @State private var clearedImageCache = false
     @State private var resetPlaybackPrefs = false
     @State private var copiedDiagnostics = false
+    @State private var copiedDiagnosticsResetID: UUID?
+    @State private var exportingDiagnostics = false
+    @State private var diagnosticExportDocument = DiagnosticReportDocument()
     @State private var switchingBackend: MediaBackendKind?
 
     /// Default bitrate cap for NEW playback sessions — the same key the custom player seeds each
@@ -44,6 +48,10 @@ struct SettingsView: View {
             accountSection
         }
         .navigationTitle("Settings")
+        .fileExporter(isPresented: $exportingDiagnostics,
+                      document: diagnosticExportDocument,
+                      contentType: .plainText,
+                      defaultFilename: "VisionPlex-Diagnostic-Report") { _ in }
     }
 
     // MARK: Playback
@@ -266,6 +274,7 @@ struct SettingsView: View {
             Button {
                 UIPasteboard.general.string = diagnosticReportText
                 copiedDiagnostics = true
+                scheduleCopiedDiagnosticsReset()
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_copied", fields: [
                     "events_in_buffer": .int(AppDiagnostics.events().count),
                     "logging_enabled": .bool(diagnosticLoggingEnabled),
@@ -277,10 +286,21 @@ struct SettingsView: View {
                     Label("Copy diagnostic report", systemImage: "doc.on.doc")
                 }
             }
+
+            Button {
+                diagnosticExportDocument = DiagnosticReportDocument(text: diagnosticReportText)
+                exportingDiagnostics = true
+                AppDiagnostics.record(.settingsUI, "diagnostics.report_export_requested", fields: [
+                    "events_in_buffer": .int(AppDiagnostics.events().count),
+                    "logging_enabled": .bool(diagnosticLoggingEnabled),
+                ])
+            } label: {
+                Label("Export diagnostic report file", systemImage: "square.and.arrow.up")
+            }
         } header: {
             Text("Diagnostics")
         } footer: {
-            Text("Logging is off by default. When enabled, VisionPlex keeps a bounded local ring buffer for bug reports. Reports are copied only when you tap the button, and sensitive values are omitted.")
+            Text("Logging is off by default. When enabled, VisionPlex keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted.")
         }
     }
 
@@ -336,6 +356,17 @@ struct SettingsView: View {
             selectedQuality: StreamingQuality.label(kbps: maxVideoBitrateKbps),
             loggingEnabled: diagnosticLoggingEnabled
         ))
+    }
+
+    private func scheduleCopiedDiagnosticsReset() {
+        let resetID = UUID()
+        copiedDiagnosticsResetID = resetID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard copiedDiagnosticsResetID == resetID else { return }
+            copiedDiagnostics = false
+            copiedDiagnosticsResetID = nil
+        }
     }
 
     private var diagnosticServerLine: String? {
@@ -424,5 +455,23 @@ struct SettingsView: View {
                 Text(signOutConfirmationMessage)
             }
         }
+    }
+}
+
+private struct DiagnosticReportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.plainText] }
+
+    var text: String = ""
+
+    init(text: String = "") {
+        self.text = text
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        text = ""
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }
