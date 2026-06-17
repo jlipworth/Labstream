@@ -10,8 +10,9 @@ struct HomeView: View {
     @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var jellyfinRails: [JellyfinHomeRail] = []
     @State private var loadState: LoadState = .idle
-    /// The server the current hubs were loaded from (pop-back no-op guard).
-    @State private var loadedServer: URL?
+    /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
+    /// Includes selected Plex server id because multiple servers can resolve through the same URL.
+    @State private var loadedIdentity: String?
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -73,7 +74,7 @@ struct HomeView: View {
     private var loadIdentity: String {
         switch appModel.activeBackend {
         case .plex:
-            return "plex:\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+            return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
         case .jellyfin:
             return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
         }
@@ -109,8 +110,8 @@ struct HomeView: View {
         // `.task` also re-fires every time the stack pops back to Home; without this
         // guard the rails reload and dump the scroll position the user returned to.
         // A real server change (different URL) still reloads.
-        let activeServer = appModel.activeBackend == .jellyfin ? appModel.jellyfinServerBaseURL : appModel.serverBaseURL
-        if !force, loadedServer == activeServer, case .loaded = loadState { return }
+        let activeIdentity = loadIdentity
+        if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
@@ -118,7 +119,7 @@ struct HomeView: View {
                 let views = try await service.userViewLinks()
                 jellyfinViews = views
                 jellyfinRails = try await service.homeRails(for: views)
-                loadedServer = activeServer
+                loadedIdentity = activeIdentity
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -135,7 +136,7 @@ struct HomeView: View {
         do {
             let resp = try await appModel.client.send(req, as: HubsResponse.self)
             hubs = resp.mediaContainer.hub
-            loadedServer = server
+            loadedIdentity = activeIdentity
             loadState = .loaded
             // System integration (#24): make the just-browsed items findable in
             // Spotlight, and refresh the "Play <title> on VisionPlex" Siri phrase

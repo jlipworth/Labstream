@@ -61,7 +61,7 @@ struct LibrariesView: View {
     private var loadIdentity: String {
         switch appModel.activeBackend {
         case .plex:
-            return "plex:\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+            return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
         case .jellyfin:
             return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
         }

@@ -18,9 +18,12 @@ struct SettingsView: View {
     @Environment(DownloadManager.self) private var downloadManager
 
     @State private var rediscovering = false
+    @State private var selectingPlexServerID: String?
+    @State private var checkingPlexServers = false
     @State private var confirmingSignOut = false
     @State private var confirmingReset = false
     @State private var connectionStatus: ConnectionStatus = .unknown
+    @State private var plexServerStatuses: [String: ConnectionStatus] = [:]
     /// Transient "done" feedback for the one-shot maintenance/About actions.
     @State private var clearedImageCache = false
     @State private var resetPlaybackPrefs = false
@@ -35,6 +38,10 @@ struct SettingsView: View {
     @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
     @AppStorage(AppDiagnostics.enabledDefaultsKey) private var diagnosticLoggingEnabled = false
+    @AppStorage(PlaybackPreferenceKeys.preferredAudioLanguage) private var preferredAudioLanguage = ""
+    @AppStorage(PlaybackPreferenceKeys.preferredSubtitleLanguage) private var preferredSubtitleLanguage = ""
+    @AppStorage(PlaybackPreferenceKeys.subtitleAutoSelectMode) private var subtitleAutoSelectModeRaw = SubtitleAutoSelectMode.manual.rawValue
+    @AppStorage(PlaybackPreferenceKeys.subtitleBurnMode) private var subtitleBurnModeRaw = SubtitleBurnMode.automatic.rawValue
 
     var body: some View {
         Form {
@@ -65,6 +72,46 @@ struct SettingsView: View {
             } label: {
                 Label("Default Quality", systemImage: "slider.horizontal.3")
             }
+
+            Picker(selection: $preferredAudioLanguage) {
+                ForEach(PlaybackLanguageOption.common) { option in
+                    Text(option.label).tag(option.id)
+                }
+            } label: {
+                Label("Preferred Audio", systemImage: "speaker.wave.2")
+            }
+
+            Picker(selection: Binding(
+                get: { preferredSubtitleLanguage },
+                set: { language in
+                    preferredSubtitleLanguage = language
+                    UserDefaults.standard.set(false, forKey: PlaybackPreferenceKeys.subtitlesOff)
+                }
+            )) {
+                ForEach(PlaybackLanguageOption.common) { option in
+                    Text(option.label).tag(option.id)
+                }
+            } label: {
+                Label("Preferred Subtitles", systemImage: "captions.bubble")
+            }
+
+            Picker("Auto-select Subtitles", selection: Binding(
+                get: { SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual },
+                set: { subtitleAutoSelectModeRaw = $0.rawValue }
+            )) {
+                ForEach(SubtitleAutoSelectMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+
+            Picker("Burn Subtitles", selection: Binding(
+                get: { SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic },
+                set: { subtitleBurnModeRaw = $0.rawValue }
+            )) {
+                ForEach(SubtitleBurnMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
         } header: {
             Text("Playback")
         } footer: {
@@ -75,7 +122,9 @@ struct SettingsView: View {
     private var playbackFooter: String {
         switch appModel.activeBackend {
         case .plex:
-            return "The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \"Maximum (transcoded)\" always transcodes."
+            let subtitleMode = SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual
+            let burnMode = SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic
+            return "The quality new streams start at. Changing quality inside the player updates this too. \"Direct Play / Maximum\" plays the original file directly when the server can, otherwise it transcodes at maximum. \(subtitleMode.help) \(burnMode.help)"
         case .jellyfin:
             return "The quality new Jellyfin streams start at. Changing quality inside the player reopens the Jellyfin stream with the same cap."
         }
@@ -131,6 +180,43 @@ struct SettingsView: View {
         SwiftUI.Section("Server") {
             switch appModel.activeBackend {
             case .plex:
+                if appModel.plexServers.isEmpty {
+                    Text("No Plex servers discovered.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Picker("Plex Server", selection: Binding(
+                        get: { appModel.selectedServer?.clientIdentifier ?? "" },
+                        set: { serverID in
+                            guard !serverID.isEmpty,
+                                  serverID != appModel.selectedServer?.clientIdentifier else { return }
+                            selectingPlexServerID = serverID
+                            Task {
+                                do {
+                                    try await authManager.selectPlexServer(id: serverID)
+                                    plexServerStatuses[serverID] = .reachable(.now)
+                                } catch {
+                                    plexServerStatuses[serverID] = .unreachable(.now)
+                                }
+                                connectionStatus = .unknown
+                                selectingPlexServerID = nil
+                            }
+                        })) {
+                            ForEach(appModel.plexServers) { server in
+                                Text(serverPickerLabel(server))
+                                    .tag(server.clientIdentifier)
+                            }
+                        }
+                        .disabled(selectingPlexServerID != nil)
+                    if let selectingPlexServerID,
+                       let server = appModel.plexServers.first(where: { $0.clientIdentifier == selectingPlexServerID }) {
+                        HStack {
+                            ProgressView()
+                            Text("Selecting \(server.name)…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
                 if let server = appModel.selectedServer {
                     LabeledContent("Name", value: server.name)
                     if let version = server.productVersion, !version.isEmpty {
@@ -144,11 +230,23 @@ struct SettingsView: View {
                     connectionStatusRow
                 }
                 Button {
+                    Task { await checkPlexServerReachability() }
+                } label: {
+                    if checkingPlexServers {
+                        ProgressView()
+                    } else {
+                        Label("Check server reachability", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                }
+                .disabled(checkingPlexServers || appModel.plexServers.isEmpty)
+
+                Button {
                     Task {
                         rediscovering = true
                         try? await authManager.refreshServers()
                         rediscovering = false
                         connectionStatus = .unknown
+                        plexServerStatuses.removeAll()
                     }
                 } label: {
                     if rediscovering {
@@ -178,38 +276,67 @@ struct SettingsView: View {
         }
     }
 
-    /// Status dot + last-checked time, with the whole row acting as "check now".
+    /// Status dot + last-checked time. The explicit "Check server reachability" row below is
+    /// the action; keeping this display-only avoids visionOS rendering the row as a giant button.
     private var connectionStatusRow: some View {
-        Button {
-            Task {
-                connectionStatus = .checking
-                let ok = await authManager.probeSelectedServer()
-                connectionStatus = ok ? .reachable(.now) : .unreachable(.now)
-            }
-        } label: {
-            LabeledContent {
-                switch connectionStatus {
-                case .unknown:
-                    Text("Tap to check")
-                case .checking:
-                    ProgressView()
-                case .reachable(let date):
-                    Label(checkedAt(date), systemImage: "circle.fill")
-                        .foregroundStyle(.green)
-                case .unreachable(let date):
-                    Label(checkedAt(date), systemImage: "circle.fill")
-                        .foregroundStyle(.red)
-                }
-            } label: {
-                Label("Status", systemImage: "dot.radiowaves.left.and.right")
+        HStack(spacing: 12) {
+            Text("Status")
+            Spacer()
+            switch connectionStatus {
+            case .unknown:
+                Text("Not checked")
+                    .foregroundStyle(.secondary)
+            case .checking:
+                ProgressView()
+            case .reachable(let date):
+                statusValue(checkedAt(date), color: .green)
+            case .unreachable(let date):
+                statusValue(checkedAt(date), color: .red)
             }
         }
-        .buttonStyle(.plain)
-        .disabled(connectionStatus == .checking)
+    }
+
+    private func statusValue(_ text: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 12, height: 12)
+            Text(text)
+                .foregroundStyle(color)
+        }
     }
 
     private func checkedAt(_ date: Date) -> String {
         "Checked \(date.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private func serverPickerLabel(_ server: PlexDevice) -> String {
+        var label = server.name
+        switch plexServerStatuses[server.clientIdentifier] {
+        case .reachable:
+            label += " · Reachable"
+        case .unreachable:
+            label += " · Unreachable"
+        case .checking:
+            label += " · Checking"
+        case .unknown, nil:
+            break
+        }
+        return label
+    }
+
+    private func checkPlexServerReachability() async {
+        checkingPlexServers = true
+        for server in appModel.plexServers {
+            plexServerStatuses[server.clientIdentifier] = .checking
+            let ok = await authManager.probePlexServer(id: server.clientIdentifier)
+            plexServerStatuses[server.clientIdentifier] = ok ? .reachable(.now) : .unreachable(.now)
+        }
+        if let selectedID = appModel.selectedServer?.clientIdentifier,
+           case let status? = plexServerStatuses[selectedID] {
+            connectionStatus = status
+        }
+        checkingPlexServers = false
     }
 
     // MARK: Storage
@@ -402,6 +529,28 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         SwiftUI.Section {
+            switch appModel.activeBackend {
+            case .plex:
+                LabeledContent {
+                    Text(appModel.plexAccountProfile?.displayName ?? "Unavailable")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } label: {
+                    Label("Signed In As", systemImage: "person.crop.circle")
+                }
+                if let username = appModel.plexAccountProfile?.username, !username.isEmpty,
+                   username != appModel.plexAccountProfile?.displayName {
+                    LabeledContent("Username", value: username)
+                }
+                Button {
+                    Task { await authManager.refreshPlexAccountProfile() }
+                } label: {
+                    Label("Refresh account identity", systemImage: "person.crop.circle.badge.checkmark")
+                }
+            case .jellyfin:
+                EmptyView()
+            }
+
             // Reset lives down here next to Sign Out: both are rarely-used, destructive-ish
             // account actions, so they're grouped away from the everyday playback toggles.
             Button(role: .destructive) {

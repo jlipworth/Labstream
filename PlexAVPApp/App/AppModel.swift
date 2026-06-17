@@ -49,8 +49,15 @@ final class AppModel {
     /// The server the user has selected from discovery.
     var selectedServer: PlexDevice?
 
+    /// Plex servers discovered for the signed-in account. Kept in app state so
+    /// Settings can present a real picker instead of forcing first-reachable.
+    var plexServers: [PlexDevice] = []
+
     /// The resolved base URL for `selectedServer` (best-ranked connection).
     var serverBaseURL: URL?
+
+    /// Non-secret display metadata for the signed-in Plex account.
+    var plexAccountProfile: PlexAccountProfile?
 
     /// Jellyfin session state. These mirror the Plex fields above but are intentionally
     /// separate so a Jellyfin sign-in never clobbers Plex credentials.
