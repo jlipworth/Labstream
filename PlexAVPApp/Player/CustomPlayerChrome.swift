@@ -174,6 +174,7 @@ struct CustomPlayerChrome: View {
             trickPlayPreviewTask?.cancel()
         }
         .onChange(of: controller.transport.isPaused) { _, _ in scheduleChromeHideIfNeeded() }
+        .onChange(of: controller.transport.pauseRequested) { _, _ in scheduleChromeHideIfNeeded() }
         .onChange(of: controller.playbackError.isFailed) { _, _ in
             scheduleChromeHideIfNeeded()
             considerBandwidthToast()
@@ -188,7 +189,7 @@ struct CustomPlayerChrome: View {
     }
 
     private var shouldShowChrome: Bool {
-        chromeVisible || controller.transport.isPaused || controller.playbackError.isFailed || isReconnecting || selectedMenu != nil
+        chromeVisible || controller.transport.showsPausedControl || controller.playbackError.isFailed || isReconnecting || selectedMenu != nil
     }
 
     private var topChrome: some View {
@@ -252,9 +253,10 @@ struct CustomPlayerChrome: View {
             HStack(spacing: 16) {
                 Button(action: {
                     revealChrome()
-                    togglePlayback()
+                    controller.togglePlayback()
+                    scheduleChromeHideIfNeeded()
                 }) {
-                    Image(systemName: controller.transport.isPaused ? "play.fill" : "pause.fill")
+                    Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
                         .font(.title2.weight(.semibold))
                         .frame(width: 44, height: 44)
                 }
@@ -485,11 +487,28 @@ struct CustomPlayerChrome: View {
     }
 
     private var bufferingCard: some View {
-        ProgressView("Buffering…")
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial, in: Capsule())
-            .allowsHitTesting(false)
+        VStack(spacing: 10) {
+            ProgressView(controller.transport.showsPausedControl ? "Paused — buffering…" : "Buffering…")
+            Text(controller.transport.showsPausedControl
+                 ? "Playback will stay paused once the stream is ready."
+                 : "You can pause now and let the stream build buffer before playing.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                revealChrome(keepVisible: true)
+                controller.togglePlayback()
+            } label: {
+                Label(controller.transport.showsPausedControl ? "Play when ready" : "Pause while loading",
+                      systemImage: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: 340)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private func considerBandwidthToast() {
@@ -621,15 +640,6 @@ struct CustomPlayerChrome: View {
         revealChrome()
     }
 
-    private func togglePlayback() {
-        if controller.transport.isPaused {
-            controller.player.play()
-        } else {
-            controller.player.pause()
-        }
-        scheduleChromeHideIfNeeded()
-    }
-
     private func toggleCinemaMode() async {
         switch cinemaSession.presentationState {
         case .closed:
@@ -701,14 +711,14 @@ struct CustomPlayerChrome: View {
 
     private func scheduleChromeHideIfNeeded() {
         hideTask?.cancel()
-        guard !controller.transport.isPaused,
+        guard !controller.transport.showsPausedControl,
               !controller.playbackError.isFailed,
               !isReconnecting,
               selectedMenu == nil else { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled,
-                  !controller.transport.isPaused,
+                  !controller.transport.showsPausedControl,
                   !controller.playbackError.isFailed,
                   !isReconnecting,
                   selectedMenu == nil else { return }
