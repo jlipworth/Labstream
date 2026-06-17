@@ -22,6 +22,9 @@ struct SettingsView: View {
     @State private var plexServerStatuses: [String: ConnectionStatus] = [:]
     /// Transient "done" feedback for the one-shot maintenance/About actions.
     @State private var clearedImageCache = false
+    @State private var clearedImageCacheResetID: UUID?
+    @State private var clearedSpotlightIndex = false
+    @State private var clearedSpotlightIndexResetID: UUID?
     @State private var resetPlaybackPrefs = false
     @State private var copiedDiagnostics = false
     @State private var copiedDiagnosticsResetID: UUID?
@@ -494,6 +497,7 @@ struct SettingsView: View {
                 // bespoke image cache, so this is the whole story.
                 URLCache.shared.removeAllCachedResponses()
                 clearedImageCache = true
+                scheduleClearedImageCacheReset()
             } label: {
                 if clearedImageCache {
                     Label("Cache cleared", systemImage: "checkmark")
@@ -502,10 +506,52 @@ struct SettingsView: View {
                 }
             }
             .disabled(clearedImageCache)
+
+            Button {
+                SpotlightIndexer.deleteAll { ok in
+                    Task { @MainActor in
+                        clearedSpotlightIndex = ok
+                        if ok { scheduleClearedSpotlightIndexReset() }
+                        AppDiagnostics.record(.settingsUI, "spotlight_index.clear_requested", fields: [
+                            "accepted": .bool(ok),
+                        ])
+                    }
+                }
+            } label: {
+                if clearedSpotlightIndex {
+                    Label("Spotlight index cleared", systemImage: "checkmark")
+                } else {
+                    Label("Clear Spotlight search results", systemImage: "magnifyingglass.circle")
+                }
+            }
+            .disabled(clearedSpotlightIndex)
         } header: {
             Text("Maintenance")
         } footer: {
-            Text("Artwork re-downloads on next view.")
+            Text("Artwork re-downloads on next view. Clearing Spotlight removes VisionPlex media from system search; browsing Home or library pages again repopulates results.")
+        }
+    }
+
+
+    private func scheduleClearedImageCacheReset() {
+        let resetID = UUID()
+        clearedImageCacheResetID = resetID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard clearedImageCacheResetID == resetID else { return }
+            clearedImageCache = false
+            clearedImageCacheResetID = nil
+        }
+    }
+
+    private func scheduleClearedSpotlightIndexReset() {
+        let resetID = UUID()
+        clearedSpotlightIndexResetID = resetID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard clearedSpotlightIndexResetID == resetID else { return }
+            clearedSpotlightIndex = false
+            clearedSpotlightIndexResetID = nil
         }
     }
 
