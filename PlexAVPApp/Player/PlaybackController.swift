@@ -160,6 +160,13 @@ final class PlaybackController {
     /// Mutable: the in-player quality menu rebuilds the stream at a new cap via
     /// `reload(bitrateKbps:)`. `0` is the sentinel for "Maximum / Original" (no cap).
     private(set) var maxVideoBitrateKbps: Int
+
+    /// The user's explicit quality ceiling for this session. Automatic adaptation may move the
+    /// active `maxVideoBitrateKbps` down/up inside this ceiling, but never writes preferences or
+    /// climbs above what the viewer selected. Manual Quality picks update this and reset the
+    /// automatic state machine.
+    private var userSelectedMaxVideoBitrateKbps: Int
+
     private let qualityDefaultsKey: String
     var qualityPreferenceDefaultsKey: String { qualityDefaultsKey }
 
@@ -255,6 +262,16 @@ final class PlaybackController {
     /// top of every `startStreaming`.
     private var directPlayFallbackArmed = false
     private var suppressDirectPlayProbe = false
+
+    /// Client-driven ABR state machine (#29). True ABR is a server HLS ladder; when Plex/Jellyfin
+    /// hands us one concrete stream instead, this policy approximates adaptive playback by
+    /// reopening at bounded rungs after sustained stall/down and sustained healthy playback/up.
+    /// The pure anti-oscillation rules live in PMSKit tests; this controller owns the player and
+    /// backend reopen side effects.
+    private var adaptiveBitratePolicy = AdaptiveBitratePolicy(
+        transcodedRungsKbps: StreamingQuality.ladder.map(\.kbps).filter {
+            $0 > 0 && $0 < StreamingQuality.maxTranscodedKbps
+        })
 
     /// Server-safe final-target rebuild policy (#33 reset). A drag can emit many
     /// `timeJumpedNotification`s, but PMS must only see one intentional rebuild at the final
@@ -490,6 +507,7 @@ final class PlaybackController {
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.userSelectedMaxVideoBitrateKbps = maxVideoBitrateKbps
         self.qualityDefaultsKey = qualityDefaultsKey
         self.mediaIndex = mediaIndex
         self.machineIdentifier = machineIdentifier
@@ -519,6 +537,7 @@ final class PlaybackController {
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.userSelectedMaxVideoBitrateKbps = maxVideoBitrateKbps
         self.qualityDefaultsKey = qualityDefaultsKey
         // A local file is already one concrete version on disk; no version selection.
         self.mediaIndex = 0
@@ -559,6 +578,7 @@ final class PlaybackController {
         self.server = nil
         self.token = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
+        self.userSelectedMaxVideoBitrateKbps = maxVideoBitrateKbps
         self.qualityDefaultsKey = qualityDefaultsKey
         // A backend-resolved URL is already one concrete stream.
         self.mediaIndex = 0
@@ -1301,11 +1321,15 @@ final class PlaybackController {
     /// Only valid for reopenable sessions; a no-op for local files/static streams.
     func reload(bitrateKbps: Int) {
         guard supportsQualityReload else { return }
-        guard bitrateKbps != maxVideoBitrateKbps else { return }
+        let previousActiveKbps = maxVideoBitrateKbps
+        userSelectedMaxVideoBitrateKbps = bitrateKbps
+        adaptiveBitratePolicy.reset()
+        guard bitrateKbps != previousActiveKbps else { return }
         recordPlaybackDiagnostic("playback.quality_change", fields: [
-            "from_quality": .label(StreamingQuality.label(kbps: maxVideoBitrateKbps)),
+            "from_quality": .label(StreamingQuality.label(kbps: previousActiveKbps)),
             "to_quality": .label(StreamingQuality.label(kbps: bitrateKbps)),
             "resume": .millisecondsBucket(currentResumeMs),
+            "automatic_adaptation_reset": .bool(true),
         ])
         maxVideoBitrateKbps = bitrateKbps
         // Snapshot position so we can resume where the viewer was.
@@ -1337,6 +1361,7 @@ final class PlaybackController {
             "uses_remote_reopener": .bool(remoteStreamReopener != nil),
         ])
         finalTargetRebuildPolicy.reset()
+        adaptiveBitratePolicy.reset()
         playbackError.clear()
         removeObservers()
         if remoteStreamReopener != nil {
@@ -2034,6 +2059,7 @@ final class PlaybackController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.diagnostics.sample(player: self.player)
+                self.maybeAdaptBitrateAfterHealthyPlayback()
                 self.maybeRecordDiagnosticSnapshot()
             }
         }
@@ -2838,9 +2864,10 @@ final class PlaybackController {
     /// watchdog cancelled itself without surfacing and stranded the viewer on AVKit's spinner
     /// with no Retry. Keying on `timeControlStatus` still spares a normal pause (which reports
     /// `.paused`, not `.waitingToPlayAtSpecifiedRate`).
-    /// We surface DIRECTLY (no silent auto-retry): the watchdog already gave the stream 15s to
-    /// recover, and over a dead network a retry would just stall again. The overlay's Retry
-    /// rebuilds the session once the user's connection is back.
+    /// First tries a bounded client-driven ABR downshift for reopenable Plex/Jellyfin streams:
+    /// if the server only gave AVPlayer one rendition, a lower-cap reopen is the cheapest
+    /// approximation of a bitrate downshift. Once the session reaches the lowest rung (or for
+    /// non-reopenable/static streams), the same visible Retry failure path remains terminal.
     private func handleStallTimeout() {
         cancelStallWatchdog()
         guard !playbackError.isFailed, let current = player.currentItem else { return }
@@ -2848,6 +2875,11 @@ final class PlaybackController {
               !current.isPlaybackLikelyToKeepUp else { return }
         var fields = runtimeSnapshotFields()
         fields["keep_up"] = .bool(current.isPlaybackLikelyToKeepUp)
+
+        if attemptAdaptiveBitrateFallback(fields: fields) {
+            return
+        }
+
         if let underlying = current.error {
             fields["error"] = .error(underlying)
             recordPlaybackDiagnostic("playback.stall_watchdog_fired", fields: fields)
@@ -2862,6 +2894,61 @@ final class PlaybackController {
                 userInfo: [NSLocalizedDescriptionKey:
                     "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."]))
         }
+    }
+
+    private func attemptAdaptiveBitrateFallback(fields baseFields: [String: DiagnosticFieldValue]) -> Bool {
+        guard supportsQualityReload else { return false }
+        guard let decision = adaptiveBitratePolicy.recordStall(
+            now: ProcessInfo.processInfo.systemUptime,
+            currentKbps: maxVideoBitrateKbps,
+            userSelectedMaximumKbps: userSelectedMaxVideoBitrateKbps) else { return false }
+        return applyAdaptiveBitrateDecision(decision, baseFields: baseFields)
+    }
+
+    private func maybeAdaptBitrateAfterHealthyPlayback() {
+        guard supportsQualityReload, !playbackError.isFailed, !userWantsPaused,
+              player.timeControlStatus == .playing else { return }
+        guard let decision = adaptiveBitratePolicy.recordHealthyPlayback(
+            now: ProcessInfo.processInfo.systemUptime,
+            currentKbps: maxVideoBitrateKbps,
+            userSelectedMaximumKbps: userSelectedMaxVideoBitrateKbps,
+            bufferedAheadSeconds: diagnostics.bufferedAheadSeconds,
+            likelyToKeepUp: diagnostics.likelyToKeepUp,
+            observedBitrateKbps: diagnostics.observedBitrateKbps) else { return }
+        _ = applyAdaptiveBitrateDecision(decision, baseFields: runtimeSnapshotFields())
+    }
+
+    private func applyAdaptiveBitrateDecision(_ decision: AdaptiveBitratePolicy.Decision,
+                                              baseFields: [String: DiagnosticFieldValue]) -> Bool {
+        guard decision.targetKbps != maxVideoBitrateKbps else { return false }
+        let previousActiveKbps = maxVideoBitrateKbps
+        let resumeMs = currentResumeMs
+        var fields = baseFields
+        fields["direction"] = .label(decision.direction.rawValue)
+        fields["reason"] = .label(decision.reason)
+        fields["from_quality"] = .label(StreamingQuality.label(kbps: previousActiveKbps))
+        fields["to_quality"] = .label(StreamingQuality.label(kbps: decision.targetKbps))
+        fields["from_kbps"] = .int(previousActiveKbps)
+        fields["to_kbps"] = .int(decision.targetKbps)
+        fields["user_selected_cap_kbps"] = .int(userSelectedMaxVideoBitrateKbps)
+        fields["resume"] = .millisecondsBucket(resumeMs)
+        fields["uses_remote_reopener"] = .bool(remoteStreamReopener != nil)
+        recordPlaybackDiagnostic("playback.adaptive_bitrate_change", fields: fields)
+        recordTranscodeDiagnostic("transcode.adaptive_bitrate_change", fields: fields)
+        NSLog("PlaybackController: adaptive bitrate %@ from %@ to %@",
+              decision.direction.rawValue,
+              StreamingQuality.label(kbps: previousActiveKbps),
+              StreamingQuality.label(kbps: decision.targetKbps))
+
+        maxVideoBitrateKbps = decision.targetKbps
+        finalTargetRebuildPolicy.reset()
+        removeObservers()
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: decision.targetKbps)
+        } else {
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
+        return true
     }
 
     // MARK: - Seek final-target rebuild (#33 reset)

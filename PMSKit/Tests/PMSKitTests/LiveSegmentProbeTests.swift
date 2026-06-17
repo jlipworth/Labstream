@@ -159,9 +159,15 @@ struct LiveSegmentProbeTests {
             print(">>> SEG VERDICT: start.m3u8 failed — PMS would not even open the session at this offset.")
             return
         }
-        // The master's EXT-X-STREAM-INF BANDWIDTH is PMS's own declared stream bitrate — the
-        // decisive copy-vs-transcode tell (≈24 Mbps = copying the 4K original; ≈3 Mbps = honoring
-        // the cap). Token stripped so it's safe to log.
+        // The master variant count is the issue #29 ABR tell: multiple STREAM-INF entries mean
+        // AVPlayer has a real rendition ladder; one entry means this PMS request is still a
+        // single-rendition stream and any fallback must be client-driven. Token stripped so it's
+        // safe to log.
+        let summary = HLSPlaylistSummary.parse(masterBody)
+        if summary.isMasterPlaylist {
+            let bitrates = summary.variants.compactMap(\.bandwidthBps).map { String($0) }.joined(separator: ",")
+            print(">>> SEG master variants: \(summary.variants.count) adaptive=\(summary.isAdaptive ? "YES" : "no") bandwidths=\(bitrates)")
+        }
         if let infLine = masterBody.split(whereSeparator: \.isNewline).first(where: { $0.contains("BANDWIDTH") }) {
             print(">>> SEG master STREAM-INF: \(infLine.trimmingCharacters(in: .whitespaces))")
         }
