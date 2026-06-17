@@ -34,6 +34,7 @@ public final class DownloadManager {
         case optimizeTimedOut
         case noOptimizedPart
         case storageFull
+        case storageLimitExceeded(String)
         case transferFailed(String)
         /// The transfer finished with a 2xx but the body wasn't a usable video
         /// container (HTML/JSON error page, truncated transcode, unplayable). D1:
@@ -190,6 +191,11 @@ public final class DownloadManager {
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
 
+        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex",
+                                    expectedBytes: estimatedBytes(for: item, choice: choice,
+                                                                  mediaIndex: mediaIndex,
+                                                                  partIndex: partIndex)) { return }
+
         let chosenMedia = item.media?[safe: mediaIndex]
         let resolutionLabel = Self.resolutionLabel(for: chosenMedia)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
@@ -294,6 +300,11 @@ public final class DownloadManager {
         activeJobs.insert(ratingKey)
         lastError[ratingKey] = nil
         defer { activeJobs.remove(ratingKey) }
+
+        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Jellyfin",
+                                    expectedBytes: estimatedBytes(for: item, choice: choice,
+                                                                  mediaIndex: mediaIndex,
+                                                                  partIndex: partIndex)) { return }
 
         let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
@@ -444,6 +455,68 @@ public final class DownloadManager {
             await self.download(item, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
         }
+    }
+
+    public var totalDownloadedBytes: Int {
+        records.reduce(0) { $0 + $1.bytes }
+    }
+
+    public var storageLimitBytes: Int {
+        guard UserDefaults.standard.object(forKey: PlaybackPreferences.Keys.downloadStorageLimitBytes) != nil else {
+            return 0
+        }
+        return UserDefaults.standard.integer(forKey: PlaybackPreferences.Keys.downloadStorageLimitBytes)
+    }
+
+    public func storageLimitMessage(adding expectedBytes: Int?) -> String? {
+        guard let expectedBytes, expectedBytes > 0 else { return nil }
+        let limit = storageLimitBytes
+        guard limit > 0 else { return nil }
+        let projected = totalDownloadedBytes + expectedBytes
+        guard projected > limit else { return nil }
+        let incoming = ByteCountFormatter.string(fromByteCount: Int64(expectedBytes), countStyle: .file)
+        let used = ByteCountFormatter.string(fromByteCount: Int64(totalDownloadedBytes), countStyle: .file)
+        let cap = DownloadStorageLimit.label(bytes: limit)
+        return "This download needs about \(incoming), but \(used) is already used and the limit is \(cap). Increase the limit or remove downloads first."
+    }
+
+    public func estimatedBytes(for item: MediaItem, choice: DownloadChoice,
+                               mediaIndex: Int = 0, partIndex: Int = 0) -> Int? {
+        let media = item.media?[safe: mediaIndex]
+        let part = media?.part[safe: partIndex]
+        switch choice {
+        case .original:
+            return part?.size
+        case .optimize(let targetName):
+            if let profile = Self.customDownloadProfile(named: targetName) {
+                guard let kbps = profile.settings.maxVideoBitrateKbps else { return part?.size }
+                return Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                    videoBitrateBps: kbps * 1_000)
+            }
+            return Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
+        }
+    }
+
+    private func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
+        guard let message = storageLimitMessage(adding: expectedBytes) else { return false }
+        recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backend),
+            "reason": .label("storage_limit"),
+            "expected_bytes": .bytes(expectedBytes),
+        ])
+        lastError[ratingKey] = .storageLimitExceeded(message)
+        refreshRecords()
+        return true
+    }
+
+    public func deleteCompletedDownloads() {
+        for record in records where record.isComplete { delete(ratingKey: record.ratingKey) }
+    }
+
+    public func deleteAllDownloads() {
+        for record in records { delete(ratingKey: record.ratingKey) }
     }
 
     /// Delete a download and its backing file.
@@ -682,6 +755,10 @@ public final class DownloadManager {
             let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
             let destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
+            if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
+                store.setStatus(ratingKey: ratingKey, .failed)
+                return
+            }
             store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                         localURL: destination, bytes: 0, progress: 0,
                                         metadata: metadata))

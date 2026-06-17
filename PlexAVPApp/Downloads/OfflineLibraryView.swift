@@ -215,6 +215,7 @@ public struct OfflineLibraryView: View {
         case .optimizeTimedOut:        return "Optimize timed out on the server."
         case .noOptimizedPart:         return "No optimized version was produced."
         case .storageFull:             return "Not enough free space."
+        case .storageLimitExceeded(let m): return m
         case .transferFailed(let m):   return "Download failed: \(m)"
         case .invalidDownload(let m):  return "Download invalid: \(m)"
         }

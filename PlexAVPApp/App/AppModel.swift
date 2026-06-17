@@ -59,6 +59,10 @@ final class AppModel {
     /// Non-secret display metadata for the signed-in Plex account.
     var plexAccountProfile: PlexAccountProfile?
 
+    /// Whether the resolved Plex connection is advertised as local/LAN. Used to choose
+    /// between Home/Local and Internet/Remote quality caps without re-probing on playback.
+    var selectedServerConnectionIsLocal = false
+
     /// Jellyfin session state. These mirror the Plex fields above but are intentionally
     /// separate so a Jellyfin sign-in never clobbers Plex credentials.
     var jellyfinServerBaseURL: URL?
@@ -75,6 +79,32 @@ final class AppModel {
             return token != nil
         case .jellyfin:
             return jellyfinAccessToken != nil
+        }
+    }
+
+    var activeStreamingQualityDefaultsKey: String {
+        switch activeBackend {
+        case .plex:
+            return selectedServerConnectionIsLocal
+                ? PlaybackPreferences.Keys.homeQualityKbps
+                : PlaybackPreferences.Keys.remoteQualityKbps
+        case .jellyfin:
+            // Jellyfin does not yet carry Plex resource-locality metadata; use the
+            // internet/remote cap so the default stays conservative.
+            return PlaybackPreferences.Keys.remoteQualityKbps
+        }
+    }
+
+    var activeStreamingQualityKbps: Int {
+        PlaybackPreferences.qualityKbps(forDefaultsKey: activeStreamingQualityDefaultsKey)
+    }
+
+    var activeStreamingQualityScopeLabel: String {
+        switch activeBackend {
+        case .plex:
+            return selectedServerConnectionIsLocal ? "Home/Local" : "Internet/Remote"
+        case .jellyfin:
+            return "Internet/Remote"
         }
     }
 

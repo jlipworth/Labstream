@@ -31,7 +31,9 @@ struct DetailView: View {
     @State private var showDownloadOptions = false
     @State private var playbackErrorMessage: String?
     @State private var isResolvingPlayback = false
-    @AppStorage("maxVideoBitrateKbps") private var maxVideoBitrateKbps: Int = 8000
+    @AppStorage(PlaybackPreferences.Keys.remoteQualityKbps) private var remoteMaxVideoBitrateKbps = PlaybackPreferences.defaultRemoteQualityKbps
+    @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
+    @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
 
     /// The item currently being PLAYED in the cover. Starts as the detail item, but the
     /// Up Next autoplay (#15) swaps it to the next episode while keeping the cover up — the
@@ -207,7 +209,7 @@ struct DetailView: View {
                !detailed.isMusic {
                 musicPlayer.pauseForVideo()
                 playLocalURL = nil
-                playingItem = detailed
+                playingItem = itemWithResumeRewind(detailed)
                 presentingPlayer = true
             }
         }
@@ -344,7 +346,7 @@ struct DetailView: View {
                 musicPlayer.pauseForVideo()
                 playLocalURL = local
                 remotePlayback = nil
-                playingItem = detailed
+                playingItem = itemWithResumeRewind(detailed)
                 presentingPlayer = true
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
@@ -449,7 +451,8 @@ struct DetailView: View {
                                                                 }
                                                             })
                                                     },
-                                                    maxVideoBitrateKbps: maxVideoBitrateKbps)
+                                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
                              },
                              trickPlayProvider: JellyfinTrickPlayThumbnailProvider(
                                 item: playing,
@@ -487,7 +490,8 @@ struct DetailView: View {
                                                         token: token,
                                                         identity: appModel.identity,
                                                         client: appModel.client,
-                                                        maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                                        maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                                        qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey,
                                                         mediaIndex: mediaIndex,
                                                         machineIdentifier: machineIdentifier)
                                  },
@@ -559,7 +563,7 @@ struct DetailView: View {
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
         playLocalURL = nil
-        playingItem = detailed
+        playingItem = itemWithResumeRewind(detailed)
         switch appModel.activeBackend {
         case .plex:
             remotePlayback = nil
@@ -568,10 +572,11 @@ struct DetailView: View {
             isResolvingPlayback = true
             do {
                 let service = JellyfinBrowseService(appModel: appModel)
-                let playbackItem = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                let fetched = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                let playbackItem = itemWithResumeRewind(fetched)
                 playingItem = playbackItem
                 let result = try await service
-                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: maxVideoBitrateKbps)
+                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
                 remotePlayback = JellyfinRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
@@ -586,6 +591,24 @@ struct DetailView: View {
     }
 
     // MARK: - Derived state
+
+    private var activeMaxVideoBitrateKbps: Int {
+        // Touch the @AppStorage properties so SwiftUI invalidates this view when either cap
+        // changes, then resolve through AppModel's connection-aware scope helper.
+        _ = homeMaxVideoBitrateKbps
+        _ = remoteMaxVideoBitrateKbps
+        return appModel.activeStreamingQualityKbps
+    }
+
+    private func adjustedResumeOffsetMs(_ offset: Int?) -> Int? {
+        guard let offset, offset > 0, resumeRewindSeconds > 0 else { return offset }
+        return max(0, offset - resumeRewindSeconds * 1000)
+    }
+
+    private func itemWithResumeRewind(_ item: MediaItem) -> MediaItem {
+        guard item.viewOffset != nil, resumeRewindSeconds > 0 else { return item }
+        return item.copyWith(viewOffset: adjustedResumeOffsetMs(item.viewOffset))
+    }
 
     private var localURL: URL? {
         return downloadManager.localURL(for: downloadManager.recordKey(for: detailed))
@@ -886,5 +909,24 @@ struct EpisodeRow: View {
 extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+
+private extension MediaItem {
+    func copyWith(viewOffset: Int?) -> MediaItem {
+        MediaItem(ratingKey: ratingKey, key: key, title: title, type: type,
+                  duration: duration, viewOffset: viewOffset, viewCount: viewCount,
+                  year: year, summary: summary, thumb: thumb, art: art, media: media,
+                  librarySectionID: librarySectionID, librarySectionKey: librarySectionKey,
+                  chapters: chapters, markers: markers, rating: rating,
+                  contentRating: contentRating, tagline: tagline, genres: genres,
+                  grandparentTitle: grandparentTitle, grandparentRatingKey: grandparentRatingKey,
+                  grandparentThumb: grandparentThumb, parentTitle: parentTitle,
+                  parentRatingKey: parentRatingKey, parentThumb: parentThumb,
+                  parentIndex: parentIndex, index: index, originalTitle: originalTitle,
+                  lastViewedAt: lastViewedAt, parentYear: parentYear,
+                  ratingCount: ratingCount, composite: composite, leafCount: leafCount,
+                  playlistType: playlistType)
     }
 }
