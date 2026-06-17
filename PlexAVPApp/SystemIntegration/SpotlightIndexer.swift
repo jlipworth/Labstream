@@ -36,12 +36,17 @@ enum SpotlightIndexer {
     }
 
     /// Remove everything we've indexed. Called on sign-out so library titles don't
-    /// linger in system search after the account is gone.
-    static func deleteAll() {
+    /// linger in system search after the account is gone. Settings can also call this
+    /// as a manual stale-index cleanup action; completion reports whether CoreSpotlight
+    /// accepted the delete request.
+    static func deleteAll(completion: (@Sendable (Bool) -> Void)? = nil) {
         CSSearchableIndex.default()
             .deleteSearchableItems(withDomainIdentifiers: [domainIdentifier]) { error in
                 if let error {
                     NSLog("%@", "SpotlightIndexer: delete failed: \(error.localizedDescription)")
+                    completion?(false)
+                } else {
+                    completion?(true)
                 }
             }
     }
