@@ -34,6 +34,10 @@ final class PlaybackDiagnostics {
     var decisionText: String = "—"
     /// The host:port we are streaming from (no token, ever).
     var connectionHost: String = "—"
+    /// True when AVFoundation is reading through the app's loopback HLS proxy. In that mode
+    /// AVPlayer's observed bitrate measures localhost/proxy burst rate, not server/network
+    /// throughput, so the Stats panel should not present it as real bandwidth.
+    var usesLocalMediaProxy: Bool = false
 
     // MARK: Dynamic numbers
 
@@ -113,6 +117,7 @@ final class PlaybackDiagnostics {
         if let host = server?.host {
             connectionHost = server?.port.map { "\(host):\($0)" } ?? host
         }
+        usesLocalMediaProxy = false
         self.targetBitrateKbps = targetBitrateKbps
     }
 
@@ -195,11 +200,15 @@ final class PlaybackDiagnostics {
         }
 
         guard let access = item.accessLog(), let event = access.events.last else { return }
-        // AVFoundation reports bits/sec; show kbps. -1 means "not available".
-        if event.observedBitrate > 0 {
+        if event.indicatedBitrate > 0 { indicatedBitrateKbps = event.indicatedBitrate / 1000 }
+        // AVFoundation reports bits/sec; show kbps. -1 means "not available". When the app's
+        // loopback proxy fronts a Jellyfin HLS seek, this value is localhost/proxy burst rate,
+        // not the server/network bitrate; leave Observed blank and rely on Indicated/Target.
+        if usesLocalMediaProxy {
+            observedBitrateKbps = 0
+        } else if event.observedBitrate > 0 {
             observedBitrateKbps = event.observedBitrate / 1000
         }
-        if event.indicatedBitrate > 0 { indicatedBitrateKbps = event.indicatedBitrate / 1000 }
         if event.numberOfDroppedVideoFrames >= 0 { droppedFrames = event.numberOfDroppedVideoFrames }
         if event.numberOfStalls >= 0 { stalls = event.numberOfStalls }
     }

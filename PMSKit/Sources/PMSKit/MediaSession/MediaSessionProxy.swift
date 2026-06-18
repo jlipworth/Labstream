@@ -9,6 +9,8 @@ public actor MediaSessionProxy {
     private let origin = LoopbackOrigin()
     private let upstreamFetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     private let rebuildUpstream: @Sendable () -> Void
+    private let strippedPlaylistQueryItemNames: Set<String>
+    private let injectedPlaylistStartTimeOffsetSeconds: Double?
     private var connection: UpstreamConnection?
     private var current: MediaSessionHandle?
 
@@ -30,6 +32,8 @@ public actor MediaSessionProxy {
     public init(timeout: TimeInterval = 20,
                 trustDelegate: URLSessionDelegate? = nil,
                 controlSend: @escaping @Sendable (PlexRequest) async throws -> Data,
+                strippedPlaylistQueryItemNames: Set<String> = [],
+                injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
                 now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         // A box so `rebuild` can swap the session that `fetch` reads (the one thing
         // AVFoundation's own media-plane pool won't do — guarantee a fresh socket).
@@ -38,6 +42,8 @@ public actor MediaSessionProxy {
         self.upstreamFetch = { req in try await box.fetch(req) }
         self.rebuildUpstream = { box.rebuild() }
         self.controlSend = controlSend
+        self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
+        self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         _ = now
     }
 
@@ -46,10 +52,14 @@ public actor MediaSessionProxy {
     /// no-op because there is no real socket to rotate; the rotate *count* still increments.
     init(upstreamFetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse),
          controlSend: @escaping @Sendable (PlexRequest) async throws -> Data = { _ in Data() },
+         strippedPlaylistQueryItemNames: Set<String> = [],
+         injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.upstreamFetch = upstreamFetch
         self.rebuildUpstream = {}
         self.controlSend = controlSend
+        self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
+        self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         _ = now
     }
 
@@ -110,7 +120,7 @@ public actor MediaSessionProxy {
 
     /// Bind the app-owned loopback origin in front of `streamURL`'s PMS host and return a
     /// handle whose `localURL` mirrors `streamURL`'s path+query onto the loopback.
-    func standUpLoopback(forStream streamURL: URL) async throws -> MediaSessionHandle {
+    public func standUpLoopback(forStream streamURL: URL) async throws -> MediaSessionHandle {
         // Re-open reuses this proxy: tear down any prior listener before binding a fresh one.
         if current != nil {
             origin.stop()
@@ -145,7 +155,10 @@ public actor MediaSessionProxy {
             throw URLError(.badURL)
         }
         self.loopbackBase = loopbackBase
-        rewriterBox.set(PlaylistRewriter(upstreamBase: upstreamBase, loopbackBase: loopbackBase))
+        rewriterBox.set(PlaylistRewriter(upstreamBase: upstreamBase,
+                                         loopbackBase: loopbackBase,
+                                         strippedQueryItemNames: strippedPlaylistQueryItemNames,
+                                         injectedStartTimeOffsetSeconds: injectedPlaylistStartTimeOffsetSeconds))
 
         generationCounter += 1
         let handle = MediaSessionHandle(localURL: localURL, generation: generationCounter)

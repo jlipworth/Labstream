@@ -25,4 +25,26 @@ final class PlaylistRewriterTests: XCTestCase {
         let out = rewriter.rewrite(Data(body.utf8), contentType: "video/mp2t")
         XCTAssertEqual(String(decoding: out, as: UTF8.self), body)
     }
+
+    func testStripsConfiguredQueryItemsFromPlaylistURIs() {
+        let rewriter = PlaylistRewriter(
+            upstreamBase: URL(string: "https://pms.example:32400")!,
+            loopbackBase: URL(string: "http://127.0.0.1:51234")!,
+            strippedQueryItemNames: ["starttimeticks"])
+        let body = "#EXTM3U\nseg0.ts?api_key=abc&StartTimeTicks=123\nseg1.ts?StartTimeTicks=123&api_key=abc\n"
+        let out = rewriter.rewrite(Data(body.utf8), contentType: "application/vnd.apple.mpegurl")
+        XCTAssertEqual(String(decoding: out, as: UTF8.self),
+                       "#EXTM3U\nseg0.ts?api_key=abc\nseg1.ts?api_key=abc\n")
+    }
+
+    func testInjectsStartOffsetWhenMissing() {
+        let rewriter = PlaylistRewriter(
+            upstreamBase: URL(string: "https://pms.example:32400")!,
+            loopbackBase: URL(string: "http://127.0.0.1:51234")!,
+            injectedStartTimeOffsetSeconds: 1419.0)
+        let body = "#EXTM3U\n#EXT-X-TARGETDURATION:3\nseg0.ts\n"
+        let out = rewriter.rewrite(Data(body.utf8), contentType: "application/vnd.apple.mpegurl")
+        XCTAssertEqual(String(decoding: out, as: UTF8.self),
+                       "#EXTM3U\n#EXT-X-START:TIME-OFFSET=1419.000,PRECISE=NO\n#EXT-X-TARGETDURATION:3\nseg0.ts\n")
+    }
 }
