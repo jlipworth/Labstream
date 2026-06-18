@@ -206,9 +206,13 @@ struct JellyfinBrowseService {
                                                   identity: jellyfinIdentity,
                                                   token: context.token,
                                                   itemId: item.ratingKey,
+                                                  startTimeTicks: startTicks,
+                                                  maxVideoBitrate: maxBitrateBps,
                                                   maxWidth: resolutionCap?.width,
                                                   maxHeight: resolutionCap?.height,
-                                                  audioBitrate: audioBitrate)
+                                                  audioBitrate: audioBitrate,
+                                                  audioStreamIndex: audioStreamIndex,
+                                                  subtitleStreamIndex: subtitleStreamIndex)
     }
 
 
