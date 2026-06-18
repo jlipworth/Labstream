@@ -214,6 +214,9 @@ final class PlaybackController {
     private var lastDiagnosticSnapshotUptime: TimeInterval = 0
     private var lastDiagnosticTimeControlStatus: AVPlayer.TimeControlStatus?
     private var failedToEndObserver: NSObjectProtocol?
+    private var currentPlayerItemGeneration = 0
+    private var nextPlayerItemGeneration = 0
+    private var ignoredRecoverableFailedToEndCount = 0
     /// Watchdog for a stalled stream (#8 hardening). HLS network loss frequently manifests as a
     /// PERMANENT stall — the player sits in `.waitingToPlayAtSpecifiedRate` with an empty buffer
     /// and never flips `AVPlayerItem.status` to `.failed` (AVKit paints its own placeholder glyph
@@ -1944,12 +1947,21 @@ final class PlaybackController {
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
         attachExternalMetadata(to: playerItem)
+        nextPlayerItemGeneration += 1
+        currentPlayerItemGeneration = nextPlayerItemGeneration
+        ignoredRecoverableFailedToEndCount = 0
+        let itemGeneration = currentPlayerItemGeneration
+        let observedPlaybackGeneration = playbackGeneration
         player.replaceCurrentItem(with: playerItem)
         recordPlaybackDiagnostic("playback.item_loaded", fields: [
             "resume": .millisecondsBucket(resumeOffsetMs),
             "preferred_forward_buffer_seconds": .int(Int(playerItem.preferredForwardBufferDuration)),
+            "item_generation": .int(itemGeneration),
         ])
-        installObservers(for: playerItem, resumeOffsetMs: resumeOffsetMs)
+        installObservers(for: playerItem,
+                         resumeOffsetMs: resumeOffsetMs,
+                         itemGeneration: itemGeneration,
+                         observedPlaybackGeneration: observedPlaybackGeneration)
         startDiagnosticsSampling()
         if userWantsPaused {
             player.pause()
@@ -1975,7 +1987,10 @@ final class PlaybackController {
         diagnosticsTimer = timer
     }
 
-    private func installObservers(for playerItem: AVPlayerItem, resumeOffsetMs: Int?) {
+    private func installObservers(for playerItem: AVPlayerItem,
+                                  resumeOffsetMs: Int?,
+                                  itemGeneration: Int,
+                                  observedPlaybackGeneration: Int) {
         // Observe item status for its WHOLE lifetime (P4 #8): handle both the resume
         // seek on `.readyToPlay` AND a later `.failed`. The old code self-nilled this
         // observation inside the readyToPlay branch, so a subsequent ready→failed
@@ -1983,6 +1998,15 @@ final class PlaybackController {
         statusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] pItem, _ in
             guard let self else { return }
             Task { @MainActor in
+                guard self.isCurrentObservedItem(pItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else {
+                    self.recordIgnoredPlayerItemEvent("item_status",
+                                                      playerItem: pItem,
+                                                      itemGeneration: itemGeneration,
+                                                      observedPlaybackGeneration: observedPlaybackGeneration)
+                    return
+                }
                 switch pItem.status {
                 case .readyToPlay:
                     self.recordPlaybackDiagnostic("playback.item_status", fields: [
@@ -2035,7 +2059,11 @@ final class PlaybackController {
                         "status": .label("failed"),
                         "error": .error(pItem.error),
                     ])
-                    self.handlePlaybackFailure(pItem.error)
+                    self.handlePlaybackFailure(pItem.error,
+                                               source: .itemStatusFailed,
+                                               playerItem: pItem,
+                                               itemGeneration: itemGeneration,
+                                               observedPlaybackGeneration: observedPlaybackGeneration)
                 default:
                     break
                 }
@@ -2052,10 +2080,10 @@ final class PlaybackController {
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             Task { @MainActor in
                 guard let self else { return }
-                self.recordPlaybackDiagnostic("playback.failed_to_end", fields: [
-                    "error": .error(error),
-                ])
-                self.handlePlaybackFailure(error)
+                self.handleFailedToPlayToEnd(error,
+                                             playerItem: playerItem,
+                                             itemGeneration: itemGeneration,
+                                             observedPlaybackGeneration: observedPlaybackGeneration)
             }
         }
 
@@ -2068,7 +2096,17 @@ final class PlaybackController {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.handleSeekJump()
+                guard let self else { return }
+                guard self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else {
+                    self.recordIgnoredPlayerItemEvent("time_jumped",
+                                                      playerItem: playerItem,
+                                                      itemGeneration: itemGeneration,
+                                                      observedPlaybackGeneration: observedPlaybackGeneration)
+                    return
+                }
+                self.handleSeekJump()
             }
         }
 
@@ -2161,6 +2199,15 @@ final class PlaybackController {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else {
+                    self.recordIgnoredPlayerItemEvent("did_play_to_end",
+                                                      playerItem: playerItem,
+                                                      itemGeneration: itemGeneration,
+                                                      observedPlaybackGeneration: observedPlaybackGeneration)
+                    return
+                }
                 self.maybeRecordDiagnosticSnapshot(force: true)
                 self.recordPlaybackDiagnostic("playback.ended", fields: [
                     "resume": .millisecondsBucket(self.currentResumeMs),
@@ -2409,10 +2456,177 @@ final class PlaybackController {
 
     // MARK: - Failure handling
 
+    private func isCurrentObservedItem(_ observedItem: AVPlayerItem,
+                                       itemGeneration: Int,
+                                       observedPlaybackGeneration: Int) -> Bool {
+        player.currentItem === observedItem &&
+            currentPlayerItemGeneration == itemGeneration &&
+            playbackGeneration == observedPlaybackGeneration
+    }
+
+    private func recordIgnoredPlayerItemEvent(_ event: String,
+                                              playerItem: AVPlayerItem,
+                                              itemGeneration: Int,
+                                              observedPlaybackGeneration: Int) {
+        recordPlaybackDiagnostic("playback.item_event_ignored", fields: [
+            "event": .label(event),
+            "reason": .label("stale_item"),
+            "current_item": .bool(player.currentItem === playerItem),
+            "item_generation": .int(itemGeneration),
+            "current_item_generation": .int(currentPlayerItemGeneration),
+            "observed_playback_generation": .int(observedPlaybackGeneration),
+            "playback_generation": .int(playbackGeneration),
+        ])
+    }
+
+    private func handleFailedToPlayToEnd(_ error: Error?,
+                                         playerItem: AVPlayerItem,
+                                         itemGeneration: Int,
+                                         observedPlaybackGeneration: Int) {
+        let snapshot = playbackFailureSnapshot(source: .failedToPlayToEnd,
+                                               playerItem: playerItem,
+                                               error: error)
+        var fields = playbackFailureDiagnosticFields(snapshot: snapshot,
+                                                     playerItem: playerItem,
+                                                     error: error)
+        fields["item_generation"] = .int(itemGeneration)
+        fields["observed_playback_generation"] = .int(observedPlaybackGeneration)
+        guard isCurrentObservedItem(playerItem,
+                                    itemGeneration: itemGeneration,
+                                    observedPlaybackGeneration: observedPlaybackGeneration) else {
+            fields["policy_action"] = .label(PlaybackFailureAction.ignoreStaleItem.rawValue)
+            fields["reason"] = .label("stale_item")
+            recordPlaybackDiagnostic("playback.failed_to_end", fields: fields)
+            recordPlaybackDiagnostic("playback.failed_to_end_ignored", fields: fields)
+            return
+        }
+        let action = PlaybackFailurePolicy.action(for: snapshot)
+        fields["policy_action"] = .label(action.rawValue)
+        recordPlaybackDiagnostic("playback.failed_to_end", fields: fields)
+
+        switch action {
+        case .ignoreStaleItem:
+            fields["reason"] = .label("stale_item")
+            recordPlaybackDiagnostic("playback.failed_to_end_ignored", fields: fields)
+        case .ignoreRecoverableBufferedRemoteHLS:
+            ignoredRecoverableFailedToEndCount += 1
+            fields["reason"] = .label("buffered_remote_hls_ready_playing")
+            recordPlaybackDiagnostic("playback.failed_to_end_ignored", fields: fields)
+        case .surface:
+            handlePlaybackFailure(error,
+                                  source: .failedToPlayToEnd,
+                                  playerItem: playerItem,
+                                  itemGeneration: itemGeneration,
+                                  observedPlaybackGeneration: observedPlaybackGeneration,
+                                  contextFields: fields)
+        }
+    }
+
+    private func playbackFailureSnapshot(source: PlaybackFailureSource,
+                                         playerItem: AVPlayerItem?,
+                                         error: Error?) -> PlaybackFailureSnapshot {
+        let itemIsCurrent = playerItem.map { player.currentItem === $0 } ?? true
+        let nsError = error.map { $0 as NSError }
+        let itemError = playerItem?.error.map { $0 as NSError }
+        let playerError = player.error.map { $0 as NSError }
+        let isRemoteHLS = remoteStreamReopener != nil && remotePlayMethod != .directPlay
+        return PlaybackFailureSnapshot(
+            source: source,
+            path: isRemoteHLS ? .remoteHLS : .other,
+            isCurrentItem: itemIsCurrent,
+            isItemReadyToPlay: playerItem?.status == .readyToPlay,
+            isPlayerPlaying: player.timeControlStatus == .playing,
+            bufferedAheadSeconds: playerItem.map(bufferedAheadSeconds) ?? diagnostics.bufferedAheadSeconds,
+            notificationErrorCode: nsError?.code,
+            itemErrorCode: itemError?.code,
+            playerErrorCode: playerError?.code,
+            ignoredRecoverableFailureCount: ignoredRecoverableFailedToEndCount)
+    }
+
+    private func playbackFailureDiagnosticFields(snapshot: PlaybackFailureSnapshot,
+                                                 playerItem: AVPlayerItem?,
+                                                 error: Error?) -> [String: DiagnosticFieldValue] {
+        var fields: [String: DiagnosticFieldValue] = [
+            "error": .error(error),
+            "failure_source": .label(snapshot.source.rawValue),
+            "failure_path": .label(snapshot.path.rawValue),
+            "current_item": .bool(snapshot.isCurrentItem),
+            "item_ready": .bool(snapshot.isItemReadyToPlay),
+            "player_playing": .bool(snapshot.isPlayerPlaying),
+            "item_status": .label(playerItem.map { Self.itemStatusLabel($0.status) }),
+            "player_status": .label(Self.playerStatusLabel(player.status)),
+            "time_control_status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
+            "buffer_ahead_seconds": .double(snapshot.bufferedAheadSeconds),
+            "likely_to_keep_up": .bool(playerItem?.isPlaybackLikelyToKeepUp ?? false),
+            "ignored_recoverable_failed_to_end": .int(snapshot.ignoredRecoverableFailureCount),
+            "item_error": .error(playerItem?.error),
+            "player_error": .error(player.error),
+        ]
+        if let code = snapshot.notificationErrorCode {
+            fields["notification_error_code"] = .int(code)
+        }
+        if let nsError = error.map({ $0 as NSError }) {
+            fields["notification_error_domain"] = .label(nsError.domain)
+            fields["notification_error_domain_family"] = .label(Self.errorDomainFamily(nsError.domain))
+        }
+        if let code = snapshot.itemErrorCode {
+            fields["item_error_code"] = .int(code)
+        }
+        if let itemError = playerItem?.error.map({ $0 as NSError }) {
+            fields["item_error_domain_family"] = .label(Self.errorDomainFamily(itemError.domain))
+        }
+        if let code = snapshot.playerErrorCode {
+            fields["player_error_code"] = .int(code)
+        }
+        if let playerError = player.error.map({ $0 as NSError }) {
+            fields["player_error_domain_family"] = .label(Self.errorDomainFamily(playerError.domain))
+        }
+        if let errorEvent = playerItem?.errorLog()?.events.last {
+            fields["error_log_status_code"] = .int(errorEvent.errorStatusCode)
+            fields["error_log_domain"] = .label(errorEvent.errorDomain)
+            fields["error_log_comment"] = .text(errorEvent.errorComment)
+            fields["error_log_uri_shape"] = .urlShape(errorEvent.uri.flatMap(URL.init(string:)))
+        }
+        return fields
+    }
+
+    private func bufferedAheadSeconds(for playerItem: AVPlayerItem) -> Double {
+        let now = player.currentTime().seconds
+        guard now.isFinite else { return 0 }
+        var bestAhead = 0.0
+        for value in playerItem.loadedTimeRanges {
+            let range = value.timeRangeValue
+            let start = range.start.seconds
+            let end = (range.start + range.duration).seconds
+            guard start.isFinite, end.isFinite, end >= now else { continue }
+            if now >= start - 1 {
+                bestAhead = max(bestAhead, max(0, end - now))
+            }
+        }
+        return bestAhead
+    }
+
     /// Surface a playback failure to the UI. No silent auto-retry: a failed PMS stream must not
     /// become a hidden restart loop that can hammer the server. Retry is an explicit user action.
-    private func handlePlaybackFailure(_ error: Error?) {
+    private func handlePlaybackFailure(_ error: Error?,
+                                       source: PlaybackFailureSource = .playerFailure,
+                                       playerItem: AVPlayerItem? = nil,
+                                       itemGeneration: Int? = nil,
+                                       observedPlaybackGeneration: Int? = nil,
+                                       contextFields: [String: DiagnosticFieldValue] = [:]) {
         guard !playbackError.isFailed else { return }
+        if let playerItem,
+           let itemGeneration,
+           let observedPlaybackGeneration,
+           !isCurrentObservedItem(playerItem,
+                                  itemGeneration: itemGeneration,
+                                  observedPlaybackGeneration: observedPlaybackGeneration) {
+            recordIgnoredPlayerItemEvent(source.rawValue,
+                                         playerItem: playerItem,
+                                         itemGeneration: itemGeneration,
+                                         observedPlaybackGeneration: observedPlaybackGeneration)
+            return
+        }
         // Direct Play / Maximum, playback-time fallback: a committed direct-play stream that
         // fails to load isn't a hard failure — PMS agreed to copy the video, but AVFoundation
         // couldn't play the resulting HLS rendition. Degrade ONCE to the maximum-transcode path
@@ -2440,9 +2654,16 @@ final class PlaybackController {
         // don't surface over it. `suppressDirectPlayProbe` stays set until that rebuild's
         // `startStreaming` consumes it, well before any new item could fail.
         if suppressDirectPlayProbe { return }
-        recordPlaybackDiagnostic("playback.player_failure", fields: [
-            "error": .error(error),
-        ])
+        var fields = contextFields
+        fields["error"] = .error(error)
+        fields["failure_source"] = .label(source.rawValue)
+        if let itemGeneration {
+            fields["item_generation"] = .int(itemGeneration)
+        }
+        if let observedPlaybackGeneration {
+            fields["observed_playback_generation"] = .int(observedPlaybackGeneration)
+        }
+        recordPlaybackDiagnostic("playback.player_failure", fields: fields)
         NSLog("PlaybackController: playback failed, surfacing to UI (%@)",
               String(describing: error))
         surfaceFailure(error)
@@ -2894,6 +3115,53 @@ final class PlaybackController {
             return "playing"
         @unknown default:
             return "unknown"
+        }
+    }
+
+    private static func itemStatusLabel(_ status: AVPlayerItem.Status) -> String {
+        switch status {
+        case .unknown:
+            return "unknown"
+        case .readyToPlay:
+            return "readyToPlay"
+        case .failed:
+            return "failed"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private static func playerStatusLabel(_ status: AVPlayer.Status) -> String {
+        switch status {
+        case .unknown:
+            return "unknown"
+        case .readyToPlay:
+            return "readyToPlay"
+        case .failed:
+            return "failed"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private static func errorDomainFamily(_ domain: String) -> String {
+        switch domain {
+        case NSURLErrorDomain:
+            return "nsurl"
+        case AVFoundationErrorDomain:
+            return "avfoundation"
+        case NSOSStatusErrorDomain:
+            return "osstatus"
+        case CocoaError.errorDomain:
+            return "cocoa"
+        case POSIXError.errorDomain:
+            return "posix"
+        default:
+            let lower = domain.lowercased()
+            if lower.contains("coremedia") { return "coremedia" }
+            if lower.contains("fig") { return "fig" }
+            if lower.contains("audio") { return "audio" }
+            return "other"
         }
     }
 
