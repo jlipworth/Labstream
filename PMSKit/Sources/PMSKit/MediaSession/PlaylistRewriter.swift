@@ -7,6 +7,8 @@ import Foundation
 struct PlaylistRewriter {
     let upstreamBase: URL
     let loopbackBase: URL
+    var strippedQueryItemNames: Set<String> = []
+    var injectedStartTimeOffsetSeconds: Double?
 
     func rewrite(_ body: Data, contentType: String?) -> Data {
         guard isPlaylist(contentType: contentType, body: body) else { return body }
@@ -15,8 +17,54 @@ struct PlaylistRewriter {
         while up.hasSuffix("/") { up.removeLast() }
         var loop = loopbackBase.absoluteString
         while loop.hasSuffix("/") { loop.removeLast() }
-        guard text.contains(up) else { return body }
-        return Data(text.replacingOccurrences(of: up, with: loop).utf8)
+        var rewritten = text
+        if rewritten.contains(up) {
+            rewritten = rewritten.replacingOccurrences(of: up, with: loop)
+        }
+        if !strippedQueryItemNames.isEmpty {
+            rewritten = stripQueryItems(inPlaylist: rewritten)
+        }
+        if let injectedStartTimeOffsetSeconds {
+            rewritten = injectStartTimeOffsetIfNeeded(inPlaylist: rewritten,
+                                                      offsetSeconds: injectedStartTimeOffsetSeconds)
+        }
+        guard rewritten != text else { return body }
+        return Data(rewritten.utf8)
+    }
+
+    private func injectStartTimeOffsetIfNeeded(inPlaylist text: String,
+                                               offsetSeconds: Double) -> String {
+        guard text.hasPrefix("#EXTM3U"), !text.contains("#EXT-X-START:") else { return text }
+        let start = String(format: "#EXT-X-START:TIME-OFFSET=%.3f,PRECISE=NO", offsetSeconds)
+        guard let firstNewline = text.firstIndex(of: "\n") else {
+            return text + "\n" + start + "\n"
+        }
+        var rewritten = text
+        rewritten.insert(contentsOf: start + "\n", at: text.index(after: firstNewline))
+        return rewritten
+    }
+
+    private func stripQueryItems(inPlaylist text: String) -> String {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> String in
+                let raw = String(line)
+                guard !raw.hasPrefix("#"), raw.contains("?") else { return raw }
+                return stripQueryItems(fromURI: raw)
+            }
+            .joined(separator: "\n")
+    }
+
+    private func stripQueryItems(fromURI uri: String) -> String {
+        guard var comps = URLComponents(string: uri),
+              let items = comps.queryItems else { return uri }
+        comps.queryItems = items.filter { item in
+            !strippedQueryItemNames.contains(item.name.lowercased())
+        }
+        if comps.queryItems?.isEmpty == true {
+            comps.queryItems = nil
+        }
+        return comps.string ?? uri
     }
 
     private func isPlaylist(contentType: String?, body: Data) -> Bool {

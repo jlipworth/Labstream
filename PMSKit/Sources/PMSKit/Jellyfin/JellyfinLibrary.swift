@@ -329,6 +329,21 @@ public struct JellyfinItemMediaStreamDto: Decodable, Sendable, Equatable {
         default: return nil
         }
     }
+
+    var isLowRiskJellyfinTranscodeAudio: Bool {
+        guard type == "Audio", let codec = codec?.lowercased() else { return false }
+        guard ["aac", "ac3", "eac3"].contains(codec) else { return false }
+        return (channels ?? 0) <= 6 || channels == nil
+    }
+
+    var looksLikeCommentaryOrDescriptiveAudio: Bool {
+        let text = [displayTitle, title]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        return text.contains("commentary") ||
+            text.contains("description") ||
+            text.contains("descriptive")
+    }
 }
 
 public struct JellyfinUserDataDto: Decodable, Sendable, Equatable {

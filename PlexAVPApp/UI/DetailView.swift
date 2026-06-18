@@ -424,6 +424,7 @@ struct DetailView: View {
                                                     identity: appModel.identity,
                                                     client: appModel.client,
                                                     httpHeaders: remote.headers,
+                                                    remotePlaySessionId: remote.playSessionId,
                                                     sourceMetadata: remote.sourceMetadata,
                                                     playMethod: remote.playMethod,
                                                     onStopRemoteSession: {
@@ -442,6 +443,7 @@ struct DetailView: View {
                                                         return RemoteStreamOpenResult(
                                                             url: result.url,
                                                             headers: result.requiredHTTPHeaders,
+                                                            playSessionId: result.playSessionId,
                                                             sourceMetadata: result.sourceMetadata,
                                                             playMethod: result.playMethod,
                                                             onStop: {
