@@ -65,6 +65,9 @@ struct ContentView: View {
             guard isRestoring else { return }
             await authManager.restoreSession()
             isRestoring = false
+#if DEBUG
+            await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
+#endif
         }
         // A Spotlight result was tapped: stash the ratingKey with the router. If
         // we're still on the restore splash the route waits there until RootView
