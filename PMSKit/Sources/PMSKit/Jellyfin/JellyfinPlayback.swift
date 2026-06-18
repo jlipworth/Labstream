@@ -322,14 +322,18 @@ public enum JellyfinPlayback {
         }
         // Jellyfin's PlaybackInfo body can ignore or partially carry over caps/deep-start/audio
         // choices for generated HLS URLs. The master.m3u8 query is what child playlists and
-        // segments inherit, so enforce the app's selected shape there too. This keeps capped
-        // 4K/HDR MKV playback from accidentally asking the server for a high-bitrate TS session
-        // at t=0 with TrueHD/Atmos audio when the user picked a low/mid transcode or deep seek.
-        replace("SegmentContainer", value: "mp4")
+        // segments inherit, so enforce the app's selected shape there too. Prefer MPEG-TS
+        // segments for Jellyfin live HLS because fMP4 deep-seek/reopen paths can produce
+        // transient unavailable segments in AVFoundation/Jellyfin, while TS is Jellyfin's
+        // more conservative HLS path. Keep caps/audio selections stable across seeks.
+        replace("SegmentContainer", value: "ts")
         replace("BreakOnNonKeyFrames", value: "false")
-        if let startTimeTicks, startTimeTicks > 0 {
-            replace("StartTimeTicks", value: String(startTimeTicks))
-        }
+        // Do not mirror StartTimeTicks onto the HLS master URL. Jellyfin copies master
+        // query parameters into dynamic segment requests, and DynamicHlsController rejects
+        // StartTimeTicks on segment URLs ("StartTimeTicks is not allowed"), which AVPlayer
+        // surfaces as NSURLErrorDomain -1008 after a deep seek. The start offset belongs in
+        // the PlaybackInfo body above; keep the playable URL itself segment-safe.
+        _ = startTimeTicks
         if let maxVideoBitrate, maxVideoBitrate > 0, maxVideoBitrate < 200_000_000 {
             replace("VideoBitrate", value: String(maxVideoBitrate))
         }
@@ -391,7 +395,7 @@ public enum JellyfinPlayback {
             "TranscodingProfiles": [
                 [
                     "Type": "Video",
-                    "Container": "mp4",
+                    "Container": "ts",
                     "Protocol": "hls",
                     "VideoCodec": "h264",
                     "AudioCodec": "aac",
