@@ -90,7 +90,7 @@ enum DebugJellyfinPlaybackProbe {
 
             playback.performUserSeek(toMs: seekMs)
             try await waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: 45)
-            try await holdWithoutFailure(playback, seconds: postSeekHoldSeconds)
+            try await holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds)
 
             log.notice("probe.pass position_ms=\(playback.currentResumeMs, privacy: .public) failed=\(playback.playbackError.isFailed, privacy: .public)")
             AppDiagnostics.record(.playback, "probe.jellyfin.pass", fields: [
@@ -134,7 +134,7 @@ enum DebugJellyfinPlaybackProbe {
                 throw ProbeError.playbackFailed(phase, controller.playbackError.message)
             }
             if controller.player.currentItem?.status == .readyToPlay,
-               controller.player.timeControlStatus == .playing || controller.player.rate > 0 {
+               controller.player.rate > 0 {
                 return
             }
             try await Task.sleep(for: .milliseconds(500))
@@ -142,14 +142,51 @@ enum DebugJellyfinPlaybackProbe {
         throw ProbeError.timeout(phase)
     }
 
-    private static func holdWithoutFailure(_ controller: PlaybackController, seconds: Int) async throws {
+    private static func holdWithPlaybackProgress(_ controller: PlaybackController, seconds: Int) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        var initialPositionMs: Int?
+        var lastPositionMs = rawPlayerPositionMs(controller)
+        var bestPositionMs = lastPositionMs
+        var consecutiveWaitingSamples = 0
+        var movingSamples = 0
         while ContinuousClock.now < deadline {
             if controller.playbackError.isFailed {
                 throw ProbeError.playbackFailed("hold", controller.playbackError.message)
             }
-            try await Task.sleep(for: .milliseconds(500))
+            let currentPositionMs = rawPlayerPositionMs(controller)
+            if initialPositionMs == nil, currentPositionMs > 1_000 {
+                initialPositionMs = currentPositionMs
+                lastPositionMs = currentPositionMs
+                bestPositionMs = currentPositionMs
+            }
+            bestPositionMs = max(bestPositionMs, currentPositionMs)
+            if currentPositionMs >= lastPositionMs + 500 {
+                movingSamples += 1
+                log.notice("probe.progress position_ms=\(currentPositionMs, privacy: .public) status=\(String(describing: controller.player.timeControlStatus), privacy: .public) rate=\(controller.player.rate, privacy: .public)")
+                lastPositionMs = currentPositionMs
+            }
+            if controller.player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                consecutiveWaitingSamples += 1
+            } else {
+                consecutiveWaitingSamples = 0
+            }
+            if consecutiveWaitingSamples >= 20 {
+                throw ProbeError.playbackStalled(bestPositionMs - (initialPositionMs ?? lastPositionMs),
+                                                 "player remained waiting during hold")
+            }
+            try await Task.sleep(for: .seconds(1))
         }
+        let baselineMs = initialPositionMs ?? lastPositionMs
+        let advancedMs = bestPositionMs - baselineMs
+        guard advancedMs >= min(3_000, max(1_000, seconds * 500)), movingSamples >= 3 else {
+            throw ProbeError.playbackStalled(advancedMs, "playhead did not advance enough")
+        }
+    }
+
+    private static func rawPlayerPositionMs(_ controller: PlaybackController) -> Int {
+        let seconds = controller.player.currentTime().seconds
+        guard seconds.isFinite, seconds >= 0 else { return 0 }
+        return Int(seconds * 1000)
     }
 
     private static func value(after flag: String, in arguments: [String]) -> String? {
@@ -165,12 +202,14 @@ enum DebugJellyfinPlaybackProbe {
         case itemNotFound(String)
         case timeout(String)
         case playbackFailed(String, String?)
+        case playbackStalled(Int, String)
 
         var description: String {
             switch self {
             case .itemNotFound(let query): return "item not found for query \(query)"
             case .timeout(let phase): return "timed out waiting for \(phase) playback"
             case .playbackFailed(let phase, let message): return "playback failed during \(phase): \(message ?? "no message")"
+            case .playbackStalled(let advancedMs, let reason): return "playback stalled during hold: \(reason), advanced \(advancedMs)ms"
             }
         }
     }

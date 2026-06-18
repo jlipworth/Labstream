@@ -225,6 +225,7 @@ final class PlaybackController {
     /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
     /// state. Cancelled the moment playback genuinely resumes (`.playing`).
     private var stallWatchdog: Timer?
+    private var bufferingDelayTask: Task<Void, Never>?
     /// Observer for `AVPlayerItem.timeJumpedNotification` — the only in-process signal of a user
     /// seek on visionOS (#25): AVKit's user-navigation delegate callbacks
     /// (`willResumePlaybackAfterUserNavigatedFromTime:toTime:`) are `API_UNAVAILABLE(visionos)`,
@@ -234,6 +235,8 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    private var jellyfinHLSProxy: MediaSessionProxy?
+    private var jellyfinHLSProxyGeneration: Int?
     /// User transport intent, independent of AVPlayer's transient loading state.
     ///
     /// During initial HLS priming AVPlayer sits in `.waitingToPlayAtSpecifiedRate`, so a quick
@@ -609,6 +612,11 @@ final class PlaybackController {
         upNextTask?.cancel()
         upNextTask = nil
         playbackGeneration += 1
+        if let proxy = jellyfinHLSProxy, let generation = jellyfinHLSProxyGeneration {
+            Task { await proxy.stop(generation: generation) }
+            jellyfinHLSProxy = nil
+            jellyfinHLSProxyGeneration = nil
+        }
         timeline.report(state: .stopped, force: true)
         sendTranscodeStop()
         stopRemoteSessionIfNeeded()
@@ -1695,7 +1703,15 @@ final class PlaybackController {
             diagnostics.applyJellyfinSource(remoteSourceMetadata,
                                             playMethod: remotePlayMethod)
         }
-        diagnostics.connectionHost = url.host ?? "Remote stream"
+        diagnostics.usesLocalMediaProxy = Self.isLoopback(url)
+        if diagnostics.usesLocalMediaProxy,
+           let upstream = remoteStreamURL,
+           !Self.isLoopback(upstream),
+           let host = upstream.host {
+            diagnostics.connectionHost = upstream.port.map { "\(host):\($0)" } ?? host
+        } else {
+            diagnostics.connectionHost = url.host ?? "Remote stream"
+        }
         var fields: [String: DiagnosticFieldValue] = [
             "path_mode": .label("remote_stream"),
             "stream_url_shape": .urlShape(url),
@@ -1710,6 +1726,50 @@ final class PlaybackController {
         let asset = AVURLAsset(url: url, options: options)
         let playerItem = AVPlayerItem(asset: asset)
         load(playerItem, resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
+    }
+
+    private func playableRemoteStreamURL(_ url: URL, resumeOffsetMs: Int?) async -> URL {
+        guard remotePlayMethod == .transcode,
+              let resumeOffsetMs, resumeOffsetMs > 0,
+              let primedURL = jellyfinHLSURL(url, startTimeTicks: resumeOffsetMs * 10_000)
+        else { return url }
+
+        let proxy = MediaSessionProxy(controlSend: { _ in Data() },
+                                      strippedPlaylistQueryItemNames: ["starttimeticks"],
+                                      injectedPlaylistStartTimeOffsetSeconds: Double(resumeOffsetMs) / 1000.0)
+        do {
+            let handle = try await proxy.standUpLoopback(forStream: primedURL)
+            if let oldProxy = jellyfinHLSProxy, let oldGeneration = jellyfinHLSProxyGeneration {
+                await oldProxy.stop(generation: oldGeneration)
+            }
+            jellyfinHLSProxy = proxy
+            jellyfinHLSProxyGeneration = handle.generation
+            recordPlaybackDiagnostic("playback.remote_hls_proxy_open", fields: [
+                "target": .millisecondsBucket(resumeOffsetMs),
+                "strips_start_time_ticks": .bool(true),
+            ])
+            return handle.localURL
+        } catch {
+            recordPlaybackDiagnostic("playback.remote_hls_proxy_failed", fields: [
+                "target": .millisecondsBucket(resumeOffsetMs),
+                "error": .error(error),
+            ])
+            return url
+        }
+    }
+
+    private func jellyfinHLSURL(_ url: URL, startTimeTicks: Int) -> URL? {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        var items = comps.queryItems ?? []
+        items.removeAll { $0.name.caseInsensitiveCompare("StartTimeTicks") == .orderedSame }
+        items.append(URLQueryItem(name: "StartTimeTicks", value: String(startTimeTicks)))
+        comps.queryItems = items
+        return comps.url
+    }
+
+    private static func isLoopback(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
     // MARK: - Now Playing / cinema chrome metadata (R5)
@@ -1928,22 +1988,16 @@ final class PlaybackController {
         // active and `installObservers()` no-ops on its second call.
         audioSession.activate()
         audioSession.installObservers()
-        // Forward-buffer tuning (#21). Ask AVPlayer to keep a DEEP buffer ahead of the
-        // playhead (~600s) so playback can ride out long network interruptions without
-        // rebuffering. This is a HINT, not a guarantee: AVPlayer fills toward it only as
-        // fast as bytes arrive and bounds the actual window against system resources, so it
-        // routinely under- or over-shoots. On a live capped HLS transcode the transcoder is
-        // the limiter — AVPlayer can't buffer faster than PMS produces segments — so the deep
-        // window mostly benefits DIRECT PLAY, where the source is a static file AVPlayer can
-        // pull as fast as the link allows. Memory caveat: a large window on a high-bitrate 4K
-        // direct play can hold a lot of media in memory; we accept that tradeoff for smoother
-        // playback and rely on AVPlayer's own resource bounding (watch #27 OOM). Applied
-        // uniformly (streaming + local): a local file fills it instantly so it's harmless
-        // there, and keeping one code path is simpler. `automaticallyWaitsToMinimizeStalling`
-        // stays at its default `true` (set below) so the player still waits for enough buffer
-        // before starting rather than starting and immediately stalling.
-        playerItem.preferredForwardBufferDuration = 600
-        player.automaticallyWaitsToMinimizeStalling = true
+        // Forward-buffer tuning (#21 / #43). A deep buffer is useful for Plex/static/direct
+        // playback, where AVPlayer can pull media faster than realtime. It is actively harmful
+        // for Jellyfin live HLS transcodes after a seek: the transcoder can only mint segments
+        // around realtime, and with a 600s target AVPlayer often flips back to `.waiting` after
+        // the first post-seek frame even though Jellyfin/ffmpeg are healthy. Keep the deep
+        // buffer for non-Jellyfin-transcode paths, but use a small window and let playback run
+        // as soon as segments arrive for backend-resolved transcodes.
+        let isRemoteTranscode = remoteStreamURL != nil && remotePlayMethod == .transcode
+        playerItem.preferredForwardBufferDuration = isRemoteTranscode ? 12 : 600
+        player.automaticallyWaitsToMinimizeStalling = !isRemoteTranscode
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
         attachExternalMetadata(to: playerItem)
@@ -2047,9 +2101,20 @@ final class PlaybackController {
                     if !self.didSeek, let resumeOffsetMs, resumeOffsetMs > 0 {
                         let current = self.player.currentTime().seconds
                         let nearZero = !current.isFinite || current < 1.0
-                        if nearZero {
+                        let isBackendRemoteTranscode = self.remoteStreamURL != nil && self.remotePlayMethod == .transcode
+                        if nearZero, !isBackendRemoteTranscode {
                             let target = CMTime(value: CMTimeValue(resumeOffsetMs), timescale: 1000)
-                            self.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
+                            let tolerance: CMTime = .zero
+                            self.player.seek(to: target,
+                                             toleranceBefore: tolerance,
+                                             toleranceAfter: tolerance,
+                                             completionHandler: { [weak self] finished in
+                                                 guard finished else { return }
+                                                 Task { @MainActor [weak self] in
+                                                     guard let self, !self.userWantsPaused else { return }
+                                                     self.applyPlaybackSpeed()
+                                                 }
+                                             })
                         }
                         self.didSeek = true
                     }
@@ -2167,7 +2232,7 @@ final class PlaybackController {
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
                 let isStalled = (status == .waitingToPlayAtSpecifiedRate && !self.userWantsPaused)
-                self.buffering.set(isStalled)
+                self.setBufferingVisible(isStalled)
                 // Stall watchdog (#8 hardening): a network-loss stall often never flips
                 // item.status to .failed, so arm a timeout while the player is starved and
                 // cancel it the instant playback genuinely resumes. We deliberately do NOT
@@ -2238,6 +2303,8 @@ final class PlaybackController {
         statusObservation = nil
         rateObservation = nil
         bufferingObservation = nil
+        bufferingDelayTask?.cancel()
+        bufferingDelayTask = nil
         // Cancel the stall watchdog so a stale timer can't fire across a reload / Retry /
         // teardown and surface an error against a freshly-loaded item.
         cancelStallWatchdog()
@@ -2258,6 +2325,23 @@ final class PlaybackController {
         if let failedToEndObserver {
             NotificationCenter.default.removeObserver(failedToEndObserver)
             self.failedToEndObserver = nil
+        }
+    }
+
+    private func setBufferingVisible(_ isBuffering: Bool) {
+        bufferingDelayTask?.cancel()
+        bufferingDelayTask = nil
+        guard isBuffering else {
+            buffering.set(false)
+            return
+        }
+        // Show feedback for real initial primes/rebuffers, but don't flash the card for the
+        // quick `.waiting → ready` transitions common after Jellyfin HLS seek/reopen.
+        bufferingDelayTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(750))
+            guard let self, !Task.isCancelled, !self.userWantsPaused else { return }
+            guard self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+            self.buffering.set(true)
         }
     }
 
@@ -2712,15 +2796,22 @@ final class PlaybackController {
     /// enough not to trip a slow-but-working initial prime, short enough to replace AVKit's dead
     /// placeholder glyph with a recoverable Retry promptly.
     private let stallTimeoutSeconds: TimeInterval = 15
+    private let remoteTranscodeStallTimeoutSeconds: TimeInterval = 45
+
+    private var activeStallTimeoutSeconds: TimeInterval {
+        remoteStreamURL != nil && remotePlayMethod == .transcode
+            ? remoteTranscodeStallTimeoutSeconds
+            : stallTimeoutSeconds
+    }
 
     /// Arm the stall watchdog if it isn't already running and no error is being shown. Idempotent
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
         guard stallWatchdog == nil, !playbackError.isFailed else { return }
         recordPlaybackDiagnostic("playback.stall_watchdog_armed", fields: [
-            "timeout_seconds": .int(Int(stallTimeoutSeconds)),
+            "timeout_seconds": .int(Int(activeStallTimeoutSeconds)),
         ])
-        let timer = Timer(timeInterval: stallTimeoutSeconds, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: activeStallTimeoutSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleStallTimeout()
             }
@@ -2887,7 +2978,9 @@ final class PlaybackController {
                 }
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false
-                self.loadRemoteStream(reopened.url, headers: reopened.headers, resumeOffsetMs: offsetMs)
+                let playableURL = await self.playableRemoteStreamURL(reopened.url,
+                                                                      resumeOffsetMs: offsetMs)
+                self.loadRemoteStream(playableURL, headers: reopened.headers, resumeOffsetMs: offsetMs)
                 let samePlaySession = priorPlaySessionId != nil && priorPlaySessionId == reopened.playSessionId
                 if samePlaySession {
                     self.recordPlaybackDiagnostic("playback.remote_stop_skipped", fields: [
