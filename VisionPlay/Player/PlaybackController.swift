@@ -339,16 +339,16 @@ final class PlaybackController {
     /// a SwiftUI view — and any future settings UI share one source of truth.
     private enum SubtitlePrefKey {
         /// BCP-47 / ISO language code of the user's last chosen subtitle track (e.g. "en").
-        static let language = PlaybackPreferenceKeys.preferredSubtitleLanguage
+        static let language = PlaybackPreferences.Keys.preferredSubtitleLanguage
         /// `true` once the user has explicitly chosen "Off"; suppresses auto-select.
-        static let off = PlaybackPreferenceKeys.subtitlesOff
+        static let off = PlaybackPreferences.Keys.subtitlesOff
     }
 
     /// `@AppStorage`-style key for the persisted audio-language preference (#3). Mirrors
     /// `SubtitlePrefKey`, but there is no "Off" — a video always plays some soundtrack.
     private enum AudioPrefKey {
         /// BCP-47 / ISO language code of the user's last chosen audio track (e.g. "en").
-        static let language = PlaybackPreferenceKeys.preferredAudioLanguage
+        static let language = PlaybackPreferences.Keys.preferredAudioLanguage
     }
 
     /// Every UserDefaults key this controller persists across sessions, for the Settings
@@ -359,8 +359,8 @@ final class PlaybackController {
         SubtitlePrefKey.language,
         SubtitlePrefKey.off,
         AudioPrefKey.language,
-        PlaybackPreferenceKeys.subtitleAutoSelectMode,
-        PlaybackPreferenceKeys.subtitleBurnMode,
+        PlaybackPreferences.Keys.subtitleAutoSelectMode,
+        PlaybackPreferences.Keys.subtitleBurnMode,
     ]
 
     /// Resume target (ms) for the current item, retained so the status observer can do a
@@ -847,7 +847,7 @@ final class PlaybackController {
         // the one-shot gate yet — leave the HLS default and let a future pick start fresh.
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
         let savedLang = defaults.string(forKey: SubtitlePrefKey.language)
-        let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferenceKeys.subtitleAutoSelectMode) ?? "")
+        let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
             ?? .manual
         guard wantsOff || (mode != .manual && savedLang?.isEmpty == false) else { return }
 
@@ -1044,11 +1044,11 @@ final class PlaybackController {
 
     private func selectedBurnSubtitleStreamIDForCurrentPreferences() -> Int? {
         let defaults = UserDefaults.standard
-        let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferenceKeys.subtitleBurnMode) ?? "")
+        let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? "")
             ?? .automatic
         guard burnMode != .automatic else { return nil }
 
-        let autoMode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferenceKeys.subtitleAutoSelectMode) ?? "")
+        let autoMode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
             ?? .manual
         guard autoMode != .manual else { return nil }
         if autoMode == .foreignAudio && !sourceAudioIsForeign(toPreferredLanguage: defaults) {
@@ -1589,8 +1589,8 @@ final class PlaybackController {
             "part_index": .int(0),
             "profile": .label("visionos-hls"),
             "stop_previous": .bool(stoppingPreviousTranscode),
-            "subtitle_auto_select": .label(UserDefaults.standard.string(forKey: PlaybackPreferenceKeys.subtitleAutoSelectMode) ?? SubtitleAutoSelectMode.manual.rawValue),
-            "subtitle_burn_mode": .label(UserDefaults.standard.string(forKey: PlaybackPreferenceKeys.subtitleBurnMode) ?? SubtitleBurnMode.automatic.rawValue),
+            "subtitle_auto_select": .label(UserDefaults.standard.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? SubtitleAutoSelectMode.manual.rawValue),
+            "subtitle_burn_mode": .label(UserDefaults.standard.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? SubtitleBurnMode.automatic.rawValue),
             "burning_subtitles": .bool(burnSubtitleStreamID != nil),
         ]
         requestFields.merge(sourceDiagnosticFields()) { _, new in new }
@@ -2523,21 +2523,15 @@ final class PlaybackController {
 
     /// Countdown (seconds) shown on the Up Next card before it autoplays the next item.
     private var upNextCountdownStart: Int {
-        if UserDefaults.standard.object(forKey: PlaybackPreferences.Keys.upNextCountdownSeconds) == nil {
-            return PlaybackPreferences.defaultUpNextCountdownSeconds
-        }
-        return UserDefaults.standard.integer(forKey: PlaybackPreferences.Keys.upNextCountdownSeconds)
+        PlaybackPreferences.upNextCountdownSeconds()
     }
 
     private var autoPlayUpNextEnabled: Bool {
-        if UserDefaults.standard.object(forKey: PlaybackPreferences.Keys.autoPlayUpNext) == nil { return true }
-        return UserDefaults.standard.bool(forKey: PlaybackPreferences.Keys.autoPlayUpNext)
+        PlaybackPreferences.autoPlayUpNext()
     }
 
     private func skipMode(for kind: SkipMarkerState.Kind) -> PlaybackPreferences.SkipMode {
-        let key = kind == .intro ? PlaybackPreferences.Keys.skipIntroMode : PlaybackPreferences.Keys.skipCreditsMode
-        let raw = UserDefaults.standard.string(forKey: key) ?? PlaybackPreferences.SkipMode.manual.rawValue
-        return PlaybackPreferences.SkipMode(rawValue: raw) ?? .manual
+        PlaybackPreferences.skipMode(intro: kind == .intro)
     }
 
     /// The most recent integer second at which the countdown was ticked, so the 0.5s marker

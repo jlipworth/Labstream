@@ -1,4 +1,5 @@
 import Foundation
+import PMSKit
 
 enum PlaybackPreferences {
     enum Keys {
@@ -13,6 +14,15 @@ enum PlaybackPreferences {
         static let adaptiveBitrateEnabled = "playerAdaptiveBitrateEnabled"
         static let defaultDownloadQuality = "defaultDownloadQuality"
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
+
+        // Audio/subtitle language + subtitle-handling keys (formerly the separate
+        // `PlaybackPreferenceKeys` namespace). Raw strings preserved exactly so existing
+        // @AppStorage declarations and persisted values are untouched.
+        static let preferredAudioLanguage = "preferredAudioLanguage"
+        static let preferredSubtitleLanguage = "preferredSubtitleLanguage"
+        static let subtitlesOff = "subtitlesOff"
+        static let subtitleAutoSelectMode = "subtitleAutoSelectMode"
+        static let subtitleBurnMode = "subtitleBurnMode"
     }
 
     enum SkipMode: String, CaseIterable, Identifiable {
@@ -33,10 +43,12 @@ enum PlaybackPreferences {
     static let defaultHomeQualityKbps = StreamingQuality.maximumOriginalKbps
     static let defaultUpNextCountdownSeconds = 10
     static let defaultAdaptiveBitrateEnabled = false
+    static let defaultAutoPlayUpNext = true
+    static let defaultSkipMode = SkipMode.manual
+    static let defaultStorageLimitBytes = DownloadStorageLimit.unlimited
     static let defaultDownloadQuality = "1080p 8 Mbps"
 
-    static func qualityKbps(forDefaultsKey key: String) -> Int {
-        let defaults = UserDefaults.standard
+    static func qualityKbps(forDefaultsKey key: String, defaults: UserDefaults = .standard) -> Int {
         if defaults.object(forKey: key) != nil { return defaults.integer(forKey: key) }
         if key == Keys.remoteQualityKbps, defaults.object(forKey: Keys.legacyQualityKbps) != nil {
             return defaults.integer(forKey: Keys.legacyQualityKbps)
@@ -44,8 +56,7 @@ enum PlaybackPreferences {
         return key == Keys.homeQualityKbps ? defaultHomeQualityKbps : defaultRemoteQualityKbps
     }
 
-    static func setQualityKbps(_ kbps: Int, forDefaultsKey key: String) {
-        let defaults = UserDefaults.standard
+    static func setQualityKbps(_ kbps: Int, forDefaultsKey key: String, defaults: UserDefaults = .standard) {
         defaults.set(kbps, forKey: key)
         // The retired single-cap key maps to the conservative Internet/Remote cap. Do not
         // let Home/Local changes rewrite it, or older installs with no remote key yet can
@@ -55,8 +66,7 @@ enum PlaybackPreferences {
         }
     }
 
-    static func migrateLegacyQualityIfNeeded() {
-        let defaults = UserDefaults.standard
+    static func migrateLegacyQualityIfNeeded(defaults: UserDefaults = .standard) {
         guard defaults.object(forKey: Keys.remoteQualityKbps) == nil,
               defaults.object(forKey: Keys.legacyQualityKbps) != nil else { return }
         defaults.set(defaults.integer(forKey: Keys.legacyQualityKbps),
@@ -68,6 +78,37 @@ enum PlaybackPreferences {
             return defaultAdaptiveBitrateEnabled
         }
         return defaults.bool(forKey: Keys.adaptiveBitrateEnabled)
+    }
+
+    /// Download storage cap in bytes; `DownloadStorageLimit.unlimited` (0) when unset.
+    static func downloadStorageLimitBytes(defaults: UserDefaults = .standard) -> Int {
+        guard defaults.object(forKey: Keys.downloadStorageLimitBytes) != nil else {
+            return defaultStorageLimitBytes
+        }
+        return defaults.integer(forKey: Keys.downloadStorageLimitBytes)
+    }
+
+    /// Countdown (seconds) shown on the Up Next card before it autoplays the next item.
+    static func upNextCountdownSeconds(defaults: UserDefaults = .standard) -> Int {
+        guard defaults.object(forKey: Keys.upNextCountdownSeconds) != nil else {
+            return defaultUpNextCountdownSeconds
+        }
+        return defaults.integer(forKey: Keys.upNextCountdownSeconds)
+    }
+
+    static func autoPlayUpNext(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: Keys.autoPlayUpNext) != nil else {
+            return defaultAutoPlayUpNext
+        }
+        return defaults.bool(forKey: Keys.autoPlayUpNext)
+    }
+
+    /// Skip behavior for an intro or credits marker. `intro == true` reads the intro key,
+    /// otherwise the credits key; both default to `.manual`.
+    static func skipMode(intro: Bool, defaults: UserDefaults = .standard) -> SkipMode {
+        let key = intro ? Keys.skipIntroMode : Keys.skipCreditsMode
+        let raw = defaults.string(forKey: key) ?? defaultSkipMode.rawValue
+        return SkipMode(rawValue: raw) ?? defaultSkipMode
     }
 }
 
