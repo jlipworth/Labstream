@@ -1,12 +1,7 @@
 import Foundation
 
-enum PlaybackPreferenceKeys {
-    static let preferredAudioLanguage = "preferredAudioLanguage"
-    static let preferredSubtitleLanguage = "preferredSubtitleLanguage"
-    static let subtitlesOff = "subtitlesOff"
-    static let subtitleAutoSelectMode = "subtitleAutoSelectMode"
-    static let subtitleBurnMode = "subtitleBurnMode"
-}
+// Audio/subtitle preference key strings now live in `PlaybackPreferences.Keys`
+// (see UI/PlayerExperiencePreferences.swift) so all defaults keys share one namespace.
 
 enum SubtitleAutoSelectMode: String, CaseIterable, Identifiable {
     case manual

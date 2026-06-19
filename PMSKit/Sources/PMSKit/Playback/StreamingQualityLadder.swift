@@ -18,26 +18,31 @@ import Foundation
 /// - **Maximum (HLS)** (`maxTranscodedKbps`): use Plex/Jellyfin HLS at the highest
 ///   ceiling. Plex may still copy/remux compatible video; this is not a forced re-encode.
 /// Every numeric rung transcodes at that cap.
-enum StreamingQuality {
+public enum StreamingQuality {
 
     /// The no-cap "Direct Play / Maximum" sentinel: attempt direct play/direct stream first.
-    static let maximumOriginalKbps = 0
+    public static let maximumOriginalKbps = 0
 
     /// The "Maximum (HLS)" sentinel: request the production HLS path at this effectively
     /// uncapped ceiling. It skips the literal direct-play probe, but Plex may still Direct
     /// Stream/video-copy compatible sources; it only video-transcodes when PMS requires it.
-    static let maxTranscodedKbps = 200_000
+    public static let maxTranscodedKbps = 200_000
 
     /// One rung of the ladder. `kbps == maximumOriginalKbps` (0) is the direct-play-or-max
     /// sentinel; `kbps == maxTranscodedKbps` is the maximum-HLS sentinel;
     /// `resolution` is the rough target PMS encodes to at that ceiling (empty for the maxima).
-    struct Option: Identifiable {
-        let kbps: Int
-        let resolution: String
-        var id: Int { kbps }
+    public struct Option: Identifiable, Sendable {
+        public let kbps: Int
+        public let resolution: String
+        public var id: Int { kbps }
+
+        public init(kbps: Int, resolution: String) {
+            self.kbps = kbps
+            self.resolution = resolution
+        }
     }
 
-    static let ladder: [Option] = [
+    public static let ladder: [Option] = [
         Option(kbps: 2000,  resolution: "720p"),
         Option(kbps: 3000,  resolution: "720p"),
         Option(kbps: 4000,  resolution: "720p"),
@@ -53,7 +58,7 @@ enum StreamingQuality {
     /// Friendly label: the two maxima get named choices; numeric rungs render
     /// "<N> Mbps · <resolution>", e.g. "8 Mbps · 1080p". Fractional Mbps (none in the
     /// current ladder) render without trailing zeros via `%g`.
-    static func label(kbps: Int) -> String {
+    public static func label(kbps: Int) -> String {
         switch kbps {
         case maximumOriginalKbps: return "Direct Play / Maximum"
         case maxTranscodedKbps:   return "Maximum (HLS)"
