@@ -15,7 +15,7 @@ required**.
 
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
       plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
-      **VisionPlex**. Both paths land in the library.
+      **VisionPlay**. Both paths land in the library.
 - [ ] **Welcome screen polish (GH #18)** — at the next natural sign-out, before signing back in:
       logo tile shows the real artwork with a blue/amber two-tone glow (no flat circle); title reads
       "Vision**Plex**" with amber "Plex"; tagline "Your whole Plex library, in your space."; the
@@ -228,7 +228,7 @@ required**.
       PMS `/firstCharacter` counts.
 - [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
   - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; visionOS row sane;
-    Client row says "VisionPlex on Apple Vision Pro" (NO client identifier shown).
+    Client row says "VisionPlay on Apple Vision Pro" (NO client identifier shown).
   - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
     the connection scheme only — no token, client identifier, hostname, or full URL.
   - Server section: Version row shows the PMS version; Status row says "Tap to check",
@@ -555,7 +555,7 @@ these as hardware/manual-system tests, not simulator merge blockers. Simulator v
 this slice is: app builds, App Intents metadata extraction succeeds, app launches, Settings/About
 shows the stamped Build ID, and normal in-app browsing still works.
 
-- [ ] **Shortcuts: Play Media (GH #24)** — Shortcuts app → new shortcut → search "VisionPlex" →
+- [ ] **Shortcuts: Play Media (GH #24)** — Shortcuts app → new shortcut → search "VisionPlay" →
       **Play Media**. Tapping the "Title" parameter should suggest the On Deck list and allow
       free-text search of the library (music never appears, per #15). Running the shortcut
       foregrounds the app, lands on Home, pushes the item's DetailView, and starts playback
@@ -566,7 +566,7 @@ shows the stamped Build ID, and normal in-app browsing still works.
 - [ ] **Shortcuts: Continue Watching (GH #24)** — zero-parameter intent resumes the top On Deck
       item; with an empty On Deck it errors with "There's nothing in Continue Watching right now."
 - [ ] **Intent while signed out (GH #24)** — after sign-out, any intent fails with the
-      "VisionPlex isn't signed in to a Plex server…" dialog; no crash, no half-open UI.
+      "VisionPlay isn't signed in to a Plex server…" dialog; no crash, no half-open UI.
 - [ ] **Spotlight indexing (GH #24)** — browse Home + a library grid, then system search
       (Home View search field): browsed titles appear (episodes under "Show · SxEy · Title").
       Tapping a result opens the app and pushes that item's DetailView (no autoplay, no second

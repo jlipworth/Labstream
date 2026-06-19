@@ -37,7 +37,7 @@
 	     *.plex.direct hostnames that resolve to LAN/WAN IPs; accessing a local
 	     address triggers the system Local Network prompt even over HTTPS. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>VisionPlex connects to your Plex Media Server on your local network to browse and play your library.</string>
+	<string>VisionPlay connects to your Plex Media Server on your local network to browse and play your library.</string>
 
 	<!-- App Transport Security (#33): the media-session proxy fronts PMS behind an
 	     app-owned loopback origin, so AVFoundation loads the stream from

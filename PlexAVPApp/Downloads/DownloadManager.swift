@@ -734,7 +734,7 @@ public final class DownloadManager {
         refreshRecords()
 
         do {
-            let queueTitle = "\(item.title) [VisionPlex \(UUID().uuidString.prefix(8))]"
+            let queueTitle = "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
             let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                          token: token, identity: identity) ?? item
             let originalPartIDs = Set((sourceItem.media ?? item.media ?? []).flatMap { $0.part.map(\.id) })

@@ -115,7 +115,7 @@ final class MediaSessionProxyTests: XCTestCase {
     }
 
     func testMediaSessionRequestAndErrorValueSemantics() {
-        let id = ClientIdentity(clientIdentifier: "test", product: "VisionPlex",
+        let id = ClientIdentity(clientIdentifier: "test", product: "VisionPlay",
                                 version: "0", deviceName: "test")
         let a = MediaSessionRequest(server: URL(string: "https://example.internal:32400")!,
                                     token: "tkn", identity: id,
@@ -182,7 +182,7 @@ extension MediaSessionProxyTests {
     func sampleRequest(server: URL, directStream: Bool = false) -> MediaSessionRequest {
         MediaSessionRequest(
             server: server, token: "tkn",
-            identity: ClientIdentity(clientIdentifier: "test", product: "VisionPlex",
+            identity: ClientIdentity(clientIdentifier: "test", product: "VisionPlay",
                                      version: "0", deviceName: "test"),
             metadataKey: "/library/metadata/1", maxVideoBitrateKbps: 3000,
             sessionID: "sess", mediaIndex: 0, partIndex: 0,

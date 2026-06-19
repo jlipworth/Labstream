@@ -17,7 +17,7 @@ enum VisionPlexIntentError: Error, CustomLocalizedStringResourceConvertible {
     var localizedStringResource: LocalizedStringResource {
         switch self {
         case .notSignedIn:
-            return "VisionPlex isn't signed in to a Plex server. Open the app and sign in first."
+            return "VisionPlay isn't signed in to a Plex server. Open the app and sign in first."
         case .nothingToResume:
             return "There's nothing in Continue Watching right now."
         }
@@ -27,7 +27,7 @@ enum VisionPlexIntentError: Error, CustomLocalizedStringResourceConvertible {
 struct PlayMediaIntent: AppIntent {
     static let title: LocalizedStringResource = "Play Media"
     static let description = IntentDescription(
-        "Plays a movie, show, or episode from your Plex library in VisionPlex.")
+        "Plays a movie, show, or episode from your Plex library in VisionPlay.")
     static let openAppWhenRun = true
 
     @Parameter(title: "Title", description: "What to play")
@@ -44,14 +44,14 @@ struct PlayMediaIntent: AppIntent {
         // Route by ratingKey, not the snapshot: RootView re-fetches authoritative
         // metadata (and resolves a show/season container down to an episode leaf).
         router.open(ratingKey: item.id, autoPlay: true)
-        return .result(dialog: "Playing \(item.title) in VisionPlex.")
+        return .result(dialog: "Playing \(item.title) in VisionPlay.")
     }
 }
 
 struct OpenMediaIntent: AppIntent {
     static let title: LocalizedStringResource = "Open Media"
     static let description = IntentDescription(
-        "Opens a movie, show, or episode's detail page in VisionPlex.")
+        "Opens a movie, show, or episode's detail page in VisionPlay.")
     static let openAppWhenRun = true
 
     @Parameter(title: "Title", description: "What to open")
@@ -66,7 +66,7 @@ struct OpenMediaIntent: AppIntent {
         let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady() else { throw VisionPlexIntentError.notSignedIn }
         router.open(ratingKey: item.id, autoPlay: false)
-        return .result(dialog: "Opening \(item.title) in VisionPlex.")
+        return .result(dialog: "Opening \(item.title) in VisionPlay.")
     }
 }
 
@@ -93,7 +93,7 @@ struct ResumeContinueWatchingIntent: AppIntent {
     }
 }
 
-/// Siri/Shortcuts phrases. Parameterized phrases ("Play <X> on VisionPlex") draw
+/// Siri/Shortcuts phrases. Parameterized phrases ("Play <X> on VisionPlay") draw
 /// their vocabulary from the query's `suggestedEntities()`; HomeView refreshes them
 /// via `updateAppShortcutParameters()` whenever the hubs load.
 struct VisionPlexShortcuts: AppShortcutsProvider {
