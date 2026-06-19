@@ -178,6 +178,29 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     #expect(a.optimizeActivity(ratingKey: "101", title: "x", allowSoleFallback: true)?.progress == 55)
 }
 
+@Test func matchesMediaDownloadByContextMetadataID() throws {
+    // CONFIRMED live shape: the conversion activity backing an offline download is
+    // type "media.download" with Context.metadataID (no ratingKey), and a progress field.
+    let json = """
+    {"MediaContainer":{"size":1,"Activity":[
+      {"uuid":"u","type":"media.download","cancellable":1,"progress":18,
+       "title":"Converting","subtitle":"My Episode",
+       "Context":{"deviceID":"d","metadataID":"101","partID":"55"}}
+    ]}}
+    """.data(using: .utf8)!
+    let a = try JSONDecoder().decode(Activities.self, from: json)
+    let act = try #require(a.activities.first)
+    #expect(act.looksLikeOptimize)              // media.download is recognized
+    #expect(act.contextMetadataID == "101")
+    #expect(act.correlationID == "101")
+    let match = try #require(a.optimizeActivity(ratingKey: "101", title: "anything"))
+    #expect(match.progress == 18)
+    let shape = a.probeShape(ratingKey: " 101 ", title: "anything")
+    #expect(shape["matched"] == "yes")
+    #expect(shape["match_has_metadata_id"] == "1")
+    #expect(shape["match_correlation_equal"] == "1")
+}
+
 @Test func decodesDoubleProgress() throws {
     let json = """
     {"MediaContainer":{"Activity":[{"type":"media.optimize","progress":37.9}]}}

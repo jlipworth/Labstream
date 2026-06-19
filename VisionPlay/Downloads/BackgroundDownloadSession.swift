@@ -368,32 +368,71 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let destination = entry.destination
         let ratingKey = entry.ratingKey
         Task { [weak self] in
-            let asset = AVURLAsset(url: destination)
-            let playable = (try? await asset.load(.isPlayable)) ?? false
+            let validation = await Self.validateLocalPlayback(destination)
             guard let self else { return }
-            if playable {
+            if validation.played {
                 // Validated: mark explicitly complete (D2) so a relaunch trusts it.
                 downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.complete", fields: [
                     "download_id": .identifier(ratingKey),
                     "bytes": .bytes(bytes),
+                    "validation": .label("local_playback"),
                 ])
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
-                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=not-playable bytes=\(bytes, privacy: .public)")
+                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) bytes=\(bytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
                     "download_id": .identifier(ratingKey),
-                    "reason": .label("not_playable"),
+                    "reason": .label(validation.reason),
                     "bytes": .bytes(bytes),
                 ])
                 try? self.fileManager.removeItem(at: destination)
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .failed)
-                self.onError?(ratingKey, .invalidDownload("Downloaded file isn't a playable video container."))
+                self.onError?(ratingKey, .invalidDownload("Downloaded file did not start local playback (\(validation.reason))."))
             }
             self.onChange?()
         }
+    }
+
+
+    private static func validateLocalPlayback(_ url: URL) async -> (played: Bool, reason: String) {
+        let asset = AVURLAsset(url: url)
+        let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
+        guard assetPlayable else { return (false, "asset_not_playable") }
+
+        let item = AVPlayerItem(asset: asset)
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        player.volume = 0
+        player.automaticallyWaitsToMinimizeStalling = true
+        player.play()
+        defer {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+        }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        var sawReady = false
+        while ContinuousClock.now < deadline {
+            switch item.status {
+            case .failed:
+                return (false, "item_failed")
+            case .readyToPlay:
+                sawReady = true
+            case .unknown:
+                break
+            @unknown default:
+                break
+            }
+            let seconds = player.currentTime().seconds
+            if sawReady, seconds.isFinite, seconds >= 0.5 {
+                return (true, "played")
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready")
     }
 
     func urlSession(_ session: URLSession,
