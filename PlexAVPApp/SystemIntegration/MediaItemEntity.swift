@@ -3,7 +3,7 @@ import PMSKit
 
 /// An App Intents entity wrapping one Plex library item, identified by its
 /// `ratingKey` (issue #24). This is what shows up as the "Title" parameter in
-/// Shortcuts and in "Play <title> on VisionPlex" Siri phrases.
+/// Shortcuts and in "Play <title> on VisionPlay" Siri phrases.
 ///
 /// Deliberately a snapshot of display fields only — intents re-fetch authoritative
 /// metadata by ratingKey at perform time, so a stale snapshot can't mis-play.

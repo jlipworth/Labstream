@@ -1,6 +1,6 @@
-# VisionPlex — Support
+# VisionPlay — Support
 
-VisionPlex is a native Apple Vision Pro client for **your own Plex Media Server**.
+VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server**.
 
 ## Requirements
 
@@ -9,11 +9,11 @@ VisionPlex is a native Apple Vision Pro client for **your own Plex Media Server*
   or have access to.
 - Local-network playback is free. Remote (off-LAN) streaming may require Plex
   Pass or Remote Watch Pass on your account — this is a Plex server-side
-  requirement, not a VisionPlex feature.
+  requirement, not a VisionPlay feature.
 
 ## Getting started
 
-1. Launch VisionPlex and sign in with your Plex account (PIN / OAuth).
+1. Launch VisionPlay and sign in with your Plex account (PIN / OAuth).
 2. The app discovers your servers; pick the one you want.
 3. Browse your libraries, then play. Titles resume where you left off.
 
@@ -21,7 +21,7 @@ VisionPlex is a native Apple Vision Pro client for **your own Plex Media Server*
 
 - **A re-install asks me to sign in again.** Reinstalling clears the app's
   container, including the stored token, so a fresh sign-in is expected.
-- **Playback failed / spinner won't clear.** VisionPlex has a stall watchdog
+- **Playback failed / spinner won't clear.** VisionPlay has a stall watchdog
   that surfaces a "Playback failed" overlay and rebuilds the player. If it
   persists, confirm the server is reachable and try a lower streaming quality in
   Settings.
@@ -51,5 +51,5 @@ library paths, filenames, and media titles.
 
 ## Privacy
 
-See [PRIVACY.md](PRIVACY.md). VisionPlex collects no data and sends nothing to
+See [PRIVACY.md](PRIVACY.md). VisionPlay collects no data and sends nothing to
 the developer.

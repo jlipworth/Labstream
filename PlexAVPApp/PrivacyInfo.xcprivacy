@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<!-- App Store privacy manifest (#appstore).
-	     VisionPlex talks only to the user's own Plex Media Server and stores the
+	     VisionPlay talks only to the user's own Plex Media Server and stores the
 	     Plex token in the Keychain on-device. No data is collected by or sent to
 	     the developer, and there is no tracking or third-party SDK. -->
 
