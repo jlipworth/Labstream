@@ -215,7 +215,6 @@ final class PlaybackController {
     private var timeObserver: Any?
     private var statusObservation: NSKeyValueObservation?
     private var rateObservation: NSKeyValueObservation?
-    private var bufferingObservation: NSKeyValueObservation?
     private var didEndObserver: NSObjectProtocol?
     private var diagnosticsTimer: Timer?
     private var lastDiagnosticSnapshotUptime: TimeInterval = 0
@@ -2323,59 +2322,19 @@ final class PlaybackController {
             }
         }
 
-        // Fire on play/pause transitions.
+        // Single observer for `\.timeControlStatus` driving BOTH the transport/diagnostics
+        // update and the rebuffer/stall spinner (#21). These were previously two separate
+        // `observe()` calls on the same keypath; each hopped to the main actor via its own
+        // Task, and FIFO Task ordering meant the transport handler effectively ran before the
+        // spinner handler. We preserve that order explicitly here: `handleTimeControlTransport`
+        // MUST run before `handleTimeControlBuffering` (the latter clears a surfaced error and
+        // signals "playback active", which is conceptually downstream of the transport state).
         rateObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
-                let paused = status == .paused || self.userWantsPaused
-                self.timeline.report(state: paused ? .paused : .playing, force: true)
-                self.transport.set(paused: paused)
-                if paused || status == .playing {
-                    self.transport.setPauseRequested(false)
-                }
-                if self.lastDiagnosticTimeControlStatus != status {
-                    self.lastDiagnosticTimeControlStatus = status
-                    self.recordPlaybackDiagnostic("playback.time_control_status", fields: [
-                        "status": .label(Self.timeControlStatusLabel(status)),
-                    ])
-                }
-            }
-        }
-
-        // Rebuffer/stall spinner (#21). `timeControlStatus` is the precise signal: the player
-        // is `.waitingToPlayAtSpecifiedRate` exactly while it's stalled waiting on data (or the
-        // initial prime), `.playing` once it has enough, and `.paused` when the USER pauses —
-        // so reading this status alone correctly avoids showing the spinner on a manual pause.
-        // We hop to the main actor and pass only a Sendable enum, satisfying strict concurrency.
-        bufferingObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
-            guard let self else { return }
-            let status = avPlayer.timeControlStatus
-            Task { @MainActor in
-                let isStalled = (status == .waitingToPlayAtSpecifiedRate && !self.userWantsPaused)
-                self.setBufferingVisible(isStalled)
-                // Stall watchdog (#8 hardening): a network-loss stall often never flips
-                // item.status to .failed, so arm a timeout while the player is starved and
-                // cancel it the instant playback genuinely resumes. We deliberately do NOT
-                // cancel on `.paused` — handleStallTimeout's buffer-empty check distinguishes a
-                // dead stall from a user pause on already-buffered content.
-                if isStalled {
-                    self.armStallWatchdog()
-                } else if status == .playing {
-                    self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
-                    self.playbackStartupSpan = nil
-                    self.cancelStallWatchdog()
-                    // Real playback = the failure is over. Clear any surfaced error so its
-                    // Retry/Close affordance can't linger over playing video: a stall we
-                    // surfaced (handleStallTimeout pauses + sets the error) sometimes recovers
-                    // and resumes anyway — in the expanded cinema scene the pause doesn't always
-                    // hold — and without this the AVKit Retry/Close pills stay stuck on screen,
-                    // reading as dead because the state behind them no longer matches (seen live).
-                    self.playbackError.clear()
-                    // Real playback = a successful (re)start: clear any "Reconnecting…" overlay
-                    // PlayerView raised for a failure-recovery rebuild (GH #33).
-                    self.onPlaybackActive?()
-                }
+                self.handleTimeControlTransport(status: status)
+                self.handleTimeControlBuffering(status: status)
             }
         }
 
@@ -2414,6 +2373,57 @@ final class PlaybackController {
         }
     }
 
+    /// Transport/diagnostics half of the merged `\.timeControlStatus` observation. Runs
+    /// BEFORE `handleTimeControlBuffering` (see the observer comment).
+    @MainActor
+    private func handleTimeControlTransport(status: AVPlayer.TimeControlStatus) {
+        let paused = status == .paused || self.userWantsPaused
+        self.timeline.report(state: paused ? .paused : .playing, force: true)
+        self.transport.set(paused: paused)
+        if paused || status == .playing {
+            self.transport.setPauseRequested(false)
+        }
+        if self.lastDiagnosticTimeControlStatus != status {
+            self.lastDiagnosticTimeControlStatus = status
+            self.recordPlaybackDiagnostic("playback.time_control_status", fields: [
+                "status": .label(Self.timeControlStatusLabel(status)),
+            ])
+        }
+    }
+
+    /// Rebuffer/stall-spinner half (#21) of the merged `\.timeControlStatus` observation.
+    /// `timeControlStatus` is the precise signal: the player is `.waitingToPlayAtSpecifiedRate`
+    /// exactly while it's stalled waiting on data (or the initial prime), `.playing` once it has
+    /// enough, and `.paused` when the USER pauses — so reading this status alone correctly avoids
+    /// showing the spinner on a manual pause. Runs AFTER `handleTimeControlTransport`.
+    @MainActor
+    private func handleTimeControlBuffering(status: AVPlayer.TimeControlStatus) {
+        let isStalled = (status == .waitingToPlayAtSpecifiedRate && !self.userWantsPaused)
+        self.setBufferingVisible(isStalled)
+        // Stall watchdog (#8 hardening): a network-loss stall often never flips
+        // item.status to .failed, so arm a timeout while the player is starved and
+        // cancel it the instant playback genuinely resumes. We deliberately do NOT
+        // cancel on `.paused` — handleStallTimeout's buffer-empty check distinguishes a
+        // dead stall from a user pause on already-buffered content.
+        if isStalled {
+            self.armStallWatchdog()
+        } else if status == .playing {
+            self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
+            self.playbackStartupSpan = nil
+            self.cancelStallWatchdog()
+            // Real playback = the failure is over. Clear any surfaced error so its
+            // Retry/Close affordance can't linger over playing video: a stall we
+            // surfaced (handleStallTimeout pauses + sets the error) sometimes recovers
+            // and resumes anyway — in the expanded cinema scene the pause doesn't always
+            // hold — and without this the AVKit Retry/Close pills stay stuck on screen,
+            // reading as dead because the state behind them no longer matches (seen live).
+            self.playbackError.clear()
+            // Real playback = a successful (re)start: clear any "Reconnecting…" overlay
+            // PlayerView raised for a failure-recovery rebuild (GH #33).
+            self.onPlaybackActive?()
+        }
+    }
+
     private func removeObservers() {
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
@@ -2425,7 +2435,6 @@ final class PlaybackController {
         }
         statusObservation = nil
         rateObservation = nil
-        bufferingObservation = nil
         bufferingDelayTask?.cancel()
         bufferingDelayTask = nil
         // Cancel the stall watchdog so a stale timer can't fire across a reload / Retry /

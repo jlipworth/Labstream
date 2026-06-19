@@ -130,9 +130,15 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// Current records, absolute URLs re-resolved against the live container.
+    ///
+    /// Snapshot the rows under the lock, then do the poster `fileExists` resolution
+    /// OUTSIDE the lock — stat'ing each poster file while holding the store lock
+    /// serialized every reader behind disk I/O on this hot path.
     var records: [DownloadRecord] {
-        lock.lock(); defer { lock.unlock() }
-        return rows.values
+        lock.lock()
+        let snapshot = Array(rows.values)
+        lock.unlock()
+        return snapshot
             .map { row in
                 DownloadRecord(ratingKey: row.ratingKey,
                                title: row.title,
@@ -144,6 +150,14 @@ final class DownloadStore: @unchecked Sendable {
                                posterURL: resolvedPosterURL(row.metadata?.posterRelativePath))
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// The set of indexed ratingKeys, WITHOUT touching the filesystem. Use this when
+    /// you only need to test membership (e.g. reattach matching) and don't want the
+    /// per-row poster `fileExists` cost that `records` pays.
+    var allRatingKeys: Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(rows.keys)
     }
 
     /// Absolute local URL for a completed download, if indexed AND present on disk.

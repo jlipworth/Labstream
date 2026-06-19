@@ -669,19 +669,32 @@ public final class DownloadManager {
         else { return }
         let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
         let store = self.store
-        Task { @MainActor in
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse,
-                   !(200...299).contains(http.statusCode) { return }
-                guard !data.isEmpty else { return }
-                try data.write(to: posterURL, options: .atomic)
+        Task { [weak self] in
+            // Fetch + atomic disk write happen OFF the main actor (mirrors
+            // PlaybackController.fetchArtworkData); only the store mutation hops back on.
+            guard await Self.fetchAndWritePoster(from: url, to: posterURL) else { return }
+            await MainActor.run {
                 store.setPosterRelativePath(ratingKey: ratingKey,
                                             posterURL.lastPathComponent)
-                self.refreshRecords()
-            } catch {
-                // No poster is fine — never surfaced as a download error.
+                self?.refreshRecords()
             }
+        }
+    }
+
+    /// Best-effort poster fetch + atomic write, fully off the main actor. Returns `true`
+    /// only when a non-empty poster landed on disk at `destination`; any failure (HTTP
+    /// error, empty body, write failure) returns `false` and is never surfaced — a missing
+    /// poster is never a download error.
+    private nonisolated static func fetchAndWritePoster(from url: URL, to destination: URL) async -> Bool {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse,
+               !(200...299).contains(http.statusCode) { return false }
+            guard !data.isEmpty else { return false }
+            try data.write(to: destination, options: .atomic)
+            return true
+        } catch {
+            return false
         }
     }
 
