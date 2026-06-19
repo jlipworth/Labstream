@@ -358,20 +358,6 @@ public enum JellyfinPlayback {
         return capped
     }
 
-    private static func streamURLWithoutURLToken(_ url: URL) throws -> URL {
-        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            throw JellyfinPlaybackError.invalidURL
-        }
-        comps.queryItems = comps.queryItems?.filter { item in
-            item.name != "api_key" && item.name != "apiKey"
-        }
-        if comps.queryItems?.isEmpty == true {
-            comps.queryItems = nil
-        }
-        guard let sanitized = comps.url else { throw JellyfinPlaybackError.invalidURL }
-        return sanitized
-    }
-
     static func chooseSource(_ sources: [JellyfinMediaSourceInfo],
                              preferredMediaSourceId: String?) -> JellyfinMediaSourceInfo? {
         if let preferredMediaSourceId,

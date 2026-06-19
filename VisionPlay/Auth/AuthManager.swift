@@ -66,6 +66,9 @@ final class AuthManager {
         appModel.activeBackend = backend
         keychain.selectedBackend = backend
 
+        // The guard above already returned for `.alreadyActive`, so only the two
+        // session-transition cases reach here at runtime. The `.alreadyActive` arm
+        // is retained solely to keep this switch exhaustive.
         switch resolution {
         case .alreadyActive:
             break
