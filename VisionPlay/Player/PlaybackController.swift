@@ -2102,7 +2102,6 @@ final class PlaybackController {
         // the first post-seek frame even though Jellyfin/ffmpeg are healthy. Keep the deep
         // buffer for non-Jellyfin-transcode paths, but use a small window and let playback run
         // as soon as segments arrive for backend-resolved transcodes.
-        let isRemoteTranscode = remoteStreamURL != nil && remotePlayMethod == .transcode
         configureAdaptiveBitratePolicy(isRemoteTranscode: isRemoteTranscode)
         playerItem.preferredForwardBufferDuration = isRemoteTranscode ? 12 : 600
         player.automaticallyWaitsToMinimizeStalling = !isRemoteTranscode
@@ -2223,8 +2222,7 @@ final class PlaybackController {
                     if !self.didSeek, let resumeOffsetMs, resumeOffsetMs > 0 {
                         let current = self.player.currentTime().seconds
                         let nearZero = !current.isFinite || current < 1.0
-                        let isBackendRemoteTranscode = self.remoteStreamURL != nil && self.remotePlayMethod == .transcode
-                        if nearZero, !isBackendRemoteTranscode {
+                        if nearZero, !self.isRemoteTranscode {
                             let target = CMTime(value: CMTimeValue(resumeOffsetMs), timescale: 1000)
                             let tolerance: CMTime = .zero
                             self.player.seek(to: target,
@@ -2933,8 +2931,12 @@ final class PlaybackController {
     private let directPlayMaximumStallTimeoutSeconds: TimeInterval = 90
     private let remoteTranscodeStallTimeoutSeconds: TimeInterval = 45
 
+    private var isRemoteTranscode: Bool {
+        remoteStreamURL != nil && remotePlayMethod == .transcode
+    }
+
     private var activeStallTimeoutSeconds: TimeInterval {
-        if remoteStreamURL != nil && remotePlayMethod == .transcode {
+        if isRemoteTranscode {
             return remoteTranscodeStallTimeoutSeconds
         }
         // Direct Play / Maximum can legally be a very high-bitrate HEVC remux. Initial fMP4
