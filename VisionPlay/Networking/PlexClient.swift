@@ -104,11 +104,8 @@ public actor PlexClient {
 /// SECURITY NOTE: blindly trusting any server cert exposes the token to MITM on
 /// the LAN. Keep this opt-in and host-scoped.
 ///
-/// INTENTIONALLY NOT INSTALLED: nothing in the app wires this delegate into a
-/// `URLSession` today, and that is deliberate — the secure plex.direct path covers
-/// our connections, so shipping it active would weaken TLS for no benefit. It is
-/// kept (not deleted) as the ready implementation for a future explicit
-/// "allow insecure LAN" setting. Do not remove as "dead code".
+/// Kept (not deleted) as the ready implementation for that future setting — do
+/// not remove as "dead code".
 final class PlexInsecureLANTrustDelegate: NSObject, URLSessionDelegate, Sendable {
     /// Hostnames/IPs for which we accept the server-presented cert without chain
     /// validation. Empty means "trust nothing specially" (system default).
