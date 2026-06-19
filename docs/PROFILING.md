@@ -66,7 +66,7 @@ If a source edit was made before profiling, avoid profiling an old simulator pro
 Prefer Instruments-only runs first. If a measurement needs app-side intervals, add temporary or
 permanent `os_signpost` points using non-sensitive names only. Suggested subsystem/category names:
 
-- subsystem: `com.jlipworth.VisionPlex`
+- subsystem: `com.jlipworth.VisionPlay`
 - categories: `Launch`, `LibraryGrid`, `Playback`, `MusicPlayback`
 - intervals/events:
   - `app_launch_to_home_visible`
@@ -100,11 +100,11 @@ Run one cold and one warm pass for each backend/scenario, then summarize the loc
 ```sh
 # Simulator example. Start this right after the scenario, while the relevant log window is fresh.
 xcrun simctl spawn booted log show --style json --last 15m \
-  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --markdown
 
 # If you launched via XcodeBuildMCP, the returned osLogPath is also parseable:
-uv run scripts/perf-log-summary.py --markdown < /path/to/com.jlipworth.VisionPlex_oslog_*.log
+uv run scripts/perf-log-summary.py --markdown < /path/to/com.jlipworth.VisionPlay_oslog_*.log
 ```
 
 Useful narrow summaries:
@@ -112,17 +112,17 @@ Useful narrow summaries:
 ```sh
 # Home, Libraries, and artwork first-load / warm-load comparison.
 xcrun simctl spawn booted log show --style json --last 15m \
-  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --phase home.load --phase libraries.load --phase artwork.load --markdown
 
 # Artwork split by requested backend image size. Useful for finding oversized decorative art.
 xcrun simctl spawn booted log show --style json --last 15m \
-  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --phase artwork.load --group-field pixel_width --group-field pixel_height --markdown
 
 # Playback startup comparison across Plex/Jellyfin and original/transcoded quality choices.
 xcrun simctl spawn booted log show --style json --last 15m \
-  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --phase playback.resolve --phase playback.item_load --phase playback.startup --group-field path_mode --markdown
 ```
 

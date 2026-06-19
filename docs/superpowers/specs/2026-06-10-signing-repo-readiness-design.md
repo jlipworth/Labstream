@@ -2,11 +2,11 @@
 
 **Date:** 2026-06-10
 **Status:** Approved direction; implementation plan pending
-**Scope:** Personal-device signing and GitHub/Woodpecker repo hygiene for VisionPlex. App functionality is explicitly out of scope.
+**Scope:** Personal-device signing and GitHub/Woodpecker repo hygiene for VisionPlay. App functionality is explicitly out of scope.
 
 ## Goal
 
-Make the repository and local Xcode setup feel like a real personal-device Apple app project, without starting App Store/TestFlight publication work yet. The near-term target is: a clean VisionPlex identity, predictable local signing, documented device-install friction, and lightweight CI that matches the user's existing local Woodpecker style.
+Make the repository and local Xcode setup feel like a real personal-device Apple app project, without starting App Store/TestFlight publication work yet. The near-term target is: a clean VisionPlay identity, predictable local signing, documented device-install friction, and lightweight CI that matches the user's existing local Woodpecker style.
 
 ## Non-goals
 
@@ -18,14 +18,14 @@ Make the repository and local Xcode setup feel like a real personal-device Apple
 
 ## Current state summary
 
-The app already builds as a visionOS Xcode project with automatic signing and an ignored `Signing.local.xcconfig` containing the local Apple Developer Team ID. The public README already presents the project as **VisionPlex**, but signing/run commands and bundle identity still reference `com.personal.PlexAVPApp` in several places. GitHub CLI is authenticated locally, but the repo has no `.woodpecker/` CI config yet. The working tree currently has unrelated modified files; implementation must preserve them and stage only intentional readiness changes.
+The app already builds as a visionOS Xcode project with automatic signing and an ignored `Signing.local.xcconfig` containing the local Apple Developer Team ID. The public README already presents the project as **VisionPlay**, but signing/run commands and bundle identity still reference `com.personal.PlexAVPApp` in several places. GitHub CLI is authenticated locally, but the repo has no `.woodpecker/` CI config yet. The working tree currently has unrelated modified files; implementation must preserve them and stage only intentional readiness changes.
 
-## Recommended approach: VisionPlex dev-ready
+## Recommended approach: VisionPlay dev-ready
 
 Use a focused personal-device readiness pass:
 
-1. Update the development bundle identifier to `com.jlipworth.VisionPlex`.
-2. Set display/app-facing naming to **VisionPlex** where appropriate, while avoiding disruptive internal target or folder renames unless Xcode requires them.
+1. Update the development bundle identifier to `com.jlipworth.VisionPlay`.
+2. Set display/app-facing naming to **VisionPlay** where appropriate, while avoiding disruptive internal target or folder renames unless Xcode requires them.
 3. Keep automatic signing and the existing local signing include pattern:
    - commit `Signing.xcconfig`
    - keep `Signing.local.xcconfig` ignored
@@ -45,10 +45,10 @@ The docs should be explicit that the Vision Pro trust/developer-mode prompts are
 The development bundle ID should become:
 
 ```text
-com.jlipworth.VisionPlex
+com.jlipworth.VisionPlay
 ```
 
-The installed app/display identity should read **VisionPlex**. The Xcode target, source folder, scheme, and DerivedData product may remain `PlexAVPApp` during this pass if keeping them avoids fragile churn. This creates a clean external identity while preserving the working project structure.
+The installed app/display identity should read **VisionPlay**. The Xcode target, source folder, scheme, and DerivedData product may remain `PlexAVPApp` during this pass if keeping them avoids fragile churn. This creates a clean external identity while preserving the working project structure.
 
 Documentation must use the new bundle ID in install/launch commands. Any old `com.personal.PlexAVPApp` references should be removed or clearly marked historical.
 
@@ -85,7 +85,7 @@ This pass should make a later publication push easier, not complete it. A future
 
 1. paid Apple Developer Program account confirmation
 2. App Store Connect app record
-3. registered production bundle ID, likely still `com.jlipworth.VisionPlex` if available and appropriate
+3. registered production bundle ID, likely still `com.jlipworth.VisionPlay` if available and appropriate
 4. distribution certificate/profile or Xcode-managed distribution signing
 5. archive/export/upload runbook
 6. privacy nutrition label and data-use review, especially Plex login/token behavior

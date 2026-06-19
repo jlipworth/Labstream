@@ -84,7 +84,7 @@ Insert immediately after the closing `}` of the existing `init(item:controllerFa
     /// they prefer their real identity/client.
     init(localFile: URL, item: MediaItem, onClose: (() -> Void)? = nil) {
         let identity = ClientIdentity(clientIdentifier: "offline",
-                                      product: "VisionPlex",
+                                      product: "VisionPlay",
                                       version: "0.1.0",
                                       deviceName: "Apple Vision Pro")
         let client = PlexClient(identity: identity)

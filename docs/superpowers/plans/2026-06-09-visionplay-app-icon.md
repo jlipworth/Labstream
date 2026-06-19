@@ -1,8 +1,8 @@
-# VisionPlex App Icon Implementation Plan
+# VisionPlay App Icon Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the generated/plain app icon with a custom VisionPlex A3-style asset: full VisionPlex wordmark, retro striped mark, and deep teal slate background.
+**Goal:** Replace the generated/plain app icon with a custom VisionPlay A3-style asset: full VisionPlay wordmark, retro striped mark, and deep teal slate background.
 
 **Architecture:** Add a real `Assets.xcassets` catalog under the app target, containing an `AppIcon.appiconset` and `AccentColor.colorset`. Generate a deterministic 1024×1024 PNG app icon from vector-like drawing code so the asset can be regenerated and reviewed. Wire the asset catalog into the existing Xcode project resources without touching unrelated app code.
 
@@ -10,12 +10,12 @@
 
 ---
 
-### Task 1: Generate and wire VisionPlex app icon assets
+### Task 1: Generate and wire VisionPlay app icon assets
 
 **Files:**
 - Create: `PlexAVPApp/Assets.xcassets/Contents.json`
 - Create: `PlexAVPApp/Assets.xcassets/AppIcon.appiconset/Contents.json`
-- Create: `PlexAVPApp/Assets.xcassets/AppIcon.appiconset/VisionPlex-AppIcon-1024.png`
+- Create: `PlexAVPApp/Assets.xcassets/AppIcon.appiconset/VisionPlay-AppIcon-1024.png`
 - Create: `PlexAVPApp/Assets.xcassets/AccentColor.colorset/Contents.json`
 - Modify: `PlexAVPApp.xcodeproj/project.pbxproj`
 
@@ -40,11 +40,11 @@ mkdir -p PlexAVPApp/Assets.xcassets/AppIcon.appiconset PlexAVPApp/Assets.xcasset
 
 - [ ] **Step 3: Generate the A3 icon PNG**
 
-Run a Python script that draws a 1024×1024 rounded-square deep teal slate background, glass inset, retro three-stripe mark, and `VisionPlex` wordmark. Use system fonts available on macOS if present, falling back to DejaVu/Sans.
+Run a Python script that draws a 1024×1024 rounded-square deep teal slate background, glass inset, retro three-stripe mark, and `VisionPlay` wordmark. Use system fonts available on macOS if present, falling back to DejaVu/Sans.
 
 - [ ] **Step 4: Write asset catalog JSON**
 
-`AppIcon.appiconset/Contents.json` should reference `VisionPlex-AppIcon-1024.png` as a universal 1024×1024 marketing image. `AccentColor.colorset/Contents.json` should provide the amber Plex accent.
+`AppIcon.appiconset/Contents.json` should reference `VisionPlay-AppIcon-1024.png` as a universal 1024×1024 marketing image. `AccentColor.colorset/Contents.json` should provide the amber Plex accent.
 
 - [ ] **Step 5: Add the asset catalog to the Xcode project**
 
@@ -57,7 +57,7 @@ Run:
 ```bash
 python3 - <<'PY'
 from PIL import Image
-img = Image.open('PlexAVPApp/Assets.xcassets/AppIcon.appiconset/VisionPlex-AppIcon-1024.png')
+img = Image.open('PlexAVPApp/Assets.xcassets/AppIcon.appiconset/VisionPlay-AppIcon-1024.png')
 print(img.mode, img.size)
 assert img.size == (1024, 1024)
 PY

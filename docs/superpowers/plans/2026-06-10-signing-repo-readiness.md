@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make VisionPlex dev-ready for personal Vision Pro installs, repo hygiene, and local Woodpecker CI while preserving the current app implementation.
+**Goal:** Make VisionPlay dev-ready for personal Vision Pro installs, repo hygiene, and local Woodpecker CI while preserving the current app implementation.
 
-**Architecture:** Keep the existing Xcode target/scheme/source layout stable, but change the externally visible identity to VisionPlex through bundle/display settings and docs. Use committed shared config plus ignored local signing config for device signing. Add small Woodpecker pipelines that validate portable repo/package checks without pretending to build visionOS on non-macOS CI.
+**Architecture:** Keep the existing Xcode target/scheme/source layout stable, but change the externally visible identity to VisionPlay through bundle/display settings and docs. Use committed shared config plus ignored local signing config for device signing. Add small Woodpecker pipelines that validate portable repo/package checks without pretending to build visionOS on non-macOS CI.
 
 **Tech Stack:** Xcode 26.5, visionOS 26.5/XROS SDK, Swift 6, Swift Package Manager, Woodpecker CI YAML, GitHub remote, zsh.
 
@@ -13,8 +13,8 @@
 ## File map
 
 - Modify: `PlexAVPApp.xcodeproj/project.pbxproj`
-  - Set `PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlex` for Debug and Release.
-  - Set `INFOPLIST_KEY_CFBundleDisplayName = VisionPlex` for Debug and Release.
+  - Set `PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay` for Debug and Release.
+  - Set `INFOPLIST_KEY_CFBundleDisplayName = VisionPlay` for Debug and Release.
   - Keep target/scheme/internal product structure otherwise stable.
 - Modify: `README.md`
   - Replace stale bundle ID references.
@@ -22,7 +22,7 @@
   - Add Woodpecker CI coverage note.
   - Mention future TestFlight/App Store path without making it current scope.
 - Modify: `docs/DEVELOPMENT.md`
-  - Update build/install/log commands for `com.jlipworth.VisionPlex`.
+  - Update build/install/log commands for `com.jlipworth.VisionPlay`.
   - Add concise signing runbook for `Signing.local.xcconfig`.
   - Add Woodpecker/local validation commands.
 - Modify: `CLAUDE.md`
@@ -36,7 +36,7 @@
   - Put the hygiene logic in a local script so CI and local developers run the same checks.
 - Modify: `.gitignore`
   - Confirm local signing and Xcode generated files remain ignored; add missing generated signing/profile patterns only if needed.
-- Local-only, not committed: rename checkout folder from `/Users/jlipworth/plex-avp-app` to `/Users/jlipworth/visionplex` after implementation is committed/pushed or at a deliberate handoff point.
+- Local-only, not committed: rename checkout folder from `/Users/jlipworth/plex-avp-app` to `/Users/jlipworth/visionplay` after implementation is committed/pushed or at a deliberate handoff point.
 
 ## Existing dirty tree rule
 
@@ -50,7 +50,7 @@ Only stage readiness files from this plan. Existing modified files currently inc
 
 ---
 
-### Task 1: Update Xcode external identity to VisionPlex
+### Task 1: Update Xcode external identity to VisionPlay
 
 **Files:**
 - Modify: `PlexAVPApp.xcodeproj/project.pbxproj`
@@ -75,13 +75,13 @@ from pathlib import Path
 p = Path('PlexAVPApp.xcodeproj/project.pbxproj')
 text = p.read_text()
 old = 'PRODUCT_BUNDLE_IDENTIFIER = com.personal.PlexAVPApp;'
-new = 'PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlex;'
+new = 'PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay;'
 count = text.count(old)
 if count != 2:
     raise SystemExit(f'expected 2 bundle id entries, found {count}')
 text = text.replace(old, new)
 anchor = 'INFOPLIST_KEY_UILaunchScreen_Generation = YES;\n'
-insert = 'INFOPLIST_KEY_CFBundleDisplayName = VisionPlex;\n\t\t\t\t'
+insert = 'INFOPLIST_KEY_CFBundleDisplayName = VisionPlay;\n\t\t\t\t'
 count = text.count(anchor)
 if count != 2:
     raise SystemExit(f'expected 2 launch screen anchors, found {count}')
@@ -106,8 +106,8 @@ Expected includes:
 ```text
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM = XXXXXXXXXX
-INFOPLIST_KEY_CFBundleDisplayName = VisionPlex
-PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlex
+INFOPLIST_KEY_CFBundleDisplayName = VisionPlay
+PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay
 PRODUCT_NAME = PlexAVPApp
 ```
 
@@ -133,7 +133,7 @@ Run:
 git diff -- PlexAVPApp.xcodeproj/project.pbxproj
 git add PlexAVPApp.xcodeproj/project.pbxproj
 git diff --cached --check
-git commit -m "Rename development bundle identity to VisionPlex"
+git commit -m "Rename development bundle identity to VisionPlay"
 ```
 
 Expected: commit contains only `PlexAVPApp.xcodeproj/project.pbxproj`.
@@ -250,7 +250,7 @@ from pathlib import Path
 for name in ['README.md', 'docs/DEVELOPMENT.md', 'CLAUDE.md']:
     p = Path(name)
     text = p.read_text()
-    text = text.replace('com.personal.PlexAVPApp', 'com.jlipworth.VisionPlex')
+    text = text.replace('com.personal.PlexAVPApp', 'com.jlipworth.VisionPlay')
     p.write_text(text)
 PY
 ```
@@ -264,7 +264,7 @@ Edit `README.md` so `## Build & run` contains this content, preserving the rest 
 ````markdown
 ## Build & run
 
-This is currently a **personal-device sideload** project, not an App Store/TestFlight release. The app identity is **VisionPlex** with development bundle id `com.jlipworth.VisionPlex`.
+This is currently a **personal-device sideload** project, not an App Store/TestFlight release. The app identity is **VisionPlay** with development bundle id `com.jlipworth.VisionPlay`.
 
 Build the app for the visionOS 26.5 simulator without signing:
 
@@ -323,13 +323,13 @@ cd PMSKit && swift test
 
 # Install + launch on a booted sim
 APP="$HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-<hash>/Build/Products/Debug-xrsimulator/PlexAVPApp.app"
-xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlex
+xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlay
 
 # After-the-fact logs
 xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"' --style compact
 ```
 
-- App bundle id: `com.jlipworth.VisionPlex` · Sim: "Apple Vision Pro" (visionOS 26.5).
+- App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5).
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
   `PMSKit/Sources`, `PMSKit/Tests`) — no `project.pbxproj` edits needed.
 ````
@@ -361,13 +361,13 @@ Expected: signing setup is documented without exposing the real local Team ID.
 Update `CLAUDE.md` command snippets so simulator launch/terminate uses:
 
 ```sh
-xcrun simctl terminate booted com.jlipworth.VisionPlex; xcrun simctl launch booted com.jlipworth.VisionPlex
+xcrun simctl terminate booted com.jlipworth.VisionPlay; xcrun simctl launch booted com.jlipworth.VisionPlay
 ```
 
 Also ensure any bundle ID prose says:
 
 ```markdown
-Bundle ID: `com.jlipworth.VisionPlex`.
+Bundle ID: `com.jlipworth.VisionPlay`.
 ```
 
 Expected: no unrelated `CLAUDE.md` edits are introduced.
@@ -491,7 +491,7 @@ Run:
 git add README.md docs/DEVELOPMENT.md CLAUDE.md scripts/ci-hygiene.sh .woodpecker/plexkit.yml .woodpecker/hygiene.yml
 git diff --cached --check
 git diff --cached --stat
-git commit -m "Add VisionPlex signing docs and Woodpecker CI"
+git commit -m "Add VisionPlay signing docs and Woodpecker CI"
 ```
 
 Expected: commit includes only docs, CI files, and `scripts/ci-hygiene.sh`.
@@ -549,8 +549,8 @@ Expected includes:
 ```text
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM = XXXXXXXXXX
-INFOPLIST_KEY_CFBundleDisplayName = VisionPlex
-PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlex
+INFOPLIST_KEY_CFBundleDisplayName = VisionPlay
+PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay
 PRODUCT_NAME = PlexAVPApp
 SUPPORTED_PLATFORMS = xros xrsimulator
 ```
@@ -578,7 +578,7 @@ Expected: GitHub `main` receives the new readiness commits. If not pushing yet, 
 
 ---
 
-### Task 6: Local checkout folder rename to `visionplex`
+### Task 6: Local checkout folder rename to `visionplay`
 
 **Files:**
 - No committed repo files.
@@ -601,17 +601,17 @@ Run:
 
 ```bash
 cd /Users/jlipworth
-if [ -e visionplex ]; then
-  echo 'ERROR: /Users/jlipworth/visionplex already exists' >&2
+if [ -e visionplay ]; then
+  echo 'ERROR: /Users/jlipworth/visionplay already exists' >&2
   exit 1
 fi
-mv plex-avp-app visionplex
-cd /Users/jlipworth/visionplex
+mv plex-avp-app visionplay
+cd /Users/jlipworth/visionplay
 pwd
 git status --short --branch
 ```
 
-Expected: `pwd` prints `/Users/jlipworth/visionplex`; git still works.
+Expected: `pwd` prints `/Users/jlipworth/visionplay`; git still works.
 
 - [ ] **Step 3: Search for hard-coded local path references**
 
@@ -628,7 +628,7 @@ Expected: either no output or only historical docs/spec references. If active sc
 Final response should say:
 
 ```text
-Repo folder renamed locally: /Users/jlipworth/visionplex
+Repo folder renamed locally: /Users/jlipworth/visionplay
 ```
 
 Also note that any already-open terminal/editor windows pointed at `/Users/jlipworth/plex-avp-app` should be reopened in the new path.

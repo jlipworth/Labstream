@@ -112,7 +112,7 @@ struct LoginView: View {
             logoTileShape
                 .strokeBorder(.white.opacity(0.14), lineWidth: 0.75)
 
-            Image("VisionPlexGlyph")
+            Image("VisionPlayGlyph")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 78, height: 78)

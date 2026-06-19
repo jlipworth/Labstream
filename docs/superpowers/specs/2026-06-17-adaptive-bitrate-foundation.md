@@ -2,13 +2,13 @@
 
 ## Scope
 
-This branch does **not** claim that Plex or Jellyfin currently serve VisionPlex a true
+This branch does **not** claim that Plex or Jellyfin currently serve VisionPlay a true
 multi-rendition HLS ladder. True ABR is still the preferred end state: the server returns a master
 playlist with multiple `#EXT-X-STREAM-INF` variants and AVPlayer switches among them without the app
 reopening the stream.
 
 What is implemented here is a bounded client-driven adaptation state machine for the architecture
-VisionPlex has today:
+VisionPlay has today:
 
 - Plex: reopen the universal transcode session through `beginStreaming`.
 - Jellyfin / remote backend: reopen through the existing `remoteStreamReopener` closure.
@@ -121,7 +121,7 @@ or, for true server-side ABR:
 
 ## Still open
 
-- Live-confirm whether Plex can emit a multi-rendition master for VisionPlex's request/profile shape.
+- Live-confirm whether Plex can emit a multi-rendition master for VisionPlay's request/profile shape.
 - Live-confirm whether Jellyfin returns a true ABR master for this app's playback request, or whether
   the remote reopener path remains the practical fallback.
 - Device-test the client-driven up/down behavior on a real fluctuating connection. Headless tests

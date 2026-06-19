@@ -6,7 +6,7 @@
 
 ## Goal
 
-Turn the current manual Jellyfin stream probe into a real, selectable Jellyfin backend mode that can answer the key product question: can VisionPlex become a stable Jellyfin client if Plex remains unreliable?
+Turn the current manual Jellyfin stream probe into a real, selectable Jellyfin backend mode that can answer the key product question: can VisionPlay become a stable Jellyfin client if Plex remains unreliable?
 
 The first build-out should let a user choose Plex or Jellyfin, log in to Jellyfin with a server URL plus username/password, restore that Jellyfin session on launch, browse enough Jellyfin library content to reach a detail page, and play a Jellyfin item through the resolved-stream player seam already added on this branch.
 
@@ -125,7 +125,7 @@ Map Jellyfin `BaseItemDto` into existing `MediaItem` so `DetailView` and the pla
 
 Initial type mapping:
 
-| Jellyfin `Type` | VisionPlex `MediaItem.type` |
+| Jellyfin `Type` | VisionPlay `MediaItem.type` |
 |---|---|
 | `Movie` | `movie` |
 | `Series` | `show` |

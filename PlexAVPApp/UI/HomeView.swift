@@ -157,7 +157,7 @@ struct HomeView: View {
             // Spotlight, and refresh the "Play <title> on VisionPlay" Siri phrase
             // vocabulary (drawn from the entity query's suggestions).
             SpotlightIndexer.index(hubs.flatMap(\.metadata), server: server)
-            VisionPlexShortcuts.updateAppShortcutParameters()
+            VisionPlayShortcuts.updateAppShortcutParameters()
         } catch {
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))

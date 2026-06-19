@@ -174,7 +174,7 @@ capabilities are not available, so visual feedback came from headset observation
   - CoreDevice id `73122E1D-7B2D-5EFD-AF40-F179D1978B5C`
   - `DEVELOPMENT_TEAM=XXXXXXXXXX CODE_SIGN_STYLE=Automatic`
 - Console launch pattern:
-  - `xcrun devicectl -t 3600 device process launch --device 73122E1D-7B2D-5EFD-AF40-F179D1978B5C --terminate-existing --console com.jlipworth.VisionPlex`
+  - `xcrun devicectl -t 3600 device process launch --device 73122E1D-7B2D-5EFD-AF40-F179D1978B5C --terminate-existing --console com.jlipworth.VisionPlay`
 - Representative log line from the best black immersive pass:
   - `[Custom Cinema] black immersive opened: width 9.4m · distance 6.25m · vertical 1.65m; title=The Phoenician Scheme; hasPlayer=true`
 - `devicectl` screenshot/screen-record capabilities were unsupported on this host/device pairing, so

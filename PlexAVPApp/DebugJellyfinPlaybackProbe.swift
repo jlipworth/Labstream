@@ -12,7 +12,7 @@ import PMSKit
 /// `--vp-probe-jellyfin-playback`.
 @MainActor
 enum DebugJellyfinPlaybackProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.VisionPlex", category: "JellyfinProbe")
+    private static let log = Logger(subsystem: "com.jlipworth.VisionPlay", category: "JellyfinProbe")
 
     static func runIfRequested(appModel: AppModel) async {
         let arguments = ProcessInfo.processInfo.arguments

@@ -56,7 +56,7 @@ enum PerformanceInstrumentation {
                                               category: "Artwork")
     }
 
-    static let subsystem = "com.jlipworth.VisionPlex"
+    static let subsystem = "com.jlipworth.VisionPlay"
     private static let logger = Logger(subsystem: subsystem, category: "Performance")
 
     static func begin(_ phase: Phase,

@@ -1,4 +1,4 @@
-# VisionPlex — Publish Readiness Design
+# VisionPlay — Publish Readiness Design
 
 **Date:** 2026-06-11
 **Goal:** Make the GitHub repo safe and presentable to flip **public**, and scope (not execute)
@@ -42,7 +42,7 @@ Decision (owner): **rewrite history with `git-filter-repo`**, preserving all com
 
 Ordered steps:
 
-1. **Safety backup.** `git bundle create ../visionplex-backup-<stamp>.bundle --all` so the
+1. **Safety backup.** `git bundle create ../visionplay-backup-<stamp>.bundle --all` so the
    pre-rewrite state is fully recoverable.
 2. **Rewrite the tree guard first — DONE.** `scripts/ci-hygiene.sh` no longer stores the host/IP
    at all: it now keeps only the generic `X-Plex-Token:` / `PLEX_TOKEN=` markers plus a
@@ -78,7 +78,7 @@ Documented so the owner can decide if/when to pursue it. **Not** part of this cl
   does **not** waive copyleft (App Store distributors still must ship GPL source — no proprietary
   forks). As sole copyright holder the owner also retains dual-licensing rights over their own copy.
   The exception text is drafted/applied only when store work begins; it is not added now.
-- **Apple Developer Program** — paid membership ($99/yr); register the `com.jlipworth.VisionPlex`
+- **Apple Developer Program** — paid membership ($99/yr); register the `com.jlipworth.VisionPlay`
   App ID; create distribution certificate + provisioning profile.
 - **Export compliance** — add `ITSAppUsesNonExemptEncryption` (HTTPS-only → standard exemption).
 - **Entitlements** — current `Info.plist` declares `UIBackgroundModes: audio` only; review whether
