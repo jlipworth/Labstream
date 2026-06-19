@@ -15,7 +15,7 @@ import PMSKit
 /// Visual language (#18/#19): the welcome card now uses the same mark-only
 /// foreground that ships as the visionOS app-icon Front layer. The full wordmark
 /// stays out of the circular icon crop, while the sign-in screen pairs the mark
-/// with a native SwiftUI VisionPlex title treatment.
+/// with a native SwiftUI VisionPlay title treatment.
 private enum JellyfinSignInMethod: Equatable {
     case quickConnect
     case credentials
@@ -79,19 +79,19 @@ struct LoginView: View {
 
     /// App-icon-style brand lockup. The mark is the same transparent logo-only
     /// artwork used by the icon foreground, deliberately avoiding the wordmark in
-    /// the cropped app icon while still presenting the VisionPlex name on screen.
+    /// the cropped app icon while still presenting the VisionPlay name on screen.
     private var header: some View {
         VStack(spacing: DS.Space.md) {
             brandMark
 
             HStack(spacing: 0) {
                 Text("Vision")
-                Text("Plex")
+                Text("Play")
                     .foregroundStyle(DS.Brand.amber)
             }
             .font(.largeTitle.bold())
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("VisionPlex")
+            .accessibilityLabel("VisionPlay")
         }
     }
 

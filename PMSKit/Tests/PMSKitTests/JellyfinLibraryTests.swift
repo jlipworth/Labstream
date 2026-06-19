@@ -5,7 +5,7 @@ import Testing
 @Suite("Jellyfin library")
 struct JellyfinLibraryTests {
     private let server = URL(string: "https://jellyfin.example.test/base")!
-    private let identity = JellyfinClientIdentity(client: "VisionPlex", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
+    private let identity = JellyfinClientIdentity(client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
 
     @Test func decodesAuthenticationResult() throws {
         let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: Data(#"""

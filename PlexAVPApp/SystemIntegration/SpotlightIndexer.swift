@@ -97,6 +97,6 @@ enum SpotlightIndexer {
         if let summary = item.summary, !summary.isEmpty {
             return "\(lead) — \(summary)"
         }
-        return "\(lead) · VisionPlex library"
+        return "\(lead) · VisionPlay library"
     }
 }

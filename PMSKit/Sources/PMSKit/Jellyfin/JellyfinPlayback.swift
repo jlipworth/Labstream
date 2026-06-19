@@ -386,7 +386,7 @@ public enum JellyfinPlayback {
 
     static func visionOSDeviceProfile(maxStreamingBitrate: Int) -> [String: Any] {
         [
-            "Name": "VisionPlex",
+            "Name": "VisionPlay",
             "MaxStreamingBitrate": maxStreamingBitrate,
             "DirectPlayProfiles": [
                 ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],

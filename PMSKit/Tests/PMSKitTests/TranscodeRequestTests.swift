@@ -3,7 +3,7 @@ import Foundation
 @testable import PMSKit
 
 private let server = URL(string: "https://192.0.2.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex", version: "0.1.0", deviceName: "AVP")
+private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay", version: "0.1.0", deviceName: "AVP")
 
 private func queryItems(_ url: URL) -> [URLQueryItem] {
     URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems ?? []
@@ -54,7 +54,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
 
 @Test func startURLPercentEncodesReservedQuerySeparators() throws {
     let unsafeIdentity = ClientIdentity(clientIdentifier: "CID;bad=1",
-                                        product: "VisionPlex",
+                                        product: "VisionPlay",
                                         version: "0.1.0",
                                         deviceName: "AVP")
     let req = TranscodeRequest(server: server,
