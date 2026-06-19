@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex", version: "0.1.0", deviceName: "AVP")
+private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay", version: "0.1.0", deviceName: "AVP")
 
 @Test func createPinRequest() {
     let r = PinAuth.createPinRequest(identity: id)

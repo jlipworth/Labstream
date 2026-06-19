@@ -69,7 +69,7 @@ struct SettingsView: View {
         .fileExporter(isPresented: $exportingDiagnostics,
                       document: diagnosticExportDocument,
                       contentType: .plainText,
-                      defaultFilename: "VisionPlex-Diagnostic-Report") { result in
+                      defaultFilename: "VisionPlay-Diagnostic-Report") { result in
             switch result {
             case .success:
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_export_completed", fields: [
@@ -248,7 +248,7 @@ struct SettingsView: View {
         } header: {
             Text("Backend")
         } footer: {
-            Text("Switching keeps Plex and Jellyfin credentials separate. If the selected backend has a saved session, VisionPlex reconnects automatically; otherwise it opens that backend’s sign-in flow.")
+            Text("Switching keeps Plex and Jellyfin credentials separate. If the selected backend has a saved session, VisionPlay reconnects automatically; otherwise it opens that backend’s sign-in flow.")
         }
     }
 
@@ -547,7 +547,7 @@ struct SettingsView: View {
         } header: {
             Text("Maintenance")
         } footer: {
-            Text("Artwork re-downloads on next view. Clearing Spotlight removes VisionPlex media from system search; browsing Home or library pages again repopulates results.")
+            Text("Artwork re-downloads on next view. Clearing Spotlight removes VisionPlay media from system search; browsing Home or library pages again repopulates results.")
         }
     }
 
@@ -616,7 +616,7 @@ struct SettingsView: View {
         } header: {
             Text("Diagnostics")
         } footer: {
-            Text("Logging is off by default. When enabled, VisionPlex keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted.")
+            Text("Logging is off by default. When enabled, VisionPlay keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted.")
         }
     }
 

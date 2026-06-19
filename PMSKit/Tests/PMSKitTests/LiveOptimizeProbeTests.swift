@@ -40,12 +40,12 @@ struct LiveOptimizeProbeTests {
             self.token = token
             self.metadataKey = metadataKey
             self.ratingKey = (metadataKey as NSString).lastPathComponent
-            self.title = env["PLEX_LIVE_TITLE"] ?? "VisionPlex Probe Optimize"
+            self.title = env["PLEX_LIVE_TITLE"] ?? "VisionPlay Probe Optimize"
             self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplex-live-probe",
-                product: "VisionPlex",
+                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
+                product: "VisionPlay",
                 version: "0.1.0",
-                deviceName: "VisionPlex Live Probe")
+                deviceName: "VisionPlay Live Probe")
         }
     }
 

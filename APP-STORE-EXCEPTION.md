@@ -2,7 +2,7 @@
 
 Copyright (C) 2026 Jonathan Lipworth
 
-VisionPlex is licensed under the GNU General Public License v3.0 (see
+VisionPlay is licensed under the GNU General Public License v3.0 (see
 [`LICENSE`](LICENSE)). As the sole copyright holder, I grant the following
 **additional permission** under section 7 of that license. This permission does
 **not** weaken copyleft: the complete corresponding source of any distributed

@@ -5,7 +5,7 @@ import Testing
 @Suite("Jellyfin playback")
 struct JellyfinPlaybackTests {
     private let server = URL(string: "https://jellyfin.example.test/base")!
-    private let identity = JellyfinClientIdentity(client: "VisionPlex", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
+    private let identity = JellyfinClientIdentity(client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
 
     @Test func playbackInfoRequestPostsDeviceProfileAndPlaybackOptions() throws {
         let request = try JellyfinPlayback.playbackInfoRequest(
@@ -38,7 +38,7 @@ struct JellyfinPlaybackTests {
         #expect(object["EnableDirectStream"] as? Bool == true)
         #expect(object["EnableTranscoding"] as? Bool == true)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
-        #expect(profile["Name"] as? String == "VisionPlex")
+        #expect(profile["Name"] as? String == "VisionPlay")
         #expect(profile["MaxStreamingBitrate"] as? Int == 8_000_000)
         let directProfiles = try #require(profile["DirectPlayProfiles"] as? [[String: Any]])
         let mpegTSProfile = try #require(directProfiles.first { $0["Container"] as? String == "mpegts" })

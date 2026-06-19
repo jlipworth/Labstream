@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pure helpers for VisionPlex system-entry routing (App Intents and Spotlight).
+/// Pure helpers for VisionPlay system-entry routing (App Intents and Spotlight).
 /// Kept in PMSKit so identifier parsing and one-shot autoplay behavior have unit coverage
 /// without depending on SwiftUI/AppIntents/CoreSpotlight.
 public enum MediaSearchIdentifier {

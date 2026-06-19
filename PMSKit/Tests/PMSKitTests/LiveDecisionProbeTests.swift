@@ -51,10 +51,10 @@ struct LiveDecisionProbeTests {
             self.mediaIndex = env["PLEX_LIVE_MEDIA_INDEX"].flatMap(Int.init) ?? 0
             self.partIndex = env["PLEX_LIVE_PART_INDEX"].flatMap(Int.init) ?? 0
             self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplex-live-probe",
-                product: "VisionPlex",
+                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
+                product: "VisionPlay",
                 version: "0.1.0",
-                deviceName: "VisionPlex Live Probe")
+                deviceName: "VisionPlay Live Probe")
         }
     }
 

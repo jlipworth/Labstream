@@ -1,6 +1,6 @@
 import Foundation
 
-/// Lightweight parser for the parts of an HLS master playlist VisionPlex needs to reason about
+/// Lightweight parser for the parts of an HLS master playlist VisionPlay needs to reason about
 /// adaptive playback. It intentionally does not validate full RFC 8216 syntax; it extracts
 /// `#EXT-X-STREAM-INF` variant metadata and the following URI so deterministic tests and live
 /// probes can distinguish a single-rendition PMS session from a true ABR ladder.
