@@ -39,6 +39,7 @@ Keep these as manual Apple Vision Pro checks:
 - Spotlight and Shortcuts/App Intents end-to-end behavior
 - background downloads and headset sleep/off-head transfer behavior
 - server-specific Plex/Jellyfin live download behavior
+- future Emby URL/auth/playback validation before documenting Emby as supported
 
 ## Current validation boundaries
 
@@ -48,3 +49,7 @@ Keep these as manual Apple Vision Pro checks:
 - Jellyfin browse/playback/download request paths are implemented and unit-tested, but Jellyfin downloads still need explicit live validation before being called headset-proven.
 
 The manual checklist remains in [`../TESTING-CHECKLIST.md`](../TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
+
+## Future Emby validation gates
+
+Before Emby support is described as implemented, live validation must cover manual URL handling with both origin-root and `/emby` base-path servers, HTTP `8096` and HTTPS `8920` where available, username/password auth restore, browse mapping, Direct Play, Direct Stream/remux, HLS transcode, HLS child-resource auth, subtitle/audio selection, progress/resume, and `DELETE /Videos/ActiveEncodings` actually stopping server-side work.

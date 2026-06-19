@@ -25,6 +25,18 @@ Jellyfin playback is resolved by `JellyfinBrowseService.playbackOpen`. The servi
 
 Jellyfin HLS may still use an app proxy handle where needed for header or playlist behavior. That is a backend-specific implementation detail; do not assume Plex proxy behavior applies.
 
+## Emby playback planning
+
+Emby playback support is not implemented yet. Current research points to a Jellyfin-like but explicit lifecycle:
+
+1. `POST /Items/{Id}/PlaybackInfo` with user, device, media-source, quality, stream, and device-profile constraints.
+2. Select a server-provided `DirectStreamUrl` or `TranscodingUrl` where available.
+3. Preserve `RequiredHttpHeaders`; verify whether AVFoundation propagates auth headers to HLS child playlists and segments before relying on header-only HLS auth.
+4. Report now-playing/progress/stopped through `/Sessions/Playing`, `/Sessions/Playing/Progress`, and `/Sessions/Playing/Stopped`.
+5. For HLS/transcode/direct-stream-remux sessions, also call `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=` when a `PlaySessionId` exists.
+
+Do not assume Emby `Playing/Stopped` is sufficient encoder cleanup. Do not reuse Jellyfin auth/header builders without live verification; Emby uses its own `Emby` auth scheme and may require `X-Emby-Token` or token-bearing URLs in some paths.
+
 ## Local/offline playback
 
 Offline playback uses the custom player with a local file URL. There is no server session, PMS timeline, Jellyfin active-encoding cleanup, or remote stream reopener. Resume information comes from the offline metadata/record model.
