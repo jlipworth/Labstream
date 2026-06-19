@@ -459,10 +459,7 @@ public final class DownloadManager {
     }
 
     public var storageLimitBytes: Int {
-        guard UserDefaults.standard.object(forKey: PlaybackPreferences.Keys.downloadStorageLimitBytes) != nil else {
-            return 0
-        }
-        return UserDefaults.standard.integer(forKey: PlaybackPreferences.Keys.downloadStorageLimitBytes)
+        PlaybackPreferences.downloadStorageLimitBytes()
     }
 
     public func storageLimitMessage(adding expectedBytes: Int?) -> String? {
