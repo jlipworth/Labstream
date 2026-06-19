@@ -1,4 +1,4 @@
-# VisionPlex Music — Final Design (issues #17, #22)
+# VisionPlay Music — Final Design (issues #17, #22)
 
 Status: approved design, 2026-06-10. Synthesized from three design explorations
 ("pragmatic" base, with judge-endorsed grafts from "apple-native" and
@@ -56,7 +56,7 @@ home-row customization, TIDAL.
 ## 2. Information architecture
 
 **Keep the app-level TabView exactly as is** (Home · Libraries · Search ·
-Music · Offline · Settings). VisionPlex is a video-first client; music is one
+Music · Offline · Settings). VisionPlay is a video-first client; music is one
 tab, not a music-first restructure. Inside the Music tab:
 
 ```

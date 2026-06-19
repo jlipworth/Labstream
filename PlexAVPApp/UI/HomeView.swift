@@ -154,7 +154,7 @@ struct HomeView: View {
                 "item_count": hubs.reduce(0) { $0 + $1.metadata.count },
             ])
             // System integration (#24): make the just-browsed items findable in
-            // Spotlight, and refresh the "Play <title> on VisionPlex" Siri phrase
+            // Spotlight, and refresh the "Play <title> on VisionPlay" Siri phrase
             // vocabulary (drawn from the entity query's suggestions).
             SpotlightIndexer.index(hubs.flatMap(\.metadata), server: server)
             VisionPlexShortcuts.updateAppShortcutParameters()

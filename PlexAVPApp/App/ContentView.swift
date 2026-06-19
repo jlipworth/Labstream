@@ -29,7 +29,7 @@ struct ContentView: View {
         let keychain = KeychainStore()
         let identity = ClientIdentity(
             clientIdentifier: keychain.clientIdentifier(),
-            product: "VisionPlex",
+            product: "VisionPlay",
             version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
             deviceName: "Apple Vision Pro"
         )
