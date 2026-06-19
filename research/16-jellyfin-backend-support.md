@@ -150,7 +150,7 @@ The #33 media-session proxy refactor is valuable for Jellyfin, but only part of 
 ### High-conflict files to avoid until #33 stabilizes
 
 - `PMSKit/Sources/PMSKit/MediaSession/MediaSessionProxy.swift`
-- `PlexAVPApp/Player/PlaybackController.swift`
+- `VisionPlay/Player/PlaybackController.swift`
 - `TESTING-CHECKLIST.md`
 - `docs/DEVELOPMENT.md`
 
@@ -160,10 +160,10 @@ Create an app-side backend layer **above PMSKit** first. Do not rename PMSKit or
 
 Suggested initial files:
 
-- `PlexAVPApp/Backend/MediaBackend.swift`
-- `PlexAVPApp/Backend/BackendModels.swift`
-- `PlexAVPApp/Backend/Plex/PlexBackendAdapter.swift`
-- Later: `PlexAVPApp/Backend/Jellyfin/JellyfinBackendAdapter.swift`
+- `VisionPlay/Backend/MediaBackend.swift`
+- `VisionPlay/Backend/BackendModels.swift`
+- `VisionPlay/Backend/Plex/PlexBackendAdapter.swift`
+- Later: `VisionPlay/Backend/Jellyfin/JellyfinBackendAdapter.swift`
 
 Suggested protocol shape:
 

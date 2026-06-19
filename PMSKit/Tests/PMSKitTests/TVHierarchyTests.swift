@@ -87,7 +87,7 @@ import Foundation
 
 @Test func childrenRequestURLAndParams() throws {
     let server = URL(string: "https://example.plex.direct:32400")!
-    let identity = ClientIdentity(clientIdentifier: "abc", product: "PlexAVP",
+    let identity = ClientIdentity(clientIdentifier: "abc", product: "VisionPlay",
                                   version: "1.0", deviceName: "Headset")
     let req = ChildrenRequest.children(server: server, token: "TOKEN",
                                        identity: identity, ratingKey: "100")

@@ -15,12 +15,12 @@
 - **PMSKit changes** (the #31 headroom gate, the #26 `productVersion` field) ship with Swift Testing unit tests — run `cd PMSKit && swift test` and expect all green.
 - **App-layer changes** get the build-clean gate after each task (delete the `.app` first so a skipped `Ld` can't masquerade as success):
   ```sh
-  rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
-  xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+  rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
+  xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
     -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
     -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
   ```
-  Expected: `** BUILD SUCCEEDED **` + a fresh `PlexAVPApp.app` (mtime newer than build start).
+  Expected: `** BUILD SUCCEEDED **` + a fresh `VisionPlay.app` (mtime newer than build start).
 - **Live-sim verification** is the owner's; behaviors that can only be confirmed in-headset go into `TESTING-CHECKLIST.md` (Task 2e). #27/#7/#33 are verification-only this wave (no code) — their checklist items already exist.
 
 ## Branch
@@ -37,17 +37,17 @@ Commit after each task. Do **not** push or merge — the owner merges Wave 1 the
 
 | File | Disposition in Wave 2 |
 |---|---|
-| `PlexAVPApp/Player/CustomPlayerChrome.swift` | Modify (2a: `failureCard` HStack→VStack, Retry-above-Close) |
+| `VisionPlay/Player/CustomPlayerChrome.swift` | Modify (2a: `failureCard` HStack→VStack, Retry-above-Close) |
 | `PMSKit/Sources/PMSKit/Transcode/DirectStreamHeadroomGate.swift` | **Create** (2b: #31 gate, verbatim) |
 | `PMSKit/Tests/PMSKitTests/DirectStreamHeadroomGateTests.swift` | **Create** (2b: #31 tests, verbatim) |
 | `docs/superpowers/specs/2026-06-13-direct-stream-headroom-gate-design.md` | **Create** (2b: #31 design doc, verbatim) |
-| `PlexAVPApp/Player/PlaybackController.swift` | Modify (2b: headroom key + gate at the direct-stream commit; 2c: `persistedPreferenceKeys`) |
-| `PlexAVPApp/Player/PlaybackDiagnostics.swift` | Modify (2b: persist observed-throughput sample) |
+| `VisionPlay/Player/PlaybackController.swift` | Modify (2b: headroom key + gate at the direct-stream commit; 2c: `persistedPreferenceKeys`) |
+| `VisionPlay/Player/PlaybackDiagnostics.swift` | Modify (2b: persist observed-throughput sample) |
 | `PMSKit/Sources/PMSKit/Auth/ResourceDiscovery.swift` | Modify (2c: `productVersion` on `PlexDevice`) |
 | `PMSKit/Tests/PMSKitTests/ResourceDiscoveryTests.swift` | Modify (2c: decode test) |
-| `PlexAVPApp/Auth/AuthManager.swift` | Modify (2c: `probeSelectedServer()`) |
-| `PlexAVPApp/App/ContentView.swift` | Modify (2c: version from bundle) |
-| `PlexAVPApp/UI/SettingsView.swift` | Modify (2b: headroom toggle; 2c: server version+status, reset-prefs, maintenance, About, sign-out confirm) — **3-way hotspot, land 2b then 2c, one commit each** |
+| `VisionPlay/Auth/AuthManager.swift` | Modify (2c: `probeSelectedServer()`) |
+| `VisionPlay/App/ContentView.swift` | Modify (2c: version from bundle) |
+| `VisionPlay/UI/SettingsView.swift` | Modify (2b: headroom toggle; 2c: server version+status, reset-prefs, maintenance, About, sign-out confirm) — **3-way hotspot, land 2b then 2c, one commit each** |
 | `TESTING-CHECKLIST.md` | Modify (2e: Wave 2 live-sim section) |
 
 `PlaybackController.persistedPreferenceKeys` / `directStreamHeadroomEnabledKey` and `PlaybackDiagnostics.observedThroughputEstimateKey` are internal `static let`s in the app target; `SettingsView` (same target) reads them directly.
@@ -61,7 +61,7 @@ Commit after each task. Do **not** push or merge — the owner merges Wave 1 the
 ### Task 2a.1: Stack Retry above Close in `failureCard`
 
 **Files:**
-- Modify: `PlexAVPApp/Player/CustomPlayerChrome.swift:313-325`
+- Modify: `VisionPlay/Player/CustomPlayerChrome.swift:313-325`
 
 - [ ] **Step 1: Replace the button `HStack` with a `VStack`**
 
@@ -111,7 +111,7 @@ with:
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/Player/CustomPlayerChrome.swift
+git add VisionPlay/Player/CustomPlayerChrome.swift
 git commit -m "Stack Retry above Close on the custom failure card (#30)"
 ```
 
@@ -155,7 +155,7 @@ git commit -m "PMSKit: add Direct Stream bandwidth-headroom gate + tests (#31)"
 ### Task 2b.2: Persist the observed-throughput sample (`PlaybackDiagnostics`)
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackDiagnostics.swift` (key near line 16; write at line 106)
+- Modify: `VisionPlay/Player/PlaybackDiagnostics.swift` (key near line 16; write at line 106)
 
 - [ ] **Step 1: Add the key** — immediately after the `@Observable @MainActor final class PlaybackDiagnostics {` opening line, add:
 
@@ -187,14 +187,14 @@ with:
 - [ ] **Step 4: Commit**
 
 ```sh
-git add PlexAVPApp/Player/PlaybackDiagnostics.swift
+git add VisionPlay/Player/PlaybackDiagnostics.swift
 git commit -m "Persist observed throughput for the Direct Stream headroom gate (#31)"
 ```
 
 ### Task 2b.3: Gate the direct-stream commit in `PlaybackController`
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift` (key near line 102; commit point at 1136-1140)
+- Modify: `VisionPlay/Player/PlaybackController.swift` (key near line 102; commit point at 1136-1140)
 
 - [ ] **Step 1: Add the key** — immediately after `static let directStreamEnabledKey = "directStreamEnabled"` (line 102), add:
 
@@ -243,14 +243,14 @@ with:
 - [ ] **Step 4: Commit**
 
 ```sh
-git add PlexAVPApp/Player/PlaybackController.swift
+git add VisionPlay/Player/PlaybackController.swift
 git commit -m "Apply the Direct Stream headroom gate at the copy-commit point (#31)"
 ```
 
 ### Task 2b.4: Add the headroom toggle in Settings (hotspot edit #1 — land alone)
 
 **Files:**
-- Modify: `PlexAVPApp/UI/SettingsView.swift` (`@AppStorage` block ~line 29; `playbackSection` toggles ~line 52; footer ~line 58)
+- Modify: `VisionPlay/UI/SettingsView.swift` (`@AppStorage` block ~line 29; `playbackSection` toggles ~line 52; footer ~line 58)
 
 - [ ] **Step 1: Add the `@AppStorage`** — after the `directStreamEnabled` `@AppStorage` (line 29), add:
 
@@ -280,7 +280,7 @@ git commit -m "Apply the Direct Stream headroom gate at the copy-commit point (#
 - [ ] **Step 5: Commit**
 
 ```sh
-git add PlexAVPApp/UI/SettingsView.swift
+git add VisionPlay/UI/SettingsView.swift
 git commit -m "Settings: experimental Direct Stream headroom toggle (#31)"
 ```
 
@@ -334,7 +334,7 @@ git commit -m "PMSKit: decode productVersion on PlexDevice for Settings display 
 ### Task 2c.2: Derive the app version from the bundle (`ContentView`)
 
 **Files:**
-- Modify: `PlexAVPApp/App/ContentView.swift`
+- Modify: `VisionPlay/App/ContentView.swift`
 
 - [ ] **Step 1: Replace the hardcoded `version: "0.1.0"`** in the `ClientIdentity(...)` construction with the bundle value:
 
@@ -354,14 +354,14 @@ and add the rationale comment above the `ClientIdentity(` call:
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/App/ContentView.swift
+git add VisionPlay/App/ContentView.swift
 git commit -m "Derive X-Plex-Version from the bundle, not a hardcoded string (#26)"
 ```
 
 ### Task 2c.3: One-shot `probeSelectedServer()` (`AuthManager`)
 
 **Files:**
-- Modify: `PlexAVPApp/Auth/AuthManager.swift` (insert before `func signOut()`)
+- Modify: `VisionPlay/Auth/AuthManager.swift` (insert before `func signOut()`)
 
 - [ ] **Step 1: Add the method** (verbatim from #26):
 
@@ -393,14 +393,14 @@ git commit -m "Derive X-Plex-Version from the bundle, not a hardcoded string (#2
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/Auth/AuthManager.swift
+git add VisionPlay/Auth/AuthManager.swift
 git commit -m "Auth: one-shot probeSelectedServer() reachability check for Settings (#26)"
 ```
 
 ### Task 2c.4: `persistedPreferenceKeys` (`PlaybackController`)
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift` (after the `AudioPrefKey` enum, ~line 230)
+- Modify: `VisionPlay/Player/PlaybackController.swift` (after the `AudioPrefKey` enum, ~line 230)
 
 - [ ] **Step 1: Add the array** — after the closing `}` of `enum AudioPrefKey`, add:
 
@@ -422,14 +422,14 @@ git commit -m "Auth: one-shot probeSelectedServer() reachability check for Setti
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/Player/PlaybackController.swift
+git add VisionPlay/Player/PlaybackController.swift
 git commit -m "Player: expose persistedPreferenceKeys for the Settings reset row (#26)"
 ```
 
 ### Task 2c.5: Expand `SettingsView` (hotspot edit #2 — land alone, after 2b.4)
 
 **Files:**
-- Modify: `PlexAVPApp/UI/SettingsView.swift`
+- Modify: `VisionPlay/UI/SettingsView.swift`
 
 This is the large surface from #26. Re-apply onto the current section-structured view. The current view already has `serverSection`/`playbackSection`/`storageSection`/`accountSection` computed properties — same structure the #26 branch expanded.
 
@@ -494,7 +494,7 @@ Then replace the footer with the fully combined text (current + #31 headroom + #
 
 To recover any exact block, read it from the source branch:
 ```sh
-git diff $(git merge-base main settings/26-expanded-surface)..settings/26-expanded-surface -- PlexAVPApp/UI/SettingsView.swift
+git diff $(git merge-base main settings/26-expanded-surface)..settings/26-expanded-surface -- VisionPlay/UI/SettingsView.swift
 ```
 
 - [ ] **Step 7: Build-clean gate.** Expected: `** BUILD SUCCEEDED **`. Watch for: missing `import UIKit` (UIPasteboard), and the privacy check — confirm `diagnosticsText` contains no token/identifier/host.
@@ -502,7 +502,7 @@ git diff $(git merge-base main settings/26-expanded-surface)..settings/26-expand
 - [ ] **Step 8: Commit**
 
 ```sh
-git add PlexAVPApp/UI/SettingsView.swift
+git add VisionPlay/UI/SettingsView.swift
 git commit -m "Settings: server version+status, pref reset, maintenance, About, sign-out confirm (#26)"
 ```
 

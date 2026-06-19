@@ -18,7 +18,7 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
     /// by the caller observing auth state and calling `cancel()`.
     func start(_ url: URL, onCancel: @escaping () -> Void) {
         cancel()
-        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "plexavp") { _, error in
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "visionplay") { _, error in
             if let error = error as? ASWebAuthenticationSessionError,
                error.code == .canceledLogin {
                 onCancel()

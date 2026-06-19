@@ -243,7 +243,7 @@ final class DownloadStore: @unchecked Sendable {
     private let fileManager: FileManager
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
-    ///   `Application Support/PlexAVPApp/Downloads`, created if missing.
+    ///   `Application Support/VisionPlay/Downloads`, created if missing.
     init(baseDirectory: URL? = nil, fileManager: FileManager = .default) {
         self.fileManager = fileManager
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,
@@ -252,7 +252,7 @@ final class DownloadStore: @unchecked Sendable {
                                                 create: true))
             ?? fileManager.temporaryDirectory
         let dir = baseDirectory ?? appSupport
-            .appendingPathComponent("PlexAVPApp", isDirectory: true)
+            .appendingPathComponent("VisionPlay", isDirectory: true)
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
         self.indexURL = dir.appendingPathComponent("index.json")

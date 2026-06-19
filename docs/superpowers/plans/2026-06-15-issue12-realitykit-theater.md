@@ -17,7 +17,7 @@ This slice creates a clean #12 boundary while keeping the product safe:
 2. Add `RealityTheaterConfiguration` for screen width, distance, vertical offset, seat preset, and controls placement in meters.
 3. Add `RealityTheaterSessionStore`, separate from `CustomCinemaSessionStore`, so future work can attach active playback and theater controls without coupling to Wave-2 player chrome.
 4. Add `RealityTheaterPrototypeView`, a hidden `RealityView` scene with RealityKit screen, frame, controls, and seat anchors. It is a prototype layout scaffold only; it does not render video or expose a button.
-5. Register the new hidden `ImmersiveSpace` in `PlexAVPApp` without adding any Settings toggle or player-chrome entry point.
+5. Register the new hidden `ImmersiveSpace` in `VisionPlay` without adding any Settings toggle or player-chrome entry point.
 
 ## Explicit non-goals for this slice
 
@@ -45,7 +45,7 @@ This slice creates a clean #12 boundary while keeping the product safe:
 
 ## Validation for this slice
 
-- `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' -configuration Debug build CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'generic/platform=visionOS Simulator' -configuration Debug build CODE_SIGNING_ALLOWED=NO`
 - `git diff --check`
 - Confirm no visible player-chrome theater affordance was added and `CustomCinemaMode.isUserVisible` remains `false`.
 ## 2026-06-15 buildout update

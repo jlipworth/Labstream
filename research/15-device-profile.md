@@ -19,7 +19,7 @@
 > `PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift`,
 > `PMSKit/Sources/PMSKit/Transcode/DeviceProfile.swift`,
 > `PMSKit/Sources/PMSKit/Transcode/DecisionResponse.swift`,
-> `PlexAVPApp/Player/PlaybackController.swift`.
+> `VisionPlay/Player/PlaybackController.swift`.
 
 ---
 

@@ -25,7 +25,7 @@ All new code lives in a new `MediaSession/` group under PMSKit (request building
 - Create `PMSKit/Sources/PMSKit/MediaSession/MediaSessionProxy.swift` — the actor that assembles the above behind `open / seek / stop / status`.
 - Modify `PMSKit/Sources/PMSKit/PlexSessionConfiguration.swift` — add `mediaUpstream(timeout:)` factory.
 - Create tests: `HTTPMessageTests.swift`, `UpstreamURLMapperTests.swift`, `PlaylistRewriterTests.swift`, `UpstreamConnectionTests.swift`, `MediaSessionProxyTests.swift` (+ a `StubOrigin` test helper) under `PMSKit/Tests/PMSKitTests/`.
-- Modify `PlexAVPApp/Player/PlaybackController.swift` — route `AVURLAsset` through the proxy URL; tear the proxy down on stop.
+- Modify `VisionPlay/Player/PlaybackController.swift` — route `AVURLAsset` through the proxy URL; tear the proxy down on stop.
 
 **Stage-1 scoping note (intentional, consistent with the spec):** Stage 1's `open(origin:)` takes the already-resolved PMS `start.m3u8` URL that `PlaybackController` already computes from its Direct Stream probe + decision. Migrating the decision/probe build *into* the proxy, and making `seek` re-prime, are Stage 2 — out of scope here. `seek(to:)` is a pass-through that returns the current handle.
 
@@ -1017,7 +1017,7 @@ git commit -m "MediaSessionProxy: assemble open/seek/stop/status over loopback o
 ## Task 9: Wire the proxy into `PlaybackController`
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift` (the `AVURLAsset(url: streamURL)` site ~line 1124, and teardown/stop).
+- Modify: `VisionPlay/Player/PlaybackController.swift` (the `AVURLAsset(url: streamURL)` site ~line 1124, and teardown/stop).
 
 Goal: keep the player thin. The controller still computes `streamURL` exactly as today (Direct Stream probe + decision); it then asks the proxy to front that URL and points `AVURLAsset` at the returned loopback URL. On teardown it stops the proxy generation. No seek behavior changes (Stage 1 `seek` is pass-through, so the existing seek path is untouched).
 
@@ -1054,18 +1054,18 @@ Leave the existing PMS `TranscodeRequest.stop(...)` call in place — Stage 1 do
 - [ ] **Step 3: Build the app (guard the link-skip trap)**
 
 ```bash
-rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 ```
 
-Expected: BUILD SUCCEEDED; a fresh `PlexAVPApp.app` exists (verify mtime).
+Expected: BUILD SUCCEEDED; a fresh `VisionPlay.app` exists (verify mtime).
 
 - [ ] **Step 4: Install + relaunch, confirm the installed binary is the fresh one**
 
 ```bash
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app | head -1)
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
 xcrun simctl install booted "$APP"
 xcrun simctl terminate booted com.jlipworth.VisionPlay; xcrun simctl launch booted com.jlipworth.VisionPlay
 xcrun simctl get_app_container booted com.jlipworth.VisionPlay app   # compare against $APP
@@ -1074,7 +1074,7 @@ xcrun simctl get_app_container booted com.jlipworth.VisionPlay app   # compare a
 - [ ] **Step 5: Commit**
 
 ```bash
-git add PlexAVPApp/Player/PlaybackController.swift
+git add VisionPlay/Player/PlaybackController.swift
 git commit -m "Route AVURLAsset through MediaSessionProxy loopback (#33)"
 ```
 
@@ -1088,7 +1088,7 @@ git commit -m "Route AVURLAsset through MediaSessionProxy loopback (#33)"
 - [ ] **Step 1: Exercise playback once (user drives the sim); read the log**
 
 ```bash
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'
+xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"'
 ```
 
 If playback works through the loopback URL, **skip the rest of this task** — no ATS change needed.

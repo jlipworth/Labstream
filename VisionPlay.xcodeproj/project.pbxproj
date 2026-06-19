@@ -11,12 +11,12 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		AA0000000000000000000005 /* PlexAVPApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PlexAVPApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000005 /* VisionPlay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VisionPlay.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000013 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		AA0000000000000000000006 /* PlexAVPApp */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = PlexAVPApp; sourceTree = "<group>"; };
+		AA0000000000000000000006 /* VisionPlay */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = VisionPlay; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -35,7 +35,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000013 /* Signing.xcconfig */,
-				AA0000000000000000000006 /* PlexAVPApp */,
+				AA0000000000000000000006 /* VisionPlay */,
 				AA0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -43,7 +43,7 @@
 		AA0000000000000000000003 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AA0000000000000000000005 /* PlexAVPApp.app */,
+				AA0000000000000000000005 /* VisionPlay.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -51,9 +51,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		AA0000000000000000000004 /* PlexAVPApp */ = {
+		AA0000000000000000000004 /* VisionPlay */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = AA0000000000000000000008 /* Build configuration list for PBXNativeTarget "PlexAVPApp" */;
+			buildConfigurationList = AA0000000000000000000008 /* Build configuration list for PBXNativeTarget "VisionPlay" */;
 			buildPhases = (
 				AA000000000000000000000D /* Sources */,
 				AA000000000000000000000E /* Frameworks */,
@@ -64,14 +64,14 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* PlexAVPApp */,
+				AA0000000000000000000006 /* VisionPlay */,
 			);
-			name = PlexAVPApp;
+			name = VisionPlay;
 			packageProductDependencies = (
 				AA0000000000000000000011 /* PMSKit */,
 			);
-			productName = PlexAVPApp;
-			productReference = AA0000000000000000000005 /* PlexAVPApp.app */;
+			productName = VisionPlay;
+			productReference = AA0000000000000000000005 /* VisionPlay.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -89,7 +89,7 @@
 					};
 				};
 			};
-			buildConfigurationList = AA0000000000000000000007 /* Build configuration list for PBXProject "PlexAVPApp" */;
+			buildConfigurationList = AA0000000000000000000007 /* Build configuration list for PBXProject "VisionPlay" */;
 			compatibilityVersion = "Xcode 15.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -106,7 +106,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				AA0000000000000000000004 /* PlexAVPApp */,
+				AA0000000000000000000004 /* VisionPlay */,
 			);
 		};
 /* End PBXProject section */
@@ -318,7 +318,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AA0000000000000000000007 /* Build configuration list for PBXProject "PlexAVPApp" */ = {
+		AA0000000000000000000007 /* Build configuration list for PBXProject "VisionPlay" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA0000000000000000000009 /* Debug */,
@@ -327,7 +327,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		AA0000000000000000000008 /* Build configuration list for PBXNativeTarget "PlexAVPApp" */ = {
+		AA0000000000000000000008 /* Build configuration list for PBXNativeTarget "VisionPlay" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA000000000000000000000B /* Debug */,

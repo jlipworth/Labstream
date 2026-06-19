@@ -17,12 +17,12 @@ This wave touches only SwiftUI/visionOS player UI. **There is no unit-test harne
 1. **Build-clean gate** after every code change, using the project's link-skip-trap guard (delete the `.app` product first, then build, so a skipped `Ld` step cannot masquerade as success):
 
    ```sh
-   rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
-   xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+   rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
+   xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
      -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
      -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
    ```
-   Expected: `** BUILD SUCCEEDED **` and a fresh `PlexAVPApp.app` (verify mtime is newer than the build start).
+   Expected: `** BUILD SUCCEEDED **` and a fresh `VisionPlay.app` (verify mtime is newer than the build start).
 
 2. **Live-sim verification** is performed by the owner. Every behavior this wave can only confirm in-headset is collected into `TESTING-CHECKLIST.md` (Task 1d) — do **not** ask the owner for screenshots mid-wave; the checklist is the single handoff.
 
@@ -42,15 +42,15 @@ Commit after each task (the steps below include the exact commit). Do **not** pu
 
 | File | Disposition in Wave 1 |
 |---|---|
-| `PlexAVPApp/Player/CustomPlayerView.swift` | Modify (1a: add local-file init; 1b: chrome extraction leaves this file importing the shared chrome) |
-| `PlexAVPApp/Player/CustomPlayerChrome.swift` | **Create** (1b: extracted `CustomPlayerChrome`, `CustomPlayerMenuKind`, `CustomPlayerMenuPopover`, `CustomReconnectingOverlay`, shared scrubber-clock helper) |
-| `PlexAVPApp/Player/CustomCinemaMode.swift` | Modify (1b: cinema scaffold hosts the shared chrome for full control parity) |
-| `PlexAVPApp/UI/DetailView.swift` | Modify (1a: repoint local arm; 1c: collapse toggle branch, drop `@AppStorage`) |
-| `PlexAVPApp/Downloads/OfflineLibraryView.swift` | Modify (1a: repoint local arm) |
-| `PlexAVPApp/UI/SettingsView.swift` | Modify (1c: remove toggle, `@AppStorage`, footer clause) |
-| `PlexAVPApp/Player/PlayerView.swift` | **Delete** (1c) |
-| `PlexAVPApp/Player/PlayerControlSurface.swift` | **Delete** (1c) |
-| `PlexAVPApp/Player/CinemaEnvironment.swift` | **Delete** (1c) |
+| `VisionPlay/Player/CustomPlayerView.swift` | Modify (1a: add local-file init; 1b: chrome extraction leaves this file importing the shared chrome) |
+| `VisionPlay/Player/CustomPlayerChrome.swift` | **Create** (1b: extracted `CustomPlayerChrome`, `CustomPlayerMenuKind`, `CustomPlayerMenuPopover`, `CustomReconnectingOverlay`, shared scrubber-clock helper) |
+| `VisionPlay/Player/CustomCinemaMode.swift` | Modify (1b: cinema scaffold hosts the shared chrome for full control parity) |
+| `VisionPlay/UI/DetailView.swift` | Modify (1a: repoint local arm; 1c: collapse toggle branch, drop `@AppStorage`) |
+| `VisionPlay/Downloads/OfflineLibraryView.swift` | Modify (1a: repoint local arm) |
+| `VisionPlay/UI/SettingsView.swift` | Modify (1c: remove toggle, `@AppStorage`, footer clause) |
+| `VisionPlay/Player/PlayerView.swift` | **Delete** (1c) |
+| `VisionPlay/Player/PlayerControlSurface.swift` | **Delete** (1c) |
+| `VisionPlay/Player/CinemaEnvironment.swift` | **Delete** (1c) |
 | `TESTING-CHECKLIST.md` | Modify (1d: add the Wave 1 live-sim section) |
 
 New Swift files are picked up automatically (file-system-synchronized groups) — **never** edit the pbxproj.
@@ -66,7 +66,7 @@ New Swift files are picked up automatically (file-system-synchronized groups) �
 ### Task 1a.1: Add a local-file initializer to `CustomPlayerView`
 
 **Files:**
-- Modify: `PlexAVPApp/Player/CustomPlayerView.swift` (after the existing `init` ending at line 35)
+- Modify: `VisionPlay/Player/CustomPlayerView.swift` (after the existing `init` ending at line 35)
 
 `OfflineLibraryView` holds no `AppModel`/identity, so this initializer must synthesize a throwaway offline identity/client exactly as the deleted `PlayerView.init(localFile:item:onClose:)` did (`PlayerView.swift:119`). DetailView has an `AppModel` but will use this same convenience init for simplicity.
 
@@ -107,14 +107,14 @@ Run the build-clean gate (see Testing model). Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/Player/CustomPlayerView.swift
+git add VisionPlay/Player/CustomPlayerView.swift
 git commit -m "Add local-file initializer to CustomPlayerView"
 ```
 
 ### Task 1a.2: Repoint `OfflineLibraryView` to the custom player
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/OfflineLibraryView.swift:50` (and the doc comments at lines 5, 197)
+- Modify: `VisionPlay/Downloads/OfflineLibraryView.swift:50` (and the doc comments at lines 5, 197)
 
 - [ ] **Step 1: Replace the player call**
 
@@ -143,14 +143,14 @@ Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 4: Commit**
 
 ```sh
-git add PlexAVPApp/Downloads/OfflineLibraryView.swift
+git add VisionPlay/Downloads/OfflineLibraryView.swift
 git commit -m "Play offline downloads through the custom player"
 ```
 
 ### Task 1a.3: Repoint `DetailView` downloaded-copy play to the custom player
 
 **Files:**
-- Modify: `PlexAVPApp/UI/DetailView.swift:360-363`
+- Modify: `VisionPlay/UI/DetailView.swift:360-363`
 
 This is the `if let local = playLocalURL` arm of `playerCover`. It is **not** behind the toggle today; repoint it now (the toggle-gated streaming arm is handled in Task 1c).
 
@@ -179,7 +179,7 @@ Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/UI/DetailView.swift
+git add VisionPlay/UI/DetailView.swift
 git commit -m "Play downloaded copies through the custom player"
 ```
 
@@ -194,8 +194,8 @@ git commit -m "Play downloaded copies through the custom player"
 ### Task 1b.1: Extract the chrome into a shared file
 
 **Files:**
-- Create: `PlexAVPApp/Player/CustomPlayerChrome.swift`
-- Modify: `PlexAVPApp/Player/CustomPlayerView.swift` (remove the moved declarations; add a shared clock helper call)
+- Create: `VisionPlay/Player/CustomPlayerChrome.swift`
+- Modify: `VisionPlay/Player/CustomPlayerView.swift` (remove the moved declarations; add a shared clock helper call)
 
 The following declarations currently live in `CustomPlayerView.swift` and are `private`/file-private:
 - `CustomPlayerChrome` (struct, lines ~162-605)
@@ -277,14 +277,14 @@ Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`. This proves the ext
 - [ ] **Step 4: Commit**
 
 ```sh
-git add PlexAVPApp/Player/CustomPlayerChrome.swift PlexAVPApp/Player/CustomPlayerView.swift
+git add VisionPlay/Player/CustomPlayerChrome.swift VisionPlay/Player/CustomPlayerView.swift
 git commit -m "Extract CustomPlayerChrome into a shared file"
 ```
 
 ### Task 1b.2: Host the shared chrome in the Cinema scene
 
 **Files:**
-- Modify: `PlexAVPApp/Player/CustomCinemaMode.swift` (`CustomCinemaScaffoldView`, lines 48-122)
+- Modify: `VisionPlay/Player/CustomCinemaMode.swift` (`CustomCinemaScaffoldView`, lines 48-122)
 
 - [ ] **Step 1: Give the scaffold its own scrub state + clock and host the chrome**
 
@@ -362,7 +362,7 @@ Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`. Watch specifically 
 - [ ] **Step 3: Commit**
 
 ```sh
-git add PlexAVPApp/Player/CustomCinemaMode.swift
+git add VisionPlay/Player/CustomCinemaMode.swift
 git commit -m "Give custom Cinema mode full normal-mode control parity"
 ```
 
@@ -375,7 +375,7 @@ git commit -m "Give custom Cinema mode full normal-mode control parity"
 ### Task 1c.1: Collapse the `DetailView` toggle branch
 
 **Files:**
-- Modify: `PlexAVPApp/UI/DetailView.swift` (line 46 `@AppStorage`; the `if experimentalCustomPlayerEnabled { … } else { … }` block at lines 381-408)
+- Modify: `VisionPlay/UI/DetailView.swift` (line 46 `@AppStorage`; the `if experimentalCustomPlayerEnabled { … } else { … }` block at lines 381-408)
 
 - [ ] **Step 1: Remove the streaming-arm toggle, keeping only the custom arm**
 
@@ -414,14 +414,14 @@ Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`. (`PlayerView` still
 - [ ] **Step 4: Commit**
 
 ```sh
-git add PlexAVPApp/UI/DetailView.swift
+git add VisionPlay/UI/DetailView.swift
 git commit -m "Route all streaming playback through the custom player"
 ```
 
 ### Task 1c.2: Remove the Settings toggle
 
 **Files:**
-- Modify: `PlexAVPApp/UI/SettingsView.swift` (line 35 `@AppStorage`; the `Toggle` at lines 61-63; the footer clause at line 67)
+- Modify: `VisionPlay/UI/SettingsView.swift` (line 35 `@AppStorage`; the `Toggle` at lines 61-63; the footer clause at line 67)
 
 ⚠️ This file's Playback section is a known 3-way conflict hotspot (this toggle removal, #31 headroom, #26 reset-prefs). Land this edit alone and commit before any Wave 2 work touches the section.
 
@@ -466,30 +466,30 @@ Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`.
 - [ ] **Step 4: Commit**
 
 ```sh
-git add PlexAVPApp/UI/SettingsView.swift
+git add VisionPlay/UI/SettingsView.swift
 git commit -m "Remove the experimental custom-player toggle"
 ```
 
 ### Task 1c.3: Delete the three AVKit files
 
 **Files:**
-- Delete: `PlexAVPApp/Player/PlayerView.swift`
-- Delete: `PlexAVPApp/Player/PlayerControlSurface.swift`
-- Delete: `PlexAVPApp/Player/CinemaEnvironment.swift`
+- Delete: `VisionPlay/Player/PlayerView.swift`
+- Delete: `VisionPlay/Player/PlayerControlSurface.swift`
+- Delete: `VisionPlay/Player/CinemaEnvironment.swift`
 
 - [ ] **Step 1: Delete the files**
 
 ```sh
-git rm PlexAVPApp/Player/PlayerView.swift \
-       PlexAVPApp/Player/PlayerControlSurface.swift \
-       PlexAVPApp/Player/CinemaEnvironment.swift
+git rm VisionPlay/Player/PlayerView.swift \
+       VisionPlay/Player/PlayerControlSurface.swift \
+       VisionPlay/Player/CinemaEnvironment.swift
 ```
 
 - [ ] **Step 2: Build-clean gate**
 
 Run the build-clean gate. Expected: `** BUILD SUCCEEDED **`.
 
-If the build fails with an unresolved reference, it is a doc-comment-only symbol or a missed call site. Resolve with: `rg -n "PlayerView|PlayerControlSurface|CinemaEnvironment|AVExperienceController" PlexAVPApp/`. Expected remaining hits after this task are **comments only** in `PlaybackController.swift`, `StatsForNerdsView.swift`, `DownloadManager.swift`, `AppModel.swift`, and the `PrivacyInfo.xcprivacy` manifest text — none are compiled references.
+If the build fails with an unresolved reference, it is a doc-comment-only symbol or a missed call site. Resolve with: `rg -n "PlayerView|PlayerControlSurface|CinemaEnvironment|AVExperienceController" VisionPlay/`. Expected remaining hits after this task are **comments only** in `PlaybackController.swift`, `StatsForNerdsView.swift`, `DownloadManager.swift`, `AppModel.swift`, and the `PrivacyInfo.xcprivacy` manifest text — none are compiled references.
 
 - [ ] **Step 3: Commit**
 
@@ -501,7 +501,7 @@ git commit -m "Delete the legacy AVKit player path"
 ### Task 1c.4: Sweep stale comment/manifest references (non-breaking)
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/DownloadManager.swift:19`, `PlexAVPApp/App/AppModel.swift:11`, `PlexAVPApp/PrivacyInfo.xcprivacy:20`
+- Modify: `VisionPlay/Downloads/DownloadManager.swift:19`, `VisionPlay/App/AppModel.swift:11`, `VisionPlay/PrivacyInfo.xcprivacy:20`
 
 These are descriptive text only (the build already passes). Update the most user-visible ones so the public repo doesn't reference a deleted type. The dense AVKit-mechanics comments inside `PlaybackController.swift`/`StatsForNerdsView.swift` are deferred to the DEVELOPMENT.md decomposition (Task #10), not this wave.
 

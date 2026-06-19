@@ -46,7 +46,7 @@ from "knows about loopback sockets" to "knows about loopback sockets *and* how t
 stream at an offset."
 
 **Layering caveat (important).** `PlexClient` lives in the **app layer**
-(`PlexAVPApp/Networking/`), not PMSKit — PMSKit is a package the app depends on, so the proxy
+(`VisionPlay/Networking/`), not PMSKit — PMSKit is a package the app depends on, so the proxy
 **cannot** import `PlexClient`. The proxy therefore takes an **injected control-plane send
 closure** — `@Sendable (PlexRequest) async throws -> Data` — exactly mirroring the existing
 `upstreamFetch` (media-plane) seam. The app wires that closure to its live `PlexClient.send(_:)`

@@ -34,13 +34,13 @@ same MIME/size/playability validation pipeline.
 - `scripts/live-optimize-probe.sh` — Phase 0 runner.
 
 **App:**
-- `PlexAVPApp/Downloads/DownloadManager.swift` — new `download(_:choice:…)` entry point,
+- `VisionPlay/Downloads/DownloadManager.swift` — new `download(_:choice:…)` entry point,
   rewrite `triggerOptimize` to the playlist contract, retire progressive path +
   `estimatedTranscodeBytes`, retire `DownloadQuality` cap selection.
-- `PlexAVPApp/Downloads/DownloadStore.swift` — replace `OfflineMetadata.quality` with
+- `VisionPlay/Downloads/DownloadStore.swift` — replace `OfflineMetadata.quality` with
   `resolutionLabel`.
-- `PlexAVPApp/UI/DownloadOptionsSheet.swift` — probe-first branching.
-- `PlexAVPApp/Downloads/OfflineLibraryView.swift` — simplify progress to real
+- `VisionPlay/UI/DownloadOptionsSheet.swift` — probe-first branching.
+- `VisionPlay/Downloads/OfflineLibraryView.swift` — simplify progress to real
   `Content-Length`; keep EMA + `.monospacedDigit()`.
 
 ---
@@ -688,7 +688,7 @@ git commit -m "Add real optimize contract builders + decoders (playlist items, t
 ## Task 4: Replace `OfflineMetadata.quality` with `resolutionLabel`
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/DownloadStore.swift`
+- Modify: `VisionPlay/Downloads/DownloadStore.swift`
 
 The cap-based `DownloadQuality` is being retired (Task 7). The offline UI caption needs the
 chosen file's resolution label instead. This task changes the persisted snapshot only; the
@@ -737,7 +737,7 @@ the package broke).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add PlexAVPApp/Downloads/DownloadStore.swift
+git add VisionPlay/Downloads/DownloadStore.swift
 git commit -m "OfflineMetadata: replace bitrate-cap quality with resolutionLabel"
 ```
 
@@ -749,7 +749,7 @@ git commit -m "OfflineMetadata: replace bitrate-cap quality with resolutionLabel
 ## Task 5: `DownloadManager.download(_:choice:…)` — new probe-driven entry + direct path
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/DownloadManager.swift`
+- Modify: `VisionPlay/Downloads/DownloadManager.swift`
 
 Introduce the new public entry point and the **direct-download** path (Path A). The optimizer
 path is wired in Task 6. This task also defines the `DownloadChoice` the sheet passes.
@@ -927,7 +927,7 @@ take `resolutionLabel` instead of `quality`, and add a resolution-label builder:
 - [ ] **Step 5: Commit (compiles fully only after Task 6+7; gate is Task 8)**
 
 ```bash
-git add PlexAVPApp/Downloads/DownloadManager.swift
+git add VisionPlay/Downloads/DownloadManager.swift
 git commit -m "DownloadManager: add probe-driven download entry + direct-download path"
 ```
 
@@ -936,7 +936,7 @@ git commit -m "DownloadManager: add probe-driven download entry + direct-downloa
 ## Task 6: Rewrite `triggerOptimize` to the playlist contract (Phase-0-gated)
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/DownloadManager.swift`
+- Modify: `VisionPlay/Downloads/DownloadManager.swift`
 
 Replace the legacy flat-PUT optimize with the real runtime sequence, isolated behind one
 method. Keep `pollForOptimizedPart`.
@@ -1108,7 +1108,7 @@ with:
 - [ ] **Step 3: Commit**
 
 ```bash
-git add PlexAVPApp/Downloads/DownloadManager.swift
+git add VisionPlay/Downloads/DownloadManager.swift
 git commit -m "DownloadManager: rewrite optimize path to real playlist contract (Phase-0-gated)"
 ```
 
@@ -1117,11 +1117,11 @@ git commit -m "DownloadManager: rewrite optimize path to real playlist contract 
 ## Task 7: Retire the progressive path + estimation; update the sheet + offline view
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/DownloadManager.swift`
+- Modify: `VisionPlay/Downloads/DownloadManager.swift`
 - Modify: `PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift`
 - Modify: `PMSKit/Tests/PMSKitTests/TranscodeRequestTests.swift`
-- Modify: `PlexAVPApp/UI/DownloadOptionsSheet.swift`
-- Modify: `PlexAVPApp/Downloads/OfflineLibraryView.swift`
+- Modify: `VisionPlay/UI/DownloadOptionsSheet.swift`
+- Modify: `VisionPlay/Downloads/OfflineLibraryView.swift`
 
 - [ ] **Step 1: Remove the progressive `optimizeAndDownload(_:quality:…)` + `estimatedTranscodeBytes` + `DownloadQuality`**
 
@@ -1168,7 +1168,7 @@ Expected: all pass; no reference to the removed `downloadURL()` remains.
 ```bash
 git add PMSKit/Sources/PMSKit/Transcode/TranscodeRequest.swift \
         PMSKit/Tests/PMSKitTests/TranscodeRequestTests.swift \
-        PlexAVPApp/Downloads/DownloadManager.swift
+        VisionPlay/Downloads/DownloadManager.swift
 git commit -m "Retire progressive transcode download + bitrate-cap estimation"
 ```
 
@@ -1427,7 +1427,7 @@ extension Array {
 ```
 
 (If another `[safe:]` already exists in the app target, delete this one to avoid a duplicate —
-search first: `grep -rn "subscript(safe" PlexAVPApp`.)
+search first: `grep -rn "subscript(safe" VisionPlay`.)
 
 - [ ] **Step 7: Simplify `OfflineLibraryView` progress to real Content-Length; keep EMA + monospaced**
 
@@ -1505,15 +1505,15 @@ The sheet's public surface (`DownloadOptionsSheet(item:mediaIndex:partIndex:)`) 
 so `DetailView`'s call site needs no edit. Verify no caller still references the removed
 `optimizeAndDownload(_:quality:)` or `DownloadQuality`:
 
-Run: `grep -rn "optimizeAndDownload\|DownloadQuality\|estimatedTranscodeBytes\|\.quality\b" PlexAVPApp | grep -i download`
+Run: `grep -rn "optimizeAndDownload\|DownloadQuality\|estimatedTranscodeBytes\|\.quality\b" VisionPlay | grep -i download`
 Expected: no remaining references to the removed symbols (matches only the new code/comments).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add PlexAVPApp/UI/DownloadOptionsSheet.swift \
-        PlexAVPApp/Downloads/OfflineLibraryView.swift \
-        PlexAVPApp/Downloads/DownloadManager.swift
+git add VisionPlay/UI/DownloadOptionsSheet.swift \
+        VisionPlay/Downloads/OfflineLibraryView.swift \
+        VisionPlay/Downloads/DownloadManager.swift
 git commit -m "Probe-first download sheet + simplify offline progress to real Content-Length"
 ```
 
@@ -1533,8 +1533,8 @@ existing suites green; the live probes are no-ops).
 
 Run:
 ```bash
-rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 ```

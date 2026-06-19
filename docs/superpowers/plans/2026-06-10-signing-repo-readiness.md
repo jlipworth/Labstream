@@ -12,7 +12,7 @@
 
 ## File map
 
-- Modify: `PlexAVPApp.xcodeproj/project.pbxproj`
+- Modify: `VisionPlay.xcodeproj/project.pbxproj`
   - Set `PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay` for Debug and Release.
   - Set `INFOPLIST_KEY_CFBundleDisplayName = VisionPlay` for Debug and Release.
   - Keep target/scheme/internal product structure otherwise stable.
@@ -36,7 +36,7 @@
   - Put the hygiene logic in a local script so CI and local developers run the same checks.
 - Modify: `.gitignore`
   - Confirm local signing and Xcode generated files remain ignored; add missing generated signing/profile patterns only if needed.
-- Local-only, not committed: rename checkout folder from `/Users/jlipworth/plex-avp-app` to `/Users/jlipworth/visionplay` after implementation is committed/pushed or at a deliberate handoff point.
+- Local-only, not committed: rename checkout folder from `/Users/jlipworth/visionplay-app` to `/Users/jlipworth/visionplay` after implementation is committed/pushed or at a deliberate handoff point.
 
 ## Existing dirty tree rule
 
@@ -46,24 +46,24 @@ Before each commit, run:
 git status --short
 ```
 
-Only stage readiness files from this plan. Existing modified files currently include `.claude/skills/sim-driving/SKILL.md`, `CLAUDE.md`, `PlexAVPApp/Player/PlaybackController.swift`, and `PlexAVPApp/Player/PlayerControlSurface.swift`. `CLAUDE.md` is in scope for this plan; preserve unrelated edits inside it by using targeted patches and reviewing `git diff -- CLAUDE.md` before staging.
+Only stage readiness files from this plan. Existing modified files currently include `.claude/skills/sim-driving/SKILL.md`, `CLAUDE.md`, `VisionPlay/Player/PlaybackController.swift`, and `VisionPlay/Player/PlayerControlSurface.swift`. `CLAUDE.md` is in scope for this plan; preserve unrelated edits inside it by using targeted patches and reviewing `git diff -- CLAUDE.md` before staging.
 
 ---
 
 ### Task 1: Update Xcode external identity to VisionPlay
 
 **Files:**
-- Modify: `PlexAVPApp.xcodeproj/project.pbxproj`
+- Modify: `VisionPlay.xcodeproj/project.pbxproj`
 
 - [ ] **Step 1: Inspect current bundle/display settings**
 
 Run:
 
 ```bash
-rg -n "PRODUCT_BUNDLE_IDENTIFIER|INFOPLIST_KEY_CFBundleDisplayName|PRODUCT_NAME|CODE_SIGN_STYLE|DEVELOPMENT_TEAM" PlexAVPApp.xcodeproj/project.pbxproj
+rg -n "PRODUCT_BUNDLE_IDENTIFIER|INFOPLIST_KEY_CFBundleDisplayName|PRODUCT_NAME|CODE_SIGN_STYLE|DEVELOPMENT_TEAM" VisionPlay.xcodeproj/project.pbxproj
 ```
 
-Expected: two `PRODUCT_BUNDLE_IDENTIFIER = com.personal.PlexAVPApp;` entries and no existing `INFOPLIST_KEY_CFBundleDisplayName` entries.
+Expected: two `PRODUCT_BUNDLE_IDENTIFIER = com.personal.VisionPlay;` entries and no existing `INFOPLIST_KEY_CFBundleDisplayName` entries.
 
 - [ ] **Step 2: Patch only bundle ID and display name**
 
@@ -72,9 +72,9 @@ Run:
 ```bash
 python3 - <<'PY'
 from pathlib import Path
-p = Path('PlexAVPApp.xcodeproj/project.pbxproj')
+p = Path('VisionPlay.xcodeproj/project.pbxproj')
 text = p.read_text()
-old = 'PRODUCT_BUNDLE_IDENTIFIER = com.personal.PlexAVPApp;'
+old = 'PRODUCT_BUNDLE_IDENTIFIER = com.personal.VisionPlay;'
 new = 'PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay;'
 count = text.count(old)
 if count != 2:
@@ -97,7 +97,7 @@ Expected: command exits 0.
 Run:
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -showBuildSettings 2>/dev/null \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -showBuildSettings 2>/dev/null \
   | rg "PRODUCT_BUNDLE_IDENTIFIER|INFOPLIST_KEY_CFBundleDisplayName|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PRODUCT_NAME"
 ```
 
@@ -108,17 +108,17 @@ CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM = SUAJSL8UG9
 INFOPLIST_KEY_CFBundleDisplayName = VisionPlay
 PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay
-PRODUCT_NAME = PlexAVPApp
+PRODUCT_NAME = VisionPlay
 ```
 
-`PRODUCT_NAME = PlexAVPApp` is acceptable in this pass because the external identity is bundle/display name.
+`PRODUCT_NAME = VisionPlay` is acceptable in this pass because the external identity is bundle/display name.
 
 - [ ] **Step 4: Build unsigned simulator target**
 
 Run:
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -130,13 +130,13 @@ Expected: `** BUILD SUCCEEDED **`.
 Run:
 
 ```bash
-git diff -- PlexAVPApp.xcodeproj/project.pbxproj
-git add PlexAVPApp.xcodeproj/project.pbxproj
+git diff -- VisionPlay.xcodeproj/project.pbxproj
+git add VisionPlay.xcodeproj/project.pbxproj
 git diff --cached --check
 git commit -m "Rename development bundle identity to VisionPlay"
 ```
 
-Expected: commit contains only `PlexAVPApp.xcodeproj/project.pbxproj`.
+Expected: commit contains only `VisionPlay.xcodeproj/project.pbxproj`.
 
 ---
 
@@ -164,8 +164,8 @@ printf '== git whitespace check ==\n'
 git diff --check
 
 printf '== stale bundle id check ==\n'
-if rg -n 'com\.personal\.PlexAVPApp' README.md docs CLAUDE.md PlexAVPApp.xcodeproj 2>/dev/null; then
-  fail 'stale com.personal.PlexAVPApp reference found'
+if rg -n 'com\.personal\.VisionPlay' README.md docs CLAUDE.md VisionPlay.xcodeproj 2>/dev/null; then
+  fail 'stale com.personal.VisionPlay reference found'
 fi
 
 printf '== local signing file check ==\n'
@@ -215,7 +215,7 @@ Run:
 ./scripts/ci-hygiene.sh
 ```
 
-Expected at this point: it may fail if docs still contain `com.personal.PlexAVPApp`. If it fails only for stale docs, continue to Task 3 and re-run after docs are updated. If it fails for tracked secrets/signing artifacts, stop and inspect before continuing.
+Expected at this point: it may fail if docs still contain `com.personal.VisionPlay`. If it fails only for stale docs, continue to Task 3 and re-run after docs are updated. If it fails for tracked secrets/signing artifacts, stop and inspect before continuing.
 
 - [ ] **Step 3: Stage script only when its contents are correct**
 
@@ -250,7 +250,7 @@ from pathlib import Path
 for name in ['README.md', 'docs/DEVELOPMENT.md', 'CLAUDE.md']:
     p = Path(name)
     text = p.read_text()
-    text = text.replace('com.personal.PlexAVPApp', 'com.jlipworth.VisionPlay')
+    text = text.replace('com.personal.VisionPlay', 'com.jlipworth.VisionPlay')
     p.write_text(text)
 PY
 ```
@@ -269,7 +269,7 @@ This is currently a **personal-device sideload** project, not an App Store/TestF
 Build the app for the visionOS 26.5 simulator without signing:
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -311,7 +311,7 @@ Update the top build/test block so it includes these commands:
 
 ```sh
 # Build (visionOS 26.5 simulator, unsigned)
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
@@ -322,11 +322,11 @@ cd PMSKit && swift test
 ./scripts/ci-hygiene.sh
 
 # Install + launch on a booted sim
-APP="$HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-<hash>/Build/Products/Debug-xrsimulator/PlexAVPApp.app"
+APP="$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-<hash>/Build/Products/Debug-xrsimulator/VisionPlay.app"
 xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlay
 
 # After-the-fact logs
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"' --style compact
+xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"' --style compact
 ```
 
 - App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5).
@@ -377,7 +377,7 @@ Expected: no unrelated `CLAUDE.md` edits are introduced.
 Run:
 
 ```bash
-rg -n 'com\.personal\.PlexAVPApp|bundle id `com\.personal' README.md docs CLAUDE.md PlexAVPApp.xcodeproj || true
+rg -n 'com\.personal\.VisionPlay|bundle id `com\.personal' README.md docs CLAUDE.md VisionPlay.xcodeproj || true
 ```
 
 Expected: no output.
@@ -508,7 +508,7 @@ Expected: commit includes only docs, CI files, and `scripts/ci-hygiene.sh`.
 Run:
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -540,7 +540,7 @@ Expected: `ci-hygiene: ok`.
 Run:
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -showBuildSettings 2>/dev/null \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -showBuildSettings 2>/dev/null \
   | rg "PRODUCT_BUNDLE_IDENTIFIER|INFOPLIST_KEY_CFBundleDisplayName|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PRODUCT_NAME|SUPPORTED_PLATFORMS"
 ```
 
@@ -551,7 +551,7 @@ CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM = SUAJSL8UG9
 INFOPLIST_KEY_CFBundleDisplayName = VisionPlay
 PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay
-PRODUCT_NAME = PlexAVPApp
+PRODUCT_NAME = VisionPlay
 SUPPORTED_PLATFORMS = xros xrsimulator
 ```
 
@@ -590,10 +590,10 @@ Run from the repo:
 
 ```bash
 pwd
-procs plex-avp-app || true
+procs visionplay-app || true
 ```
 
-Expected: current path is `/Users/jlipworth/plex-avp-app`; no critical process is using it. If a process is using the path, stop it or defer the rename.
+Expected: current path is `/Users/jlipworth/visionplay-app`; no critical process is using it. If a process is using the path, stop it or defer the rename.
 
 - [ ] **Step 2: Move from parent directory**
 
@@ -605,7 +605,7 @@ if [ -e visionplay ]; then
   echo 'ERROR: /Users/jlipworth/visionplay already exists' >&2
   exit 1
 fi
-mv plex-avp-app visionplay
+mv visionplay-app visionplay
 cd /Users/jlipworth/visionplay
 pwd
 git status --short --branch
@@ -618,7 +618,7 @@ Expected: `pwd` prints `/Users/jlipworth/visionplay`; git still works.
 Run:
 
 ```bash
-rg -n '/Users/jlipworth/plex-avp-app|plex-avp-app' . --hidden -g '!DerivedData' -g '!.git' || true
+rg -n '/Users/jlipworth/visionplay-app|visionplay-app' . --hidden -g '!DerivedData' -g '!.git' || true
 ```
 
 Expected: either no output or only historical docs/spec references. If active scripts/docs contain the old local path, patch them in a small follow-up commit.
@@ -631,4 +631,4 @@ Final response should say:
 Repo folder renamed locally: /Users/jlipworth/visionplay
 ```
 
-Also note that any already-open terminal/editor windows pointed at `/Users/jlipworth/plex-avp-app` should be reopened in the new path.
+Also note that any already-open terminal/editor windows pointed at `/Users/jlipworth/visionplay-app` should be reopened in the new path.

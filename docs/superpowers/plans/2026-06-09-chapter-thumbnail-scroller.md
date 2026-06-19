@@ -114,11 +114,11 @@ git commit -m "feat(player): add current-chapter selection helper for chapter sc
 ### Task 2: `ChapterCard` view (single chapter in the rail)
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlayerControlSurface.swift` (add a new private view; the existing `ChaptersTabView` is at lines 331-366 and `timecode(_:)` lives inside it at 360-365)
+- Modify: `VisionPlay/Player/PlayerControlSurface.swift` (add a new private view; the existing `ChaptersTabView` is at lines 331-366 and `timecode(_:)` lives inside it at 360-365)
 
 - [ ] **Step 1: Add the `ChapterCard` view**
 
-In `PlexAVPApp/Player/PlayerControlSurface.swift`, add this private view directly above the existing `ChaptersTabView` (line 331). It owns one chapter's thumbnail + title + timecode and the tap-to-seek button. It reuses `PosterImage` (defined in `PlexAVPApp/UI/PosterImage.swift`), which builds the `/photo/:/transcode` URL, shows a shimmer skeleton, and falls back to a film glyph when `thumb` is nil.
+In `VisionPlay/Player/PlayerControlSurface.swift`, add this private view directly above the existing `ChaptersTabView` (line 331). It owns one chapter's thumbnail + title + timecode and the tap-to-seek button. It reuses `PosterImage` (defined in `VisionPlay/UI/PosterImage.swift`), which builds the `/photo/:/transcode` URL, shows a shimmer skeleton, and falls back to a film glyph when `thumb` is nil.
 
 ```swift
 /// One chapter in the horizontal scroller: a 16:9 thumbnail with the chapter
@@ -177,17 +177,17 @@ private struct ChapterCard: View {
 }
 ```
 
-> Note: `DS.Space.xs` (4) and `DS.Radius.poster` (16) are defined in `PlexAVPApp/UI/DesignSystem.swift` — confirmed present.
+> Note: `DS.Space.xs` (4) and `DS.Radius.poster` (16) are defined in `VisionPlay/UI/DesignSystem.swift` — confirmed present.
 
 - [ ] **Step 2: Build to verify it compiles**
 
-Run: `xcodebuild build -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,name=Apple Vision Pro'`
+Run: `xcodebuild build -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'platform=visionOS Simulator,name=Apple Vision Pro'`
 Expected: BUILD SUCCEEDED. (`ChapterCard` is unused so far — a Swift warning about it is acceptable at this step.)
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add PlexAVPApp/Player/PlayerControlSurface.swift
+git add VisionPlay/Player/PlayerControlSurface.swift
 git commit -m "feat(player): add ChapterCard view for chapter thumbnail rail"
 ```
 
@@ -196,7 +196,7 @@ git commit -m "feat(player): add ChapterCard view for chapter thumbnail rail"
 ### Task 3: Rewrite `ChaptersTabView` as a horizontal rail + wire the call site
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlayerControlSurface.swift` — replace `ChaptersTabView` body (lines 331-366) and update its call site (lines 80-88)
+- Modify: `VisionPlay/Player/PlayerControlSurface.swift` — replace `ChaptersTabView` body (lines 331-366) and update its call site (lines 80-88)
 
 - [ ] **Step 1: Replace `ChaptersTabView`**
 
@@ -253,7 +253,7 @@ private struct ChaptersTabView: View {
 
 - [ ] **Step 2: Update the call site to pass `currentMs`**
 
-In `PlexAVPApp/Player/PlayerControlSurface.swift`, replace the Chapters tab block (lines 80-88):
+In `VisionPlay/Player/PlayerControlSurface.swift`, replace the Chapters tab block (lines 80-88):
 
 ```swift
         if !controller.chapters.isEmpty {
@@ -286,7 +286,7 @@ with:
 
 - [ ] **Step 3: Build to verify it compiles**
 
-Run: `xcodebuild build -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,name=Apple Vision Pro'`
+Run: `xcodebuild build -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'platform=visionOS Simulator,name=Apple Vision Pro'`
 Expected: BUILD SUCCEEDED, with no remaining "unused `ChapterCard`" warning.
 
 - [ ] **Step 4: Run the full PMSKit test suite (no regressions)**
@@ -297,7 +297,7 @@ Expected: PASS (all existing tests + the 7 new ChapterSelection tests).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add PlexAVPApp/Player/PlayerControlSurface.swift
+git add VisionPlay/Player/PlayerControlSurface.swift
 git commit -m "feat(player): replace chapter list with horizontal thumbnail rail (#10)"
 ```
 
