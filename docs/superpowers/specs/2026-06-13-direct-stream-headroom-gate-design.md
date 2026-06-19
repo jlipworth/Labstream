@@ -4,10 +4,10 @@
 > throughput sample it relied on was always measured during a capped transcode, so it could
 > never clear the full-source-bitrate bar and effectively disabled direct play. The whole
 > Direct Stream toggle + headroom concept was replaced by quality-picker semantics:
-> "Direct Play / Maximum" attempts direct play (falling back to a maximum transcode when PMS
-> can't copy, OR when the committed direct-play stream fails to load), and every capped rung —
-> including "Maximum (transcoded)" — transcodes. Kept for historical context only; the
-> `DirectStreamHeadroomGate` type no longer exists.
+> "Direct Play / Maximum" attempts literal direct play/direct stream first; numeric capped rungs
+> request transcodes at that cap; and "Maximum (HLS)" uses production HLS at an effectively
+> uncapped ceiling, which may still copy/remux compatible video. Kept for historical context only;
+> the `DirectStreamHeadroomGate` type no longer exists.
 
 ## Goal
 

@@ -39,6 +39,7 @@ struct SettingsView: View {
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
     @AppStorage(PlaybackPreferences.Keys.skipIntroMode) private var skipIntroModeRaw = PlaybackPreferences.SkipMode.manual.rawValue
     @AppStorage(PlaybackPreferences.Keys.skipCreditsMode) private var skipCreditsModeRaw = PlaybackPreferences.SkipMode.manual.rawValue
+    @AppStorage(PlaybackPreferences.Keys.adaptiveBitrateEnabled) private var adaptiveBitrateEnabled = PlaybackPreferences.defaultAdaptiveBitrateEnabled
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
@@ -118,6 +119,10 @@ struct SettingsView: View {
                 skipModeRows
             }
 
+            Toggle(isOn: $adaptiveBitrateEnabled) {
+                Label("Adaptive Bitrate", systemImage: "arrow.up.arrow.down.circle")
+            }
+
             Picker(selection: $preferredAudioLanguage) {
                 ForEach(PlaybackLanguageOption.common) { option in
                     Text(option.label).tag(option.id)
@@ -192,9 +197,9 @@ struct SettingsView: View {
         case .plex:
             let subtitleMode = SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual
             let burnMode = SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic
-            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. \(subtitleMode.help) \(burnMode.help)"
+            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. Adaptive Bitrate may reopen the stream at a lower or higher capped quality after sustained stalls or healthy playback. \(subtitleMode.help) \(burnMode.help)"
         case .jellyfin:
-            return active + " Jellyfin currently uses the Internet/Remote cap. Skip modes are honored when marker data exists."
+            return active + " Jellyfin currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback. Skip modes are honored when marker data exists."
         }
     }
 

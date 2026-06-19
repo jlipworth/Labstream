@@ -10,6 +10,7 @@ enum PlaybackPreferences {
         static let resumeRewindSeconds = "playerResumeRewindSeconds"
         static let skipIntroMode = "playerSkipIntroMode"
         static let skipCreditsMode = "playerSkipCreditsMode"
+        static let adaptiveBitrateEnabled = "playerAdaptiveBitrateEnabled"
         static let defaultDownloadQuality = "defaultDownloadQuality"
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
     }
@@ -31,6 +32,7 @@ enum PlaybackPreferences {
     static let defaultRemoteQualityKbps = 8_000
     static let defaultHomeQualityKbps = StreamingQuality.maximumOriginalKbps
     static let defaultUpNextCountdownSeconds = 10
+    static let defaultAdaptiveBitrateEnabled = false
     static let defaultDownloadQuality = "1080p 8 Mbps"
 
     static func qualityKbps(forDefaultsKey key: String) -> Int {
@@ -59,6 +61,13 @@ enum PlaybackPreferences {
               defaults.object(forKey: Keys.legacyQualityKbps) != nil else { return }
         defaults.set(defaults.integer(forKey: Keys.legacyQualityKbps),
                      forKey: Keys.remoteQualityKbps)
+    }
+
+    static func adaptiveBitrateEnabled(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: Keys.adaptiveBitrateEnabled) != nil else {
+            return defaultAdaptiveBitrateEnabled
+        }
+        return defaults.bool(forKey: Keys.adaptiveBitrateEnabled)
     }
 }
 

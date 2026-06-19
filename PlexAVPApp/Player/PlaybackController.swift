@@ -158,7 +158,7 @@ final class PlaybackController {
     /// Hard bitrate cap requested of PMS (kbps). 8 Mbps default per spec.
     ///
     /// Mutable: the in-player quality menu rebuilds the stream at a new cap via
-    /// `reload(bitrateKbps:)`. `0` is the sentinel for "Maximum / Original" (no cap).
+    /// `reload(bitrateKbps:)`. `0` is the sentinel for "Direct Play / Maximum" (no cap).
     private(set) var maxVideoBitrateKbps: Int
 
     /// The user's explicit quality ceiling for this session. Automatic adaptation may move the
@@ -255,13 +255,19 @@ final class PlaybackController {
     /// video (`savesVideoEncode`) yet hand back an HLS rendition AVFoundation can't actually
     /// play, which fails at LOAD time — not at the decision stage. `directPlayFallbackArmed`
     /// is set only while a committed direct-play stream is live; on its first failure we
-    /// degrade once to the maximum transcode instead of surfacing a dead-end.
-    /// `suppressDirectPlayProbe` is the one-shot that makes that rebuild skip the probe (so it
-    /// takes the transcode path) and also marks "a fallback is in flight" so a sibling failure
+    /// fall back once to the production HLS path instead of surfacing a dead-end. That path may
+    /// still Direct Stream/video-copy; it is not an automatic capped video-transcode fallback.
+    /// `suppressDirectPlayProbe` is the one-shot that makes that rebuild skip the literal
+    /// direct-play start and also marks "a fallback is in flight" so a sibling failure
     /// callback on the same dead item doesn't surface over it. Both are reset/consumed at the
     /// top of every `startStreaming`.
     private var directPlayFallbackArmed = false
     private var suppressDirectPlayProbe = false
+    /// Direct-play `start.m3u8` rejections seen during this controller's lifetime, keyed by
+    /// metadata/media/part. Plex can return "Direct play OK" from the decision endpoint and then
+    /// reject the actual `directPlay=1` start with HTTP 400; once seen, avoid retrying the same
+    /// doomed start on every seek/reopen until the viewer explicitly changes quality.
+    private var rejectedDirectPlayStartKeys: Set<String> = []
 
     /// Client-driven ABR state machine (#29). True ABR is a server HLS ladder; when Plex/Jellyfin
     /// hands us one concrete stream instead, this policy approximates adaptive playback by
@@ -282,6 +288,11 @@ final class PlaybackController {
     private var activeFinalTargetRebuildGeneration: Int?
     private static let finalTargetSettleNanos: UInt64 = 500_000_000
     private static let diagnosticSnapshotIntervalSeconds: TimeInterval = 15
+    private static let defaultAdaptiveUpshiftBufferSeconds: Double = 45
+    private static let remoteTranscodeAdaptiveUpshiftBufferSeconds: Double = 10
+    private var adaptiveBitrateEnabled: Bool {
+        PlaybackPreferences.adaptiveBitrateEnabled()
+    }
     /// Offset we most recently primed via `start.m3u8?offset=...`; suppress nearby programmatic
     /// resume seeks so a rebuild does not immediately schedule another rebuild.
     private var lastPrimedOffsetMs = 0
@@ -718,7 +729,7 @@ final class PlaybackController {
         // distinct "English" renditions) with a trailing index only when needed.
         var seenCounts: [String: Int] = [:]
         for (index, option) in group.options.enumerated() {
-            var label = Self.subtitleLabel(for: option)
+            var label = await Self.subtitleLabel(for: option)
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
@@ -749,7 +760,7 @@ final class PlaybackController {
     /// and " (SDH)" for SDH/CC (spoken-dialog or music-and-sound description) tracks.
     ///
     /// `@MainActor` because it touches a non-`Sendable` `AVMediaSelectionOption`.
-    static func subtitleLabel(for option: AVMediaSelectionOption) -> String {
+    static func subtitleLabel(for option: AVMediaSelectionOption) async -> String {
         var name = ""
 
         if let tag = option.extendedLanguageTag,
@@ -769,7 +780,7 @@ final class PlaybackController {
             let titles = AVMetadataItem.metadataItems(from: option.commonMetadata,
                                                       withKey: AVMetadataKey.commonKeyTitle,
                                                       keySpace: .common)
-            if let title = titles.first?.stringValue, !title.isEmpty {
+            if let title = try? await titles.first?.load(.stringValue), !title.isEmpty {
                 name = title
             }
         }
@@ -912,7 +923,7 @@ final class PlaybackController {
         var tracks: [AudioTrack] = []
         var seenCounts: [String: Int] = [:]
         for (index, option) in group.options.enumerated() {
-            var label = Self.audioLabel(for: option)
+            var label = await Self.audioLabel(for: option)
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
@@ -937,7 +948,7 @@ final class PlaybackController {
     /// accessibility). The Forced/SDH qualifiers are subtitle-specific and intentionally omitted.
     ///
     /// `@MainActor` because it touches a non-`Sendable` `AVMediaSelectionOption`.
-    static func audioLabel(for option: AVMediaSelectionOption) -> String {
+    static func audioLabel(for option: AVMediaSelectionOption) async -> String {
         var name = ""
 
         if let tag = option.extendedLanguageTag,
@@ -957,7 +968,7 @@ final class PlaybackController {
             let titles = AVMetadataItem.metadataItems(from: option.commonMetadata,
                                                       withKey: AVMetadataKey.commonKeyTitle,
                                                       keySpace: .common)
-            if let title = titles.first?.stringValue, !title.isEmpty {
+            if let title = try? await titles.first?.load(.stringValue), !title.isEmpty {
                 name = title
             }
         }
@@ -1220,7 +1231,7 @@ final class PlaybackController {
             do {
                 try await client.send(request)
             } catch {
-                NSLog("PlaybackController: audio stream selection failed: %@", String(describing: error))
+                NSLog("PlaybackController: audio stream selection failed: %@", Self.safeErrorSummary(error))
                 return
             }
         }
@@ -1315,7 +1326,7 @@ final class PlaybackController {
     /// The PMS universal transcoder cannot change its cap mid-session, so we tear the
     /// HLS stream down and start a fresh `start.m3u8` at `bitrateKbps`. To make it feel
     /// continuous we snapshot the current playhead, load the new item, then seek back to
-    /// that position before playing. `0` requests "Maximum / Original" (no cap — we pass
+    /// that position before playing. `0` requests "Direct Play / Maximum" (no cap — we pass
     /// a very high ceiling so PMS still produces a compatible HLS rendition).
     ///
     /// Only valid for reopenable sessions; a no-op for local files/static streams.
@@ -1324,6 +1335,9 @@ final class PlaybackController {
         let previousActiveKbps = maxVideoBitrateKbps
         userSelectedMaxVideoBitrateKbps = bitrateKbps
         adaptiveBitratePolicy.reset()
+        if bitrateKbps <= 0 {
+            rejectedDirectPlayStartKeys.removeAll()
+        }
         guard bitrateKbps != previousActiveKbps else { return }
         recordPlaybackDiagnostic("playback.quality_change", fields: [
             "from_quality": .label(StreamingQuality.label(kbps: previousActiveKbps)),
@@ -1524,9 +1538,9 @@ final class PlaybackController {
         }
         let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
 
-        // "Maximum / Original" (the no-cap sentinel) maps to a very high ceiling so PMS still
+        // "Direct Play / Maximum" (the no-cap sentinel) maps to a very high ceiling so PMS still
         // emits a playable HLS rendition rather than rejecting an absent cap — the same
-        // ceiling "Maximum (transcoded)" uses, and the transcode fallback when an Original
+        // ceiling "Maximum (HLS)" uses, and the transcode fallback when an Original
         // pick can't be copied.
         let requestedCap = maxVideoBitrateKbps <= 0 ? StreamingQuality.maxTranscodedKbps : maxVideoBitrateKbps
 
@@ -1549,6 +1563,9 @@ final class PlaybackController {
                                          partIndex: 0,
                                          burnSubtitleStreamID: burnSubtitleStreamID,
                                          startOffsetSeconds: offsetSeconds)
+        let directPlayStartKey = Self.directPlayStartRejectionKey(metadataKey: metadataKey,
+                                                                  mediaIndex: mediaIndex,
+                                                                  partIndex: 0)
 
         var requestFields: [String: DiagnosticFieldValue] = [
             "requested_cap_kbps": .int(requestedCap),
@@ -1571,36 +1588,70 @@ final class PlaybackController {
         // This build decides afresh whether it commits to direct play, so disarm any prior
         // fallback and consume the one-shot probe suppression. `suppressDirectPlayProbe` is set
         // by the playback-time fallback below: when a committed direct-play stream fails to
-        // load, the rebuild skips the probe and takes the maximum-transcode path instead.
+        // load, the rebuild skips the literal direct-play start and uses production HLS instead.
         directPlayFallbackArmed = false
         let skipDirectPlayProbe = suppressDirectPlayProbe
         suppressDirectPlayProbe = false
         // "Direct Play / Maximum" asks PMS to direct-play the source bits when it can copy the
-        // video; if it can't (or the probe fails) we fall through to the maximum transcode
-        // below. Every capped rung — including "Maximum (transcoded)" — skips the probe and
-        // transcodes. The user picks the path by picking the quality; there is no separate
+        // video. If the literal direct-play start is rejected, fall through to the production HLS
+        // request, which may still Direct Stream/video-copy. If PMS cannot copy video at all, that
+        // same production HLS path becomes the maximum-transcode fallback. Every numeric capped
+        // rung transcodes at that cap; "Maximum (HLS)" skips the literal direct-play probe but
+        // may still Direct Stream/video-copy compatible sources. The user picks the
+        // path by picking the quality; there is no separate
         // toggle or pre-flight bandwidth gate (#31 superseded).
-        if maxVideoBitrateKbps <= 0, !skipDirectPlayProbe, burnSubtitleStreamID == nil {
+        if maxVideoBitrateKbps <= 0,
+           !skipDirectPlayProbe,
+           burnSubtitleStreamID == nil,
+           !rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
             do {
                 let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 if probe.savesVideoEncode {
-                    NSLog("PlaybackController: Direct Play / Maximum — PMS will copy video; committing direct-play start.m3u8")
                     var fields = decisionDiagnosticFields(probe)
                     fields["probe_result"] = .label("commit_direct_play")
                     recordTranscodeDiagnostic("transcode.direct_play_probe", fields: fields)
-                    decision = probe
-                    streamURL = transcode.directPlayStartM3U8URL()
-                    // Arm the playback-time fallback: PMS agreed to copy, but the resulting HLS
-                    // rendition may still fail to load (e.g. HEVC-in-TS AVFoundation won't play).
-                    // If it does, degrade once to the maximum transcode rather than dead-ending.
-                    directPlayFallbackArmed = true
-                    #if DEBUG
-                    // Log what PMS decided for this title (probe vs production), so a Debug build
-                    // can tell whole-file direct play (mde=1000) from Direct Stream (video=copy)
-                    // at a glance. DEBUG-only; never compiled into Release.
-                    logDirectPlayDecision(transcode: transcode, probe: probe)
-                    #endif
+
+                    let startURL = transcode.directPlayStartM3U8URL()
+                    do {
+                        let playlistData = try await client.send(transcode.directPlayStartM3U8Request())
+                        guard !Task.isCancelled, generation == playbackGeneration else { return }
+                        NSLog("PlaybackController: Direct Play / Maximum — PMS will copy video and start.m3u8 is reachable; committing direct-play start.m3u8")
+                        var startFields = decisionDiagnosticFields(probe)
+                        startFields["probe_result"] = .label("commit_direct_play")
+                        startFields["start_preflight"] = .label("ok")
+                        startFields["playlist_bytes"] = .int(playlistData.count)
+                        startFields["stream_url_shape"] = .urlShape(startURL)
+                        recordTranscodeDiagnostic("transcode.direct_play_start_preflight", fields: startFields)
+                        decision = probe
+                        streamURL = startURL
+                        // Arm the playback-time fallback: PMS agreed to copy and served the
+                        // initial playlist, but AVFoundation may still fail later on the media
+                        // rendition. If it does, retry once via production HLS, which may still
+                        // Direct Stream/video-copy.
+                        directPlayFallbackArmed = true
+                        #if DEBUG
+                        // Log what PMS decided for this title (probe vs production), so a Debug
+                        // build can tell whole-file direct play (mde=1000) from Direct Stream
+                        // (video=copy) at a glance. DEBUG-only; never compiled into Release.
+                        logDirectPlayDecision(transcode: transcode, probe: probe)
+                        #endif
+                    } catch {
+                        guard !Task.isCancelled, generation == playbackGeneration else { return }
+                        rejectedDirectPlayStartKeys.insert(directPlayStartKey)
+                        var startFields = decisionDiagnosticFields(probe)
+                        startFields["probe_result"] = .label("fallback_to_production_hls")
+                        startFields["start_preflight"] = .label("rejected")
+                        startFields["error"] = .error(error)
+                        if let status = Self.httpStatus(from: error) {
+                            startFields["http_status"] = .int(status)
+                        }
+                        startFields["fallback"] = .label("production_hls")
+                        startFields["stream_url_shape"] = .urlShape(startURL)
+                        recordTranscodeDiagnostic("transcode.direct_play_start_rejected", fields: startFields)
+                        NSLog("PlaybackController: Direct Play / Maximum — PMS accepted decision but rejected direct-play start.m3u8 (%@); using production HLS path",
+                              Self.safeErrorSummary(error))
+                    }
                 } else {
                     var fields = decisionDiagnosticFields(probe)
                     fields["probe_result"] = .label("fallback_to_transcode")
@@ -1611,10 +1662,19 @@ final class PlaybackController {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 recordTranscodeDiagnostic("transcode.direct_play_probe_failed", fields: [
                     "error": .error(error),
-                    "fallback": .label("maximum_transcode"),
+                    "fallback": .label("production_hls"),
                 ])
-                NSLog("PlaybackController: direct-play probe failed (%@); using maximum transcode", String(describing: error))
+                NSLog("PlaybackController: direct-play probe failed (%@); using production HLS path", Self.safeErrorSummary(error))
             }
+        } else if maxVideoBitrateKbps <= 0,
+                  !skipDirectPlayProbe,
+                  burnSubtitleStreamID == nil,
+                  rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
+            recordTranscodeDiagnostic("transcode.direct_play_start_skipped", fields: [
+                "reason": .label("cached_start_rejection"),
+                "fallback": .label("production_hls"),
+            ])
+            NSLog("PlaybackController: Direct Play / Maximum — skipping cached rejected direct-play start.m3u8; using production HLS path")
         }
 
         if decision == nil {
@@ -1633,7 +1693,7 @@ final class PlaybackController {
                     "error": .error(error),
                     "fallback": .label("attempt_start_m3u8"),
                 ])
-                NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", String(describing: error))
+                NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", Self.safeErrorSummary(error))
             }
         }
 
@@ -1652,7 +1712,15 @@ final class PlaybackController {
         }
         recordPlaybackDiagnostic("playback.stream_selected", fields: selectedFields)
 
-        let asset = AVURLAsset(url: streamURL)
+        // Plex Universal HLS can rely on the X-Plex identity headers in addition to the
+        // token-bearing query string. In particular the Generic profile path that lets PMS
+        // remux/copy 10-bit HEVC at Direct Play / Maximum has been observed to 400 on the
+        // same URL when fetched without the standard X-Plex headers. Thread the headers into
+        // AVFoundation so the media-plane request matches our successful control preflight.
+        let assetOptions: [String: Any] = [
+            "AVURLAssetHTTPHeaderFieldsKey": PlexHeaders.media(identity: identity, token: token),
+        ]
+        let asset = AVURLAsset(url: streamURL, options: assetOptions)
         let playerItem = AVPlayerItem(asset: asset)
         guard !Task.isCancelled, generation == playbackGeneration else { return }
         load(playerItem, resumeOffsetMs: resumeMs)
@@ -1687,7 +1755,7 @@ final class PlaybackController {
                 let prod = try await client.send(transcode.decisionRequest(), as: DecisionResponse.self)
                 NSLog("PlaybackController[dp-diag]: prod-decision  %@", fields(prod))
             } catch {
-                NSLog("PlaybackController[dp-diag]: prod-decision  failed %@", String(describing: error))
+                NSLog("PlaybackController[dp-diag]: prod-decision  failed %@", Self.safeErrorSummary(error))
             }
         }
     }
@@ -2021,6 +2089,7 @@ final class PlaybackController {
         // buffer for non-Jellyfin-transcode paths, but use a small window and let playback run
         // as soon as segments arrive for backend-resolved transcodes.
         let isRemoteTranscode = remoteStreamURL != nil && remotePlayMethod == .transcode
+        configureAdaptiveBitratePolicy(isRemoteTranscode: isRemoteTranscode)
         playerItem.preferredForwardBufferDuration = isRemoteTranscode ? 12 : 600
         player.automaticallyWaitsToMinimizeStalling = !isRemoteTranscode
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
@@ -2739,21 +2808,27 @@ final class PlaybackController {
         }
         // Direct Play / Maximum, playback-time fallback: a committed direct-play stream that
         // fails to load isn't a hard failure — PMS agreed to copy the video, but AVFoundation
-        // couldn't play the resulting HLS rendition. Degrade ONCE to the maximum-transcode path
-        // (resuming at the live playhead) instead of surfacing a dead-end. Armed only while a
-        // direct-play stream is live and consumed here, so the transcode rebuild — or any later
-        // failure — surfaces normally; the rebuild can't loop back into another direct play.
+        // couldn't play the resulting literal direct-play HLS rendition. Retry ONCE through
+        // production HLS (resuming at the live playhead) instead of surfacing a dead-end. That
+        // production path may still Direct Stream/video-copy; it only becomes a maximum transcode
+        // when PMS cannot copy video. Armed only while a direct-play stream is live and consumed
+        // here, so the rebuild — or any later failure — surfaces normally; the rebuild can't loop
+        // back into another direct-play start.
         if directPlayFallbackArmed {
             directPlayFallbackArmed = false
             suppressDirectPlayProbe = true
             let resumeMs = currentResumeMs
+            rejectedDirectPlayStartKeys.insert(Self.directPlayStartRejectionKey(
+                metadataKey: item.key ?? "/library/metadata/\(item.ratingKey)",
+                mediaIndex: mediaIndex,
+                partIndex: 0))
             recordTranscodeDiagnostic("transcode.direct_play_runtime_fallback", fields: [
                 "error": .error(error),
                 "resume": .millisecondsBucket(resumeMs),
-                "fallback": .label("maximum_transcode"),
+                "fallback": .label("production_hls"),
             ])
-            NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to maximum transcode",
-                  String(describing: error))
+            NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to production HLS",
+                  Self.safeErrorSummary(error))
             finalTargetRebuildPolicy.reset()
             removeObservers()
             beginStreaming(resumeOffsetMsOverride: resumeMs)
@@ -2775,7 +2850,7 @@ final class PlaybackController {
         }
         recordPlaybackDiagnostic("playback.player_failure", fields: fields)
         NSLog("PlaybackController: playback failed, surfacing to UI (%@)",
-              String(describing: error))
+              Self.safeErrorSummary(error))
         surfaceFailure(error)
     }
 
@@ -2822,12 +2897,21 @@ final class PlaybackController {
     /// enough not to trip a slow-but-working initial prime, short enough to replace AVKit's dead
     /// placeholder glyph with a recoverable Retry promptly.
     private let stallTimeoutSeconds: TimeInterval = 15
+    private let directPlayMaximumStallTimeoutSeconds: TimeInterval = 90
     private let remoteTranscodeStallTimeoutSeconds: TimeInterval = 45
 
     private var activeStallTimeoutSeconds: TimeInterval {
-        remoteStreamURL != nil && remotePlayMethod == .transcode
-            ? remoteTranscodeStallTimeoutSeconds
-            : stallTimeoutSeconds
+        if remoteStreamURL != nil && remotePlayMethod == .transcode {
+            return remoteTranscodeStallTimeoutSeconds
+        }
+        // Direct Play / Maximum can legally be a very high-bitrate HEVC remux. Initial fMP4
+        // segments for 4K remuxes can be tens of MB and the simulator/media plane can take a long
+        // time to reach ready/keep-up even when PMS is serving valid video-copy bytes. Do not trip
+        // the generic 15s watchdog or convert this explicit user choice into a capped transcode.
+        if maxVideoBitrateKbps <= 0 {
+            return directPlayMaximumStallTimeoutSeconds
+        }
+        return stallTimeoutSeconds
     }
 
     /// Arm the stall watchdog if it isn't already running and no error is being shown. Idempotent
@@ -2875,6 +2959,7 @@ final class PlaybackController {
               !current.isPlaybackLikelyToKeepUp else { return }
         var fields = runtimeSnapshotFields()
         fields["keep_up"] = .bool(current.isPlaybackLikelyToKeepUp)
+        fields["adaptive_bitrate_enabled"] = .bool(adaptiveBitrateEnabled)
 
         if attemptAdaptiveBitrateFallback(fields: fields) {
             return
@@ -2887,17 +2972,32 @@ final class PlaybackController {
                   String(describing: underlying))
             surfaceFailure(underlying)
         } else {
+            if maxVideoBitrateKbps <= 0 {
+                fields["failure_hint"] = .label("direct_play_capacity_or_player_limit")
+            }
             recordPlaybackDiagnostic("playback.stall_watchdog_fired", fields: fields)
-            NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
+            let message: String
+            if maxVideoBitrateKbps <= 0 {
+                message = "Direct Play / Maximum stalled before playback could start. The stream may be above this network or player path's capacity. Tap Retry, or choose a transcoded/lower quality."
+                NSLog("PlaybackController: Direct Play / Maximum stalled with no item error; surfacing capacity hint")
+            } else {
+                message = "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."
+                NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
+            }
             surfaceFailure(NSError(
                 domain: "PlexAVPApp.Playback", code: -1001,
-                userInfo: [NSLocalizedDescriptionKey:
-                    "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."]))
+                userInfo: [NSLocalizedDescriptionKey: message]))
         }
     }
 
     private func attemptAdaptiveBitrateFallback(fields baseFields: [String: DiagnosticFieldValue]) -> Bool {
+        guard adaptiveBitrateEnabled else { return false }
         guard supportsQualityReload else { return false }
+        // Do not silently convert an explicit Direct Play / Maximum selection into a capped
+        // video transcode. That is worse than the user's chosen direct/remux path on fast links
+        // and was the source of the apparent ~20 Mbps fallback. If Direct Play / Maximum truly
+        // cannot play, surface Retry rather than automatically abandoning video-copy.
+        guard maxVideoBitrateKbps > 0 else { return false }
         guard let decision = adaptiveBitratePolicy.recordStall(
             now: ProcessInfo.processInfo.systemUptime,
             currentKbps: maxVideoBitrateKbps,
@@ -2906,6 +3006,7 @@ final class PlaybackController {
     }
 
     private func maybeAdaptBitrateAfterHealthyPlayback() {
+        guard adaptiveBitrateEnabled else { return }
         guard supportsQualityReload, !playbackError.isFailed, !userWantsPaused,
               player.timeControlStatus == .playing else { return }
         guard let decision = adaptiveBitratePolicy.recordHealthyPlayback(
@@ -2916,6 +3017,17 @@ final class PlaybackController {
             likelyToKeepUp: diagnostics.likelyToKeepUp,
             observedBitrateKbps: diagnostics.observedBitrateKbps) else { return }
         _ = applyAdaptiveBitrateDecision(decision, baseFields: runtimeSnapshotFields())
+    }
+
+    private func configureAdaptiveBitratePolicy(isRemoteTranscode: Bool) {
+        // Jellyfin remote transcodes intentionally keep AVPlayer's forward buffer short (#43):
+        // a 600s buffer can wedge first-frame/deep-seek playback. If the ABR policy kept its
+        // default 45s upshift-buffer requirement on that path, Jellyfin could downshift after a
+        // stall but practically never climb back up. Keep the anti-oscillation time gates, but
+        // align the buffer threshold with the remote-transcode buffer target.
+        adaptiveBitratePolicy.configuration.minimumBufferedAheadForUpshift = isRemoteTranscode
+            ? Self.remoteTranscodeAdaptiveUpshiftBufferSeconds
+            : Self.defaultAdaptiveUpshiftBufferSeconds
     }
 
     private func applyAdaptiveBitrateDecision(_ decision: AdaptiveBitratePolicy.Decision,
@@ -3084,7 +3196,7 @@ final class PlaybackController {
                     "error": .error(error),
                     "target": .millisecondsBucket(offsetMs),
                 ])
-                NSLog("PlaybackController: remote stream reopen failed (%@)", String(describing: error))
+                NSLog("PlaybackController: remote stream reopen failed (%@)", Self.safeErrorSummary(error))
                 self.surfaceFailure(NSError(
                     domain: "PlexAVPApp.Playback", code: -1004,
                     userInfo: [NSLocalizedDescriptionKey:
@@ -3256,6 +3368,23 @@ final class PlaybackController {
         case .unsupported:
             return "unsupported"
         }
+    }
+
+    private static func directPlayStartRejectionKey(metadataKey: String,
+                                                    mediaIndex: Int,
+                                                    partIndex: Int) -> String {
+        "\(metadataKey)#media=\(mediaIndex)#part=\(partIndex)"
+    }
+
+    private static func httpStatus(from error: Error) -> Int? {
+        if case PlexError.http(let status) = error { return status }
+        return nil
+    }
+
+    private static func safeErrorSummary(_ error: Error?) -> String {
+        guard let error else { return "none" }
+        let nsError = error as NSError
+        return "class=\(String(describing: type(of: error))) domain_family=\(errorDomainFamily(nsError.domain)) code=\(nsError.code)"
     }
 
     private func runtimeSnapshotFields() -> [String: DiagnosticFieldValue] {

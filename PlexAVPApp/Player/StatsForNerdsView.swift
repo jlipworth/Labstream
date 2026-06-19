@@ -36,7 +36,7 @@ struct StatsForNerdsView: View {
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                 row("Connection", diagnostics.connectionHost)
-                row("Mode", diagnostics.isTranscoding ? "Transcoding" : "Direct")
+                row("Mode", diagnostics.modeText)
                 if diagnostics.decisionText != "—" {
                     row("Decision", diagnostics.decisionText, wraps: true)
                 }

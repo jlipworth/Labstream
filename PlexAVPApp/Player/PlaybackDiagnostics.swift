@@ -30,6 +30,11 @@ final class PlaybackDiagnostics {
     var sourceBitrateKbps: Int = 0
     /// Whether PMS decided to transcode (vs direct play / direct stream).
     var isTranscoding: Bool = false
+    /// Human-readable playback mode for the Stats panel. This is deliberately separate from
+    /// `decisionText`: MDE direct-play probe responses often omit `generalDecisionCode`, so the
+    /// old enum-only mode row could say "Transcoding" while the structured part decision said
+    /// "direct play".
+    var modeText: String = "Direct"
     /// Human-readable PMS decision text, when provided.
     var decisionText: String = "—"
     /// The host:port we are streaming from (no token, ever).
@@ -61,7 +66,7 @@ final class PlaybackDiagnostics {
     var targetBitrateLabel: String {
         switch targetBitrateKbps {
         case ...0: "Direct Play / Maximum"
-        case StreamingQuality.maxTranscodedKbps: "Maximum (transcoded)"
+        case StreamingQuality.maxTranscodedKbps: "Maximum (HLS)"
         default: "\(targetBitrateKbps / 1000) Mbps"
         }
     }
@@ -106,12 +111,28 @@ final class PlaybackDiagnostics {
             container = media.container ?? "—"
         }
         if let decision {
-            switch decision.decision {
-            case .transcode: isTranscoding = true
-            case .directPlay: isTranscoding = false
-            case .unsupported: isTranscoding = true
+            if decision.playsWholeFileDirectly {
+                isTranscoding = false
+                modeText = "Direct Play"
+            } else if decision.savesVideoEncode {
+                isTranscoding = false
+                modeText = "Direct Stream"
+            } else {
+                switch decision.decision {
+                case .transcode:
+                    isTranscoding = true
+                    modeText = "Transcoding"
+                case .directPlay:
+                    isTranscoding = false
+                    modeText = "Direct Play"
+                case .unsupported:
+                    isTranscoding = true
+                    modeText = "Transcoding"
+                }
             }
             decisionText = Self.composeDecisionText(decision)
+        } else {
+            modeText = isTranscoding ? "Transcoding" : "Direct"
         }
         // host:port only — deliberately omit any query/token material.
         if let host = server?.host {
@@ -140,11 +161,19 @@ final class PlaybackDiagnostics {
         if let bitrate = source.bitrate, bitrate > 0 {
             sourceBitrateKbps = bitrate
         }
-        isTranscoding = playMethod == .transcode
-        decisionText = switch playMethod {
-        case .directPlay: "direct play"
-        case .directStream: "direct stream"
-        case .transcode: "transcode"
+        switch playMethod {
+        case .directPlay:
+            isTranscoding = false
+            modeText = "Direct Play"
+            decisionText = "direct play"
+        case .directStream:
+            isTranscoding = false
+            modeText = "Direct Stream"
+            decisionText = "direct stream"
+        case .transcode:
+            isTranscoding = true
+            modeText = "Transcoding"
+            decisionText = "transcode"
         }
     }
 
