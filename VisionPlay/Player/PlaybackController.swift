@@ -116,7 +116,7 @@ final class PlaybackController {
     var onPlaybackActive: (() -> Void)?
 
     // Inputs.
-    private let item: MediaItem
+    let item: MediaItem
     private var client: PlexClient
     private let identity: ClientIdentity
 
@@ -153,7 +153,7 @@ final class PlaybackController {
     /// multiple files at different resolutions/codecs; the DetailView's version picker
     /// threads the chosen index here so playback uses that specific version. Defaults to
     /// `0` (the first/primary version), which matches the prior hard-coded behavior.
-    private let mediaIndex: Int
+    let mediaIndex: Int
 
     /// Hard bitrate cap requested of PMS (kbps). 8 Mbps default per spec.
     ///
@@ -171,7 +171,7 @@ final class PlaybackController {
     var qualityPreferenceDefaultsKey: String { qualityDefaultsKey }
 
     /// Per-playback transcode session id (also reused as the timeline session).
-    private let sessionID = "visionplay-" + UUID().uuidString
+    let sessionID = "visionplay-" + UUID().uuidString
 
     // MARK: - Playback speed (R5)
 
@@ -3332,91 +3332,6 @@ final class PlaybackController {
         return "plex_stream"
     }
 
-    private func diagnosticFields(_ fields: [String: DiagnosticFieldValue]) -> [String: DiagnosticFieldValue] {
-        var merged: [String: DiagnosticFieldValue] = [
-            "session": .identifier(sessionID),
-            "item_type": .label(item.type),
-            "media_index": .int(mediaIndex),
-            "quality_label": .label(StreamingQuality.label(kbps: maxVideoBitrateKbps)),
-            "quality_kbps": .int(maxVideoBitrateKbps),
-        ]
-        merged.merge(fields) { _, new in new }
-        return merged
-    }
-
-    private func sourceDiagnosticFields() -> [String: DiagnosticFieldValue] {
-        let media = item.media.flatMap { mediaItems -> Media? in
-            if mediaItems.indices.contains(mediaIndex) { return mediaItems[mediaIndex] }
-            return mediaItems.first
-        }
-        let part = media?.part.first
-        var fields: [String: DiagnosticFieldValue] = [
-            "source_container": .label(media?.container ?? part?.container),
-            "source_video_codec": .label(media?.videoCodec ?? part?.videoStreams.first?.codec),
-            "source_audio_codec": .label(media?.audioCodec ?? part?.audioStreams.first?.codec),
-            "source_bitrate_kbps": .int(media?.bitrate ?? 0),
-            "duration": .millisecondsBucket(media?.duration ?? item.duration),
-            "part_index": .int(0),
-            "subtitle_mode": .label((part?.subtitleStreams.isEmpty == false) ? "available" : "none"),
-        ]
-        if let width = media?.width, let height = media?.height {
-            fields["source_resolution"] = .label("\(width)x\(height)")
-        }
-        if let channels = part?.audioStreams.first?.channels {
-            fields["source_audio_channels"] = .int(channels)
-        }
-        return fields
-    }
-
-    private func jellyfinSourceDiagnosticFields(_ source: JellyfinPlaybackSourceMetadata?) -> [String: DiagnosticFieldValue] {
-        guard let source else { return [:] }
-        var fields: [String: DiagnosticFieldValue] = [
-            "source_container": .label(source.container),
-            "source_video_codec": .label(source.videoCodec),
-            "source_audio_codec": .label(source.audioCodec),
-            "source_bitrate_kbps": .int(source.bitrate ?? 0),
-        ]
-        if let width = source.width, let height = source.height {
-            fields["source_resolution"] = .label("\(width)x\(height)")
-        }
-        return fields
-    }
-
-    private func decisionDiagnosticFields(_ decision: DecisionResponse) -> [String: DiagnosticFieldValue] {
-        var fields: [String: DiagnosticFieldValue] = [
-            "pms_decision_mode": .label(Self.decisionModeLabel(decision)),
-            "saves_video_encode": .bool(decision.savesVideoEncode),
-            "plays_whole_file_directly": .bool(decision.playsWholeFileDirectly),
-            "part_decision": .label(decision.partDecision),
-            "video_decision": .label(decision.videoDecision),
-            "audio_decision": .label(decision.audioDecision),
-        ]
-        if let code = decision.generalDecisionCode {
-            fields["general_decision_code"] = .int(code)
-        }
-        if let code = decision.mdeDecisionCode {
-            fields["mde_decision_code"] = .int(code)
-        }
-        if let text = decision.generalDecisionText {
-            fields["general_decision_text"] = .text(text)
-        }
-        if let text = decision.mdeDecisionText {
-            fields["mde_decision_text"] = .text(text)
-        }
-        return fields
-    }
-
-    private static func decisionModeLabel(_ decision: DecisionResponse) -> String {
-        switch decision.decision {
-        case .directPlay:
-            return "direct_play"
-        case .transcode:
-            return "transcode"
-        case .unsupported:
-            return "unsupported"
-        }
-    }
-
     private static func directPlayStartRejectionKey(metadataKey: String,
                                                     mediaIndex: Int,
                                                     partIndex: Int) -> String {
@@ -3434,23 +3349,6 @@ final class PlaybackController {
         return "class=\(String(describing: type(of: error))) domain_family=\(errorDomainFamily(nsError.domain)) code=\(nsError.code)"
     }
 
-    private func runtimeSnapshotFields() -> [String: DiagnosticFieldValue] {
-        [
-            "target_bitrate_kbps": .int(diagnostics.targetBitrateKbps),
-            "target_bitrate_label": .label(diagnostics.targetBitrateLabel),
-            "source_bitrate_kbps": .int(diagnostics.sourceBitrateKbps),
-            "observed_bitrate_kbps": .double(diagnostics.observedBitrateKbps),
-            "indicated_bitrate_kbps": .double(diagnostics.indicatedBitrateKbps),
-            "required_bitrate_kbps": .double(diagnostics.requiredBitrateKbps),
-            "buffer_ahead_seconds": .double(diagnostics.bufferedAheadSeconds),
-            "likely_to_keep_up": .bool(diagnostics.likelyToKeepUp),
-            "stall_count": .int(diagnostics.stalls),
-            "dropped_frames": .int(diagnostics.droppedFrames),
-            "is_transcoding": .bool(diagnostics.isTranscoding),
-            "decision_summary": .text(diagnostics.decisionText),
-        ]
-    }
-
     private func maybeRecordDiagnosticSnapshot(force: Bool = false) {
         guard AppDiagnostics.isEnabled else { return }
         let now = ProcessInfo.processInfo.systemUptime
@@ -3459,66 +3357,6 @@ final class PlaybackController {
         }
         lastDiagnosticSnapshotUptime = now
         recordPlaybackDiagnostic("playback.snapshot", fields: runtimeSnapshotFields())
-    }
-
-    private static func timeControlStatusLabel(_ status: AVPlayer.TimeControlStatus) -> String {
-        switch status {
-        case .paused:
-            return "paused"
-        case .waitingToPlayAtSpecifiedRate:
-            return "waiting"
-        case .playing:
-            return "playing"
-        @unknown default:
-            return "unknown"
-        }
-    }
-
-    private static func itemStatusLabel(_ status: AVPlayerItem.Status) -> String {
-        switch status {
-        case .unknown:
-            return "unknown"
-        case .readyToPlay:
-            return "readyToPlay"
-        case .failed:
-            return "failed"
-        @unknown default:
-            return "unknown"
-        }
-    }
-
-    private static func playerStatusLabel(_ status: AVPlayer.Status) -> String {
-        switch status {
-        case .unknown:
-            return "unknown"
-        case .readyToPlay:
-            return "readyToPlay"
-        case .failed:
-            return "failed"
-        @unknown default:
-            return "unknown"
-        }
-    }
-
-    private static func errorDomainFamily(_ domain: String) -> String {
-        switch domain {
-        case NSURLErrorDomain:
-            return "nsurl"
-        case AVFoundationErrorDomain:
-            return "avfoundation"
-        case NSOSStatusErrorDomain:
-            return "osstatus"
-        case CocoaError.errorDomain:
-            return "cocoa"
-        case POSIXError.errorDomain:
-            return "posix"
-        default:
-            let lower = domain.lowercased()
-            if lower.contains("coremedia") { return "coremedia" }
-            if lower.contains("fig") { return "fig" }
-            if lower.contains("audio") { return "audio" }
-            return "other"
-        }
     }
 
 }
