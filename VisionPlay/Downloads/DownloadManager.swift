@@ -781,6 +781,7 @@ public final class DownloadManager {
                                                                                                token: token,
                                                                                                identity: identity),
                                                       queueTitle: queueTitle,
+                                                      mediaTitle: item.title,
                                                       server: server, token: token,
                                                       identity: identity)
             let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
@@ -1106,6 +1107,7 @@ public final class DownloadManager {
                                       originalPartIDs: Set<Int>,
                                       backgroundProcessingKey: String?,
                                       queueTitle: String,
+                                      mediaTitle: String,
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
@@ -1123,7 +1125,10 @@ public final class DownloadManager {
             // Surface server-side optimize/transcode progress for the "Preparing on
             // server…" caption. Best-effort: failures or no-match leave the existing
             // behavior untouched.
-            await pollOptimizeActivity(ratingKey: ratingKey, queueTitle: queueTitle,
+            // The sole-optimizer fallback is only safe when THIS client has a single active
+            // download — otherwise an unrelated server optimize job could be mis-attributed.
+            await pollOptimizeActivity(ratingKey: ratingKey, mediaTitle: mediaTitle,
+                                       allowSoleFallback: activeJobs.count == 1,
                                        server: server, token: token, identity: identity)
             if let backgroundProcessingKey,
                let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
@@ -1205,7 +1210,8 @@ public final class DownloadManager {
     /// PRIVACY: media titles in `Activity.title`/`subtitle` are matched in memory ONLY and
     /// never logged. We emit a single redaction-safe shape probe per poll (structural facts
     /// + numeric progress only) so the real PMS shape can be confirmed from logs.
-    private func pollOptimizeActivity(ratingKey: String, queueTitle: String,
+    private func pollOptimizeActivity(ratingKey: String, mediaTitle: String,
+                                      allowSoleFallback: Bool,
                                       server: URL, token: String,
                                       identity: ClientIdentity) async {
         let req = ActivitiesRequest.list(server: server, token: token, identity: identity)
@@ -1218,7 +1224,8 @@ public final class DownloadManager {
         // progress — never a title/subtitle VALUE. The "types" string is a list of dotted
         // activity types (e.g. "media.optimize,library.update.section"), which are
         // server-vocabulary identifiers, not media titles, and pass through unredacted.
-        let shape = activities.probeShape(ratingKey: ratingKey, queueTitle: queueTitle)
+        let shape = activities.probeShape(ratingKey: ratingKey, title: mediaTitle,
+                                          allowSoleFallback: allowSoleFallback)
         var probeFields: [String: DiagnosticFieldValue] = [
             "download_id": .identifier(ratingKey),
             "activity_count": .int(Int(shape["activity_count"] ?? "0") ?? 0),
@@ -1242,7 +1249,8 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.optimize_activity_probe", fields: probeFields)
 
         guard let activity = activities.optimizeActivity(ratingKey: ratingKey,
-                                                         queueTitle: queueTitle) else {
+                                                         title: mediaTitle,
+                                                         allowSoleFallback: allowSoleFallback) else {
             return
         }
 
