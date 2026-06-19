@@ -179,10 +179,7 @@ struct PosterImage: View {
                                                       tag: parsed.tag,
                                                       width: Int(width * scale),
                                                       height: Int(height * scale)) else { return nil }
-        let identity = JellyfinClientIdentity(client: appModel.identity.product,
-                                              device: appModel.identity.deviceName,
-                                              deviceId: appModel.identity.clientIdentifier,
-                                              version: appModel.identity.version)
+        let identity = appModel.identity.jellyfin
         return JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity)
     }
 

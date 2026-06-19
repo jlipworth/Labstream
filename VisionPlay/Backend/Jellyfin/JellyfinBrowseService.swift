@@ -21,10 +21,7 @@ struct JellyfinBrowseService {
     }
 
     var jellyfinIdentity: JellyfinClientIdentity {
-        JellyfinClientIdentity(client: appModel.identity.product,
-                               device: appModel.identity.deviceName,
-                               deviceId: appModel.identity.clientIdentifier,
-                               version: appModel.identity.version)
+        appModel.identity.jellyfin
     }
 
     func userViews() async throws -> [JellyfinBaseItemDto] {
