@@ -40,6 +40,8 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow)
             ?? scenes.first?.windows.first
-        return window ?? ASPresentationAnchor()
+        if let window { return window }
+        if let scene = scenes.first { return ASPresentationAnchor(windowScene: scene) }
+        preconditionFailure("ASWebAuthenticationSession requires an active window scene")
     }
 }
