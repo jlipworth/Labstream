@@ -907,21 +907,8 @@ struct EpisodeRow: View {
         return episode.title
     }
 
-    @ViewBuilder
     private var progressSliver: some View {
-        if let offset = episode.viewOffset, offset > 0,
-           let duration = episode.duration, duration > 0 {
-            let fraction = min(1, max(0, Double(offset) / Double(duration)))
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.black.opacity(0.45))
-                    Capsule().fill(.tint).frame(width: geo.size.width * fraction)
-                }
-            }
-            .frame(height: 4)
-            .padding(.horizontal, DS.Space.sm)
-            .padding(.bottom, DS.Space.sm)
-        }
+        ProgressSliver(offset: episode.viewOffset, duration: episode.duration)
     }
 }
 
