@@ -1260,13 +1260,13 @@ final class PlaybackController {
         // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
         // stream selection above; Jellyfin carries the stream index in the reopen request.
         let resumeMs = currentResumeMs
-        finalTargetRebuildPolicy.reset()
-        removeObservers()
-        if remoteStreamReopener != nil {
-            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
-        } else {
-            beginStreaming(resumeOffsetMsOverride: resumeMs)
-        }
+        restartAtCurrentPosition(offsetMs: resumeMs,
+                                 bitrateKbps: maxVideoBitrateKbps,
+                                 resetFinalTarget: true,
+                                 resetAdaptive: false,
+                                 clearError: false,
+                                 removeObservers: true,
+                                 swapRecoveryClient: false)
     }
 
     // MARK: - Playback speed (R5)
@@ -1364,13 +1364,13 @@ final class PlaybackController {
         let resumeMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
         // A reload is explicit user intent: reset the final-target rebuild budget.
         // (didScrobble is intentionally NOT reset — the same content shouldn't re-scrobble.)
-        finalTargetRebuildPolicy.reset()
-        removeObservers()
-        if remoteStreamReopener != nil {
-            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: bitrateKbps)
-        } else {
-            beginStreaming(resumeOffsetMsOverride: resumeMs)
-        }
+        restartAtCurrentPosition(offsetMs: resumeMs,
+                                 bitrateKbps: bitrateKbps,
+                                 resetFinalTarget: true,
+                                 resetAdaptive: false,
+                                 clearError: false,
+                                 removeObservers: true,
+                                 swapRecoveryClient: false)
     }
 
     // MARK: - Failure / retry
@@ -1388,16 +1388,13 @@ final class PlaybackController {
             "resume": .millisecondsBucket(resumeMs),
             "uses_remote_reopener": .bool(remoteStreamReopener != nil),
         ])
-        finalTargetRebuildPolicy.reset()
-        adaptiveBitratePolicy.reset()
-        playbackError.clear()
-        removeObservers()
-        if remoteStreamReopener != nil {
-            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
-        } else {
-            switchToRecoveryControlClient()
-            beginStreaming(resumeOffsetMsOverride: resumeMs)
-        }
+        restartAtCurrentPosition(offsetMs: resumeMs,
+                                 bitrateKbps: maxVideoBitrateKbps,
+                                 resetFinalTarget: true,
+                                 resetAdaptive: true,
+                                 clearError: true,
+                                 removeObservers: true,
+                                 swapRecoveryClient: true)
     }
 
     /// App-owned scrubber commit hook for the experimental custom player path (#38).
@@ -3082,13 +3079,13 @@ final class PlaybackController {
               StreamingQuality.label(kbps: decision.targetKbps))
 
         maxVideoBitrateKbps = decision.targetKbps
-        finalTargetRebuildPolicy.reset()
-        removeObservers()
-        if remoteStreamReopener != nil {
-            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: decision.targetKbps)
-        } else {
-            beginStreaming(resumeOffsetMsOverride: resumeMs)
-        }
+        restartAtCurrentPosition(offsetMs: resumeMs,
+                                 bitrateKbps: decision.targetKbps,
+                                 resetFinalTarget: true,
+                                 resetAdaptive: false,
+                                 clearError: false,
+                                 removeObservers: true,
+                                 swapRecoveryClient: false)
         return true
     }
 
@@ -3158,6 +3155,35 @@ final class PlaybackController {
                 guard self.isStreaming else { return }
                 self.beginFinalTargetRebuild(toMs: target)
             }
+        }
+    }
+
+    /// Centralized in-place restart at a known playhead. Several call sites (audio-stream
+    /// switch, quality reload, retry, ABR step) tear the live stream down and start a fresh one
+    /// at the current position, forking by hand between the Jellyfin reopener path
+    /// (`reopenRemoteStream`) and the Plex path (`beginStreaming`) and applying SOME subset of
+    /// the same bookkeeping. This collects the fork and the bookkeeping in one place so each
+    /// caller requests exactly the steps it needs, in a single canonical order:
+    ///   finalTargetRebuildPolicy.reset → adaptiveBitratePolicy.reset → playbackError.clear →
+    ///   removeObservers → branch (reopener, else [recovery-client swap → beginStreaming]).
+    /// The recovery-client swap only ever applied on the Plex/`beginStreaming` branch, so it is
+    /// performed inside the `else` here, matching the retry path's original placement.
+    private func restartAtCurrentPosition(offsetMs: Int,
+                                          bitrateKbps: Int,
+                                          resetFinalTarget: Bool,
+                                          resetAdaptive: Bool,
+                                          clearError: Bool,
+                                          removeObservers shouldRemoveObservers: Bool,
+                                          swapRecoveryClient: Bool) {
+        if resetFinalTarget { finalTargetRebuildPolicy.reset() }
+        if resetAdaptive { adaptiveBitratePolicy.reset() }
+        if clearError { playbackError.clear() }
+        if shouldRemoveObservers { removeObservers() }
+        if remoteStreamReopener != nil {
+            reopenRemoteStream(offsetMs: offsetMs, bitrateKbps: bitrateKbps)
+        } else {
+            if swapRecoveryClient { switchToRecoveryControlClient() }
+            beginStreaming(resumeOffsetMsOverride: offsetMs)
         }
     }
 
