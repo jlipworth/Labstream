@@ -196,7 +196,7 @@ required**.
       `AVPlayerItem` there. **Manual result after `9ed4569`: single drag OK; double-drag still
       shows behavior very similar to the pre-reset failure, so do not mark #33 solved.** Claude
       self-serves screenshots/logs (`xcrun simctl io booted screenshot`,
-      `log show --predicate 'process == "PlexAVPApp"'`).
+      `log show --predicate 'process == "VisionPlay"'`).
       - [ ] **Normal playback uses direct PMS URL.** Open any title; no `media proxy open ok` or
             `proxy re-prime` log appears. Playback starts normally and Stats still show the PMS
             decision/probe data.

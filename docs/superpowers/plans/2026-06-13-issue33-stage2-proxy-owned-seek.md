@@ -25,7 +25,7 @@
 - **Modify** `PMSKit/Sources/PMSKit/MediaSession/MediaSessionProxy.swift` — add control-plane seam + `now` clock + `decoder`; refactor `open(origin:)` into internal `standUpLoopback(forStream:)` + static `loopbackURL(forStream:base:)`; add `resolveStreamURL`, public `open(_:offsetMs:)`, `currentDecision()`, coalescing `seek(to:)`, `runReprimeLoop`, `reprimeOnce`, proxy `stopPreviousTranscode`, the reprime `SeekRestartBudget`, and a monotonic generation counter.
 - **Modify** `PMSKit/Tests/PMSKitTests/MediaSessionProxyTests.swift` — migrate transport tests to `standUpLoopback`; delete the Stage-1 pass-through test; add decision/probe/coalescing/budget/stop-order tests plus `Clock`/`ControlRecorder`/`Gate`/`sampleRequest` helpers.
 - **Modify** `PMSKit/Tests/PMSKitTests/LiveProxyProbeTests.swift` — migrate to `open(_:offsetMs:)` with a real control sender; add a deep-offset seek hop.
-- **Modify** `PlexAVPApp/Player/PlaybackController.swift` — wire the proxy (lazy `mediaProxy` with `controlSend`); build `MediaSessionRequest`; new `open` + `loopbackUnavailable` fallback; seed diagnostics from `currentDecision()`; add `handleSeekJump`/`repositionViaProxy`/`loadProxyHandle`/`isWithinLoadedRanges`; delete the old seek-restart machinery.
+- **Modify** `VisionPlay/Player/PlaybackController.swift` — wire the proxy (lazy `mediaProxy` with `controlSend`); build `MediaSessionRequest`; new `open` + `loopbackUnavailable` fallback; seed diagnostics from `currentDecision()`; add `handleSeekJump`/`repositionViaProxy`/`loadProxyHandle`/`isWithinLoadedRanges`; delete the old seek-restart machinery.
 - **Modify** `TESTING-CHECKLIST.md` — add the manual Stage-2 seek checklist.
 
 ---
@@ -819,7 +819,7 @@ git commit -m "MediaSessionProxy (#33): coalescing latest-wins seek re-prime + r
 ### Task 4: Wire `PlaybackController` to the proxy-owned seek; delete the old machinery
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
 
 This is the app-target task. After it, run `xcodebuild` (see Build/Test Sequencing). No new unit test framework runs against the app target here; correctness is verified by build + the live probe (Task 5) + the manual checklist (Task 6).
 
@@ -1128,13 +1128,13 @@ Replace the entire `// MARK: - Seek-during-stall recovery (#25)` section — the
             } catch let MediaSessionError.budgetEscalated(recentCount) {
                 NSLog("%@", String(format: "[VP] seek: proxy reprime budget escalated (%d) — surfacing failure", recentCount))
                 self.surfaceFailure(NSError(
-                    domain: "PlexAVPApp.Playback", code: -1002,
+                    domain: "VisionPlay.Playback", code: -1002,
                     userInfo: [NSLocalizedDescriptionKey:
                         "Playback keeps falling behind the server. Tap Retry to rebuild the stream, or lower the quality setting."]))
             } catch {
                 NSLog("PlaybackController: proxy reprime failed (%@)", String(describing: error))
                 self.surfaceFailure(NSError(
-                    domain: "PlexAVPApp.Playback", code: -1003,
+                    domain: "VisionPlay.Playback", code: -1003,
                     userInfo: [NSLocalizedDescriptionKey:
                         "Couldn't seek to that position. Tap Retry to rebuild the stream."]))
             }
@@ -1180,7 +1180,7 @@ Delete these four property declarations (lines ~165, ~170, ~178, ~186 — verify
 Run:
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-rg -n "handleTimeJump|confirmSeekStallRestart|seekRestartTimer|hasPlayedThisItem|lastSettledPlayheadSeconds|pendingSeekTargetMs|seekRestartBudget|seekJumpMinDeltaSeconds|seekStallConfirmSeconds|mediaProxy\.open\(origin" PlexAVPApp/Player/PlaybackController.swift
+rg -n "handleTimeJump|confirmSeekStallRestart|seekRestartTimer|hasPlayedThisItem|lastSettledPlayheadSeconds|pendingSeekTargetMs|seekRestartBudget|seekJumpMinDeltaSeconds|seekStallConfirmSeconds|mediaProxy\.open\(origin" VisionPlay/Player/PlaybackController.swift
 ```
 Expected: NO output (all removed). If any line prints, fix it before building.
 
@@ -1188,19 +1188,19 @@ Expected: NO output (all removed). If any line prints, fix it before building.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app | head -1)
-/bin/ls -la "$APP/PlexAVPApp"
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+/bin/ls -la "$APP/VisionPlay"
 ```
 Expected: BUILD SUCCEEDED, and the binary mtime is fresh (now).
 
 - [ ] **Step 12: Commit**
 
 ```bash
-git add PlexAVPApp/Player/PlaybackController.swift
+git add VisionPlay/Player/PlaybackController.swift
 git commit -m "PlaybackController (#33 Stage 2): proxy-owned seek; delete player-side seek-restart machinery"
 ```
 
@@ -1284,7 +1284,7 @@ Add a new section to `TESTING-CHECKLIST.md` (place it near the existing seek/#25
 
 These exercise the bug this stage fixes ("drag once = slow but works; drag twice = sticky +
 reconnect hell") now that the proxy owns the re-prime. Claude self-serves screenshots/logs
-(`xcrun simctl io booted screenshot`, `log show --predicate 'process == "PlexAVPApp"'`).
+(`xcrun simctl io booted screenshot`, `log show --predicate 'process == "VisionPlay"'`).
 
 - [ ] **Single deep drag still works.** Start a transcoded item, let it play, drag the scrubber
       far ahead (minutes). Playback resumes at the new spot within a few seconds. Log shows a

@@ -171,7 +171,7 @@ final class PlaybackController {
     var qualityPreferenceDefaultsKey: String { qualityDefaultsKey }
 
     /// Per-playback transcode session id (also reused as the timeline session).
-    private let sessionID = "plex-avp-" + UUID().uuidString
+    private let sessionID = "visionplay-" + UUID().uuidString
 
     // MARK: - Playback speed (R5)
 
@@ -3018,7 +3018,7 @@ final class PlaybackController {
                 NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
             }
             surfaceFailure(NSError(
-                domain: "PlexAVPApp.Playback", code: -1001,
+                domain: "VisionPlay.Playback", code: -1001,
                 userInfo: [NSLocalizedDescriptionKey: message]))
         }
     }
@@ -3231,7 +3231,7 @@ final class PlaybackController {
                 ])
                 NSLog("PlaybackController: remote stream reopen failed (%@)", Self.safeErrorSummary(error))
                 self.surfaceFailure(NSError(
-                    domain: "PlexAVPApp.Playback", code: -1004,
+                    domain: "VisionPlay.Playback", code: -1004,
                     userInfo: [NSLocalizedDescriptionKey:
                         "Couldn't reopen the stream at that position. Tap Retry or try a lower quality setting."]))
                 self.didStopRemoteSession = true
@@ -3295,7 +3295,7 @@ final class PlaybackController {
                 "target": .millisecondsBucket(targetMs),
             ])
             surfaceFailure(NSError(
-                domain: "PlexAVPApp.Playback", code: -1002,
+                domain: "VisionPlay.Playback", code: -1002,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Playback keeps falling behind the server. Tap Retry to rebuild the stream, or lower the quality setting."]))
         }

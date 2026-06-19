@@ -18,7 +18,7 @@ Make the repository and local Xcode setup feel like a real personal-device Apple
 
 ## Current state summary
 
-The app already builds as a visionOS Xcode project with automatic signing and an ignored `Signing.local.xcconfig` containing the local Apple Developer Team ID. The public README already presents the project as **VisionPlay**, but signing/run commands and bundle identity still reference `com.personal.PlexAVPApp` in several places. GitHub CLI is authenticated locally, but the repo has no `.woodpecker/` CI config yet. The working tree currently has unrelated modified files; implementation must preserve them and stage only intentional readiness changes.
+The app already builds as a visionOS Xcode project with automatic signing and an ignored `Signing.local.xcconfig` containing the local Apple Developer Team ID. The public README already presents the project as **VisionPlay**, but signing/run commands and bundle identity still reference `com.personal.VisionPlay` in several places. GitHub CLI is authenticated locally, but the repo has no `.woodpecker/` CI config yet. The working tree currently has unrelated modified files; implementation must preserve them and stage only intentional readiness changes.
 
 ## Recommended approach: VisionPlay dev-ready
 
@@ -48,9 +48,9 @@ The development bundle ID should become:
 com.jlipworth.VisionPlay
 ```
 
-The installed app/display identity should read **VisionPlay**. The Xcode target, source folder, scheme, and DerivedData product may remain `PlexAVPApp` during this pass if keeping them avoids fragile churn. This creates a clean external identity while preserving the working project structure.
+The installed app/display identity should read **VisionPlay**. The Xcode target, source folder, scheme, and DerivedData product may remain `VisionPlay` during this pass if keeping them avoids fragile churn. This creates a clean external identity while preserving the working project structure.
 
-Documentation must use the new bundle ID in install/launch commands. Any old `com.personal.PlexAVPApp` references should be removed or clearly marked historical.
+Documentation must use the new bundle ID in install/launch commands. Any old `com.personal.VisionPlay` references should be removed or clearly marked historical.
 
 ## Woodpecker CI design
 
@@ -99,9 +99,9 @@ Keep these as documented future steps only. Do not add publication-only settings
 
 Implementation should prove the readiness work with:
 
-- `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,name=Apple Vision Pro' -configuration Debug build CODE_SIGNING_ALLOWED=NO`
+- `xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'platform=visionOS Simulator,name=Apple Vision Pro' -configuration Debug build CODE_SIGNING_ALLOWED=NO`
 - `cd PMSKit && swift test`
-- `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -showBuildSettings` filtered for bundle/signing/product values
+- `xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -showBuildSettings` filtered for bundle/signing/product values
 - `git diff --check`
 - confirm no ignored local signing file or secret-like artifact is staged
 - inspect `.woodpecker/*.yml` for simple, runnable commands

@@ -1,10 +1,10 @@
-# plex-avp-app Implementation Plan
+# visionplay-app Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A personal-use native visionOS Plex client that does reliable server-side transcoding, theater-mode playback, and capped-bitrate offline downloads in one app.
 
-**Architecture:** Single visionOS SwiftUI app target (skeleton already built in Phase 0, commit `1cd41e6`). Source files live under `PlexAVPApp/` in folders that map to the six modules from the design spec; a `PBXFileSystemSynchronizedRootGroup` auto-includes any `.swift` added to those folders, so no task edits `project.pbxproj`. Networking is a hand-rolled `URLSession` REST client (no third-party Plex SDK). The pure-logic core (header/URL/param builders, response parsing) is unit-tested and runs without Xcode via `swift test` on a sibling SwiftPM package; UI/AVKit/RealityKit integration is device/simulator-verified.
+**Architecture:** Single visionOS SwiftUI app target (skeleton already built in Phase 0, commit `1cd41e6`). Source files live under `VisionPlay/` in folders that map to the six modules from the design spec; a `PBXFileSystemSynchronizedRootGroup` auto-includes any `.swift` added to those folders, so no task edits `project.pbxproj`. Networking is a hand-rolled `URLSession` REST client (no third-party Plex SDK). The pure-logic core (header/URL/param builders, response parsing) is unit-tested and runs without Xcode via `swift test` on a sibling SwiftPM package; UI/AVKit/RealityKit integration is device/simulator-verified.
 
 **Tech Stack:** Swift 6, SwiftUI, AVKit (`AVPlayerViewController`), RealityKit (cinema environment), `URLSession` (incl. background config), Keychain Services, Swift Testing (`import Testing`). visionOS 26 deployment target.
 
@@ -18,7 +18,7 @@ The pure-logic core is split into a **local SwiftPM package** `PMSKit/` so its t
 
 - **`PMSKit/Sources/PMSKit/`** — pure logic: models, header builder, URL/param builders, response decoders, the transcode-decision logic. No UIKit/AVKit/SwiftUI imports.
 - **`PMSKit/Tests/PMSKitTests/`** — Swift Testing unit tests. Run: `cd PMSKit && swift test`.
-- **App target `PlexAVPApp/`** — SwiftUI views, AVKit player, RealityKit environment, Keychain, live `URLSession` wiring. Imports `PMSKit`. Compile-gate: `xcodebuild -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' build CODE_SIGNING_ALLOWED=NO` (needs the platform/runtime download finished).
+- **App target `VisionPlay/`** — SwiftUI views, AVKit player, RealityKit environment, Keychain, live `URLSession` wiring. Imports `PMSKit`. Compile-gate: `xcodebuild -scheme VisionPlay -destination 'generic/platform=visionOS Simulator' build CODE_SIGNING_ALLOWED=NO` (needs the platform/runtime download finished).
 - **Manual/device** — auth round-trip, a forced 8 Mbps transcode play, resume, optimize+download+offline-play, theater docking. These are checklists at the end, run by the human on the headset.
 
 **Gate per task:** logic tasks must end green on `swift test`; app-target tasks must end green on the `xcodebuild` build. Never mark a task done on a red gate.
@@ -31,7 +31,7 @@ The pure-logic core is split into a **local SwiftPM package** `PMSKit/` so its t
 - Create: `PMSKit/Package.swift`
 - Create: `PMSKit/Sources/PMSKit/PMSKit.swift`
 - Create: `PMSKit/Tests/PMSKitTests/SanityTests.swift`
-- Modify: `PlexAVPApp.xcodeproj/project.pbxproj` (add local package dependency — the ONE allowed pbxproj edit)
+- Modify: `VisionPlay.xcodeproj/project.pbxproj` (add local package dependency — the ONE allowed pbxproj edit)
 
 - [ ] **Step 1: Write `Package.swift`**
 
@@ -82,7 +82,7 @@ In Xcode this is "Add Local Package". Headless, add to `project.pbxproj`: an `XC
 
 - [ ] **Step 5: Verify app still builds**
 
-Run: `xcodebuild -list -project PlexAVPApp.xcodeproj` (must still parse), then once the platform is installed: `xcodebuild -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' build CODE_SIGNING_ALLOWED=NO`.
+Run: `xcodebuild -list -project VisionPlay.xcodeproj` (must still parse), then once the platform is installed: `xcodebuild -scheme VisionPlay -destination 'generic/platform=visionOS Simulator' build CODE_SIGNING_ALLOWED=NO`.
 Expected: BUILD SUCCEEDED.
 
 - [ ] **Step 6: Commit**
@@ -111,12 +111,12 @@ import Testing
 
 @Test func headersIncludeRequiredPlexFields() {
     let id = ClientIdentity(clientIdentifier: "ABC-123",
-                            product: "plex-avp-app",
+                            product: "visionplay-app",
                             version: "0.1.0",
                             deviceName: "Vision Pro")
     let h = PlexHeaders.standard(identity: id, token: "tok")
     #expect(h["X-Plex-Client-Identifier"] == "ABC-123")
-    #expect(h["X-Plex-Product"] == "plex-avp-app")
+    #expect(h["X-Plex-Product"] == "visionplay-app")
     #expect(h["X-Plex-Version"] == "0.1.0")
     #expect(h["X-Plex-Platform"] == "visionOS")
     #expect(h["X-Plex-Device-Name"] == "Vision Pro")
@@ -291,7 +291,7 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app", version: "0.1.0", deviceName: "AVP")
+private let id = ClientIdentity(clientIdentifier: "CID", product: "visionplay-app", version: "0.1.0", deviceName: "AVP")
 
 @Test func createPinRequest() {
     let r = PinAuth.createPinRequest(identity: id)
@@ -392,7 +392,7 @@ import Foundation
 @testable import PMSKit
 
 private let server = URL(string: "https://192.168.1.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID", product: "plex-avp-app", version: "0.1.0", deviceName: "AVP")
+private let id = ClientIdentity(clientIdentifier: "CID", product: "visionplay-app", version: "0.1.0", deviceName: "AVP")
 
 @Test func startURLHasRequiredTranscodeParams() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
@@ -517,8 +517,8 @@ Capped offline download trigger. **Port exact params from `python-plexapi Video.
 Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/builds the final `URLRequest`, plus a TLS note for self-signed Plex certs.
 
 **Files:**
-- Create: `PlexAVPApp/Networking/PlexClient.swift`
-- Create: `PlexAVPApp/Networking/PlexRequest+URLRequest.swift`
+- Create: `VisionPlay/Networking/PlexClient.swift`
+- Create: `VisionPlay/Networking/PlexRequest+URLRequest.swift`
 
 - [ ] **Step 1:** Implement `PlexRequest.urlRequest()` (compose `URLComponents` from url+queryItems, set method/headers/body). **Step 2:** Implement `actor PlexClient` with `func send<T: Decodable>(_ r: PlexRequest, as: T.Type) async throws -> T` and `func send(_ r: PlexRequest) async throws -> Data`, using an injected `URLSession`. Map non-2xx to a typed `PlexError` (`.unauthorized`, `.serverUnreachable`, `.http(Int)`, `.decoding`). **Step 3:** Handle Plex's self-signed certs for direct LAN IP connections via a `URLSessionDelegate` that trusts the server cert **only for known Plex hosts** (document the risk; prefer the `*.plex.direct` hostnames from discovery which have valid certs). **Step 4:** Compile-gate `xcodebuild ... build`. **Step 5: Commit** `"Task 8: live PlexClient executor"`.
 
@@ -529,9 +529,9 @@ Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/b
 ## Task 9: Auth + Keychain + identity persistence (app target)
 
 **Files:**
-- Create: `PlexAVPApp/Auth/KeychainStore.swift`
-- Create: `PlexAVPApp/Auth/AuthManager.swift`
-- Create: `PlexAVPApp/App/AppModel.swift` (the `@Observable` app state)
+- Create: `VisionPlay/Auth/KeychainStore.swift`
+- Create: `VisionPlay/Auth/AuthManager.swift`
+- Create: `VisionPlay/App/AppModel.swift` (the `@Observable` app state)
 
 - [ ] **Step 1:** `KeychainStore` — `save/read/delete` for `token` and `clientIdentifier` (generate a UUID once on first launch, persist forever). **Step 2:** `@MainActor @Observable final class AppModel` holding `identity: ClientIdentity`, `token: String?`, `selectedServer`, `connectionBaseURL`, and a `client: PlexClient`. **Step 3:** `AuthManager` driving the PIN flow: create pin → open `authAppURL` (via `openURL` / present web auth) → poll `pollPinRequest` every 1s until `authToken` → store in Keychain → set `AppModel.token` → run discovery (`ResourceDiscovery`) → pick `bestConnection`. **Step 4:** Compile-gate. **Step 5: Commit** `"Task 9: auth manager + keychain + app model"`.
 
@@ -542,12 +542,12 @@ Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/b
 ## Task 10: LibraryUI — browse (app target)
 
 **Files:**
-- Create: `PlexAVPApp/UI/RootView.swift` (tab strip: Home · Libraries · Search + Settings/server)
-- Create: `PlexAVPApp/UI/HomeView.swift` (hubs from `GET /hubs`)
-- Create: `PlexAVPApp/UI/LibraryGridView.swift` (poster grid for a section)
-- Create: `PlexAVPApp/UI/DetailView.swift` (artwork, summary, Play/Resume, Download, mark-watched)
-- Create: `PlexAVPApp/UI/PosterImage.swift` (async thumb loader hitting `/photo/:/transcode`)
-- Modify: `PlexAVPApp/App/ContentView.swift` (swap skeleton for `RootView` gated on auth)
+- Create: `VisionPlay/UI/RootView.swift` (tab strip: Home · Libraries · Search + Settings/server)
+- Create: `VisionPlay/UI/HomeView.swift` (hubs from `GET /hubs`)
+- Create: `VisionPlay/UI/LibraryGridView.swift` (poster grid for a section)
+- Create: `VisionPlay/UI/DetailView.swift` (artwork, summary, Play/Resume, Download, mark-watched)
+- Create: `VisionPlay/UI/PosterImage.swift` (async thumb loader hitting `/photo/:/transcode`)
+- Modify: `VisionPlay/App/ContentView.swift` (swap skeleton for `RootView` gated on auth)
 
 - [ ] **Step 1:** `RootView` switches on `AppModel.token == nil` → `LoginView`, else the tab UI. **Step 2:** `HomeView` loads hubs; horizontal rails of posters. **Step 3:** `LibraryGridView` loads a section's items into a `LazyVGrid`. **Step 4:** `DetailView` shows metadata + actions; Play routes to Task 11, Download to Task 12. **Step 5:** `PosterImage` builds a sized `/photo/:/transcode` URL and loads via `AsyncImage`/a small cache. **Step 6:** Compile-gate + (once runtime present) launch in simulator and click through with a stub server. **Step 7: Commit** `"Task 10: browse UI (home/library/detail)"`.
 
@@ -558,9 +558,9 @@ Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/b
 ## Task 11: Player — AVPlayerViewController + cinema environment + timeline (app target)
 
 **Files:**
-- Create: `PlexAVPApp/Player/PlayerView.swift` (`UIViewControllerRepresentable` wrapping `AVPlayerViewController`)
-- Create: `PlexAVPApp/Player/PlaybackController.swift` (owns `AVPlayer`, decision→start.m3u8, timeline heartbeat)
-- Create: `PlexAVPApp/Player/CinemaEnvironment.swift` (RealityKit/system environment hookup)
+- Create: `VisionPlay/Player/PlayerView.swift` (`UIViewControllerRepresentable` wrapping `AVPlayerViewController`)
+- Create: `VisionPlay/Player/PlaybackController.swift` (owns `AVPlayer`, decision→start.m3u8, timeline heartbeat)
+- Create: `VisionPlay/Player/CinemaEnvironment.swift` (RealityKit/system environment hookup)
 
 - [ ] **Step 1:** `PlaybackController.start(item:)` — call `decisionURL()` via `PlexClient`; if `.transcode` or `.directPlay`, build `startM3U8URL()`, set as `AVPlayerItem`; seek to `viewOffset`. **Step 2:** `PlayerView` wraps `AVPlayerViewController`, sets `player`, enables the system **Cinema Environment** (visionOS `AVPlayerViewController` exposes the environment picker / docking; configure `experienceController`/preferred environment per research/02). **Step 3:** Add an `addPeriodicTimeObserver` → fire `TimelineRequest.timeline(state:time:)` every ~10s and on play/pause/stop; on completion send `scrobble`. **Step 4:** Compile-gate. **Step 5: Commit** `"Task 11: AVKit player + cinema environment + timeline"`.
 
@@ -571,9 +571,9 @@ Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/b
 ## Task 12: DownloadManager — optimize → poll → background download → offline (app target)
 
 **Files:**
-- Create: `PlexAVPApp/Downloads/DownloadManager.swift`
-- Create: `PlexAVPApp/Downloads/DownloadStore.swift` (metadata index of local files)
-- Create: `PlexAVPApp/Downloads/OfflineLibraryView.swift`
+- Create: `VisionPlay/Downloads/DownloadManager.swift`
+- Create: `VisionPlay/Downloads/DownloadStore.swift` (metadata index of local files)
+- Create: `VisionPlay/Downloads/OfflineLibraryView.swift`
 
 - [ ] **Step 1:** `DownloadManager.optimizeAndDownload(item:)` — send `OptimizeRequest.create` (8 Mbps 1080p preset) via `PlexClient`; poll status until the optimized `Part` exists. **Step 2:** Fetch it with a **background `URLSession`** (`URLSessionConfiguration.background`) from `OptimizeRequest.downloadURL`; store under Application Support; record in `DownloadStore` (ratingKey → local URL, title, size, progress). **Step 3:** `OfflineLibraryView` lists downloads with delete; tapping plays the local file through the Task 11 `AVPlayer` path. **Step 4:** Handle background-session delegate progress/completion; surface job-failed and storage-full states; communicate the "transfers pause while headset is off" reality (research/10). **Step 5:** Compile-gate. **Step 6: Commit** `"Task 12: optimize + background download + offline playback"`.
 
@@ -582,8 +582,8 @@ Now leave PMSKit's pure world. A thin async executor that runs a `PlexRequest`/b
 ## Task 13: Search, Settings, and integration hardening (app target)
 
 **Files:**
-- Create: `PlexAVPApp/UI/SearchView.swift` (`GET /hubs/search?query=`)
-- Create: `PlexAVPApp/UI/SettingsView.swift` (server picker, sign out, storage usage, default bitrate)
+- Create: `VisionPlay/UI/SearchView.swift` (`GET /hubs/search?query=`)
+- Create: `VisionPlay/UI/SettingsView.swift` (server picker, sign out, storage usage, default bitrate)
 - Create: `PMSKit/Tests/PMSKitTests/Fixtures/` (real captured payloads)
 
 - [ ] **Step 1:** `SearchView` queries `/hubs/search` and renders grouped results into the existing Detail flow. **Step 2:** `SettingsView` — switch server (re-rank connections), sign out (clear Keychain), show download storage, set the default `maxVideoBitrate`. **Step 3:** During live testing, capture real JSON from the server and add as fixtures; re-run `swift test` to harden the decoders (Task 2). **Step 4:** Compile-gate + full `swift test`. **Step 5: Commit** `"Task 13: search + settings + fixture hardening"`.

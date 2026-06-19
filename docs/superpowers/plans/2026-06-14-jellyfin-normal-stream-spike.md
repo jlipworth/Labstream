@@ -16,9 +16,9 @@
 - `PMSKit/Sources/PMSKit/Jellyfin/JellyfinPlayback.swift`: PlaybackInfo request/response models and stream URL resolver.
 - `PMSKit/Tests/PMSKitTests/JellyfinAuthTests.swift`: auth header/login request tests.
 - `PMSKit/Tests/PMSKitTests/JellyfinPlaybackTests.swift`: PlaybackInfo JSON/body, TranscodingUrl resolution, direct/static fallback tests.
-- `PlexAVPApp/Player/PlaybackController.swift`: add a URL-streaming initializer that loads a pre-resolved URL while keeping local/offline and Plex paths unchanged.
-- `PlexAVPApp/Player/PlayerView.swift`: add an initializer for resolved remote stream URLs.
-- `PlexAVPApp/UI/SettingsView.swift`: add default-off/manual Jellyfin test-stream fields and a button to open a typed item id when credentials are present.
+- `VisionPlay/Player/PlaybackController.swift`: add a URL-streaming initializer that loads a pre-resolved URL while keeping local/offline and Plex paths unchanged.
+- `VisionPlay/Player/PlayerView.swift`: add an initializer for resolved remote stream URLs.
+- `VisionPlay/UI/SettingsView.swift`: add default-off/manual Jellyfin test-stream fields and a button to open a typed item id when credentials are present.
 
 ## Task 1: PMSKit Jellyfin auth/request builders
 
@@ -47,8 +47,8 @@
 ## Task 3: Player seam for already-resolved remote URLs
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
-- Modify: `PlexAVPApp/Player/PlayerView.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
+- Modify: `VisionPlay/Player/PlayerView.swift`
 
 - [ ] Add a remote-URL initializer that accepts a pre-resolved stream URL and optional HTTP headers.
 - [ ] Keep timeline/proxy/stop behavior disabled for this spike path until Jellyfin session reporting is wired.
@@ -57,7 +57,7 @@
 ## Task 4: Default-off manual Jellyfin test stream path
 
 **Files:**
-- Modify: `PlexAVPApp/UI/SettingsView.swift`
+- Modify: `VisionPlay/UI/SettingsView.swift`
 
 - [ ] Add `@AppStorage` fields for experimental Jellyfin base URL/token/user id/item id.
 - [ ] Add a button that calls PMSKit Jellyfin resolver and presents `PlayerView(resolvedRemoteURL:item:)` using a placeholder MediaItem title.

@@ -82,7 +82,7 @@ then Read the crop (rendered ~1:1) and refine the center.
 
 ```sh
 xcrun simctl io booted screenshot /tmp/visionplay-test.png   # then Read it
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'
+xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"'
 ```
 
 After a click, sleep ~2s before screenshotting (navigation/animation settles). If a click

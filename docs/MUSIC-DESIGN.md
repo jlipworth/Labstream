@@ -349,7 +349,7 @@ prefix; only needed for opus/ogg), lyrics (Stream type-4 detection), `/:/rate`.
 **Keep untouched (verified, hard-won, or load-bearing):**
 - `MusicPlayerController` core (extend-only per §4.3).
 - MiniPlayerBar ornament mounting + `.glassBackgroundEffect`
-  (PlexAVPApp/UI/RootView.swift ornament mount).
+  (VisionPlay/UI/RootView.swift ornament mount).
 - AlbumDetailView treatment + the #20 inset-gazeHighlight row pattern.
 - NowPlayingView scrub-state pattern + explicit ✕.
 - `SquareArtCell`/`MusicArt`, all existing `MusicRequest` builders,

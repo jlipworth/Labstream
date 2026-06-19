@@ -81,7 +81,7 @@ while IFS= read -r -d '' path; do
   esac
 done < <(git ls-files -z)
 
-old_bundle_id="$(printf '%s%s' 'com.personal.' 'PlexAVPApp')"
+old_bundle_id="$(printf '%s%s' 'com.personal.' 'VisionPlay')"
 if ((${#stale_paths[@]} > 0)) && git grep -n -I -F -- "$old_bundle_id" -- "${stale_paths[@]}"; then
   fail "stale bundle identifier $old_bundle_id found"
 fi

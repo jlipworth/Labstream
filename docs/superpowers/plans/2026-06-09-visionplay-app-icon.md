@@ -13,19 +13,19 @@
 ### Task 1: Generate and wire VisionPlay app icon assets
 
 **Files:**
-- Create: `PlexAVPApp/Assets.xcassets/Contents.json`
-- Create: `PlexAVPApp/Assets.xcassets/AppIcon.appiconset/Contents.json`
-- Create: `PlexAVPApp/Assets.xcassets/AppIcon.appiconset/VisionPlay-AppIcon-1024.png`
-- Create: `PlexAVPApp/Assets.xcassets/AccentColor.colorset/Contents.json`
-- Modify: `PlexAVPApp.xcodeproj/project.pbxproj`
+- Create: `VisionPlay/Assets.xcassets/Contents.json`
+- Create: `VisionPlay/Assets.xcassets/AppIcon.appiconset/Contents.json`
+- Create: `VisionPlay/Assets.xcassets/AppIcon.appiconset/VisionPlay-AppIcon-1024.png`
+- Create: `VisionPlay/Assets.xcassets/AccentColor.colorset/Contents.json`
+- Modify: `VisionPlay.xcodeproj/project.pbxproj`
 
 - [ ] **Step 1: Confirm current asset catalog state**
 
 Run:
 
 ```bash
-find PlexAVPApp -maxdepth 3 -name '*.xcassets' -o -name 'AppIcon.appiconset'
-rg -n "Assets.xcassets|AppIcon|AccentColor" PlexAVPApp.xcodeproj/project.pbxproj
+find VisionPlay -maxdepth 3 -name '*.xcassets' -o -name 'AppIcon.appiconset'
+rg -n "Assets.xcassets|AppIcon|AccentColor" VisionPlay.xcodeproj/project.pbxproj
 ```
 
 Expected: no existing asset catalog path in the project file; `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon` already exists.
@@ -35,7 +35,7 @@ Expected: no existing asset catalog path in the project file; `ASSETCATALOG_COMP
 Run:
 
 ```bash
-mkdir -p PlexAVPApp/Assets.xcassets/AppIcon.appiconset PlexAVPApp/Assets.xcassets/AccentColor.colorset
+mkdir -p VisionPlay/Assets.xcassets/AppIcon.appiconset VisionPlay/Assets.xcassets/AccentColor.colorset
 ```
 
 - [ ] **Step 3: Generate the A3 icon PNG**
@@ -57,7 +57,7 @@ Run:
 ```bash
 python3 - <<'PY'
 from PIL import Image
-img = Image.open('PlexAVPApp/Assets.xcassets/AppIcon.appiconset/VisionPlay-AppIcon-1024.png')
+img = Image.open('VisionPlay/Assets.xcassets/AppIcon.appiconset/VisionPlay-AppIcon-1024.png')
 print(img.mode, img.size)
 assert img.size == (1024, 1024)
 PY
@@ -70,7 +70,7 @@ Expected: `RGBA (1024, 1024)`.
 Run:
 
 ```bash
-xcodebuild build -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO
+xcodebuild build -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'generic/platform=visionOS Simulator' CODE_SIGNING_ALLOWED=NO
 ```
 
 Expected: build succeeds or only unrelated existing warnings remain.

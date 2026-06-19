@@ -21,7 +21,7 @@ final class KeychainStore {
 
     private let service: String
 
-    init(service: String = "com.plexavp.app") {
+    init(service: String = "com.visionplay.app") {
         self.service = service
     }
 
@@ -95,7 +95,7 @@ final class KeychainStore {
     private func fallbackURL(for account: String) -> URL {
         let dir = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PlexAVPSecrets", isDirectory: true)
+            .appendingPathComponent("VisionPlaySecrets", isDirectory: true)
         return dir.appendingPathComponent("\(service).\(account)")
     }
 

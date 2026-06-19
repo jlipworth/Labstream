@@ -12,20 +12,20 @@
 
 ## File Structure
 
-- `PlexAVPApp/App/AppModel.swift`: add selected server token/readiness fields.
-- `PlexAVPApp/Auth/AuthManager.swift`: make restore/login discovery explicit, set selected server token, cancel PIN polling.
-- `PlexAVPApp/Auth/KeychainStore.swift`: expose checked token persistence while keeping current simulator fallback behavior narrow.
-- `PlexAVPApp/Networking/PlexClient.swift`: preserve cancellation errors.
+- `VisionPlay/App/AppModel.swift`: add selected server token/readiness fields.
+- `VisionPlay/Auth/AuthManager.swift`: make restore/login discovery explicit, set selected server token, cancel PIN polling.
+- `VisionPlay/Auth/KeychainStore.swift`: expose checked token persistence while keeping current simulator fallback behavior narrow.
+- `VisionPlay/Networking/PlexClient.swift`: preserve cancellation errors.
 - `PMSKit/Sources/PMSKit/Models/Library.swift`: lenient section decoding.
 - `PMSKit/Sources/PMSKit/Auth/PinAuth.swift`: percent-encode auth fragment values.
 - `PMSKit/Tests/PMSKitTests/*`: failing tests first for PMSKit behavior.
-- `PlexAVPApp/Downloads/DownloadStore.swift`: expose only completed local URLs, persist resume offset, sanitize filenames.
-- `PlexAVPApp/Downloads/DownloadManager.swift`: selected media indices, background handler race fix.
-- `PlexAVPApp/UI/DetailView.swift`: use server token, thread media index into downloads, fix failed/download labels and offline playback guard.
-- `PlexAVPApp/UI/DownloadOptionsSheet.swift`: accept/pass media index.
-- `PlexAVPApp/UI/HomeView.swift`, `LibraryGridView.swift`, `SearchView.swift`, `RootView.swift`: use selected server token and visible no-server errors.
-- `PlexAVPApp/Player/PlaybackController.swift`: tracked startup task/generation, current-resume retry, selected media diagnostics, interruption/background flags.
-- `PlexAVPApp/Player/PlaybackDiagnostics.swift`: selected media index support.
+- `VisionPlay/Downloads/DownloadStore.swift`: expose only completed local URLs, persist resume offset, sanitize filenames.
+- `VisionPlay/Downloads/DownloadManager.swift`: selected media indices, background handler race fix.
+- `VisionPlay/UI/DetailView.swift`: use server token, thread media index into downloads, fix failed/download labels and offline playback guard.
+- `VisionPlay/UI/DownloadOptionsSheet.swift`: accept/pass media index.
+- `VisionPlay/UI/HomeView.swift`, `LibraryGridView.swift`, `SearchView.swift`, `RootView.swift`: use selected server token and visible no-server errors.
+- `VisionPlay/Player/PlaybackController.swift`: tracked startup task/generation, current-resume retry, selected media diagnostics, interruption/background flags.
+- `VisionPlay/Player/PlaybackDiagnostics.swift`: selected media index support.
 
 ---
 
@@ -45,10 +45,10 @@
 ### Task 2: Auth/session readiness and selected server token
 
 **Files:**
-- Modify: `PlexAVPApp/App/AppModel.swift`
-- Modify: `PlexAVPApp/Auth/AuthManager.swift`
-- Modify: `PlexAVPApp/Auth/KeychainStore.swift`
-- Modify: `PlexAVPApp/UI/*.swift` authenticated call sites
+- Modify: `VisionPlay/App/AppModel.swift`
+- Modify: `VisionPlay/Auth/AuthManager.swift`
+- Modify: `VisionPlay/Auth/KeychainStore.swift`
+- Modify: `VisionPlay/UI/*.swift` authenticated call sites
 
 - [ ] Add failing compile-time/use-site checks by changing call sites to prefer `appModel.serverToken` where PMS APIs are used.
 - [ ] Implement `serverToken`, `isBrowseReady`, explicit restore discovery handling, and per-resource token selection.
@@ -58,10 +58,10 @@
 ### Task 3: Downloads correctness pass
 
 **Files:**
-- Modify: `PlexAVPApp/Downloads/DownloadStore.swift`
-- Modify: `PlexAVPApp/Downloads/DownloadManager.swift`
-- Modify: `PlexAVPApp/UI/DetailView.swift`
-- Modify: `PlexAVPApp/UI/DownloadOptionsSheet.swift`
+- Modify: `VisionPlay/Downloads/DownloadStore.swift`
+- Modify: `VisionPlay/Downloads/DownloadManager.swift`
+- Modify: `VisionPlay/UI/DetailView.swift`
+- Modify: `VisionPlay/UI/DownloadOptionsSheet.swift`
 
 - [ ] Add/adjust small pure helpers where possible so selected media index, completed-local-URL gating, failed-label behavior, and offline metadata resume can be verified by buildable code paths.
 - [ ] Thread selected media/part index into download requests.
@@ -73,8 +73,8 @@
 ### Task 4: Playback race/retry/diagnostics fixes
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
-- Modify: `PlexAVPApp/Player/PlaybackDiagnostics.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
+- Modify: `VisionPlay/Player/PlaybackDiagnostics.swift`
 
 - [ ] Track and cancel playback startup/reload task with generation guard.
 - [ ] Use current playhead for retry/auto-retry fallback.

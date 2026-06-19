@@ -1,4 +1,4 @@
-# Design Spec — plex-avp-app
+# Design Spec — visionplay-app
 
 **Date:** 2026-06-08
 **Status:** Draft for review (pre-implementation)
