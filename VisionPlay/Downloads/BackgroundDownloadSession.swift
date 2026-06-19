@@ -91,10 +91,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // `path` query param (the metadataKey), which is stable per item; if we
             // can't match we still leave the task running and rely on the store row.
             var liveKeys: Set<String> = []
+            // Build the indexed-key set ONCE (FS-free) before the task loop, instead of
+            // stat'ing every store row per task under the held lock (was O(tasks×rows)).
+            let knownKeys = self.store.allRatingKeys
             self.lock.lock()
             for task in tasks {
                 guard self.inflight[task.taskIdentifier] == nil,
-                      let ratingKey = Self.ratingKey(for: task, store: self.store) else { continue }
+                      let ratingKey = Self.ratingKey(for: task, knownKeys: knownKeys) else { continue }
                 let destination = self.store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 self.inflight[task.taskIdentifier] = (ratingKey, destination)
                 liveKeys.insert(ratingKey)
@@ -112,7 +115,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// The task's original request URL carries the item's metadata key as the `path`
     /// query param (`/library/metadata/<ratingKey>`). We extract the trailing id and
     /// confirm a matching in-progress record exists in the store.
-    private static func ratingKey(for task: URLSessionTask, store: DownloadStore) -> String? {
+    private static func ratingKey(for task: URLSessionTask, knownKeys: Set<String>) -> String? {
         guard let url = task.originalRequest?.url,
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         let candidates: [String]
@@ -129,9 +132,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         }
         let expanded = candidates.flatMap { [$0, "jellyfin:\($0)"] }
-        return expanded.first { key in
-            store.records.contains(where: { $0.ratingKey == key })
-        }
+        return expanded.first { knownKeys.contains($0) }
     }
 
     /// Force the lazy background session to be created (and thus its delegate bound),
