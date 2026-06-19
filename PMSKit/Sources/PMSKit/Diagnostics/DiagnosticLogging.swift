@@ -399,6 +399,7 @@ public struct DiagnosticReportContext: Sendable, Equatable {
     public var server: String?
     public var connectionScheme: String?
     public var selectedQuality: String
+    public var adaptiveBitrateEnabled: Bool?
     public var loggingEnabled: Bool
 
     public init(product: String,
@@ -412,6 +413,7 @@ public struct DiagnosticReportContext: Sendable, Equatable {
                 server: String? = nil,
                 connectionScheme: String? = nil,
                 selectedQuality: String,
+                adaptiveBitrateEnabled: Bool? = nil,
                 loggingEnabled: Bool) {
         self.product = product
         self.appVersion = appVersion
@@ -424,6 +426,7 @@ public struct DiagnosticReportContext: Sendable, Equatable {
         self.server = server
         self.connectionScheme = connectionScheme
         self.selectedQuality = selectedQuality
+        self.adaptiveBitrateEnabled = adaptiveBitrateEnabled
         self.loggingEnabled = loggingEnabled
     }
 }
@@ -454,6 +457,9 @@ public enum DiagnosticReportRenderer {
             lines.append("- Connection scheme: \(redact(scheme))")
         }
         lines.append("- Selected quality: \(redact(context.selectedQuality))")
+        if let adaptiveBitrateEnabled = context.adaptiveBitrateEnabled {
+            lines.append("- Adaptive Bitrate: \(adaptiveBitrateEnabled ? "enabled" : "disabled")")
+        }
         lines.append("")
         lines.append("Diagnostics")
         lines.append("- Diagnostic logging enabled: \(context.loggingEnabled ? "yes" : "no")")

@@ -218,30 +218,27 @@ struct CustomPlayerChrome: View {
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
                 Text(title)
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    // Long episode/movie titles should never compress the menu pills.
-                    // Cap the title region and give the action cluster layout priority
-                    // so buttons keep stable tap targets on narrower player widths.
-                    .frame(maxWidth: 420, alignment: .leading)
+                    // Give the title a little more room than before, but keep it capped so the
+                    // fixed-size menu pills remain legible/tappable instead of getting squeezed.
+                    .frame(minWidth: 220, maxWidth: 560, alignment: .leading)
+                    .layoutPriority(1)
                     .accessibilityLabel(title)
 
-                Spacer(minLength: 12)
+                Spacer(minLength: 8)
 
                 cinemaButton
                     .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(2)
 
                 realityTheaterDeveloperButton
                     .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(2)
 
                 menuStrip
                     .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(2)
             }
 
             if scrubState.isDragging, trickPlayProvider != nil {
@@ -367,12 +364,12 @@ struct CustomPlayerChrome: View {
             } label: {
                 Label("Exit Cinema", systemImage: "rectangle.on.rectangle.slash")
                     .labelStyle(.titleAndIcon)
-                    .font(.headline.weight(.semibold))
-                    .frame(minWidth: 128)
-                    .padding(.horizontal, 8)
+                    .font(.callout.weight(.semibold))
+                    .frame(minWidth: 112)
+                    .padding(.horizontal, 6)
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
+            .controlSize(.small)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
         } else {
             Button {
@@ -381,12 +378,12 @@ struct CustomPlayerChrome: View {
             } label: {
                 Label("Cinema", systemImage: "theatermasks")
                     .labelStyle(.titleAndIcon)
-                    .font(.headline.weight(.semibold))
-                    .frame(minWidth: 94)
-                    .padding(.horizontal, 8)
+                    .font(.callout.weight(.semibold))
+                    .frame(minWidth: 82)
+                    .padding(.horizontal, 6)
             }
             .buttonStyle(.bordered)
-            .controlSize(.regular)
+            .controlSize(.small)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
         }
     }
@@ -405,12 +402,12 @@ struct CustomPlayerChrome: View {
                       systemImage: realityTheaterSession.phase == .open
                       ? "rectangle.on.rectangle.slash" : "theatermasks.fill")
                     .labelStyle(.titleAndIcon)
-                    .font(.headline.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .frame(minWidth: realityTheaterButtonMinWidth)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 6)
             }
             .buttonStyle(.bordered)
-            .controlSize(.regular)
+            .controlSize(.small)
             .disabled(realityTheaterSession.phase == .opening)
             .help("RealityKit cinema prototype for #12 headset testing")
         }
@@ -418,7 +415,7 @@ struct CustomPlayerChrome: View {
 
 
     private var realityTheaterButtonMinWidth: CGFloat {
-        realityTheaterSession.phase == .open ? 128 : CustomPlayerMenuKind.quality.minChromeWidth
+        realityTheaterSession.phase == .open ? 112 : CustomPlayerMenuKind.quality.minChromeWidth
     }
 
     private var menuStrip: some View {
@@ -429,12 +426,12 @@ struct CustomPlayerChrome: View {
                 } label: {
                     Label(menu.shortTitle, systemImage: menu.systemImage)
                         .labelStyle(.titleAndIcon)
-                        .font(.headline.weight(.semibold))
+                        .font(.callout.weight(.semibold))
                         .frame(minWidth: menu.minChromeWidth)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 6)
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.regular)
+                .controlSize(.small)
             }
         }
     }
@@ -814,8 +811,8 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var minChromeWidth: CGFloat {
         switch self {
-        case .quality, .subtitles, .audio, .speed, .stats: 84
-        case .chapters: 112
+        case .quality, .subtitles, .audio, .speed, .stats: 72
+        case .chapters: 94
         }
     }
 
