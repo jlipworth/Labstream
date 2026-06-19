@@ -43,10 +43,14 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
     public let subtitle: String?
     /// Source ratingKey, when the server threads one through the nested `Context`.
     public let contextRatingKey: String?
+    /// Library metadata id from the nested `Context` (`metadataID`). On a real PMS the
+    /// `media.download` conversion activity carries this instead of `ratingKey`, and it
+    /// equals the source item's ratingKey — so it is the reliable correlator here.
+    public let contextMetadataID: String?
 
     public init(uuid: String? = nil, type: String? = nil, progress: Int? = nil,
                 cancellable: Bool? = nil, title: String? = nil, subtitle: String? = nil,
-                contextRatingKey: String? = nil) {
+                contextRatingKey: String? = nil, contextMetadataID: String? = nil) {
         self.uuid = uuid
         self.type = type
         self.progress = progress
@@ -54,6 +58,7 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
         self.title = title
         self.subtitle = subtitle
         self.contextRatingKey = contextRatingKey
+        self.contextMetadataID = contextMetadataID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -66,13 +71,19 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
 
     private struct Context: Decodable {
         let ratingKey: String?
+        let metadataID: String?
         let key: String?
-        enum CodingKeys: String, CodingKey { case ratingKey, key }
+        enum CodingKeys: String, CodingKey { case ratingKey, metadataID, key }
+        /// Decode an id that may arrive as a `String` or an `Int`.
+        private static func id(_ c: KeyedDecodingContainer<CodingKeys>, _ k: CodingKeys) -> String? {
+            if let s = (try? c.decodeIfPresent(String.self, forKey: k)) ?? nil { return s }
+            if let i = (try? c.decodeIfPresent(Int.self, forKey: k)) ?? nil { return String(i) }
+            return nil
+        }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            // ratingKey may arrive as a String or Int; tolerate both.
-            self.ratingKey = (try? c.decodeIfPresent(String.self, forKey: .ratingKey))
-                ?? (try? c.decodeIfPresent(Int.self, forKey: .ratingKey)).map { $0.map(String.init) } ?? nil
+            self.ratingKey = Context.id(c, .ratingKey)
+            self.metadataID = Context.id(c, .metadataID)
             self.key = try? c.decodeIfPresent(String.self, forKey: .key)
         }
     }
@@ -108,6 +119,16 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
             ?? (try? c.decodeIfPresent(String.self, forKey: .Subtitle)) ?? nil
         let context = (try? c.decodeIfPresent(Context.self, forKey: .context)) ?? nil
         self.contextRatingKey = context?.ratingKey
+        self.contextMetadataID = context?.metadataID
+    }
+
+    /// The source library id this activity is tied to, if any: `Context.ratingKey` (some
+    /// PMS versions) or `Context.metadataID` (the `media.download` conversion activity).
+    /// Both equal the source item's ratingKey.
+    public var correlationID: String? {
+        if let r = contextRatingKey, !r.isEmpty { return r }
+        if let m = contextMetadataID, !m.isEmpty { return m }
+        return nil
     }
 
     /// `true` when this activity looks like an optimize/transcode/conversion job. The real
@@ -117,8 +138,12 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
         guard let t = type?.lowercased() else { return false }
         if t.contains("optimize") { return true }
         let candidates = [
+            // `media.download` is the CONFIRMED type a live PMS emits for the server-side
+            // conversion that backs an offline download (verified via /activities probe).
+            "media.download",
             "media.optimize",
             "library.optimize",
+            "media.convert",
             "provider.subscriptions.process",
             "media.generate",
         ]
@@ -145,7 +170,9 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
     /// title: exact `Context.ratingKey`, else a `matchesTitle` hit. Per-activity predicate;
     /// ambiguity across multiple activities is resolved by `Activities.optimizeActivity`.
     public func matches(ratingKey: String?, title mediaTitle: String?) -> Bool {
-        if let ratingKey, let ctx = contextRatingKey, !ctx.isEmpty, ctx == ratingKey {
+        if let ratingKey, let id = correlationID,
+           !ratingKey.isEmpty,
+           id.trimmingCharacters(in: .whitespacesAndNewlines) == ratingKey.trimmingCharacters(in: .whitespacesAndNewlines) {
             return true
         }
         return matchesTitle(mediaTitle)
@@ -184,8 +211,10 @@ public struct Activities: Decodable, Sendable, Equatable {
     public func optimizeActivity(ratingKey: String?, title: String?,
                                  allowSoleFallback: Bool = false) -> PlexActivity? {
         let optimizers = activities.filter { $0.looksLikeOptimize }
-        if let r = ratingKey, !r.isEmpty,
-           let exact = optimizers.first(where: { ($0.contextRatingKey.map { !$0.isEmpty && $0 == r }) ?? false }) {
+        if let r = ratingKey?.trimmingCharacters(in: .whitespacesAndNewlines), !r.isEmpty,
+           let exact = optimizers.first(where: {
+               $0.correlationID?.trimmingCharacters(in: .whitespacesAndNewlines) == r
+           }) {
             return exact
         }
         if let title, !title.isEmpty {
@@ -214,6 +243,11 @@ public struct Activities: Decodable, Sendable, Equatable {
             out["match_progress"] = match.progress.map(String.init) ?? "nil"
             out["match_has_uuid"] = (match.uuid != nil) ? "1" : "0"
             out["match_has_context_ratingkey"] = (match.contextRatingKey != nil) ? "1" : "0"
+            out["match_has_metadata_id"] = (match.contextMetadataID != nil) ? "1" : "0"
+            if let r = ratingKey?.trimmingCharacters(in: .whitespacesAndNewlines), !r.isEmpty,
+               let c = match.correlationID?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty {
+                out["match_correlation_equal"] = (r == c) ? "1" : "0"
+            }
             out["match_has_title"] = (match.title != nil) ? "1" : "0"
             out["match_has_subtitle"] = (match.subtitle != nil) ? "1" : "0"
             out["match_cancellable"] = match.cancellable.map { $0 ? "1" : "0" } ?? "nil"

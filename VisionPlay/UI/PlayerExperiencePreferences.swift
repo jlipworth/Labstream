@@ -14,6 +14,7 @@ enum PlaybackPreferences {
         static let adaptiveBitrateEnabled = "playerAdaptiveBitrateEnabled"
         static let defaultDownloadQuality = "defaultDownloadQuality"
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
+        static let prioritizeQuickDownloads = "prioritizeQuickDownloads"
 
         // Audio/subtitle language + subtitle-handling keys (formerly the separate
         // `PlaybackPreferenceKeys` namespace). Raw strings preserved exactly so existing
@@ -47,6 +48,19 @@ enum PlaybackPreferences {
     static let defaultSkipMode = SkipMode.manual
     static let defaultStorageLimitBytes = DownloadStorageLimit.unlimited
     static let defaultDownloadQuality = "1080p 8 Mbps"
+    /// Off by default: the move PUT reorders the user's server-wide conversion queue and is
+    /// admin-gated, so it is opt-in (least surprising — respect the server's queue order).
+    static let defaultPrioritizeQuickDownloads = false
+
+    /// Whether a newly-enqueued optimize job should jump ahead of pending conversions (but never
+    /// the one currently transcoding). When false, the server's queue order is respected and no
+    /// reorder PUT is issued.
+    static func prioritizeQuickDownloads(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: Keys.prioritizeQuickDownloads) != nil else {
+            return defaultPrioritizeQuickDownloads
+        }
+        return defaults.bool(forKey: Keys.prioritizeQuickDownloads)
+    }
 
     static func qualityKbps(forDefaultsKey key: String, defaults: UserDefaults = .standard) -> Int {
         if defaults.object(forKey: key) != nil { return defaults.integer(forKey: key) }
