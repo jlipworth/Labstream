@@ -1,9 +1,15 @@
 import Foundation
 
 /// The app's single bitrate-cap ladder (#21), shared by the in-player Quality tab and the
-/// Settings "Default Quality" picker so the two surfaces can never drift apart —
-/// both read/write the same persisted `maxVideoBitrateKbps` key, and a value picked in one
-/// always resolves a checkmark in the other.
+/// Settings "Default Quality" pickers so the surfaces can never drift apart — every surface
+/// resolves and persists caps through `PlaybackPreferences`, and a value picked in one always
+/// resolves a checkmark in the other.
+///
+/// Persistence is split into three `PlaybackPreferences.Keys` (see `PlayerExperiencePreferences`):
+/// a separate Home cap (`homeMaxVideoBitrateKbps`) and Remote cap (`remoteMaxVideoBitrateKbps`),
+/// chosen by reachability, plus the pre-split legacy key (`maxVideoBitrateKbps`) retained for
+/// back-compat — it's migrated into the Remote key on first launch, and writes to the Remote cap
+/// mirror back to it, so an older build still reads a sensible value.
 ///
 /// Aligned to Plex's web quality presets so each cap maps to a sensible resolution. All
 /// previously selectable caps (2/4/8/12/20 Mbps + Maximum) are retained — so an older
