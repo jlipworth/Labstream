@@ -100,6 +100,12 @@ enum CustomCinemaMode {
     static let rewindButtonName = "custom-cinema-rewind-30-button"
     static let playPauseButtonName = "custom-cinema-play-pause-button"
     static let forwardButtonName = "custom-cinema-forward-30-button"
+    static let moreButtonName = "custom-cinema-more-button"
+    static let qualityButtonName = "custom-cinema-quality-button"
+    static let speedButtonName = "custom-cinema-speed-button"
+    static let audioButtonName = "custom-cinema-audio-button"
+    static let subtitlesButtonName = "custom-cinema-subtitles-button"
+    static let backButtonName = "custom-cinema-back-button"
     static let exitButtonName = "custom-cinema-exit-button"
 }
 
@@ -169,6 +175,8 @@ struct CustomCinemaScaffoldView: View {
     @Environment(\.openWindow) private var openWindow
 
     @State private var controlsVisible = false
+    @State private var menuMode: CinemaControlsMode = .transport
+    @State private var statusMessage: String?
     @State private var controlsHideTask: Task<Void, Never>?
 
     var body: some View {
@@ -176,13 +184,17 @@ struct CustomCinemaScaffoldView: View {
             content.add(Self.makeRoot(player: session.player,
                                       geometry: session.geometry,
                                       controlsVisible: controlsVisible,
-                                      isPaused: session.controller?.transport.isPaused ?? true))
+                                      isPaused: session.controller?.transport.isPaused ?? true,
+                                      menuMode: menuMode,
+                                      statusMessage: statusMessage))
         } update: { content in
             content.entities.removeAll(where: { $0.name == "custom-cinema-root" })
             content.add(Self.makeRoot(player: session.player,
                                       geometry: session.geometry,
                                       controlsVisible: controlsVisible,
-                                      isPaused: session.controller?.transport.isPaused ?? true))
+                                      isPaused: session.controller?.transport.isPaused ?? true,
+                                      menuMode: menuMode,
+                                      statusMessage: statusMessage))
         }
         .gesture(SpatialTapGesture().targetedToAnyEntity().onEnded { value in
             Task { @MainActor in
@@ -199,6 +211,8 @@ struct CustomCinemaScaffoldView: View {
             print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer); reopenMain=\(session.shouldReopenMainWindowOnDismiss)")
             controlsHideTask?.cancel()
             controlsVisible = false
+            menuMode = .transport
+            statusMessage = nil
             if session.shouldReopenMainWindowOnDismiss {
                 // Covers system/Crown immersive dismissal after the player WindowGroup was
                 // detached. Stop playback first so returning to Home never leaves hidden audio.
@@ -226,6 +240,24 @@ struct CustomCinemaScaffoldView: View {
         case CustomCinemaMode.forwardButtonName:
             print("[Custom Cinema] native forward 30 tapped")
             seekRelative(seconds: 30)
+        case CustomCinemaMode.moreButtonName:
+            print("[Custom Cinema] native more tapped")
+            openMenu()
+        case CustomCinemaMode.backButtonName:
+            print("[Custom Cinema] native back tapped")
+            closeMenu()
+        case CustomCinemaMode.qualityButtonName:
+            print("[Custom Cinema] native quality tapped")
+            cycleQuality()
+        case CustomCinemaMode.speedButtonName:
+            print("[Custom Cinema] native speed tapped")
+            cycleSpeed()
+        case CustomCinemaMode.audioButtonName:
+            print("[Custom Cinema] native audio tapped")
+            cycleAudio()
+        case CustomCinemaMode.subtitlesButtonName:
+            print("[Custom Cinema] native subtitles tapped")
+            cycleSubtitles()
         case CustomCinemaMode.exitButtonName:
             print("[Custom Cinema] native exit tapped")
             exitCinema()
@@ -235,15 +267,38 @@ struct CustomCinemaScaffoldView: View {
     }
 
     @MainActor
-    private func revealControls() {
+    private func revealControls(keepVisible: Bool = false) {
         guard session.hasActivePlayer else { return }
         controlsVisible = true
         controlsHideTask?.cancel()
+        guard !keepVisible, menuMode == .transport else { return }
         controlsHideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(6))
             guard !Task.isCancelled else { return }
             controlsVisible = false
+            menuMode = .transport
+            statusMessage = nil
         }
+    }
+
+    @MainActor
+    private func openMenu() {
+        menuMode = .menu
+        statusMessage = nil
+        revealControls(keepVisible: true)
+    }
+
+    @MainActor
+    private func closeMenu() {
+        menuMode = .transport
+        statusMessage = nil
+        revealControls()
+    }
+
+    @MainActor
+    private func showStatus(_ message: String) {
+        statusMessage = message
+        revealControls(keepVisible: true)
     }
 
     @MainActor
@@ -261,6 +316,74 @@ struct CustomCinemaScaffoldView: View {
     }
 
     @MainActor
+    private func cycleQuality() {
+        guard let controller = session.controller else { return }
+        guard controller.supportsQualityReload else {
+            showStatus("Quality unavailable")
+            return
+        }
+        let ladder = StreamingQuality.ladder.map(\.kbps)
+        guard !ladder.isEmpty else { return }
+        let current = controller.activeQualityBitrateKbps
+        let index = ladder.firstIndex(of: current) ?? max(ladder.count - 2, 0)
+        let next = ladder[(index + 1) % ladder.count]
+        controller.reload(bitrateKbps: next)
+        PlaybackPreferences.setQualityKbps(next, forDefaultsKey: controller.qualityPreferenceDefaultsKey)
+        showStatus(StreamingQuality.label(kbps: next))
+    }
+
+    @MainActor
+    private func cycleSpeed() {
+        guard let controller = session.controller else { return }
+        let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        let current = controller.speedState.speed
+        let index = speeds.firstIndex(where: { abs($0 - current) < 0.01 }) ?? 1
+        let next = speeds[(index + 1) % speeds.count]
+        controller.setPlaybackSpeed(next)
+        showStatus(next == 1.0 ? "Normal speed" : String(format: "%g× speed", next))
+    }
+
+    @MainActor
+    private func cycleAudio() {
+        guard let controller = session.controller else { return }
+        Task { @MainActor in
+            if controller.supportsMetadataAudioSelection {
+                let choices = controller.loadAudioStreamChoices()
+                guard choices.count > 1 else {
+                    showStatus("No other audio")
+                    return
+                }
+                let current = choices.firstIndex(where: \.isSelected) ?? 0
+                let next = choices[(current + 1) % choices.count]
+                await controller.selectAudioStream(next)
+                showStatus("Audio: \(next.displayName)")
+            } else if let result = await controller.loadAudioTracks(), result.tracks.count > 1 {
+                let current = result.tracks.firstIndex(where: { $0.id == result.selectedID }) ?? 0
+                let next = result.tracks[(current + 1) % result.tracks.count]
+                await controller.selectAudio(next)
+                showStatus("Audio: \(next.displayName)")
+            } else {
+                showStatus("No other audio")
+            }
+        }
+    }
+
+    @MainActor
+    private func cycleSubtitles() {
+        guard let controller = session.controller else { return }
+        Task { @MainActor in
+            guard let result = await controller.loadSubtitleTracks(), result.tracks.count > 1 else {
+                showStatus("No subtitles")
+                return
+            }
+            let current = result.tracks.firstIndex(where: { $0.id == result.selectedID }) ?? 0
+            let next = result.tracks[(current + 1) % result.tracks.count]
+            await controller.selectSubtitle(next)
+            showStatus("Subs: \(next.displayName)")
+        }
+    }
+
+    @MainActor
     private func exitCinema() {
         controlsHideTask?.cancel()
         controlsVisible = false
@@ -275,7 +398,12 @@ struct CustomCinemaScaffoldView: View {
     }
 
     @MainActor
-    private static func makeRoot(player: AVPlayer?, geometry: CustomCinemaGeometry, controlsVisible: Bool, isPaused: Bool) -> Entity {
+    private static func makeRoot(player: AVPlayer?,
+                                 geometry: CustomCinemaGeometry,
+                                 controlsVisible: Bool,
+                                 isPaused: Bool,
+                                 menuMode: CinemaControlsMode,
+                                 statusMessage: String?) -> Entity {
         let root = Entity()
         root.name = "custom-cinema-root"
 
@@ -307,18 +435,25 @@ struct CustomCinemaScaffoldView: View {
         root.addChild(screen)
 
         if controlsVisible {
-            root.addChild(makeControlsRail(isPaused: isPaused, geometry: geometry))
+            root.addChild(makeControlsRail(isPaused: isPaused,
+                                           geometry: geometry,
+                                           mode: menuMode,
+                                           statusMessage: statusMessage))
         }
 
         return root
     }
 
-    private static func makeControlsRail(isPaused: Bool, geometry: CustomCinemaGeometry) -> Entity {
+    private static func makeControlsRail(isPaused: Bool,
+                                         geometry: CustomCinemaGeometry,
+                                         mode: CinemaControlsMode,
+                                         statusMessage: String?) -> Entity {
         let root = Entity()
         root.name = CustomCinemaMode.controlsRootName
         root.position = geometry.controlsPosition
 
-        let back = ModelEntity(mesh: .generateBox(width: 1.72,
+        let railWidth: Float = mode == .transport ? 2.12 : 2.42
+        let back = ModelEntity(mesh: .generateBox(width: railWidth,
                                                   height: 0.30,
                                                   depth: 0.030,
                                                   cornerRadius: 0.15),
@@ -326,35 +461,80 @@ struct CustomCinemaScaffoldView: View {
         back.name = "custom-cinema-controls-background"
         root.addChild(back)
 
-        let rewind = makeButton(name: CustomCinemaMode.rewindButtonName,
-                                label: "−30",
-                                x: -0.54,
-                                width: 0.30,
-                                color: UIColor(white: 0.16, alpha: 0.88))
-        root.addChild(rewind)
+        if mode == .transport {
+            let rewind = makeButton(name: CustomCinemaMode.rewindButtonName,
+                                    label: "−30",
+                                    x: -0.54,
+                                    width: 0.30,
+                                    color: UIColor(white: 0.16, alpha: 0.88))
+            root.addChild(rewind)
 
-        let play = makeButton(name: CustomCinemaMode.playPauseButtonName,
-                              label: isPaused ? "▶" : "Ⅱ",
-                              x: -0.18,
-                              width: 0.34,
-                              color: UIColor(white: 0.22, alpha: 0.92),
-                              fontSize: 0.070)
-        root.addChild(play)
+            let play = makeButton(name: CustomCinemaMode.playPauseButtonName,
+                                  label: isPaused ? "▶" : "Ⅱ",
+                                  x: -0.18,
+                                  width: 0.34,
+                                  color: UIColor(white: 0.22, alpha: 0.92),
+                                  fontSize: 0.070)
+            root.addChild(play)
 
-        let forward = makeButton(name: CustomCinemaMode.forwardButtonName,
-                                 label: "+30",
-                                 x: 0.18,
-                                 width: 0.30,
-                                 color: UIColor(white: 0.16, alpha: 0.88))
-        root.addChild(forward)
+            let forward = makeButton(name: CustomCinemaMode.forwardButtonName,
+                                     label: "+30",
+                                     x: 0.18,
+                                     width: 0.30,
+                                     color: UIColor(white: 0.16, alpha: 0.88))
+            root.addChild(forward)
 
-        let exit = makeButton(name: CustomCinemaMode.exitButtonName,
-                              label: "Exit",
-                              x: 0.62,
-                              width: 0.38,
-                              color: UIColor(red: 0.38, green: 0.07, blue: 0.07, alpha: 0.84),
-                              fontSize: 0.048)
-        root.addChild(exit)
+            let more = makeButton(name: CustomCinemaMode.moreButtonName,
+                                  label: "⋯",
+                                  x: 0.56,
+                                  width: 0.30,
+                                  color: UIColor(white: 0.16, alpha: 0.88),
+                                  fontSize: 0.074)
+            root.addChild(more)
+
+            let exit = makeButton(name: CustomCinemaMode.exitButtonName,
+                                  label: "Exit",
+                                  x: 0.86,
+                                  width: 0.38,
+                                  color: UIColor(red: 0.38, green: 0.07, blue: 0.07, alpha: 0.84),
+                                  fontSize: 0.048)
+            root.addChild(exit)
+        } else {
+            root.addChild(makeButton(name: CustomCinemaMode.backButtonName,
+                                     label: "‹",
+                                     x: -0.88,
+                                     width: 0.28,
+                                     color: UIColor(white: 0.16, alpha: 0.88),
+                                     fontSize: 0.085))
+            root.addChild(makeButton(name: CustomCinemaMode.qualityButtonName,
+                                     label: "Quality",
+                                     x: -0.48,
+                                     width: 0.46,
+                                     color: UIColor(white: 0.16, alpha: 0.88),
+                                     fontSize: 0.043))
+            root.addChild(makeButton(name: CustomCinemaMode.speedButtonName,
+                                     label: "Speed",
+                                     x: -0.03,
+                                     width: 0.40,
+                                     color: UIColor(white: 0.16, alpha: 0.88),
+                                     fontSize: 0.043))
+            root.addChild(makeButton(name: CustomCinemaMode.audioButtonName,
+                                     label: "Audio",
+                                     x: 0.38,
+                                     width: 0.40,
+                                     color: UIColor(white: 0.16, alpha: 0.88),
+                                     fontSize: 0.043))
+            root.addChild(makeButton(name: CustomCinemaMode.subtitlesButtonName,
+                                     label: "Subs",
+                                     x: 0.78,
+                                     width: 0.36,
+                                     color: UIColor(white: 0.16, alpha: 0.88),
+                                     fontSize: 0.043))
+        }
+
+        if let statusMessage, !statusMessage.isEmpty {
+            root.addChild(makeStatusLabel(statusMessage))
+        }
 
         return root
     }
@@ -392,6 +572,28 @@ struct CustomCinemaScaffoldView: View {
 
         return root
     }
+
+    private static func makeStatusLabel(_ label: String) -> Entity {
+        let width: Float = 1.70
+        let mesh = MeshResource.generateText(label,
+                                             extrusionDepth: 0.0015,
+                                             font: .systemFont(ofSize: 0.040, weight: .medium),
+                                             containerFrame: CGRect(x: -CGFloat(width) / 2,
+                                                                    y: -0.022,
+                                                                    width: CGFloat(width),
+                                                                    height: 0.06),
+                                             alignment: .center,
+                                             lineBreakMode: .byTruncatingTail)
+        let text = ModelEntity(mesh: mesh, materials: [UnlitMaterial(color: UIColor(white: 1, alpha: 0.78))])
+        text.name = "custom-cinema-status-label"
+        text.position = SIMD3<Float>(0, -0.245, 0.045)
+        return text
+    }
+}
+
+private enum CinemaControlsMode {
+    case transport
+    case menu
 }
 
 private extension Comparable {
