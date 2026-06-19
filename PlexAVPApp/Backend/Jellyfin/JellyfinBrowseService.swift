@@ -103,15 +103,19 @@ struct JellyfinBrowseService {
         _ = try context()
         var rails: [JellyfinHomeRail] = []
 
-        let continueWatching = try? await resumeItems(limit: 20)
-        if let continueWatching, !continueWatching.isEmpty {
+        // These two home rails are independent server requests. Start them together so
+        // Jellyfin's homepage does not pay their network latency serially; append in the
+        // existing UI order once both are available.
+        async let continueWatchingResult = try? resumeItems(limit: 20)
+        async let nextUpResult = try? nextUp(limit: 20)
+
+        if let continueWatching = await continueWatchingResult, !continueWatching.isEmpty {
             rails.append(JellyfinHomeRail(id: "continue-watching",
                                           title: "Continue Watching",
                                           items: continueWatching))
         }
 
-        let nextUpItems = try? await nextUp(limit: 20)
-        if let nextUpItems, !nextUpItems.isEmpty {
+        if let nextUpItems = await nextUpResult, !nextUpItems.isEmpty {
             rails.append(JellyfinHomeRail(id: "next-up",
                                           title: "Next Up",
                                           items: nextUpItems))

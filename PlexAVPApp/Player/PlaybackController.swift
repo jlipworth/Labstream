@@ -239,6 +239,8 @@ final class PlaybackController {
     /// checked in the XROS 26.5 AVPlayerViewController.h.
     private var timeJumpedObserver: NSObjectProtocol?
     private var started = false
+    private var playbackStartupSpan: PerformanceSpan?
+    private var playbackItemLoadSpan: PerformanceSpan?
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
@@ -607,8 +609,16 @@ final class PlaybackController {
     func start() {
         guard !started else { return }
         started = true
+        let pathMode = localFile != nil ? "local_file" : (remoteStreamURL != nil ? "remote_stream" : "plex_stream")
+        playbackStartupSpan = PerformanceInstrumentation.begin(.playbackStartup,
+                                                                backend: performanceBackendLabel,
+                                                                fields: [
+                                                                    "path_mode": pathMode,
+                                                                    "resume": initialResumeMsOverride ?? item.viewOffset ?? 0,
+                                                                    "quality_kbps": maxVideoBitrateKbps,
+                                                                ])
         var fields: [String: DiagnosticFieldValue] = [
-            "path_mode": .label(localFile != nil ? "local_file" : (remoteStreamURL != nil ? "remote_stream" : "plex_stream")),
+            "path_mode": .label(pathMode),
             "initial_resume": .millisecondsBucket(initialResumeMsOverride ?? item.viewOffset),
         ]
         fields.merge(sourceDiagnosticFields()) { _, new in new }
@@ -638,6 +648,10 @@ final class PlaybackController {
             "resume": .millisecondsBucket(currentResumeMs),
             "sent_transcode_stop": .bool(sentTranscodeStop),
         ])
+        playbackItemLoadSpan?.end(result: "cancelled", fields: ["path_mode": performancePathMode])
+        playbackItemLoadSpan = nil
+        playbackStartupSpan?.end(result: "cancelled", fields: ["path_mode": performancePathMode])
+        playbackStartupSpan = nil
         playbackTask?.cancel()
         playbackTask = nil
         upNextTask?.cancel()
@@ -2101,6 +2115,14 @@ final class PlaybackController {
         let itemGeneration = currentPlayerItemGeneration
         let observedPlaybackGeneration = playbackGeneration
         player.replaceCurrentItem(with: playerItem)
+        playbackItemLoadSpan?.end(result: "superseded", fields: ["path_mode": performancePathMode])
+        playbackItemLoadSpan = PerformanceInstrumentation.begin(.playbackItemLoad,
+                                                                backend: performanceBackendLabel,
+                                                                fields: [
+                                                                    "path_mode": performancePathMode,
+                                                                    "resume": resumeOffsetMs ?? 0,
+                                                                    "quality_kbps": maxVideoBitrateKbps,
+                                                                ])
         recordPlaybackDiagnostic("playback.item_loaded", fields: [
             "resume": .millisecondsBucket(resumeOffsetMs),
             "preferred_forward_buffer_seconds": .int(Int(playerItem.preferredForwardBufferDuration)),
@@ -2162,6 +2184,11 @@ final class PlaybackController {
                         "status": .label("readyToPlay"),
                         "duration": .secondsBucket(pItem.duration.seconds),
                     ])
+                    self.playbackItemLoadSpan?.end(fields: [
+                        "path_mode": self.performancePathMode,
+                        "duration_seconds": pItem.duration.seconds.isFinite ? Int(pItem.duration.seconds) : 0,
+                    ])
+                    self.playbackItemLoadSpan = nil
                     // Gate timeline/scrobble heartbeats until we actually have content +
                     // a real duration (P8 #11) so we don't post duration=0/time≈0.
                     let durSecs = pItem.duration.seconds
@@ -2219,6 +2246,10 @@ final class PlaybackController {
                         "status": .label("failed"),
                         "error": .error(pItem.error),
                     ])
+                    self.playbackItemLoadSpan?.end(result: "failure", fields: ["path_mode": self.performancePathMode])
+                    self.playbackItemLoadSpan = nil
+                    self.playbackStartupSpan?.end(result: "failure", fields: ["path_mode": self.performancePathMode])
+                    self.playbackStartupSpan = nil
                     self.handlePlaybackFailure(pItem.error,
                                                source: .itemStatusFailed,
                                                playerItem: pItem,
@@ -2336,6 +2367,8 @@ final class PlaybackController {
                 if isStalled {
                     self.armStallWatchdog()
                 } else if status == .playing {
+                    self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
+                    self.playbackStartupSpan = nil
                     self.cancelStallWatchdog()
                     // Real playback = the failure is over. Clear any surfaced error so its
                     // Retry/Close affordance can't linger over playing video: a stall we
@@ -3283,6 +3316,18 @@ final class PlaybackController {
     private func recordTranscodeDiagnostic(_ name: String,
                                            fields: [String: DiagnosticFieldValue] = [:]) {
         AppDiagnostics.record(.transcode, name, fields: diagnosticFields(fields))
+    }
+
+    private var performanceBackendLabel: String {
+        if localFile != nil { return "Local" }
+        if remoteStreamURL != nil { return "Jellyfin" }
+        return "Plex"
+    }
+
+    private var performancePathMode: String {
+        if localFile != nil { return "local_file" }
+        if remoteStreamURL != nil { return "remote_stream" }
+        return "plex_stream"
     }
 
     private func diagnosticFields(_ fields: [String: DiagnosticFieldValue]) -> [String: DiagnosticFieldValue] {

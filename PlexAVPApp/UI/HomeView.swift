@@ -112,6 +112,10 @@ struct HomeView: View {
         // A real server change (different URL) still reloads.
         let activeIdentity = loadIdentity
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
+
+        let span = PerformanceInstrumentation.begin(.homeLoad,
+                                                     backend: appModel.activeBackend.performanceLabel,
+                                                     fields: ["force": force ? 1 : 0])
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
@@ -121,13 +125,20 @@ struct HomeView: View {
                 jellyfinRails = try await service.homeRails(for: views)
                 loadedIdentity = activeIdentity
                 loadState = .loaded
+                span.end(fields: [
+                    "view_count": views.count,
+                    "rail_count": jellyfinRails.count,
+                    "item_count": jellyfinRails.reduce(0) { $0 + $1.items.count },
+                ])
             } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
             return
         }
 
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No reachable Plex server selected.")
             return
         }
@@ -138,12 +149,17 @@ struct HomeView: View {
             hubs = resp.mediaContainer.hub
             loadedIdentity = activeIdentity
             loadState = .loaded
+            span.end(fields: [
+                "hub_count": hubs.count,
+                "item_count": hubs.reduce(0) { $0 + $1.metadata.count },
+            ])
             // System integration (#24): make the just-browsed items findable in
             // Spotlight, and refresh the "Play <title> on VisionPlex" Siri phrase
             // vocabulary (drawn from the entity query's suggestions).
             SpotlightIndexer.index(hubs.flatMap(\.metadata), server: server)
             VisionPlexShortcuts.updateAppShortcutParameters()
         } catch {
+            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
     }

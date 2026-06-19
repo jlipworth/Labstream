@@ -105,19 +105,25 @@ struct LibrariesView: View {
         // so only first load and pull-to-refresh fetch.
         if !force, loadedIdentity == loadIdentity, case .loaded = loadState { return }
         loadState = .loading
+        let span = PerformanceInstrumentation.begin(.librariesLoad,
+                                                     backend: appModel.activeBackend.performanceLabel,
+                                                     fields: ["force": force ? 1 : 0])
 
         if appModel.activeBackend == .jellyfin {
             do {
                 jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
                 loadedIdentity = loadIdentity
                 loadState = .loaded
+                span.end(fields: ["library_count": jellyfinViews.count])
             } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
             return
         }
 
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No server selected.")
             return
         }
@@ -131,7 +137,9 @@ struct LibrariesView: View {
             sections = resp.mediaContainer.directory.filter { !$0.isMusic }
             loadedIdentity = loadIdentity
             loadState = .loaded
+            span.end(fields: ["library_count": sections.count])
         } catch {
+            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
     }
@@ -254,7 +262,11 @@ struct LibraryGridView: View {
     }
 
     private func loadPlex(section: PlexSection) async {
+        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
+                                                     backend: "Plex",
+                                                     fields: ["page_size": pageSize])
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No server selected.")
             return
         }
@@ -278,14 +290,23 @@ struct LibraryGridView: View {
             slots = fresh
             firstCharacters = (await initialsResponse)?.libraryEntries(totalSize: total) ?? []
             loadState = .loaded
+            span.end(fields: [
+                "item_count": page.count,
+                "total_count": total,
+                "alphabet_count": firstCharacters.count,
+            ])
             // Make the browsed page findable in system search (#24).
             SpotlightIndexer.index(page, server: server)
         } catch {
+            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
     }
 
     private func loadJellyfin(view: JellyfinLibraryLink) async {
+        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
+                                                     backend: "Jellyfin",
+                                                     fields: ["page_size": pageSize])
         do {
             let page = try await JellyfinBrowseService(appModel: appModel)
                 .itemsPage(parentId: view.id,
@@ -302,8 +323,13 @@ struct LibraryGridView: View {
             slots = fresh
             firstCharacters = []
             loadState = .loaded
+            span.end(fields: [
+                "item_count": page.items.count,
+                "total_count": total,
+            ])
             Task { await loadJellyfinFirstCharacters(view: view, total: total) }
         } catch {
+            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
     }
@@ -324,9 +350,13 @@ struct LibraryGridView: View {
 
         switch source {
         case .plex(let section):
+            let span = PerformanceInstrumentation.begin(.libraryGridPage,
+                                                         backend: "Plex",
+                                                         fields: ["page": page, "page_size": pageSize])
             guard let server = appModel.serverBaseURL,
                   let token = appModel.serverToken
             else {
+                span.end(result: "failure", fields: ["error": "missing_plex_server"])
                 loadingPages.remove(page)
                 return
             }
@@ -341,11 +371,16 @@ struct LibraryGridView: View {
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
+                span.end(fields: ["item_count": pageItems.count])
                 SpotlightIndexer.index(pageItems, server: server)
             } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
             }
         case .jellyfin(let view):
+            let span = PerformanceInstrumentation.begin(.libraryGridPage,
+                                                         backend: "Jellyfin",
+                                                         fields: ["page": page, "page_size": pageSize])
             do {
                 let page = try await JellyfinBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
@@ -358,7 +393,9 @@ struct LibraryGridView: View {
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
+                span.end(fields: ["item_count": page.items.count])
             } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
             }
         }
