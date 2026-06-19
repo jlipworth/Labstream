@@ -243,16 +243,69 @@ public struct OfflineLibraryView: View {
     /// `DownloadManager.refreshRecords` (kept — orthogonal jitter fix).
     private func progressCaption(for record: DownloadRecord, progress: Double?) -> String {
         let isActive = manager.activeJobs.contains(record.ratingKey)
-        if record.bytes == 0 { return isActive ? "Preparing on server…" : "Queued…" }
+        if record.bytes == 0 {
+            // Phase 1 — server-side optimize/transcode (the rendered file can't download
+            // until this finishes). Surface live transcode % + the phase-appropriate
+            // estimated time remaining (the transcode-only remaining; the subsequent
+            // download time is not yet estimable because no bytes are flowing, so we never
+            // fabricate a combined total). `optimizeETA` is single-source: it carries the
+            // server-`speed`-based estimate when available, else the progress-rate EMA.
+            if let p = manager.optimizeProgress[record.ratingKey] {
+                var caption = "Transcoding \(Int(p * 100))%"
+                if let eta = manager.optimizeETA[record.ratingKey], eta > 0,
+                   let left = timeLeftString(eta) {
+                    caption += " • ~\(left) left"
+                }
+                return caption
+            }
+            if manager.optimizeState[record.ratingKey] == "queued" {
+                return "Queued on server"
+            }
+            return isActive ? "Preparing on server…" : "Queued…"
+        }
 
+        // Phase 2 — file download of the rendered/original Part. When the byte stream is gated
+        // by the server's transcoder (the file is served as it renders), a slow rate means the
+        // server is still transcoding — NOT a slow network — so say so rather than implying a
+        // network bottleneck or a fabricated network speed. The ETA already reflects the real
+        // (gated) byte rate, so it stays honest in either case.
+        let transcodeLimited = manager.isDownloadTranscodeLimited(record.ratingKey)
         var pieces: [String] = []
-        if let progress { pieces.append("\(Int(progress * 100))%") }
+        if isActive {
+            var head = transcodeLimited ? "Downloading (server still transcoding)" : "Downloading"
+            if let eta = manager.downloadETA[record.ratingKey], eta > 0,
+               let left = timeLeftString(eta) {
+                head += " • ~\(left) left"
+            }
+            pieces.append(head)
+        } else if let progress {
+            pieces.append("\(Int(progress * 100))%")
+        }
         pieces.append(byteString(record.bytes))
-        if let speed = manager.downloadSpeed[record.ratingKey], speed > 0 {
+        // Only show a "/s" reading when it's a genuine NETWORK rate. For a transcode-gated
+        // transfer the byte rate is the transcoder's output, not the connection, so suppress it
+        // to avoid implying a slow network.
+        if isActive, !transcodeLimited,
+           let speed = manager.downloadSpeed[record.ratingKey], speed > 0 {
             pieces.append("\(byteString(Int(speed)))/s")
         }
         if let r = resolutionLabel(for: record) { pieces.append(r) }
         return pieces.joined(separator: " • ")
+    }
+
+    /// Human estimated-time-remaining string ("under a min" / "N min" / "Nh Mm") for a
+    /// transcode or download ETA, or nil when the estimate is out of the trustworthy band
+    /// (non-finite, ≤0, or >12h — never show a negative or absurd value). The "~" prefix +
+    /// "left" suffix are added at the call site to mark it as an estimate.
+    private func timeLeftString(_ seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds > 0, seconds < 60 * 60 * 12 else { return nil }
+        if seconds < 60 { return "under a min" }
+        let totalMinutes = Int((seconds / 60).rounded())
+        guard totalMinutes >= 1 else { return nil }
+        if totalMinutes < 60 { return "\(totalMinutes) min" }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
     }
 
     /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".

@@ -42,6 +42,7 @@ struct SettingsView: View {
     @AppStorage(PlaybackPreferences.Keys.adaptiveBitrateEnabled) private var adaptiveBitrateEnabled = PlaybackPreferences.defaultAdaptiveBitrateEnabled
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
+    @AppStorage(PlaybackPreferences.Keys.prioritizeQuickDownloads) private var prioritizeQuickDownloads = PlaybackPreferences.defaultPrioritizeQuickDownloads
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
     @AppStorage(AppDiagnostics.enabledDefaultsKey) private var diagnosticLoggingEnabled = false
     @AppStorage(PlaybackPreferences.Keys.preferredAudioLanguage) private var preferredAudioLanguage = ""
@@ -447,6 +448,13 @@ struct SettingsView: View {
                 Label("Storage Limit", systemImage: "internaldrive")
             }
 
+            Picker(selection: $prioritizeQuickDownloads) {
+                Text("Respect server queue order").tag(false)
+                Text("Prioritize quick downloads").tag(true)
+            } label: {
+                Label("Queue Order", systemImage: "arrow.up.to.line")
+            }
+
             LabeledContent {
                 Text("\(downloadManager.records.count)")
             } label: {
@@ -476,7 +484,7 @@ struct SettingsView: View {
         } header: {
             Text("Downloads")
         } footer: {
-            Text("Download quality is the default for new downloads; Original still appears only when feasible. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically.")
+            Text("Download quality is the default for new downloads; Original still appears only when feasible. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads moves a new job ahead of pending conversions on the server (never the one already transcoding); it requires server admin permission.")
         }
         .confirmationDialog("Remove completed downloads?", isPresented: $confirmingRemoveCompletedDownloads, titleVisibility: .visible) {
             Button("Remove Completed", role: .destructive) {
@@ -496,6 +504,7 @@ struct SettingsView: View {
 
     private var downloadQualityPresets: [String] {
         [
+            "Original video quality",
             "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"

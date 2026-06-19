@@ -102,7 +102,7 @@ struct DownloadOptionsSheet: View {
         async let presetsTask = downloadManager.optimizePresetNames(server: server, token: token)
 
         let probe = await probeTask
-        let fetchedPresets = await presetsTask
+        let fetchedPresets = filteredOptimizePresets(await presetsTask)
         let presets = fetchedPresets.isEmpty ? defaultPresets : fetchedPresets
         let media = item.media?[safe: mediaIndex]
         let part = probe.part ?? media?.part[safe: partIndex]
@@ -133,12 +133,24 @@ struct DownloadOptionsSheet: View {
     }
 
     private var defaultPresets: [String] {
-        [
-            "Optimized for TV", "Optimized for Mobile", "Original Quality",
-            "Original", "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
+        filteredOptimizePresets([
+            "Original video quality",
+            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"
-        ]
+        ])
+    }
+
+    private func filteredOptimizePresets(_ presets: [String]) -> [String] {
+        presets.filter { preset in
+            ![
+                "Original Quality",
+                "Optimized for TV",
+                "Optimized for Mobile",
+            ].contains { hidden in
+                preset.localizedCaseInsensitiveCompare(hidden) == .orderedSame
+            }
+        }
     }
 
     private var jellyfinPresets: [String] {
@@ -177,14 +189,14 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original")
         } footer: {
-            Text("Downloads the source file without server transcoding. Use this only when you want the largest original file and the container is locally playable.")
+            Text("Downloads the raw source file without server conversion. This is shown only when the original container is locally playable.")
         }
     }
 
     private var originalUnsupportedSection: some View {
         SwiftUI.Section {
             Label {
-                Text("The original can stream, but its file container may not play as an offline local file here. Use an optimized preset for a compatible offline copy.")
+                Text("The original can stream, but its file container may not play as a raw offline local file here. Use Original video quality to keep source quality in a compatible offline copy, or pick a bitrate preset to save space.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } icon: {
@@ -231,10 +243,13 @@ struct DownloadOptionsSheet: View {
                     : "Your server renders a compatible offline version. Pick a preset.")
         }
         .onAppear {
+            if selectedChoice == .original, originalAvailable {
+                return
+            }
             if case .optimize(let selected)? = selectedChoice, presets.contains(selected) {
                 return
             }
-            selectedChoice = preferredSelection(originalAvailable: false, presets: presets)
+            selectedChoice = preferredSelection(originalAvailable: originalAvailable, presets: presets)
         }
     }
 

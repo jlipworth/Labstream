@@ -242,12 +242,20 @@ final class DownloadStore: @unchecked Sendable {
     /// Reconcile persisted rows against disk at launch (D2).
     ///
     /// A row left `.queued`/`.downloading` from a previous run whose task did NOT
-    /// survive relaunch can't be trusted: it was never validated/marked `.complete`,
-    /// so even a file on disk may be partial. We mark such rows `.failed` (retryable)
-    /// rather than letting the UI spin forever on a dead transfer. A `.complete` row
-    /// whose file has since vanished is likewise demoted to `.failed`. `liveRatingKeys`
-    /// are the ratingKeys the background session reattached to — genuinely still in
-    /// flight and left untouched.
+    /// survive relaunch can't usually be trusted: it was never validated/marked
+    /// `.complete`, so even a file on disk may be partial. We mark such rows `.failed`
+    /// (retryable) rather than letting the UI spin forever on a dead transfer.
+    ///
+    /// Plex optimized/download-prep rows are the exception: Plex may still be
+    /// rendering the compatible file and the app must resume polling after relaunch.
+    /// We reset their local transfer counters and keep them `.queued`; any partial
+    /// local file is removed so the eventual compatible part starts from a clean
+    /// download. Jellyfin optimized rows are NOT server-prep rows: they stream from a
+    /// live URLSession task, so if that task is gone they must stay retryable-failed.
+    ///
+    /// A `.complete` row whose file has since vanished is likewise demoted to `.failed`.
+    /// `liveRatingKeys` are the ratingKeys the background session reattached to —
+    /// genuinely still in flight and left untouched.
     func reconcile(liveRatingKeys: Set<String>) {
         lock.lock()
         var changed = false
@@ -255,9 +263,18 @@ final class DownloadStore: @unchecked Sendable {
             let hasLiveTask = liveRatingKeys.contains(key)
             let fileExists = fileManager.fileExists(
                 atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
-            let newStatus = DownloadStatus.reconciledStatus(
-                current: row.status, fileExists: fileExists, hasLiveTask: hasLiveTask)
-            guard newStatus != row.status else { continue }
+            let isPlexServerPrepOptimizedJob = !hasLiveTask
+                && (row.status == .queued || row.status == .downloading)
+                && row.metadata?.optimizeTargetName?.isEmpty == false
+                && row.metadata?.optimizeQueueTitle?.isEmpty == false
+                && !row.ratingKey.hasPrefix("jellyfin:")
+            let newStatus = isPlexServerPrepOptimizedJob
+                ? .queued
+                : DownloadStatus.reconciledStatus(
+                    current: row.status, fileExists: fileExists, hasLiveTask: hasLiveTask)
+            let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
+                && (row.bytes != 0 || row.progress != 0)
+            guard newStatus != row.status || shouldResetOptimizedProgress else { continue }
             // A non-live queued/downloading row that we're demoting to `.failed` may
             // have left a partial file behind. Delete it so dead bytes don't sit
             // invisibly on disk — a retry rebuilds the file from scratch regardless.
@@ -266,6 +283,10 @@ final class DownloadStore: @unchecked Sendable {
                     at: baseDirectory.appendingPathComponent(row.relativePath))
             }
             row.status = newStatus
+            if isPlexServerPrepOptimizedJob {
+                row.bytes = 0
+                row.progress = 0
+            }
             rows[key] = row
             changed = true
         }
