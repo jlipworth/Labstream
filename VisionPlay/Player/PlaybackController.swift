@@ -334,9 +334,9 @@ final class PlaybackController {
     /// to the new audible group.
     private var didApplyAudioPreference = false
 
-    /// `@AppStorage` keys for the persisted subtitle preference. Mirrors `PlayerView`'s
-    /// `maxVideoBitrateKbps` pattern (UserDefaults-backed) so the controller — which can't be
-    /// a SwiftUI view — and any future settings UI share one source of truth.
+    /// `@AppStorage` keys for the persisted subtitle preference. Mirrors the UserDefaults-backed
+    /// quality-cap pattern (`PlaybackPreferences`) so the controller — which can't be a SwiftUI
+    /// view — and the settings UI share one source of truth.
     private enum SubtitlePrefKey {
         /// BCP-47 / ISO language code of the user's last chosen subtitle track (e.g. "en").
         static let language = PlaybackPreferenceKeys.preferredSubtitleLanguage

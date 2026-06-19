@@ -39,8 +39,8 @@ extension MediaItem {
     /// Strongly-typed item kind derived from the PMS `type` string.
     public var kind: Kind { Kind(rawValue: type) }
 
-    /// True for music items (artist/album/track). Hidden from browse until a proper
-    /// music experience exists (issue #15).
+    /// True for music items — classifies `artist`/`album`/`track` PMS types so callers can
+    /// branch on music vs. video content.
     public var isMusic: Bool {
         switch type { case "artist", "album", "track": return true; default: return false }
     }
