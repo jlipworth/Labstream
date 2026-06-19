@@ -671,19 +671,32 @@ public final class DownloadManager {
         else { return }
         let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
         let store = self.store
-        Task { @MainActor in
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse,
-                   !(200...299).contains(http.statusCode) { return }
-                guard !data.isEmpty else { return }
-                try data.write(to: posterURL, options: .atomic)
+        Task { [weak self] in
+            // Fetch + atomic disk write happen OFF the main actor (mirrors
+            // PlaybackController.fetchArtworkData); only the store mutation hops back on.
+            guard await Self.fetchAndWritePoster(from: url, to: posterURL) else { return }
+            await MainActor.run {
                 store.setPosterRelativePath(ratingKey: ratingKey,
                                             posterURL.lastPathComponent)
-                self.refreshRecords()
-            } catch {
-                // No poster is fine — never surfaced as a download error.
+                self?.refreshRecords()
             }
+        }
+    }
+
+    /// Best-effort poster fetch + atomic write, fully off the main actor. Returns `true`
+    /// only when a non-empty poster landed on disk at `destination`; any failure (HTTP
+    /// error, empty body, write failure) returns `false` and is never surfaced — a missing
+    /// poster is never a download error.
+    private nonisolated static func fetchAndWritePoster(from url: URL, to destination: URL) async -> Bool {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse,
+               !(200...299).contains(http.statusCode) { return false }
+            guard !data.isEmpty else { return false }
+            try data.write(to: destination, options: .atomic)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -1248,10 +1261,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // `path` query param (the metadataKey), which is stable per item; if we
             // can't match we still leave the task running and rely on the store row.
             var liveKeys: Set<String> = []
+            // Build the indexed-key set ONCE (FS-free) before the task loop, instead of
+            // stat'ing every store row per task under the held lock (was O(tasks×rows)).
+            let knownKeys = self.store.allRatingKeys
             self.lock.lock()
             for task in tasks {
                 guard self.inflight[task.taskIdentifier] == nil,
-                      let ratingKey = Self.ratingKey(for: task, store: self.store) else { continue }
+                      let ratingKey = Self.ratingKey(for: task, knownKeys: knownKeys) else { continue }
                 let destination = self.store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 self.inflight[task.taskIdentifier] = (ratingKey, destination)
                 liveKeys.insert(ratingKey)
@@ -1269,7 +1285,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// The task's original request URL carries the item's metadata key as the `path`
     /// query param (`/library/metadata/<ratingKey>`). We extract the trailing id and
     /// confirm a matching in-progress record exists in the store.
-    private static func ratingKey(for task: URLSessionTask, store: DownloadStore) -> String? {
+    private static func ratingKey(for task: URLSessionTask, knownKeys: Set<String>) -> String? {
         guard let url = task.originalRequest?.url,
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         let candidates: [String]
@@ -1286,9 +1302,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         }
         let expanded = candidates.flatMap { [$0, "jellyfin:\($0)"] }
-        return expanded.first { key in
-            store.records.contains(where: { $0.ratingKey == key })
-        }
+        return expanded.first { knownKeys.contains($0) }
     }
 
     /// Force the lazy background session to be created (and thus its delegate bound),
