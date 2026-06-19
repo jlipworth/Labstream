@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
 ///     another. PMSKit owns the parser so the namespace-stripping behavior is unit-tested.
 enum SpotlightIndexer {
     /// Single domain for everything we index, so sign-out can wipe it in one call.
-    static let domainIdentifier = "com.jlipworth.VisionPlex.media"
+    static let domainIdentifier = "com.jlipworth.VisionPlay.media"
 
     /// Queue a batch for indexing. Fire-and-forget: indexing is a nicety and must
     /// never affect browse, so failures are only logged.

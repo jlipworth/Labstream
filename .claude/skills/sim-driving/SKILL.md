@@ -1,6 +1,6 @@
 ---
 name: sim-driving
-description: Drive the visionOS simulator hands-free — synthetic clicks, screenshots, coordinate mapping, and log reading for live-testing VisionPlex without asking the user to interact.
+description: Drive the visionOS simulator hands-free — synthetic clicks, screenshots, coordinate mapping, and log reading for live-testing VisionPlay without asking the user to interact.
 ---
 
 # Driving the visionOS simulator
@@ -81,7 +81,7 @@ then Read the crop (rendered ~1:1) and refine the center.
 ## Screenshot + logs (verify every click)
 
 ```sh
-xcrun simctl io booted screenshot /tmp/visionplex-test.png   # then Read it
+xcrun simctl io booted screenshot /tmp/visionplay-test.png   # then Read it
 xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'
 ```
 

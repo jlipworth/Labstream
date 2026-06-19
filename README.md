@@ -62,7 +62,7 @@ VisionPlay/
 ## Build & run
 
 This is a **personal-device sideload** project today. The app identity is **VisionPlay** and the
-development bundle identifier is `com.jlipworth.VisionPlex`. It runs from Xcode on the visionOS 26.5
+development bundle identifier is `com.jlipworth.VisionPlay`. It runs from Xcode on the visionOS 26.5
 simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
 expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
 the first-launch trust prompt are Apple's expected security gate for sideloaded development builds.

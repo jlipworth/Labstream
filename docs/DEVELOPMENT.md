@@ -1,7 +1,7 @@
 # Development notes
 
 Durable, easy-to-forget facts about building and working on this app. Task/bug tracking lives in
-[GitHub Issues](https://github.com/jlipworth/VisionPlex/issues); see the [README](../README.md)
+[GitHub Issues](https://github.com/jlipworth/VisionPlay/issues); see the [README](../README.md)
 for the basic build/run.
 
 ## Build, test, run
@@ -20,13 +20,13 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
 
 # Install + launch on a booted sim
 APP="$HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-<hash>/Build/Products/Debug-xrsimulator/PlexAVPApp.app"
-xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlex
+xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlay
 
 # After-the-fact logs
 xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"' --style compact
 ```
 
-- App bundle id: `com.jlipworth.VisionPlex` · Sim: "Apple Vision Pro" (visionOS 26.5).
+- App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5).
 - Profiling workflow: see [`docs/PROFILING.md`](PROFILING.md) for Instruments baseline targets, simulator/device caveats, and finding templates.
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
   `PMSKit/Sources`, `PMSKit/Tests`) — no `project.pbxproj` edits needed.

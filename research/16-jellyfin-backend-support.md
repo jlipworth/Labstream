@@ -6,14 +6,14 @@
 
 ## TL;DR
 
-Jellyfin support is feasible and probably a better long-term test of VisionPlex's real architecture goal: a stable visionOS player over a server-specific media-session backend. Jellyfin has a generated official OpenAPI surface for the needed pieces: user auth, library browsing, playback preparation, HLS/server-side transcoding, playback progress, active-encoding cleanup, and direct downloads. The strongest native-client pattern is:
+Jellyfin support is feasible and probably a better long-term test of VisionPlay's real architecture goal: a stable visionOS player over a server-specific media-session backend. Jellyfin has a generated official OpenAPI surface for the needed pieces: user auth, library browsing, playback preparation, HLS/server-side transcoding, playback progress, active-encoding cleanup, and direct downloads. The strongest native-client pattern is:
 
 1. Authenticate and send the full `Authorization: MediaBrowser ... Token="..."` header.
 2. Browse with `GET /UserViews`, `GET /Items`, and `GET /Items/{itemId}`.
 3. Prepare playback with `POST /Items/{itemId}/PlaybackInfo` using a visionOS/AVPlayer `DeviceProfile` and the requested bitrate/start time/streams.
 4. Prefer the returned `MediaSourceInfo.TranscodingUrl` when Jellyfin decides HLS/remux/transcode is needed; build direct/static stream URLs only when Jellyfin reports direct play/direct stream support.
 5. Report start/progress/stopped with `/Sessions/Playing*` and explicitly stop active encodings with `DELETE /Videos/ActiveEncodings` when replacing or tearing down transcodes.
-6. Treat downloads as original-file downloads via `/Items/{itemId}/Download` first. That is not the same as a pre-transcoded VisionPlex-compatible offline asset.
+6. Treat downloads as original-file downloads via `/Items/{itemId}/Download` first. That is not the same as a pre-transcoded VisionPlay-compatible offline asset.
 
 The codebase should **not** make `MediaSessionProxy` generic while #33 is still changing. Start with an app-side backend boundary above PMSKit, keep Plex behavior byte-identical, then add a Jellyfin adapter behind an experimental/default-off backend toggle.
 
@@ -69,13 +69,13 @@ The current public Jellyfin API browser exposes a generated OpenAPI spec. The st
 | Original file | `GET /Items/{itemId}/File` | Direct original file access. |
 | Direct stream fallback | `GET /Videos/{itemId}/stream[.{container}]` | Can be used for direct/static delivery, but not an offline transcode system. |
 
-No first-party offline-sync system analogous to Plex Downloads was found in the public API surface. VisionPlex should treat Jellyfin downloads as raw/original media downloads first; a VisionPlex-compatible offline rendition would be a later app/server workflow.
+No first-party offline-sync system analogous to Plex Downloads was found in the public API surface. VisionPlay should treat Jellyfin downloads as raw/original media downloads first; a VisionPlay-compatible offline rendition would be a later app/server workflow.
 
 ## Reference-client behavior
 
 ### Official Swift SDK (`jellyfin/jellyfin-sdk-swift`)
 
-Use this as a generated API reference, not as a player architecture. It exposes the exact shapes VisionPlex needs:
+Use this as a generated API reference, not as a player architecture. It exposes the exact shapes VisionPlay needs:
 
 - `Paths.getPostedPlaybackInfo(itemID:...)` for `POST /Items/{id}/PlaybackInfo`.
 - `PlaybackInfoDto` with device profile, start ticks, stream indexes, media source, max bitrate, and direct/transcode flags.
@@ -128,7 +128,7 @@ Observed flow:
 
 Desktop delegates server URL construction to Jellyfin Web and hands the resulting URL to MPV. It is still useful because its device profile exposes practical transcode policy knobs: HLS `ts`, configurable video codecs, and force-transcode rules for Dolby Vision/HDR/Hi10P/HEVC/AV1/4K. Those are future tuning inputs for a visionOS profile.
 
-## VisionPlex codebase implications
+## VisionPlay codebase implications
 
 ### What is already reusable
 
@@ -231,7 +231,7 @@ For the first branch, the Plex adapter can wrap existing Plex request builders a
 
 ## Live validation checklist for Jellyfin
 
-Before declaring Jellyfin better than Plex for VisionPlex, run these against a real Jellyfin server:
+Before declaring Jellyfin better than Plex for VisionPlay, run these against a real Jellyfin server:
 
 1. `POST /Items/{id}/PlaybackInfo` with a visionOS profile returns a playable HLS `TranscodingUrl`.
 2. AVPlayer on visionOS can play the returned HLS URL with the required auth headers/query token.

@@ -20,7 +20,7 @@ Commit under test: `9ed4569 Rebuild player at final seek target`
 ## Handoff note
 
 Do not consider #33 fixed by final-target rebuild. The current state is a safer, cleaner baseline
-for leaving VisionPlex work, but if playback work resumes it needs a fresh diagnosis of the actual
+for leaving VisionPlay work, but if playback work resumes it needs a fresh diagnosis of the actual
 double-drag path (AVKit time-jump signal, debounce timing, player-item replacement, PMS request
 sequence, and server log correlation). Avoid reintroducing proxy-owned segment re-prime or hidden
 retry loops without explicit server-safety proof.

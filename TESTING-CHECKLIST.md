@@ -4,7 +4,7 @@ _Everything below is implemented + build-verified on `main` (app builds green; t
 suite passes — run `cd PMSKit && swift test`) but the unchecked items are NOT yet human-verified
 in the headset/simulator. Work through them in one pass._
 
-**Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlex/issues)).
+**Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlay/issues)).
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: **reinstalling wipes the container → re-login
 required**.
@@ -57,7 +57,7 @@ required**.
       offline. Both paths now serve a STATIC file with a real Content-Length, so the % is server-
       reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
       unavailable there; device keeps the background session.) Logs:
-      `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlex"'`
+      `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlay"'`
 - [ ] **Download dual path — DIRECT (offline-download redesign)** — open the download sheet on a
       known-compatible title (the player would direct-play it): the sheet shows a single
       "Download original — <size> · <res>" action (no quality picker). Downloading fetches the
@@ -68,7 +68,7 @@ required**.
       rendered Part, then downloads it. ⚠️ The optimizer POST contract is NOT live-verified — run
       `./scripts/live-optimize-probe.sh` (Phase 0) FIRST and reconcile `OptimizeRequest` to the real
       shape before trusting this path. Optimizer logs persist at os.log `.error`:
-      `log show --predicate 'subsystem == "com.jlipworth.VisionPlex" AND category == "Downloads"'`
+      `log show --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Downloads"'`
 - [ ] **Download sheet probe-failure fallback** — with the server briefly unreachable when the sheet
       opens, it still offers the optimize presets (it must never dead-end on a probe failure).
 
@@ -174,7 +174,7 @@ required**.
       - [ ] **Stop-before-restart** — quality switch, audio switch, in-player Retry, and a
             final-target deep-seek rebuild each log `transcode: stopping previous job before
             in-place restart` (Playback category — `xcrun simctl spawn booted log show --last 5m
-            --predicate 'subsystem == "com.jlipworth.VisionPlex" AND category == "Playback"'`) and
+            --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Playback"'`) and
             the server never shows more than ONE `Plex Transcoder` for the session.
       - [ ] **Final-target coalescing** — scrub repeatedly into unbuffered territory on a heavy
             (4K HEVC/EAC3 MKV) title. During one drag, PMS sees only the settled final target, not

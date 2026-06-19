@@ -15,5 +15,5 @@ if ! git diff --quiet --ignore-submodules -- 2>/dev/null || \
 fi
 
 slug="${commit_count}-${commit}-${dirty}"
-echo "xcodebuild-versioned: VISIONPLEX_BUILD_SLUG=${slug} VISIONPLEX_BUILD_DATE_UTC=${built_at}" >&2
-exec xcodebuild "VISIONPLEX_BUILD_SLUG=${slug}" "VISIONPLEX_BUILD_DATE_UTC=${built_at}" "$@"
+echo "xcodebuild-versioned: VISIONPLAY_BUILD_SLUG=${slug} VISIONPLAY_BUILD_DATE_UTC=${built_at}" >&2
+exec xcodebuild "VISIONPLAY_BUILD_SLUG=${slug}" "VISIONPLAY_BUILD_DATE_UTC=${built_at}" "$@"

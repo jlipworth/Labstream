@@ -1,4 +1,4 @@
-# VisionPlex (PlexAVPApp) — Claude Code notes
+# VisionPlay (PlexAVPApp) — Claude Code notes
 
 visionOS Plex client. App code in `PlexAVPApp/`, networking/model layer in `PMSKit/`
 (local Swift package with its own tests). Design rationale and hard-won AVKit findings
@@ -12,7 +12,7 @@ live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the 
 # but SKIP the Ld step — exit 0, no new binary, and the "fix" you then install is the OLD
 # app. Guard every fix build: delete the .app product first, and verify afterwards that
 # the binary mtime is fresh (and matches the installed copy via
-# `xcrun simctl get_app_container booted com.jlipworth.VisionPlex app`).
+# `xcrun simctl get_app_container booted com.jlipworth.VisionPlay app`).
 rm -rf $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app
 xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
@@ -23,7 +23,7 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
 # /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app | head -1)
 xcrun simctl install booted "$APP"
-xcrun simctl terminate booted com.jlipworth.VisionPlex; xcrun simctl launch booted com.jlipworth.VisionPlex
+xcrun simctl terminate booted com.jlipworth.VisionPlay; xcrun simctl launch booted com.jlipworth.VisionPlay
 
 # PMSKit unit tests
 cd PMSKit && swift test
@@ -41,7 +41,7 @@ or log dumps:
 
 ```sh
 # Claude takes its own screenshots after the user interacts
-xcrun simctl io booted screenshot /tmp/visionplex-test.png   # then Read the PNG
+xcrun simctl io booted screenshot /tmp/visionplay-test.png   # then Read the PNG
 
 # Claude reads app logs itself (NSLog instrumentation shows up here)
 xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"'

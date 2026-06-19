@@ -11,7 +11,7 @@ struct PlexAVPApp: App {
     init() {
         // Register App Shortcuts at process start, per Apple guidance; Home refreshes
         // dynamic media parameters again after browse data loads.
-        VisionPlexShortcuts.updateAppShortcutParameters()
+        VisionPlayShortcuts.updateAppShortcutParameters()
     }
 
     var body: some Scene {
