@@ -581,8 +581,10 @@ struct SettingsView: View {
             Toggle(isOn: Binding(
                 get: { diagnosticLoggingEnabled },
                 set: { enabled in
+                    // setEnabled is the single writer of the persisted flag; the @AppStorage
+                    // binding observes the same UserDefaults key, so assigning it here would be
+                    // a redundant double-write.
                     AppDiagnostics.setEnabled(enabled)
-                    diagnosticLoggingEnabled = enabled
                 })) {
                     Label("Enable diagnostic logging", systemImage: "ladybug")
                 }
@@ -689,9 +691,12 @@ struct SettingsView: View {
     private var diagnosticServerLine: String? {
         switch appModel.activeBackend {
         case .plex:
-            guard let server = appModel.selectedServer else { return nil }
+            // Never include the user-chosen server NAME — it is often a personal name
+            // ("Some Person's Laptop") that the best-effort redactor cannot catch. Mirror the
+            // Jellyfin branch: emit only the product (and version, which is non-identifying).
+            guard let server = appModel.selectedServer else { return "Plex Media Server" }
             let version = server.productVersion.map { " \($0)" } ?? ""
-            return "\(server.name)\(version)"
+            return "Plex Media Server\(version)"
         case .jellyfin:
             return "Jellyfin"
         }
