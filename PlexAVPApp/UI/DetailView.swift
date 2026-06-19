@@ -230,7 +230,7 @@ struct DetailView: View {
     @ViewBuilder
     private var artBackdrop: some View {
         if let art = detailed.art ?? detailed.thumb, !art.isEmpty {
-            PosterImage(path: art, width: 900, height: 600, cornerRadius: 0)
+            PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .blur(radius: 60)
                 .opacity(0.30)
@@ -562,6 +562,12 @@ struct DetailView: View {
         // Defense-in-depth (#15): music is filtered from browse, but never let a music item
         // launch the video player. Unreachable in normal flow.
         guard !detailed.isMusic else { return }
+        let span = PerformanceInstrumentation.begin(.playbackResolve,
+                                                     backend: appModel.activeBackend.performanceLabel,
+                                                     fields: [
+                                                        "resume": detailed.viewOffset ?? 0,
+                                                        "quality_kbps": activeMaxVideoBitrateKbps,
+                                                     ])
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
         playLocalURL = nil
@@ -570,6 +576,7 @@ struct DetailView: View {
         case .plex:
             remotePlayback = nil
             presentingPlayer = true
+            span.end(fields: ["path_mode": "plex_stream"])
         case .jellyfin:
             isResolvingPlayback = true
             do {
@@ -585,7 +592,12 @@ struct DetailView: View {
                                                         sourceMetadata: result.sourceMetadata,
                                                         playMethod: result.playMethod)
                 presentingPlayer = true
+                span.end(fields: [
+                    "path_mode": "remote_stream",
+                    "play_method": result.playMethod.rawValue,
+                ])
             } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 playbackErrorMessage = friendlyMessage(error)
             }
             isResolvingPlayback = false
@@ -698,15 +710,23 @@ struct DetailView: View {
     }
 
     private func refreshMetadata() async {
+        let span = PerformanceInstrumentation.begin(.detailMetadata,
+                                                     backend: appModel.activeBackend.performanceLabel)
         if appModel.activeBackend == .jellyfin {
             if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
                 detailed = full
                 selectedMediaIndex = 0
                 watchedOverride = nil
+                span.end(fields: ["media_count": full.media?.count ?? 0])
+            } else {
+                span.end(result: "failure", fields: ["error": "metadata_unavailable"])
             }
             return
         }
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            span.end(result: "failure", fields: ["error": "missing_plex_server"])
+            return
+        }
         let req = BrowseAPI.metadata(server: server, token: token,
                                      identity: appModel.identity, ratingKey: item.ratingKey)
         if let resp = try? await appModel.client.send(req, as: MetadataResponse.self),
@@ -719,6 +739,9 @@ struct DetailView: View {
                 selectedMediaIndex = 0
             }
             watchedOverride = nil
+            span.end(fields: ["media_count": full.media?.count ?? 0])
+        } else {
+            span.end(result: "failure", fields: ["error": "metadata_unavailable"])
         }
     }
 }

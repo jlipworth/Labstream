@@ -22,6 +22,9 @@ struct PosterImage: View {
     var width: CGFloat = 200
     var height: CGFloat = 300
     var cornerRadius: CGFloat = DS.Radius.poster
+    /// Request scale for backend image transcodes. Most posters use @2x for crispness;
+    /// decorative blurred/backdrop art can opt into @1x to avoid fetching oversized images.
+    var requestScale: CGFloat = 2.0
 
     @Environment(AppModel.self) private var appModel
 
@@ -59,7 +62,26 @@ struct PosterImage: View {
         guard let request = imageRequest else { return }
         loaded = nil
         failed = false
+
+        var attempts = 0
+        var completed = false
+        let span = PerformanceInstrumentation.begin(.artworkLoad,
+                                                     backend: artworkBackendLabel,
+                                                     fields: [
+                                                        "width": Int(width),
+                                                        "height": Int(height),
+                                                        "pixel_width": Int(width * requestScale),
+                                                        "pixel_height": Int(height * requestScale),
+                                                     ])
+        defer {
+            if !completed {
+                span.end(result: Task.isCancelled ? "cancelled" : "failure",
+                         fields: ["attempts": attempts])
+            }
+        }
+
         for attempt in 0..<3 {
+            attempts = attempt + 1
             if attempt > 0 {
                 try? await Task.sleep(for: .milliseconds(300 << attempt))
             }
@@ -70,6 +92,16 @@ struct PosterImage: View {
                 if (400..<500).contains(status) { break } // missing art — don't hammer
                 guard status == 200, let ui = UIImage(data: data) else { continue }
                 withAnimation(.easeOut(duration: 0.35)) { loaded = Image(uiImage: ui) }
+                completed = true
+                span.end(fields: [
+                    "attempts": attempts,
+                    "bytes": data.count,
+                    "status": status,
+                    "width": Int(width),
+                    "height": Int(height),
+                    "pixel_width": Int(width * requestScale),
+                    "pixel_height": Int(height * requestScale),
+                ])
                 return
             } catch is CancellationError {
                 return
@@ -78,6 +110,10 @@ struct PosterImage: View {
             }
         }
         failed = true
+    }
+
+    private var artworkBackendLabel: String {
+        parsedJellyfinImagePath == nil ? "Plex" : "Jellyfin"
     }
 
     /// Neutral fallback when there's no artwork or it fails to load.
@@ -118,7 +154,7 @@ struct PosterImage: View {
 
         // The image path is itself relative to the server; the transcoder wants it
         // as the `url` query value (it may be an absolute path on the same server).
-        let scale = 2.0 // request at @2x for crisp posters on visionOS
+        let scale = requestScale
         guard var comps = URLComponents(url: base.appendingPathComponent("/photo/:/transcode"),
                                         resolvingAgainstBaseURL: false) else { return nil }
         PlexURLQueryEncoder.replaceQueryItems([
@@ -136,7 +172,7 @@ struct PosterImage: View {
         guard let parsed = parsedJellyfinImagePath,
               let base = appModel.jellyfinServerBaseURL,
               let token = appModel.jellyfinAccessToken else { return nil }
-        let scale = 2.0
+        let scale = requestScale
         guard let url = try? JellyfinLibrary.imageURL(server: base,
                                                       itemId: parsed.itemId,
                                                       imageType: parsed.type,

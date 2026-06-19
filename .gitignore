@@ -55,3 +55,8 @@ Carthage/Build/
 
 # Superpowers visual brainstorming scratch data (never commit)
 .superpowers/
+
+# Python tooling
+.venv/
+__pycache__/
+*.py[cod]
