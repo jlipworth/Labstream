@@ -646,10 +646,7 @@ final class AuthManager {
     }
 
     private var jellyfinIdentity: JellyfinClientIdentity {
-        JellyfinClientIdentity(client: appModel.identity.product,
-                               device: appModel.identity.deviceName,
-                               deviceId: appModel.identity.clientIdentifier,
-                               version: appModel.identity.version)
+        appModel.identity.jellyfin
     }
 
     private static let jellyfinSession: URLSession = {

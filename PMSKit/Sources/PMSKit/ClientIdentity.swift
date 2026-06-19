@@ -10,3 +10,12 @@ public struct ClientIdentity: Sendable, Equatable {
         self.deviceName = deviceName
     }
 }
+
+extension ClientIdentity {
+    public var jellyfin: JellyfinClientIdentity {
+        JellyfinClientIdentity(client: product,
+                               device: deviceName,
+                               deviceId: clientIdentifier,
+                               version: version)
+    }
+}

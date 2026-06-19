@@ -460,10 +460,7 @@ struct DetailView: View {
                                 item: playing,
                                 server: appModel.jellyfinServerBaseURL,
                                 token: appModel.jellyfinAccessToken,
-                                identity: JellyfinClientIdentity(client: appModel.identity.product,
-                                                                 device: appModel.identity.deviceName,
-                                                                 deviceId: appModel.identity.clientIdentifier,
-                                                                 version: appModel.identity.version)),
+                                identity: appModel.identity.jellyfin),
                              onClose: { presentingPlayer = false },
                              allowsRealityTheater: false)
                 .id(remote.id)
