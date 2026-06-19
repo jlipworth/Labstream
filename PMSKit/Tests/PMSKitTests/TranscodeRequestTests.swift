@@ -236,7 +236,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     let q = queryItems(req.startM3U8URL())
     func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
     // Must be a profile PMS actually has on disk; "visionOS" 400s. See TranscodeRequest.
-    #expect(v("X-Plex-Client-Profile-Name") == "Safari")
+    #expect(v("X-Plex-Client-Profile-Name") == "Generic")
     #expect(v("X-Plex-Client-Profile-Extra")?.contains("add-transcode-target") == true)
     #expect(v("videoQuality") == "100")
     #expect(v("directStream") == "1")
@@ -260,15 +260,15 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(q.filter { $0.name == "directPlay" }.count == 1)
 }
 
-@Test func directPlayProbeKeepsSafariProfile() {
+@Test func directPlayProbeKeepsGenericProfile() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
                                metadataKey: "/library/metadata/101",
                                maxVideoBitrateKbps: 8000, sessionID: "S",
                                mediaIndex: 0, partIndex: 0)
     let q = queryItems(req.directPlayProbeDecisionURL())
     func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
-    // An unknown profile name 400s — the probe must still use the server-known "Safari".
-    #expect(v("X-Plex-Client-Profile-Name") == "Safari")
+    // An unknown profile name 400s — the probe must still use the server-known "Generic".
+    #expect(v("X-Plex-Client-Profile-Name") == "Generic")
 }
 
 @Test func directPlayProbeProfileHasDirectPlayAndRequiredCap() {
@@ -324,7 +324,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     }
     #expect(v(start, "directPlay") == "1")
     #expect(v(start, "hasMDE") == nil)
-    #expect(v(start, "X-Plex-Client-Profile-Name") == "Safari")
+    #expect(v(start, "X-Plex-Client-Profile-Name") == "Generic")
     #expect(v(start, "X-Plex-Client-Profile-Extra")?.contains("add-direct-play-profile") == true)
     // Exactly one of each overridden param survives.
     #expect(start.filter { $0.name == "directPlay" }.count == 1)
@@ -339,6 +339,19 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
                                startOffsetSeconds: 1860)
     let q = queryItems(req.directPlayStartM3U8URL())
     #expect(q.first { $0.name == "offset" }?.value == "1860")
+}
+
+@Test func directPlayStartRequestCanPreflightActualPlaylist() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0)
+    let preflight = req.directPlayStartM3U8Request()
+    #expect(preflight.url.path == req.directPlayStartM3U8URL().path)
+    #expect(Set(queryItems(preflight.url)) == Set(queryItems(req.directPlayStartM3U8URL())))
+    #expect(preflight.method == "GET")
+    #expect(preflight.headers["Accept"]?.contains("application/json") == true)
+    #expect(queryItems(preflight.url).first { $0.name == "directPlay" }?.value == "1")
 }
 
 // MARK: - Regression guards (production path must stay byte-identical)

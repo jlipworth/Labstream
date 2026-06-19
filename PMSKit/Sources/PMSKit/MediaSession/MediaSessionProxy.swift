@@ -100,6 +100,7 @@ public actor MediaSessionProxy {
                 let data = try await controlSend(transcode.directPlayProbeRequest())
                 let probe = try decoder.decode(DecisionResponse.self, from: data)
                 if probe.savesVideoEncode {
+                    _ = try await controlSend(transcode.directPlayStartM3U8Request())
                     decision = probe
                     streamURL = transcode.directPlayStartM3U8URL()
                 }

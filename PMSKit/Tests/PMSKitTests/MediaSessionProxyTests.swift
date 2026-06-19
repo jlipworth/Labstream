@@ -88,6 +88,29 @@ final class MediaSessionProxyTests: XCTestCase {
                                           offsetMs: 0)
         // savesVideoEncode == true → committed to the direct-play start (directPlay=1).
         XCTAssertTrue(handle.localURL.absoluteString.contains("directPlay=1"))
+        XCTAssertTrue(recorder.urls.contains { url in
+            url.path == "/video/:/transcode/universal/start.m3u8"
+            && url.absoluteString.contains("directPlay=1")
+        }, "expected a direct-play start preflight before commit; got \(recorder.urls)")
+        await proxy.stop(generation: handle.generation)
+    }
+
+    func testOpenFallsBackWhenDirectPlayStartPreflightFails() async throws {
+        let origin = try await StubOrigin.start { _ in
+            (200, "application/vnd.apple.mpegurl", Data("#EXTM3U\nindex.m3u8\n".utf8))
+        }
+        defer { origin.stop() }
+        let recorder = ControlRecorder(response: Self.directPlayDecisionJSON) { req in
+            if req.url.path == "/video/:/transcode/universal/start.m3u8" {
+                throw URLError(.badServerResponse)
+            }
+        }
+        let proxy = MediaSessionProxy(upstreamFetch: origin.fetcher(),
+                                      controlSend: recorder.send())
+        let handle = try await proxy.open(sampleRequest(server: origin.baseURL, directStream: true),
+                                          offsetMs: 0)
+        XCTAssertFalse(handle.localURL.absoluteString.contains("directPlay=1"))
+        XCTAssertTrue(handle.localURL.absoluteString.contains("directPlay=0"))
         await proxy.stop(generation: handle.generation)
     }
 
@@ -172,10 +195,19 @@ final class ControlRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var sent: [URL] = []
     private let response: Data
-    init(response: Data) { self.response = response }
+    private let beforeRespond: (@Sendable (PlexRequest) async throws -> Void)?
+    init(response: Data,
+         beforeRespond: (@Sendable (PlexRequest) async throws -> Void)? = nil) {
+        self.response = response
+        self.beforeRespond = beforeRespond
+    }
     private func record(_ url: URL) { lock.lock(); sent.append(url); lock.unlock() }
     func send() -> @Sendable (PlexRequest) async throws -> Data {
-        { [self] req in record(req.url); return response }
+        { [self] req in
+            record(req.url)
+            try await beforeRespond?(req)
+            return response
+        }
     }
     var urls: [URL] { lock.lock(); defer { lock.unlock() }; return sent }
 }

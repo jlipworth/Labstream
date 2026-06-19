@@ -11,7 +11,7 @@ import Foundation
 /// rebuild loop keeps erroring and never recovers.
 ///
 /// This probe reproduces the EXACT failing wire shape from the live logs — `maxVideoBitrate`,
-/// `directPlay=0 directStream=1`, the `Safari` profile, and a deep `offset` — but fetches it
+/// `directPlay=0 directStream=1`, the `Generic` profile, standard X-Plex headers, and a deep `offset` — but fetches it
 /// from the Mac via `URLSession` instead of through the simulator's AVFoundation. That splits
 /// the question the simulator can't answer:
 ///   • Mac fetches start.m3u8 + the primed segment cleanly  → the SERVER is fine; the failure is
@@ -80,8 +80,12 @@ struct LiveSegmentProbeTests {
     /// to prove PMS produced it without downloading the whole thing.
     @discardableResult
     private func fetch(_ session: URLSession, _ label: String, _ url: URL,
+                       headers: [String: String] = [:],
                        firstBytesOnly: Bool = false) async -> Data? {
         var req = URLRequest(url: url)
+        for (name, value) in headers {
+            req.setValue(value, forHTTPHeaderField: name)
+        }
         if firstBytesOnly { req.setValue("bytes=0-65535", forHTTPHeaderField: "Range") }
         let started = Date()
         do {
@@ -136,6 +140,7 @@ struct LiveSegmentProbeTests {
             return
         }
         let session = makeSession()
+        let mediaHeaders = PlexHeaders.media(identity: cfg.identity, token: cfg.token)
         let transcode = TranscodeRequest(
             server: cfg.server, token: cfg.token, identity: cfg.identity,
             metadataKey: cfg.metadataKey, maxVideoBitrateKbps: cfg.maxVideoBitrateKbps,
@@ -143,10 +148,19 @@ struct LiveSegmentProbeTests {
             mediaIndex: cfg.mediaIndex, partIndex: cfg.partIndex,
             startOffsetSeconds: cfg.offsetSeconds)
 
-        print(String(format: ">>> SEG probe: offset=%ds cap=%dkbps segments=%d — the exact failing wire shape (directPlay=0 directStream=1 Safari).",
+        print(String(format: ">>> SEG probe: offset=%ds cap=%dkbps segments=%d — the exact playback wire shape (directPlay=0 directStream=1 Generic + X-Plex headers).",
                      cfg.offsetSeconds, cfg.maxVideoBitrateKbps, cfg.segmentCount))
 
-        // 1) start.m3u8 — starts the transcode session at the deep offset and returns the master.
+        // 1) Ask MDE for the production decision first. The app does this before handing
+        //    start.m3u8 to AVFoundation, and PMS may reject a start URL for "lacking decision"
+        //    if the media-plane request arrives before this control-plane authorization.
+        if let decisionData = await fetch(session, "decision", transcode.decisionURL(),
+                                          headers: PlexHeaders.standard(identity: cfg.identity, token: cfg.token)),
+           let decision = try? JSONDecoder().decode(DecisionResponse.self, from: decisionData) {
+            print(">>> SEG decision: video=\(decision.videoDecision ?? "nil") audio=\(decision.audioDecision ?? "nil") savesVideoEncode=\(decision.savesVideoEncode)")
+        }
+
+        // 2) start.m3u8 — starts the transcode session at the deep offset and returns the master.
         //    PLEX_LIVE_DIRECT_STREAM=0 rewrites the hardcoded directStream=1 to 0, to test whether
         //    forcing a transcode makes PMS honor maxVideoBitrate (segments should shrink ~8x at 3Mbps).
         var startURL = transcode.startM3U8URL()
@@ -154,7 +168,7 @@ struct LiveSegmentProbeTests {
             let flipped = startURL.absoluteString.replacingOccurrences(of: "directStream=1", with: "directStream=0")
             if let u = URL(string: flipped) { startURL = u; print(">>> SEG note: forcing directStream=0 (transcode, not copy)") }
         }
-        guard let masterData = await fetch(session, "start.m3u8", startURL),
+        guard let masterData = await fetch(session, "start.m3u8", startURL, headers: mediaHeaders),
               let masterBody = String(data: masterData, encoding: .utf8) else {
             print(">>> SEG VERDICT: start.m3u8 failed — PMS would not even open the session at this offset.")
             return
@@ -172,14 +186,14 @@ struct LiveSegmentProbeTests {
             print(">>> SEG master STREAM-INF: \(infLine.trimmingCharacters(in: .whitespaces))")
         }
 
-        // 2) Resolve the variant (master → media playlist), or treat start.m3u8 as the media playlist.
+        // 3) Resolve the variant (master → media playlist), or treat start.m3u8 as the media playlist.
         var mediaPlaylistURL = startURL
         var mediaBody = masterBody
         if masterBody.contains("#EXT-X-STREAM-INF"), let variant = playlistURIs(masterBody).first {
             guard let variantURL = URL(string: variant, relativeTo: startURL) else {
                 print(">>> SEG VERDICT: could not resolve variant URI \(variant)"); return
             }
-            guard let data = await fetch(session, "index.m3u8", variantURL),
+            guard let data = await fetch(session, "index.m3u8", variantURL, headers: mediaHeaders),
                   let body = String(data: data, encoding: .utf8) else {
                 print(">>> SEG VERDICT: master OK but the variant index.m3u8 failed — session opened, playlist won't serve.")
                 return
@@ -195,7 +209,7 @@ struct LiveSegmentProbeTests {
             print(">>> SEG note: media playlist has NO #EXT-X-START — PMS did not prime at the offset (deep seek would stall).")
         }
 
-        // 3) Seek INTO the playlist to the resume offset and fetch the N consecutive segments
+        // 4) Seek INTO the playlist to the resume offset and fetch the N consecutive segments
         //    AVPlayer plays right after a deep-offset (re)start — the exact ones that stalled.
         //    (The top-of-list segments are empty 188-byte t=0 stubs; see timedSegments.)
         let timed = timedSegments(mediaBody)
@@ -213,16 +227,19 @@ struct LiveSegmentProbeTests {
         let slice = timed[startIdx..<min(startIdx + cfg.segmentCount, timed.count)]
         for entry in slice {
             guard let segURL = URL(string: entry.uri, relativeTo: mediaPlaylistURL) else { continue }
-            // Full fetch (no range): a real primed segment is hundreds of KB of MPEG-TS; an empty
-            // 188-byte PAT-only stub means PMS did NOT transcode media at this point.
-            if let data = await fetch(session, "segment@\(Int(entry.start))s", segURL) {
+            // Range-fetch the start of the segment. A real primed MPEG-TS or fMP4 segment is
+            // thousands of bytes immediately; an empty 188-byte PAT-only stub means PMS did not
+            // produce media at this point. Direct-streamed HEVC is normally fMP4, not TS.
+            if let data = await fetch(session, "segment@\(Int(entry.start))s", segURL,
+                                      headers: mediaHeaders, firstBytesOnly: true) {
                 served += 1
                 let head = [UInt8](data.prefix(8))
                 let isTS = head.first == 0x47
-                let looksReal = data.count > 2_000          // a genuine video segment, not a 1-packet stub
-                if isTS && looksReal { realMedia += 1 }
-                print(String(format: ">>> SEG sniff@%ds: %d bytes, ts=%@ realMedia=%@ head=%@",
-                             Int(entry.start), data.count, isTS ? "YES" : "no",
+                let isFMP4 = data.count >= 8 && String(bytes: data[4..<8], encoding: .ascii) != nil
+                let looksReal = data.count > 2_000          // genuine media bytes, not a 1-packet stub
+                if looksReal && (isTS || isFMP4) { realMedia += 1 }
+                print(String(format: ">>> SEG sniff@%ds: %d bytes, ts=%@ fmp4=%@ realMedia=%@ head=%@",
+                             Int(entry.start), data.count, isTS ? "YES" : "no", isFMP4 ? "YES" : "no",
                              looksReal ? "YES" : "NO(stub)",
                              head.map { String(format: "%02x", $0) }.joined()))
             }

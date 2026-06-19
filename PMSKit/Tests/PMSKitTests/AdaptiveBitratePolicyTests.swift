@@ -19,10 +19,16 @@ private let fastConfig = AdaptiveBitratePolicy.Configuration(
     #expect(policy.fallbackBitrateKbps(afterStallAt: 2_000, userSelectedMaximumKbps: 8_000) == nil)
 }
 
-@Test func adaptiveFallbackMapsMaximumSentinelsToHighestBoundedRung() {
+@Test func adaptiveFallbackDoesNotDownshiftDirectPlayMaximumSentinel() {
+    var policy = AdaptiveBitratePolicy(configuration: fastConfig)
+
+    #expect(policy.fallbackBitrateKbps(afterStallAt: 0, userSelectedMaximumKbps: 0) == nil)
+    #expect(policy.recordStall(now: 0, currentKbps: 0, userSelectedMaximumKbps: 0) == nil)
+}
+
+@Test func adaptiveFallbackMapsMaximumTranscodeSentinelToHighestBoundedRung() {
     let policy = AdaptiveBitratePolicy()
 
-    #expect(policy.fallbackBitrateKbps(afterStallAt: 0, userSelectedMaximumKbps: 0) == 40_000)
     #expect(policy.fallbackBitrateKbps(afterStallAt: 200_000, userSelectedMaximumKbps: 200_000) == 40_000)
 }
 

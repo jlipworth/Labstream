@@ -114,9 +114,11 @@ public struct TranscodeRequest: Sendable, Equatable {
             // PMS resolves this name to a built-in profile file (`Profiles/<Name>.xml`).
             // There is NO "visionOS" profile on the server, and an unknown name makes
             // the universal transcoder return a bare HTTP 400 (verified against live
-            // PMS). "Safari" is the closest built-in match: AVFoundation HLS with
-            // HEVC/fMP4 support, which is exactly what our AVPlayer can play.
-            .init(name: "X-Plex-Client-Profile-Name", value: "Safari"),
+            // PMS). Use "Generic" plus our explicit `X-Plex-Client-Profile-Extra` so
+            // PMS will direct-stream/remux HEVC video when the requested cap permits it.
+            // The Safari profile hard-limits 10-bit HEVC and caused high-bitrate 4K MKV
+            // titles to be video-transcoded at ~20 Mbps even on Direct Play / Maximum.
+            .init(name: "X-Plex-Client-Profile-Name", value: "Generic"),
             .init(name: "X-Plex-Client-Profile-Extra", value: deviceProfile.clientProfileExtra),
         ]
 
@@ -190,7 +192,7 @@ public struct TranscodeRequest: Sendable, Equatable {
     /// Built additively from `sharedQueryItems()`: we swap `directPlay` 0→1 and replace the
     /// `X-Plex-Client-Profile-Extra` with the direct-play probe variant, then append `hasMDE=1`.
     /// Everything else (path/protocol/session/token/maxVideoBitrate/mediaIndex/partIndex/profile
-    /// name `Safari`/subtitles/offset/identity) is identical to `decisionURL()`. Query-param
+    /// name `Generic`/subtitles/offset/identity) is identical to `decisionURL()`. Query-param
     /// order is irrelevant to PMS, so this stays consistent with the production decision request.
     public func directPlayProbeDecisionURL() -> URL {
         var items = directPlayQueryItems()
@@ -219,9 +221,19 @@ public struct TranscodeRequest: Sendable, Equatable {
         buildURL(path: "/video/:/transcode/universal/start.m3u8", queryItems: directPlayQueryItems())
     }
 
+    /// The direct-play start URL as a control-plane request. This is useful as a lightweight
+    /// startability preflight: PMS can return `Direct play OK` from `/decision` and still reject
+    /// the actual `directPlay=1` `start.m3u8` with HTTP 400. Fetching the tiny playlist before
+    /// handing the URL to AVPlayer lets the app fall back intentionally instead of discovering
+    /// the rejection through an opaque player load failure.
+    public func directPlayStartM3U8Request() -> PlexRequest {
+        PlexRequest(url: directPlayStartM3U8URL(), method: "GET",
+                    headers: PlexHeaders.media(identity: identity, token: token))
+    }
+
     /// `sharedQueryItems()` with the two direct-play deltas applied: `directPlay` 0→1 and the
     /// `X-Plex-Client-Profile-Extra` swapped for the direct-play-capable profile. Everything
-    /// else (path/protocol/session/token/cap/indices/profile name `Safari`/subtitles/offset/
+    /// else (path/protocol/session/token/cap/indices/profile name `Generic`/subtitles/offset/
     /// identity) is identical to the production transcode params.
     private func directPlayQueryItems() -> [URLQueryItem] {
         var items = sharedQueryItems()

@@ -9,9 +9,10 @@ import Foundation
 /// - sustained stall -> downshift one bounded rung, subject to cooldown/frequency limits
 /// - sustained healthy playback with enough buffer -> optional upshift one bounded rung
 ///
-/// The policy never raises above the user's selected cap. Sentinel qualities such as Direct Play /
-/// Maximum (0) and Maximum transcoded (200 Mbps in the app) are treated as permission to climb only
-/// to the highest bounded rung; the app does not auto-switch back into direct play after recovering.
+/// The policy never raises above the user's selected cap. `Direct Play / Maximum` (0) is not a
+/// downshiftable transcode rung: callers must surface a visible failure or make an explicit user-
+/// initiated quality change rather than silently abandoning video-copy intent. `Maximum (HLS)`
+/// (200 Mbps in the app) is treated as permission to climb only to the highest bounded rung.
 public struct AdaptiveBitratePolicy: Sendable, Equatable {
     public struct Configuration: Sendable, Equatable {
         /// Minimum seconds between any two automatic changes. Protects PMS/Jellyfin from restart
@@ -60,8 +61,8 @@ public struct AdaptiveBitratePolicy: Sendable, Equatable {
     }
 
     /// Positive transcoded caps, low -> high. Excludes sentinel values such as "Direct Play /
-    /// Maximum" (`0`) and "Maximum transcoded" (`200_000`) because automatic adaptation should
-    /// operate only on bounded rungs.
+    /// Maximum" (`0`) and "Maximum (HLS)" (`200_000`) because automatic adaptation should
+    /// operate only on bounded rungs. Direct Play / Maximum is explicitly not downshifted.
     public let transcodedRungsKbps: [Int]
     public var configuration: Configuration
 
@@ -137,8 +138,7 @@ public struct AdaptiveBitratePolicy: Sendable, Equatable {
     /// Next lower bounded rung for a sustained stall.
     public func fallbackBitrateKbps(afterStallAt currentKbps: Int,
                                     userSelectedMaximumKbps: Int = Int.max) -> Int? {
-        guard let highest = boundedRungs(userSelectedMaximumKbps: userSelectedMaximumKbps).last else { return nil }
-        if currentKbps <= 0 { return highest }
+        guard currentKbps > 0 else { return nil }
         return boundedRungs(userSelectedMaximumKbps: userSelectedMaximumKbps).last { $0 < currentKbps }
     }
 
