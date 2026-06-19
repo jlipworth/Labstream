@@ -8,8 +8,9 @@ Secrets and stable identifiers belong in `KeychainStore`:
 - stable client identifier
 - selected backend/server details that are sensitive enough to avoid UserDefaults
 - Jellyfin server URL, access token, user ID, and server ID
+- future Emby server base URL, access token, user ID, server ID, and stable device ID once Emby support is implemented
 
-Passwords are not persisted.
+Passwords are not persisted. For future Emby support, preserve any user-entered base path such as `/emby` with the server URL and scope tokens by server ID so a token is never sent to the wrong server.
 
 ## UserDefaults
 

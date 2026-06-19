@@ -117,11 +117,9 @@ and [`testing`](docs/TESTING-STRATEGY.md).
 On first launch, choose Plex or Jellyfin and sign in to your server. Reinstalling wipes the app
 container, so a re-login is required after a fresh install.
 
-## Archive
+## Docs
 
-Historical design research, completed implementation plans, and superseded review snapshots live in
-[`docs/archive/`](docs/archive/). Archived files are context only; they are not the current source of
-truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
+Current architecture and operating guidance lives in the top-level files under [`docs/`](docs/). Active research for not-yet-implemented work lives in [`docs/research/`](docs/research/); promote only proven behavior from research into the current docs. Historical design research, completed implementation plans, and superseded review snapshots live in [`docs/archive/`](docs/archive/). Archived files are context only; they are not the current source of truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
 
 ## License
 

@@ -15,7 +15,7 @@ VisionPlay is a native visionOS app with a deliberately small app shell, backend
 
 `PMSKit` is intentionally not an app framework. It should stay pure and testable:
 
-- request builders for Plex and Jellyfin
+- request builders for Plex and Jellyfin; future backends such as Emby should start here as pure request/model work before app integration
 - response models and MediaItem mapping
 - playback/download decision helpers
 - small policy state machines such as adaptive bitrate and seek restart budgeting
@@ -25,7 +25,7 @@ The app owns all live `URLSession`, `AVPlayer`, SwiftUI state, Keychain, filesys
 
 ## Backend boundary
 
-There is no shared “everything backend” protocol yet. Plex and Jellyfin differ enough that a wide abstraction would hide important behavior. The current bridge is `MediaItem`: browse/playback/download features adapt backend-specific responses into that shared model where useful.
+There is no shared “everything backend” protocol yet. Plex and Jellyfin differ enough that a wide abstraction would hide important behavior. Emby research reinforces that rule: related APIs are not identical enough to justify pretending one backend implementation can cover both Jellyfin and Emby without explicit seams. The current bridge is `MediaItem`: browse/playback/download features adapt backend-specific responses into that shared model where useful.
 
 See [`BACKENDS.md`](BACKENDS.md) for the backend comparison.
 
