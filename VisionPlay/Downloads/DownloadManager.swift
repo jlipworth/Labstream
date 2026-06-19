@@ -318,10 +318,7 @@ public final class DownloadManager {
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
-        let identity = JellyfinClientIdentity(client: appModel.identity.product,
-                                              device: appModel.identity.deviceName,
-                                              deviceId: appModel.identity.clientIdentifier,
-                                              version: appModel.identity.version)
+        let identity = appModel.identity.jellyfin
         var request: URLRequest
         var destination: URL
         var expectedBytes: Int?
