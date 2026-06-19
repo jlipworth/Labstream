@@ -125,19 +125,30 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
         return candidates.contains { t.hasPrefix($0) || t == $0 }
     }
 
-    /// `true` when this activity is plausibly tied to the given ratingKey/title.
-    /// Match chain (research-recommended): exact `Context.ratingKey`, else the human
-    /// title/subtitle CONTAINS the queue title. Title matching is in-memory only — the
-    /// title is NEVER logged (see `PlexActivity.title` doc).
-    public func matches(ratingKey: String?, queueTitle: String?) -> Bool {
+    /// `true` when this activity's human title/subtitle matches the **bare** media title
+    /// (e.g. `"Blade Runner"`, NOT our suffixed optimize-queue title `"Blade Runner
+    /// [VisionPlay abc12345]"` — the server activity never carries that suffix). Normalized
+    /// equality first, then a containment fallback for `"Title (year)"`-style subtitles.
+    /// In-memory only — the title is NEVER logged (see `PlexActivity.title` doc).
+    public func matchesTitle(_ mediaTitle: String?) -> Bool {
+        guard let needle = mediaTitle?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
+              !needle.isEmpty else { return false }
+        for field in [subtitle, title] {
+            guard let f = field?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
+                  !f.isEmpty else { continue }
+            if f == needle || f.contains(needle) { return true }
+        }
+        return false
+    }
+
+    /// `true` when this activity is plausibly tied to the given ratingKey or bare media
+    /// title: exact `Context.ratingKey`, else a `matchesTitle` hit. Per-activity predicate;
+    /// ambiguity across multiple activities is resolved by `Activities.optimizeActivity`.
+    public func matches(ratingKey: String?, title mediaTitle: String?) -> Bool {
         if let ratingKey, let ctx = contextRatingKey, !ctx.isEmpty, ctx == ratingKey {
             return true
         }
-        if let queueTitle, !queueTitle.isEmpty {
-            if title?.localizedCaseInsensitiveContains(queueTitle) == true { return true }
-            if subtitle?.localizedCaseInsensitiveContains(queueTitle) == true { return true }
-        }
-        return false
+        return matchesTitle(mediaTitle)
     }
 }
 
@@ -161,30 +172,38 @@ public struct Activities: Decodable, Sendable, Equatable {
         self.activities = (try? container.decodeIfPresent([PlexActivity].self, forKey: .activity)) ?? []
     }
 
-    /// Find the optimize/conversion activity for a given job, using the research match chain:
-    /// 1. an optimize-typed activity whose `Context.ratingKey` == `ratingKey`;
-    /// 2. else an optimize-typed activity whose title/subtitle contains `queueTitle`;
-    /// 3. else, if exactly one optimize-typed activity is running, take it (single-job common case).
-    /// Returns `nil` when nothing plausibly matches (caller keeps current behavior).
-    public func optimizeActivity(ratingKey: String?, queueTitle: String?) -> PlexActivity? {
+    /// Find the optimize/conversion activity for a given job. `title` is the **bare** media
+    /// title (NOT a suffixed queue title). Conservative match chain — it never guesses when
+    /// attribution would be ambiguous, so a wrong percentage is never shown for another job:
+    /// 1. an optimize-typed activity whose `Context.ratingKey` == `ratingKey` (reliable);
+    /// 2. else, if EXACTLY ONE optimize-typed activity matches the bare title, take it
+    ///    (uniqueness guards against `"Alien"`/`"Aliens"` collisions and concurrent jobs);
+    /// 3. else, ONLY when `allowSoleFallback` (caller asserts this client has a single active
+    ///    optimize job) AND exactly one optimize activity is running, take it.
+    /// Returns `nil` when nothing UNAMBIGUOUSLY matches (caller keeps current behavior).
+    public func optimizeActivity(ratingKey: String?, title: String?,
+                                 allowSoleFallback: Bool = false) -> PlexActivity? {
         let optimizers = activities.filter { $0.looksLikeOptimize }
-        if let exact = optimizers.first(where: {
-            if let r = ratingKey, let c = $0.contextRatingKey, !c.isEmpty { return c == r }
-            return false
-        }) { return exact }
-        if let titled = optimizers.first(where: { $0.matches(ratingKey: ratingKey, queueTitle: queueTitle) }) {
-            return titled
+        if let r = ratingKey, !r.isEmpty,
+           let exact = optimizers.first(where: { ($0.contextRatingKey.map { !$0.isEmpty && $0 == r }) ?? false }) {
+            return exact
         }
-        if optimizers.count == 1 { return optimizers.first }
+        if let title, !title.isEmpty {
+            let titleMatches = optimizers.filter { $0.matchesTitle(title) }
+            if titleMatches.count == 1 { return titleMatches.first }
+        }
+        if allowSoleFallback, optimizers.count == 1 { return optimizers.first }
         return nil
     }
 
     /// Redaction-safe shape descriptor of the raw decode for the live PMS probe.
     /// Emits ONLY structural facts (counts, field-presence flags, numeric progress,
     /// dotted types) — NEVER any `title`/`subtitle` VALUE. Safe to log.
-    public func probeShape(ratingKey: String?, queueTitle: String?) -> [String: String] {
+    public func probeShape(ratingKey: String?, title: String?,
+                           allowSoleFallback: Bool = false) -> [String: String] {
         let optimizers = activities.filter { $0.looksLikeOptimize }
-        let match = optimizeActivity(ratingKey: ratingKey, queueTitle: queueTitle)
+        let match = optimizeActivity(ratingKey: ratingKey, title: title,
+                                     allowSoleFallback: allowSoleFallback)
         var out: [String: String] = [
             "activity_count": String(activities.count),
             "optimize_count": String(optimizers.count),
