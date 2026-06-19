@@ -1,10 +1,10 @@
 # VisionPlay — Privacy Policy
 
-_Last updated: 2026-06-16_
+_Last updated: 2026-06-19_
 
 VisionPlay is a personal media client for Apple Vision Pro that connects to a
-Plex Media Server **that you choose and control**. It is designed to collect as
-little as possible.
+Plex Media Server or Jellyfin server **that you choose and control**. It is
+designed to collect as little as possible.
 
 ## What VisionPlay does not do
 
@@ -12,14 +12,16 @@ little as possible.
   no telemetry, no crash reporting to the developer, and no advertising.
 - **No tracking.** VisionPlay does not track you across apps or websites and
   contains no third-party tracking SDKs.
-- **No third-party servers.** VisionPlay communicates only with Plex
-  (`plex.tv`, for sign-in) and the Plex Media Server you point it at.
+- **No developer servers.** VisionPlay communicates only with the media backend
+  you configure. Plex sign-in uses Plex (`plex.tv`) plus the Plex Media Server
+  you select; Jellyfin mode talks to the Jellyfin server URL you enter.
 
 ## What stays on your device
 
-- **Your Plex authentication token** is stored in the iOS/visionOS **Keychain**
-  on your device. It is sent only to Plex and to your own server to authenticate
-  requests. It is never transmitted to the developer.
+- **Your media-server credentials/tokens** are stored in the iOS/visionOS
+  **Keychain** on your device. Plex tokens are sent only to Plex and the selected
+  Plex server; Jellyfin access tokens are sent only to your Jellyfin server.
+  They are never transmitted to the developer.
 - **Playback preferences and resume positions** are stored locally
   (UserDefaults) and, where applicable, reported to your Plex server as Plex's
   normal playback-state ("scrobble") feature.
@@ -34,8 +36,8 @@ little as possible.
 ## Diagnostic reports
 
 When you tap **Copy diagnostic report**, VisionPlay includes safe app/server
-version information, the selected quality setting, a recent playback snapshot
-when available, and recent redacted events. The diagnostics API and report
+product/version information, backend name, connection scheme, selected quality
+settings, a recent playback snapshot when available, and recent redacted events. The diagnostics API and report
 renderer are designed to omit sensitive values such as Plex tokens, client
 identifiers, hostnames/IP addresses, full URLs, usernames, library paths,
 filenames, and media titles.
@@ -46,11 +48,14 @@ choose to paste or attach it somewhere.
 
 ## Data shared with Plex
 
-When you sign in and stream, VisionPlay talks to Plex and to your server exactly
-as an official Plex client would (account sign-in, library browsing, playback,
-playback-state reporting). That interaction is governed by **Plex's own privacy
-policy** (<https://www.plex.tv/about/privacy-legal/>), not by the developer of
+When you sign in and stream with Plex, VisionPlay talks to Plex and to your
+server for account sign-in, library browsing, playback, and playback-state
+reporting. That interaction is governed by **Plex's own privacy policy**
+(<https://www.plex.tv/about/privacy-legal/>), not by the developer of
 VisionPlay.
+
+When you use Jellyfin, VisionPlay talks directly to the Jellyfin server URL you
+configure. That server is controlled by you or your server administrator.
 
 ## Children
 

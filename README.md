@@ -5,10 +5,9 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
-A personal-use, native **visionOS (Apple Vision Pro)** Plex client that combines the three things no
-current visionOS Plex app cleanly does together: **reliable bitrate-capped HLS transcoding** (request
-a capped HLS stream, not direct-play-only), **theater/cinema playback** on a giant virtual screen, and
-**offline downloads** of capped copies of your library.
+A personal-use, native **visionOS (Apple Vision Pro)** media client for Plex and Jellyfin. It combines
+server-aware streaming quality control, custom Apple Vision Pro cinema playback, and offline downloads
+that choose between raw originals and compatible server-rendered copies.
 
 > **Status: working app.** End-to-end playback runs in the visionOS 26.5 simulator and on device.
 > Build is green and the `PMSKit` package ships a full unit-test suite (`cd PMSKit && swift test`).
@@ -16,18 +15,18 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 
 ## What this app does
 
-- **Sign-in** via Plex PIN OAuth (in-app web sheet that auto-closes), token stored in Keychain
+- **Sign-in** via Plex PIN OAuth or Jellyfin credentials, with secrets stored in Keychain
 - **Browse + search** Home hubs, libraries, and a search surface
-- **Transcoded HLS playback** — forces a server-side bitrate-capped HLS stream (4K HEVC → ~7.5 Mbps
-  1080p H.264 by default) rather than relying on direct play
+- **Server-aware playback** — Direct Play / Maximum attempts copy/direct paths where viable; explicit
+  quality rungs request capped server streams
 - **Scrubbing + resume** — seeks cleanly and resumes half-watched titles at the right offset
 - **Cinema docking** — the player expands into a system Cinema Environment with a controllable transport
   that stays tappable in both inline and expanded states
 - **TV show hierarchy** — drill down Show → Seasons → Episodes
 - **Skip Intro / Skip Credits** during server-detected marker windows
 - **Up Next + autoplay** — advances to the next episode with a countdown, crossing season boundaries
-- **Offline downloads** — quality-picker downloads with persistent transfers, offline metadata + poster
-  + resume, and download-integrity rejection of truncated/error bodies
+- **Offline downloads** — raw original downloads only when locally playable; otherwise compatible
+  original-quality or bitrate-capped server-rendered files with metadata, poster, resume, and integrity checks
 - **Failure recovery** — a stall watchdog surfaces a "Playback failed" overlay and rebuilds the player
   to recover from wedged HLS network loss without relaunching the app
 - **Playback extras** — quality switch that keeps the playhead, subtitles by language name, chapters,
@@ -36,10 +35,11 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 
 ## Tech
 
-- **SwiftUI** app shell with **AVKit / AVFoundation** for transcoded HLS playback and Cinema Environment docking
+- **SwiftUI** app shell with a custom AVFoundation player surface for streaming, offline playback,
+  and Cinema Environment docking
 - **Swift 6** with strict concurrency
-- **`PMSKit`** — a local Swift package providing the hand-rolled Plex API layer (auth, library browse,
-  transcode decision, playback-state endpoints, TV + music hierarchy), fully unit-tested
+- **`PMSKit`** — a local Swift package providing tested Plex/Jellyfin request builders, models,
+  playback/download decision helpers, diagnostics primitives, and policy state machines
 - **Xcode 26**, targeting **visionOS 26.5**
 
 ## Project structure
@@ -48,15 +48,15 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 VisionPlay/
 ├── VisionPlay/            # visionOS app (SwiftUI)
 │   ├── App/              # app entry + session state
-│   ├── Auth/             # Plex PIN OAuth + Keychain
+│   ├── Auth/             # Plex/Jellyfin auth + Keychain
+│   ├── Backend/          # Jellyfin service lane
 │   ├── Networking/       # Plex client wiring
-│   ├── Player/           # AVKit player + Cinema Environment + recovery
+│   ├── Player/           # custom AVPlayer surface + Cinema Environment + recovery
 │   ├── Music/            # Plexamp-style music browse + audio player
 │   ├── Downloads/        # offline transfers + offline library
 │   └── UI/               # Home · Libraries · Search · Detail
-├── PMSKit/              # local Swift package: Plex API layer (+ tests)
-├── research/             # design research that informed the build
-└── docs/                 # supporting notes
+├── PMSKit/              # local Swift package: request/model/policy layer (+ tests)
+└── docs/                 # current architecture docs plus archived research/plans
 ```
 
 ## Build & run
@@ -107,18 +107,21 @@ entitlements review, screenshots, privacy metadata, and store-specific release a
 is intentionally not part of this personal sideload setup.
 
 See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
-gotchas worth knowing before changing the player or transcode code.
+gotchas worth knowing before changing the player or transcode code. Current architecture docs start at
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), with focused notes for
+[`playback`](docs/PLAYBACK-ARCHITECTURE.md), [`backends`](docs/BACKENDS.md),
+[`downloads/offline`](docs/DOWNLOADS-OFFLINE.md), [`persistence`](docs/PERSISTENCE.md),
+[`diagnostics/privacy`](docs/DIAGNOSTICS-PRIVACY.md), [`system integration`](docs/SYSTEM-INTEGRATION.md),
+and [`testing`](docs/TESTING-STRATEGY.md).
 
-On first launch, sign in with your Plex account and point the app at your server (e.g.
-`https://your-server:32400`). Reinstalling wipes the app container, so a re-login is required after a
-fresh install.
+On first launch, choose Plex or Jellyfin and sign in to your server. Reinstalling wipes the app
+container, so a re-login is required after a fresh install.
 
-## Research
+## Archive
 
-The `research/` directory holds the design research that informed this client — the Plex transcoding
-API surface, visionOS playback/theater capabilities, the offline-download approach, a competitive
-teardown, and playback-state plumbing. It documents *why* the app is built the way it is and remains a
-useful reference for the transcode-decision and download paths.
+Historical design research, completed implementation plans, and superseded review snapshots live in
+[`docs/archive/`](docs/archive/). Archived files are context only; they are not the current source of
+truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
 
 ## License
 
