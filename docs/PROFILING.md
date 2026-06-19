@@ -79,6 +79,112 @@ permanent `os_signpost` points using non-sensitive names only. Suggested subsyst
 Keep signpost payloads numeric or generic. Do not signpost media titles, server names, account names,
 URLs, tokens, client identifiers, or local paths.
 
+
+## Issue #42 repeatable load-time spans
+
+The profiling log summarizer is Python stdlib-only, but it is intentionally pinned through the repo
+`pyproject.toml`/`uv.lock` so repeated local and CI runs use a known Python toolchain. Use `uv run`
+for committed profiling commands and `uv run python -m unittest discover -s scripts/tests -v` for its
+tests.
+
+Only Debug builds emit the privacy-preserving `perf.span` lines and matching Points of Interest
+signposts; Release/TestFlight/App Store builds use no-op instrumentation. Debug profiling covers the
+focused #42 matrix: Home, Libraries list, library grid first/page loads, artwork requests, detail
+metadata refresh, playback negotiation, player-item load, and tap-to-playing startup. The
+fields are generic counts, backend labels, dimensions, path modes, quality caps, byte counts, HTTP
+status codes, and durations only; do not add media titles, server URLs, usernames, tokens, client
+identifiers, image paths, or local file paths.
+
+Run one cold and one warm pass for each backend/scenario, then summarize the local logs:
+
+```sh
+# Simulator example. Start this right after the scenario, while the relevant log window is fresh.
+xcrun simctl spawn booted log show --style json --last 15m \
+  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  | uv run scripts/perf-log-summary.py --markdown
+
+# If you launched via XcodeBuildMCP, the returned osLogPath is also parseable:
+uv run scripts/perf-log-summary.py --markdown < /path/to/com.jlipworth.VisionPlex_oslog_*.log
+```
+
+Useful narrow summaries:
+
+```sh
+# Home, Libraries, and artwork first-load / warm-load comparison.
+xcrun simctl spawn booted log show --style json --last 15m \
+  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  | uv run scripts/perf-log-summary.py --phase home.load --phase libraries.load --phase artwork.load --markdown
+
+# Artwork split by requested backend image size. Useful for finding oversized decorative art.
+xcrun simctl spawn booted log show --style json --last 15m \
+  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  | uv run scripts/perf-log-summary.py --phase artwork.load --group-field pixel_width --group-field pixel_height --markdown
+
+# Playback startup comparison across Plex/Jellyfin and original/transcoded quality choices.
+xcrun simctl spawn booted log show --style json --last 15m \
+  --predicate 'subsystem == "com.jlipworth.VisionPlex" && category == "Performance"' \
+  | uv run scripts/perf-log-summary.py --phase playback.resolve --phase playback.item_load --phase playback.startup --group-field path_mode --markdown
+```
+
+Interpret the key spans as:
+
+| Span | Start | End | Use |
+| --- | --- | --- | --- |
+| `home.load` | Home task starts a backend fetch | first home content state is marked loaded/failed | cold/warm homepage latency, rail counts |
+| `libraries.load` | Libraries tab starts section/view fetch | Libraries list is loaded/failed | Movies/TV/Music entry-list latency |
+| `library_grid.initial_page` | library grid starts page 0 fetch | initial slots are populated/failed | first visible listing content latency |
+| `library_grid.page` | lazy placeholder triggers a later page | page items are patched/failed | pagination latency while scrolling |
+| `detail.metadata` | detail screen starts full metadata refresh | detail model is refreshed/failed | pre-play metadata latency |
+| `artwork.load` | a `PosterImage` starts a backend image request | image data is decoded/failed/cancelled | poster/chapter/artwork fetch + decode latency; aggregate by backend and screen scenario because per-image logs are noisy |
+| `playback.resolve` | user taps Play | app presents player after backend negotiation | backend playback-info/URL resolution latency |
+| `playback.item_load` | `AVPlayerItem` is installed | item reaches `readyToPlay`/failed | AVFoundation item readiness |
+| `playback.startup` | `PlaybackController.start()` begins | time control first reaches `.playing`/failed/cancelled | tap/player startup to useful playback |
+
+
+What we intentionally do not get from these spans:
+
+- SwiftUI render/recomposition cost for a submenu opening after state changes. Use SwiftUI/Hangs Instruments if
+  the Quality/Subs/Audio/Chapters/Stats panels feel sluggish.
+- true scroll FPS/frame pacing. Use Hangs, SwiftUI, and RealityKit/compositor templates on device.
+- memory growth/leaks. Use Allocations/Leaks.
+- server network time vs JSON decode split inside a page-load span. Add narrower spans only after a broad
+  span proves that path is slow.
+
+Recommended #42 run matrix:
+
+1. Plex Home cold launch, then Home pull-to-refresh warm pass.
+2. Jellyfin Home cold launch, then Home pull-to-refresh warm pass.
+3. Plex Movies, TV, and Music listings: first grid load, one lazy page, warm reopen.
+4. Jellyfin Movies, TV, and Music listings: first grid load, one lazy page, warm reopen.
+5. Plex playback startup: one Original/Maximum path and one capped transcode path.
+6. Jellyfin playback startup: one DirectPlay/DirectStream-like path and one transcoded path.
+
+These log summaries are not a substitute for Instruments. Use them to make the scenarios repeatable
+and to identify which interval deserves a Time Profiler, Hangs, SwiftUI, or Points of Interest trace.
+Any product claim about smoothness or first frame still needs a physical Vision Pro pass.
+
+
+### Baseline-driven improvement from the first simulator pass
+
+Grouping `artwork.load` by image dimensions showed that decorative 900×600 backdrops were requesting
+1800×1200 backend transcodes and landing in the slowest artwork bucket in the initial simulator log.
+Those blurred/low-opacity backdrops now request @1x images while normal posters remain @2x. This is
+the intended workflow for the profiling rails: identify a specific slow bucket, make a narrow change,
+and re-measure rather than adding broad speculative caching.
+
+## Storing profiling results over time
+
+Raw `.trace` bundles, simulator logs, screenshots, and media-specific notes stay outside git. For quick
+one-off checks, paste the reviewed `perf-log-summary.py` table into the relevant GitHub issue. When a
+result is useful as a long-term comparison point, commit a small privacy-reviewed Markdown summary under
+[`docs/profiling/baselines/`](profiling/baselines/) and keep the raw artifact only in local scratch storage.
+
+This gives us three tiers:
+
+1. **Raw evidence**: local-only traces/logs, never committed.
+2. **Issue comments**: most ad-hoc pass/fail summaries and surprising findings.
+3. **Repo baselines**: curated, redacted summaries worth comparing across releases or major refactors.
+
 ## MetricKit follow-up
 
 MetricKit is for aggregate real-device field metrics after the app is running on hardware. It is not a

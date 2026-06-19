@@ -94,7 +94,7 @@ struct NowPlayingView: View {
     @ViewBuilder
     private var artBackdrop: some View {
         if let art = artPath, !art.isEmpty {
-            PosterImage(path: art, width: 900, height: 600, cornerRadius: 0)
+            PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .blur(radius: 60)
                 .opacity(0.30)

@@ -194,4 +194,13 @@ if ((${#scan_paths[@]} > 0)); then
   )
 fi
 
+
+if [[ -f pyproject.toml ]]; then
+  if ! command -v uv >/dev/null 2>&1; then
+    fail "uv is required for repo Python tooling; install uv or run outside this hygiene gate"
+  fi
+  printf '== Python tooling tests ==\n'
+  uv run python -m unittest discover -s scripts/tests -v
+fi
+
 echo "ci-hygiene: ok"
