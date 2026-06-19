@@ -33,7 +33,7 @@ VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server*
 Open an issue with steps to reproduce, your visionOS version, and the app
 version (Settings):
 
-<https://github.com/jlipworth/VisionPlex/issues>
+<https://github.com/jlipworth/VisionPlay/issues>
 
 For hard-to-reproduce playback, download, or music issues, you can include a
 local diagnostic report:

@@ -1,4 +1,4 @@
-# VisionPlex player reset: final-target rebuild, no retry storms
+# VisionPlay player reset: final-target rebuild, no retry storms
 
 Date: 2026-06-14
 Status: implemented in app path; manual double-drag still failing
@@ -24,18 +24,18 @@ The Stage-3 proxy experiment tried to make deep scrub seeks seamless by keeping 
 
 Manual testing disproved the design. A single deep backward drag could work, but double-drag and rapid scrub paths repeatedly produced AVKit retry loops, local HTTP failures, 502s, upstream timeouts, and likely PMS transcode pressure. Patches for handler cancellation and short client-stability gating reduced specific failure classes but did not eliminate the architectural failure shape.
 
-The new constraint is explicit: VisionPlex must not amplify a scrub into retry/restart hell, repeated 503s, or multiple PMS transcodes for the same user intent. Reliability and server safety outrank seamless native scrubbing.
+The new constraint is explicit: VisionPlay must not amplify a scrub into retry/restart hell, repeated 503s, or multiple PMS transcodes for the same user intent. Reliability and server safety outrank seamless native scrubbing.
 
 ## Design goal
 
 Use a visible but reliable final-target reload model:
 
 - AVKit remains the renderer and owns normal playback UI.
-- VisionPlex acts only on the user's final seek target, not every intermediate segment request.
+- VisionPlay acts only on the user's final seek target, not every intermediate segment request.
 - At most one PMS re-prime/rebuild runs at a time per playback session.
 - Intermediate seek targets are coalesced or ignored; the latest final target wins.
 - Automatic retry loops are removed or tightly bounded.
-- If a rebuild fails, VisionPlex surfaces a user-visible error with a one-shot Retry action instead of silently retrying.
+- If a rebuild fails, VisionPlay surfaces a user-visible error with a one-shot Retry action instead of silently retrying.
 
 ## Non-goals
 
@@ -55,7 +55,7 @@ Use a visible but reliable final-target reload model:
    - Small in-buffer seeks use AVKit natively and should remain instant.
 
 2. **Final-target deep seek rebuild**
-   - When the user performs a deep/out-of-buffer scrub and playback cannot resume cleanly from the current transcode, VisionPlex rebuilds intentionally at the final target.
+   - When the user performs a deep/out-of-buffer scrub and playback cannot resume cleanly from the current transcode, VisionPlay rebuilds intentionally at the final target.
    - The rebuild path:
      1. record the latest target offset;
      2. cancel/drop any stale pending rebuild intent;

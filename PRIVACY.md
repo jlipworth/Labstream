@@ -59,7 +59,7 @@ VisionPlay is not directed at children and collects no personal information.
 ## Contact
 
 Questions about privacy: open an issue at
-<https://github.com/jlipworth/VisionPlex/issues> (or the support contact listed
+<https://github.com/jlipworth/VisionPlay/issues> (or the support contact listed
 in the App Store).
 
 ## Changes

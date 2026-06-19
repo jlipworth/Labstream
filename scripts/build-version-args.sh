@@ -17,5 +17,5 @@ if ! git diff --quiet --ignore-submodules -- 2>/dev/null || \
   dirty="dirty"
 fi
 
-printf 'VISIONPLEX_BUILD_SLUG=%s-%s-%s\n' "$commit_count" "$commit" "$dirty"
-printf 'VISIONPLEX_BUILD_DATE_UTC=%s\n' "$built_at"
+printf 'VISIONPLAY_BUILD_SLUG=%s-%s-%s\n' "$commit_count" "$commit" "$dirty"
+printf 'VISIONPLAY_BUILD_DATE_UTC=%s\n' "$built_at"

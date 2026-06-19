@@ -10,7 +10,7 @@ import PMSKit
 
 /// User-facing intent failures. Every case reads as a complete sentence — this is
 /// the text Siri speaks / Shortcuts shows when the intent can't proceed.
-enum VisionPlexIntentError: Error, CustomLocalizedStringResourceConvertible {
+enum VisionPlayIntentError: Error, CustomLocalizedStringResourceConvertible {
     case notSignedIn
     case nothingToResume
 
@@ -40,7 +40,7 @@ struct PlayMediaIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let router = SystemEntryRouter.shared
-        guard await router.ensureBrowseReady() else { throw VisionPlexIntentError.notSignedIn }
+        guard await router.ensureBrowseReady() else { throw VisionPlayIntentError.notSignedIn }
         // Route by ratingKey, not the snapshot: RootView re-fetches authoritative
         // metadata (and resolves a show/season container down to an episode leaf).
         router.open(ratingKey: item.id, autoPlay: true)
@@ -64,7 +64,7 @@ struct OpenMediaIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let router = SystemEntryRouter.shared
-        guard await router.ensureBrowseReady() else { throw VisionPlexIntentError.notSignedIn }
+        guard await router.ensureBrowseReady() else { throw VisionPlayIntentError.notSignedIn }
         router.open(ratingKey: item.id, autoPlay: false)
         return .result(dialog: "Opening \(item.title) in VisionPlay.")
     }
@@ -80,11 +80,11 @@ struct ResumeContinueWatchingIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady(),
-              let ctx = router.browseContext else { throw VisionPlexIntentError.notSignedIn }
+              let ctx = router.browseContext else { throw VisionPlayIntentError.notSignedIn }
         let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
         guard let resp = try? await ctx.client.send(req, as: MetadataResponse.self),
               let next = resp.mediaContainer.metadata.first(where: { !$0.isMusic }) else {
-            throw VisionPlexIntentError.nothingToResume
+            throw VisionPlayIntentError.nothingToResume
         }
         // On Deck items are leaves (movies/episodes) carrying a viewOffset, so
         // autoplay lands directly in the player at the resume point.
@@ -96,7 +96,7 @@ struct ResumeContinueWatchingIntent: AppIntent {
 /// Siri/Shortcuts phrases. Parameterized phrases ("Play <X> on VisionPlay") draw
 /// their vocabulary from the query's `suggestedEntities()`; HomeView refreshes them
 /// via `updateAppShortcutParameters()` whenever the hubs load.
-struct VisionPlexShortcuts: AppShortcutsProvider {
+struct VisionPlayShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: PlayMediaIntent(),

@@ -1067,8 +1067,8 @@ Expected: BUILD SUCCEEDED; a fresh `PlexAVPApp.app` exists (verify mtime).
 ```bash
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-*/Build/Products/Debug-xrsimulator/PlexAVPApp.app | head -1)
 xcrun simctl install booted "$APP"
-xcrun simctl terminate booted com.jlipworth.VisionPlex; xcrun simctl launch booted com.jlipworth.VisionPlex
-xcrun simctl get_app_container booted com.jlipworth.VisionPlex app   # compare against $APP
+xcrun simctl terminate booted com.jlipworth.VisionPlay; xcrun simctl launch booted com.jlipworth.VisionPlay
+xcrun simctl get_app_container booted com.jlipworth.VisionPlay app   # compare against $APP
 ```
 
 - [ ] **Step 5: Commit**

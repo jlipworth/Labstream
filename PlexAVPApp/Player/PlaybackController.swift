@@ -50,7 +50,7 @@ typealias RemoteStreamReopener = (RemoteStreamReopenRequest) async throws -> Rem
 /// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
 /// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
 /// before an in-place restart (#27), which guards against the server-OOM job pile-up.
-let playbackLog = Logger(subsystem: "com.jlipworth.VisionPlex", category: "Playback")
+let playbackLog = Logger(subsystem: "com.jlipworth.VisionPlay", category: "Playback")
 
 /// Owns the `AVPlayer` for one playback session and drives Plex playback state.
 ///

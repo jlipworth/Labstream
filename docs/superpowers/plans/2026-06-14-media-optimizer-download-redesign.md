@@ -121,12 +121,12 @@ struct LiveOptimizeProbeTests {
             self.token = token
             self.metadataKey = metadataKey
             self.ratingKey = (metadataKey as NSString).lastPathComponent
-            self.title = env["PLEX_LIVE_TITLE"] ?? "VisionPlex Probe Optimize"
+            self.title = env["PLEX_LIVE_TITLE"] ?? "VisionPlay Probe Optimize"
             self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplex-live-probe",
-                product: "VisionPlex",
+                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
+                product: "VisionPlay",
                 version: "0.1.0",
-                deviceName: "VisionPlex Live Probe")
+                deviceName: "VisionPlay Live Probe")
         }
     }
 
@@ -438,7 +438,7 @@ import Foundation
 @testable import PMSKit
 
 private let server = URL(string: "https://192.0.2.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlex",
+private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
                                version: "0.1.0", deviceName: "AVP")
 
 @Test func backgroundProcessingRequestTargetsType42Playlists() {
@@ -1605,7 +1605,7 @@ git commit -m "Document offline-download dual-path manual test plan"
    `mediaProcessingTargetsRequest` / the decoders and their tests to the real shape, then
    re-run `cd PMSKit && swift test`.
 5. The in-app optimizer path logs at os.log `.error` so it persists; read it with
-   `log show --predicate 'subsystem == "com.jlipworth.VisionPlex" AND category == "Downloads"'`.
+   `log show --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Downloads"'`.
 
 ---
 

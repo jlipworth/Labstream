@@ -5,7 +5,7 @@
 > `contextualActions`; quality-reload keeps the playhead; failure overlay + stall
 > watchdog + retry; download body validation + failed-state machine). Kept only as a
 > dated historical synthesis — current state lives in
-> [GitHub Issues](https://github.com/jlipworth/VisionPlex/issues) and
+> [GitHub Issues](https://github.com/jlipworth/VisionPlay/issues) and
 > `docs/DEVELOPMENT.md`.
 
 Synthesis of 10 research agents: core-code audits (playback / downloads / PMSKit), competitive feature inventories (Plex, Emby/Infuse/Plexi/Aurora/VidHub/MrMC, Swiftfin, jellyfin-web), and Apple visionOS/AVFoundation platform briefs. Drives implementation. File:line locations are from the live tree.

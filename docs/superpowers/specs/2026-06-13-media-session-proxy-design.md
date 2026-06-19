@@ -80,7 +80,7 @@ reuse the same session logic.
  Player / AVKit / future custom renderer
         │  consumes localPlaybackURL, reports events
         ▼
- VisionPlex Media Session Proxy   ── owns position / seek / prime / recovery
+ VisionPlay Media Session Proxy   ── owns position / seek / prime / recovery
         │  loopback origin (NWListener on 127.0.0.1:<port>)
         │  forwards over an app-owned upstream URLSession
         ▼

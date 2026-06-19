@@ -19,7 +19,7 @@
 - Delete: `docs/superpowers/plans/2026-06-14-issue33-stage3-proxy-owned-playlist.md`
 - Delete: `docs/superpowers/reviews/2026-06-14-issue33-stage3-proxy-review.md`
 
-- [x] Save a temporary patch of current dirty Stage-3 work: `git diff > /tmp/visionplex-stage3-dirty.patch`.
+- [x] Save a temporary patch of current dirty Stage-3 work: `git diff > /tmp/visionplay-stage3-dirty.patch`.
 - [x] Restore modified Stage-3 files to the last committed state with `git restore PMSKit/Sources/PMSKit/MediaSession/MediaSessionProxy.swift PMSKit/Tests/PMSKitTests/MediaSessionProxyTests.swift`.
 - [x] Remove untracked Stage-3 artifacts with `rm -f PMSKit/Sources/PMSKit/MediaSession/SegmentTimeline.swift docs/superpowers/plans/2026-06-14-issue33-stage3-proxy-owned-playlist.md docs/superpowers/reviews/2026-06-14-issue33-stage3-proxy-review.md`.
 - [x] Verify no active code references `SegmentTimeline`, `serveSegment`, `segmentReprime`, or `segmentClientStability` with `rg 'SegmentTimeline|serveSegment|segmentReprime|segmentClientStability' PMSKit/Sources PMSKit/Tests`.

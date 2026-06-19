@@ -647,11 +647,11 @@ struct SettingsView: View {
     }
 
     private static var buildSlug: String? {
-        Bundle.main.object(forInfoDictionaryKey: "VisionPlexBuildSlug") as? String
+        Bundle.main.object(forInfoDictionaryKey: "VisionPlayBuildSlug") as? String
     }
 
     private static var buildDateUTC: String? {
-        Bundle.main.object(forInfoDictionaryKey: "VisionPlexBuildDateUTC") as? String
+        Bundle.main.object(forInfoDictionaryKey: "VisionPlayBuildDateUTC") as? String
     }
 
     /// Bug-report blob. Includes versions, server name/version, selected quality, and the

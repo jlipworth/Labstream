@@ -2,7 +2,7 @@
 
 Date written: 2026-06-12
 Author: Codex agent (server-side / cluster investigation)
-Related app/repo: VisionPlex (this repository)
+Related app/repo: VisionPlay (this repository)
 
 ## Executive summary
 
@@ -51,7 +51,7 @@ Current state after investigation:
 - `k8s-02` was healthy, `MemoryPressure=False`.
 - Alertmanager had no active matching Wazuh/Plex/k8s-02 alerts at the time of checks.
 
-## Why this points at VisionPlex / AVP client behavior
+## Why this points at VisionPlay / AVP client behavior
 
 The Plex application logs show transcode sessions named like:
 
@@ -250,7 +250,7 @@ The process list in the kernel OOM dump included many Plex transcoders and `av:h
 
 Most likely failure mode:
 
-1. The VisionPlex/AVP client requests HLS playback for a HEVC/EAC3 MKV.
+1. The VisionPlay/AVP client requests HLS playback for a HEVC/EAC3 MKV.
 2. Plex cannot direct play/remux with the presented client profile/settings.
 3. Plex falls back to HEVC -> H.264 and EAC3 -> AAC transcoding.
 4. Hardware transcoding is not actually used for this path, so CPU/software transcode workers are spawned.
@@ -263,7 +263,7 @@ Most likely failure mode:
 
 This looks like an app-side playback/retry/session-lifecycle bug more than a general Plex or Kubernetes problem.
 
-## Things to inspect in VisionPlex
+## Things to inspect in VisionPlay
 
 Search for where the app constructs Plex playback URLs and transcode session IDs. Key questions:
 
@@ -370,4 +370,4 @@ Important: Plex logs can contain tokens/account details. Redact before sharing.
 
 ## Bottom line for next agent
 
-Investigate VisionPlex playback session lifecycle and retry behavior. The Plex server evidence shows repeated `plex-avp-*` HLS transcode jobs for the same HEVC/EAC3 media item within seconds, no usable hardware transcode path, and a resulting 8Gi Plex pod OOM. The likely bug is that buffering/retry/seek logic creates overlapping Plex transcode sessions instead of reusing or cleaning up the existing session.
+Investigate VisionPlay playback session lifecycle and retry behavior. The Plex server evidence shows repeated `plex-avp-*` HLS transcode jobs for the same HEVC/EAC3 media item within seconds, no usable hardware transcode path, and a resulting 8Gi Plex pod OOM. The likely bug is that buffering/retry/seek logic creates overlapping Plex transcode sessions instead of reusing or cleaning up the existing session.
