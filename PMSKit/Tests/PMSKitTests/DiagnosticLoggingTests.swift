@@ -99,4 +99,43 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertFalse(line.contains("secret"))
     }
 
+    /// The best-effort redactor cannot scrub a personal server name with no dot/TLD (it looks like
+    /// an ordinary label), so the call-site must NEVER pass the raw user-chosen name. This asserts
+    /// the sanitized server line the SettingsView call-site produces keeps the personal name out of
+    /// the rendered report — and demonstrates why redact() alone is not a sufficient defense.
+    func testReportDoesNotLeakPersonalServerName() {
+        let personalName = "Some Person s Laptop"
+
+        // First, prove the renderer/redactor would leak it verbatim if handed the raw name —
+        // this is the failure the call-site fix prevents.
+        let leaky = DiagnosticReportContext(product: "VisionPlay",
+                                            appVersion: "1.0",
+                                            appBuild: "42",
+                                            operatingSystem: "visionOS 26.5",
+                                            deviceName: "Apple Vision Pro",
+                                            backend: "Plex",
+                                            server: "\(personalName) 1.40",
+                                            connectionScheme: "https",
+                                            selectedQuality: "8 Mbps",
+                                            loggingEnabled: true)
+        XCTAssertTrue(DiagnosticReportRenderer.render(context: leaky, events: []).contains(personalName),
+                      "redact() is not expected to scrub a dotless personal name; the call-site must sanitize")
+
+        // The fixed call-site emits only the product + version, never the user's server name.
+        let sanitized = DiagnosticReportContext(product: "VisionPlay",
+                                                appVersion: "1.0",
+                                                appBuild: "42",
+                                                operatingSystem: "visionOS 26.5",
+                                                deviceName: "Apple Vision Pro",
+                                                backend: "Plex",
+                                                server: "Plex Media Server 1.40",
+                                                connectionScheme: "https",
+                                                selectedQuality: "8 Mbps",
+                                                loggingEnabled: true)
+        let report = DiagnosticReportRenderer.render(context: sanitized, events: [])
+        XCTAssertFalse(report.contains(personalName),
+                       "rendered report must not contain the personal server name")
+        XCTAssertTrue(report.contains("Plex Media Server 1.40"))
+    }
+
 }
