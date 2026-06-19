@@ -32,6 +32,10 @@ public final class DownloadManager {
         case notAuthenticated
         case optimizeFailed(String)
         case optimizeTimedOut
+        // Deliberately never produced today: the optimize path surfaces its own
+        // `.optimizeFailed`/`.optimizeTimedOut` instead. Retained because
+        // `OfflineLibraryView` still maps it to a user-facing message, so a future
+        // "optimized version had no Part" diagnostic can be wired in without churn.
         case noOptimizedPart
         case storageFull
         case storageLimitExceeded(String)
