@@ -41,7 +41,7 @@ home-row customization, TIDAL.
 
 ### Hard constraints (unchanged, load-bearing)
 
-- `X-Plex-Client-Profile-Name=Safari` in `TranscodeRequest` is video-only and
+- `X-Plex-Client-Profile-Name=Generic` in `TranscodeRequest` is video-only and
   is touched by **nothing** in this design.
 - No Plex tokens/client identifiers committed; placeholders
   `plex.example.internal` / `192.0.2.10` only.

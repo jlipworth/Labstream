@@ -73,7 +73,7 @@ stale_paths=()
 while IFS= read -r -d '' path; do
   case "$path" in
     # Historical/planning docs may intentionally reference the old bundle ID.
-    docs/superpowers/*)
+    docs/superpowers/*|docs/archive/*)
       ;;
     *)
       stale_paths+=("$path")
@@ -90,7 +90,7 @@ scan_paths=()
 while IFS= read -r -d '' path; do
   case "$path" in
     # Intentional guardrail/historical mentions are allowed in these files.
-    .gitignore|scripts/ci-hygiene.sh|docs/superpowers/*)
+    .gitignore|scripts/ci-hygiene.sh|docs/superpowers/*|docs/archive/*)
       ;;
     *)
       scan_paths+=("$path")

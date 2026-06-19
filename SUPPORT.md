@@ -1,20 +1,20 @@
 # VisionPlay — Support
 
-VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server**.
+VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server or Jellyfin server**.
 
 ## Requirements
 
 - Apple Vision Pro running **visionOS 26.0** or later.
-- A **Plex account** (free) and a reachable **Plex Media Server** you administer
-  or have access to.
-- Local-network playback is free. Remote (off-LAN) streaming may require Plex
+- A reachable **Plex Media Server** or **Jellyfin server** you administer or have access to.
+  Plex mode also requires a Plex account for PIN/OAuth sign-in.
+- Local-network playback is free. Plex remote (off-LAN) streaming may require Plex
   Pass or Remote Watch Pass on your account — this is a Plex server-side
   requirement, not a VisionPlay feature.
 
 ## Getting started
 
-1. Launch VisionPlay and sign in with your Plex account (PIN / OAuth).
-2. The app discovers your servers; pick the one you want.
+1. Launch VisionPlay and choose Plex or Jellyfin.
+2. Sign in to the selected backend and choose/enter the server.
 3. Browse your libraries, then play. Titles resume where you left off.
 
 ## Common questions
@@ -26,7 +26,8 @@ VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server*
   persists, confirm the server is reachable and try a lower streaming quality in
   Settings.
 - **Can I watch away from home?** Remote streaming of personal media may require
-  Plex Pass / Remote Watch Pass on your Plex account (a Plex policy).
+  Plex Pass / Remote Watch Pass on your Plex account in Plex mode (a Plex policy).
+  Jellyfin remote access depends on your Jellyfin server/network setup.
 
 ## Reporting a problem
 

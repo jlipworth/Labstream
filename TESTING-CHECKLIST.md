@@ -64,7 +64,7 @@ required**.
       original `Part.key` byte-for-byte; the row shows a real % and plays offline.
 - [ ] **Download dual path — OPTIMIZER (offline-download redesign, Phase-0-gated)** — open the sheet
       on a known-incompatible title (forces a transcode): the sheet lists the server's real optimize
-      presets ("Optimized for TV", etc.). Choosing one triggers a server-side optimize, polls for the
+      presets (for example Original video quality or numeric bitrate/resolution choices). Choosing one triggers a server-side render/optimize, polls for the
       rendered Part, then downloads it. ⚠️ The optimizer POST contract is NOT live-verified — run
       `./scripts/live-optimize-probe.sh` (Phase 0) FIRST and reconcile `OptimizeRequest` to the real
       shape before trusting this path. Optimizer logs persist at os.log `.error`:
@@ -579,8 +579,7 @@ shows the stamped Build ID, and normal in-app browsing still works.
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
   direct-play `start.m3u8` when Default Quality is "Direct Play / Maximum" and PMS can copy the
   source (see the "Direct play via Direct Play / Maximum" item in §A). Still subject to the
-  **CRITICAL `Safari` client-profile constraint** — needs the live headset pass to confirm no
-  regression in resume-priming / `subtitles=auto`.
+  **CRITICAL `Generic` client-profile constraint** — must not be changed back to Safari or an unknown profile. Keep the live headset pass for resume-priming / `subtitles=auto` regressions.
 - **GH #4 — trick-play scrub thumbnails:** server-dependent (PMS I-frame playlist); held.
 - **GH #12 — RealityKit theater:** hidden prototype scaffold only; no visible entry point until
   the device-only checks above pass. **GH #13 — multi-track offline (.movpkg):** optional / later.
