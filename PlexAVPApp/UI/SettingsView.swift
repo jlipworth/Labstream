@@ -69,7 +69,21 @@ struct SettingsView: View {
         .fileExporter(isPresented: $exportingDiagnostics,
                       document: diagnosticExportDocument,
                       contentType: .plainText,
-                      defaultFilename: "VisionPlex-Diagnostic-Report") { _ in }
+                      defaultFilename: "VisionPlex-Diagnostic-Report") { result in
+            switch result {
+            case .success:
+                AppDiagnostics.record(.settingsUI, "diagnostics.report_export_completed", fields: [
+                    "events_in_buffer": .int(AppDiagnostics.events().count),
+                    "logging_enabled": .bool(diagnosticLoggingEnabled),
+                ])
+            case .failure(let error):
+                AppDiagnostics.record(.settingsUI, "diagnostics.report_export_failed", fields: [
+                    "events_in_buffer": .int(AppDiagnostics.events().count),
+                    "logging_enabled": .bool(diagnosticLoggingEnabled),
+                    "error": .error(error),
+                ])
+            }
+        }
     }
 
     // MARK: Playback
@@ -574,13 +588,13 @@ struct SettingsView: View {
                 }
 
             Button {
-                UIPasteboard.general.string = diagnosticReportText
-                copiedDiagnostics = true
-                scheduleCopiedDiagnosticsReset()
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_copied", fields: [
                     "events_in_buffer": .int(AppDiagnostics.events().count),
                     "logging_enabled": .bool(diagnosticLoggingEnabled),
                 ])
+                UIPasteboard.general.string = diagnosticReportText
+                copiedDiagnostics = true
+                scheduleCopiedDiagnosticsReset()
             } label: {
                 if copiedDiagnostics {
                     Label("Copied diagnostic report", systemImage: "checkmark")
@@ -590,12 +604,12 @@ struct SettingsView: View {
             }
 
             Button {
-                diagnosticExportDocument = DiagnosticReportDocument(text: diagnosticReportText)
-                exportingDiagnostics = true
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_export_requested", fields: [
                     "events_in_buffer": .int(AppDiagnostics.events().count),
                     "logging_enabled": .bool(diagnosticLoggingEnabled),
                 ])
+                diagnosticExportDocument = DiagnosticReportDocument(text: diagnosticReportText)
+                exportingDiagnostics = true
             } label: {
                 Label("Export diagnostic report file", systemImage: "square.and.arrow.up")
             }
@@ -656,6 +670,7 @@ struct SettingsView: View {
             server: diagnosticServerLine,
             connectionScheme: diagnosticConnectionScheme,
             selectedQuality: "Home: \(StreamingQuality.label(kbps: homeMaxVideoBitrateKbps)); Remote: \(StreamingQuality.label(kbps: remoteMaxVideoBitrateKbps))",
+            adaptiveBitrateEnabled: adaptiveBitrateEnabled,
             loggingEnabled: diagnosticLoggingEnabled
         ))
     }

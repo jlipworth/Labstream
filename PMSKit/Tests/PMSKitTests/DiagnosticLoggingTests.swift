@@ -57,6 +57,7 @@ final class DiagnosticLoggingTests: XCTestCase {
                                               server: "Plex Media Server 1.40",
                                               connectionScheme: "https",
                                               selectedQuality: "8 Mbps",
+                                              adaptiveBitrateEnabled: false,
                                               loggingEnabled: true)
         let report = DiagnosticReportRenderer.render(context: context,
                                                      events: store.snapshot(),
@@ -64,6 +65,7 @@ final class DiagnosticLoggingTests: XCTestCase {
 
         XCTAssertTrue(report.contains("VisionPlex Diagnostic Report"))
         XCTAssertTrue(report.contains("Diagnostic logging enabled: yes"))
+        XCTAssertTrue(report.contains("Adaptive Bitrate: disabled"))
         XCTAssertTrue(report.contains("observed_bitrate_kbps"))
         XCTAssertTrue(report.contains("Recent redacted events"))
         XCTAssertFalse(report.contains("topsecret"))
