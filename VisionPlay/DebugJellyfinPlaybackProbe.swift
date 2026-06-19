@@ -18,7 +18,11 @@ enum DebugJellyfinPlaybackProbe {
         let arguments = ProcessInfo.processInfo.arguments
         guard arguments.contains("--vp-probe-jellyfin-playback") else { return }
 
-        UserDefaults.standard.set(true, forKey: AppDiagnostics.enabledDefaultsKey)
+        // Enable diagnostics for the duration of the probe so its events land in the ring buffer,
+        // then restore the user-facing flag — the probe must not silently flip a persisted setting.
+        let priorDiagnosticsEnabled = AppDiagnostics.isEnabled
+        AppDiagnostics.setEnabled(true)
+        defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
 
         let query = value(after: "--vp-probe-query", in: arguments) ?? "1917"
         let bitrateKbps = intValue(after: "--vp-probe-bitrate-kbps", in: arguments) ?? appModel.activeStreamingQualityKbps

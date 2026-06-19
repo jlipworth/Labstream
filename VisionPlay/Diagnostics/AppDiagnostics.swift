@@ -17,18 +17,22 @@ enum AppDiagnostics {
         enabled: UserDefaults.standard.bool(forKey: enabledDefaultsKey)
     )
 
+    /// Pure read of the in-memory store. `setEnabled` is the single writer that keeps the store
+    /// and the persisted flag in sync, so there is no need to re-read UserDefaults here.
     static var isEnabled: Bool {
-        let persisted = UserDefaults.standard.bool(forKey: enabledDefaultsKey)
-        store.setEnabled(persisted)
-        return persisted
+        store.isEnabled
     }
 
+    /// Single writer of the persisted `enabledDefaultsKey` flag and the in-memory store.
     static func setEnabled(_ enabled: Bool) {
         if enabled {
             UserDefaults.standard.set(true, forKey: enabledDefaultsKey)
             store.setEnabled(true)
             record(.settingsUI, "diagnostics.enabled", fields: ["enabled": .bool(true)])
         } else {
+            // Intentional ordering: enable the store first so the "diagnostics.disabled" event is
+            // actually recorded into the ring buffer, THEN persist+apply the disable. Do NOT
+            // "simplify" by recording after disabling — the event would be dropped.
             store.setEnabled(true)
             record(.settingsUI, "diagnostics.disabled", fields: ["enabled": .bool(false)])
             UserDefaults.standard.set(false, forKey: enabledDefaultsKey)
@@ -44,7 +48,6 @@ enum AppDiagnostics {
     static func record(_ category: DiagnosticCategory,
                        _ name: String,
                        fields: [String: DiagnosticFieldValue] = [:]) -> DiagnosticEvent? {
-        store.setEnabled(UserDefaults.standard.bool(forKey: enabledDefaultsKey))
         guard let event = store.record(category: category, name: name, fields: fields) else {
             return nil
         }
