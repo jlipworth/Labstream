@@ -35,7 +35,7 @@ new overlay layer.
 ## Components & boundaries
 
 ### `ChaptersTabView` (rewrite — same file & name)
-`PlexAVPApp/Player/PlayerControlSurface.swift`
+`VisionPlay/Player/PlayerControlSurface.swift`
 
 Public surface changes from:
 

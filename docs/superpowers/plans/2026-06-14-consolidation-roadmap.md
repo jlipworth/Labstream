@@ -56,16 +56,16 @@
 ## AVKit removal surface (Wave 1 detail)
 
 **Delete entirely (~1,187 lines):**
-- `PlexAVPApp/Player/PlayerView.swift` (AVKit wrapper + `AVPlayerViewController` bridge + legacy
+- `VisionPlay/Player/PlayerView.swift` (AVKit wrapper + `AVPlayerViewController` bridge + legacy
   floated overlays — the custom player reimplements equivalents)
-- `PlexAVPApp/Player/PlayerControlSurface.swift` (`customInfoViewControllers`, `contextualActions`,
+- `VisionPlay/Player/PlayerControlSurface.swift` (`customInfoViewControllers`, `contextualActions`,
   `AVExperienceController.Delegate` glue)
-- `PlexAVPApp/Player/CinemaEnvironment.swift` (operates only on `AVPlayerViewController.experienceController`)
+- `VisionPlay/Player/CinemaEnvironment.swift` (operates only on `AVPlayerViewController.experienceController`)
 
 **Surgery (remove the toggle + AVKit branch):**
-- `PlexAVPApp/UI/DetailView.swift` — collapse the `if experimentalCustomPlayerEnabled { … } else { PlayerView(…) }`
+- `VisionPlay/UI/DetailView.swift` — collapse the `if experimentalCustomPlayerEnabled { … } else { PlayerView(…) }`
   branch to the `CustomPlayerView` arm; remove the `@AppStorage`.
-- `PlexAVPApp/UI/SettingsView.swift` — remove the toggle, its `@AppStorage`, and the footer clause.
+- `VisionPlay/UI/SettingsView.swift` — remove the toggle, its `@AppStorage`, and the footer clause.
 
 **Keep (shared, do NOT over-reach):** `PlaybackController.swift`, `PlayerControlPickers.swift`,
 `StatsForNerdsView.swift`, `PlaybackDiagnostics.swift`, `TimelineReporter.swift`,

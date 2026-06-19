@@ -15,13 +15,13 @@
 - Create `PMSKit/Sources/PMSKit/Jellyfin/JellyfinLibrary.swift`: Jellyfin auth/session response models, library request builders, item DTOs, mapping to `MediaItem`, image URL helpers, active encoding stop request.
 - Create `PMSKit/Tests/PMSKitTests/JellyfinLibraryTests.swift`: request-shape and mapping tests.
 - Modify `PMSKit/Sources/PMSKit/Jellyfin/JellyfinAuth.swift`: decode `AuthenticationResult` and nested `User` fields.
-- Modify `PlexAVPApp/App/AppModel.swift`: add `MediaBackendKind`, Jellyfin session fields, backend-aware readiness.
-- Modify `PlexAVPApp/Auth/KeychainStore.swift`: separate persisted Jellyfin keys and selected backend.
-- Modify `PlexAVPApp/Auth/AuthManager.swift`: backend selection, Jellyfin login, restore, sign-out.
-- Create `PlexAVPApp/Backend/Jellyfin/JellyfinBrowseService.swift`: app-side URLSession service for Jellyfin library/detail/playback/cleanup.
-- Modify `PlexAVPApp/UI/LoginView.swift`: backend picker and Jellyfin credential form.
-- Modify `PlexAVPApp/UI/HomeView.swift`, `LibraryGridView.swift`, `SearchView.swift`, `MusicLibraryView.swift`, `PosterImage.swift`, `DetailView.swift`, `SettingsView.swift`: branch UI/load/playback behavior by active backend while preserving Plex.
-- Modify `PlexAVPApp/Player/PlaybackController.swift` and `CustomPlayerView.swift`: carry optional remote session stop callback for Jellyfin active encoding cleanup.
+- Modify `VisionPlay/App/AppModel.swift`: add `MediaBackendKind`, Jellyfin session fields, backend-aware readiness.
+- Modify `VisionPlay/Auth/KeychainStore.swift`: separate persisted Jellyfin keys and selected backend.
+- Modify `VisionPlay/Auth/AuthManager.swift`: backend selection, Jellyfin login, restore, sign-out.
+- Create `VisionPlay/Backend/Jellyfin/JellyfinBrowseService.swift`: app-side URLSession service for Jellyfin library/detail/playback/cleanup.
+- Modify `VisionPlay/UI/LoginView.swift`: backend picker and Jellyfin credential form.
+- Modify `VisionPlay/UI/HomeView.swift`, `LibraryGridView.swift`, `SearchView.swift`, `MusicLibraryView.swift`, `PosterImage.swift`, `DetailView.swift`, `SettingsView.swift`: branch UI/load/playback behavior by active backend while preserving Plex.
+- Modify `VisionPlay/Player/PlaybackController.swift` and `CustomPlayerView.swift`: carry optional remote session stop callback for Jellyfin active encoding cleanup.
 
 ## Task 1: PMSKit Jellyfin library and mapping layer
 
@@ -85,9 +85,9 @@ git commit -m "Add Jellyfin library API mapping (#35)"
 ## Task 2: Backend-aware app session state
 
 **Files:**
-- Modify: `PlexAVPApp/App/AppModel.swift`
-- Modify: `PlexAVPApp/Auth/KeychainStore.swift`
-- Modify: `PlexAVPApp/Auth/AuthManager.swift`
+- Modify: `VisionPlay/App/AppModel.swift`
+- Modify: `VisionPlay/Auth/KeychainStore.swift`
+- Modify: `VisionPlay/Auth/AuthManager.swift`
 
 - [ ] **Step 1: Add backend model and keychain storage**
 
@@ -99,7 +99,7 @@ Add `AuthManager.selectBackend(_:)`, `loginToJellyfin(server:username:password:)
 
 - [ ] **Step 3: Verify compile through app build**
 
-Run: `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet`
+Run: `xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet`
 
 Expected: app builds.
 
@@ -108,16 +108,16 @@ Expected: app builds.
 Run:
 
 ```bash
-git add PlexAVPApp/App/AppModel.swift PlexAVPApp/Auth/KeychainStore.swift PlexAVPApp/Auth/AuthManager.swift
+git add VisionPlay/App/AppModel.swift VisionPlay/Auth/KeychainStore.swift VisionPlay/Auth/AuthManager.swift
 git commit -m "Add backend-aware Jellyfin session state (#35)"
 ```
 
 ## Task 3: Jellyfin browse service and login UI
 
 **Files:**
-- Create: `PlexAVPApp/Backend/Jellyfin/JellyfinBrowseService.swift`
-- Modify: `PlexAVPApp/UI/LoginView.swift`
-- Modify: `PlexAVPApp/UI/SettingsView.swift`
+- Create: `VisionPlay/Backend/Jellyfin/JellyfinBrowseService.swift`
+- Modify: `VisionPlay/UI/LoginView.swift`
+- Modify: `VisionPlay/UI/SettingsView.swift`
 
 - [ ] **Step 1: Add browse service**
 
@@ -140,21 +140,21 @@ Run the same `xcodebuild ... CODE_SIGNING_ALLOWED=NO -quiet` command.
 Run:
 
 ```bash
-git add PlexAVPApp/Backend/Jellyfin/JellyfinBrowseService.swift PlexAVPApp/UI/LoginView.swift PlexAVPApp/UI/SettingsView.swift
+git add VisionPlay/Backend/Jellyfin/JellyfinBrowseService.swift VisionPlay/UI/LoginView.swift VisionPlay/UI/SettingsView.swift
 git commit -m "Add Jellyfin login UI and browse service (#35)"
 ```
 
 ## Task 4: Jellyfin browsing, images, playback, and cleanup wiring
 
 **Files:**
-- Modify: `PlexAVPApp/UI/HomeView.swift`
-- Modify: `PlexAVPApp/UI/LibraryGridView.swift`
-- Modify: `PlexAVPApp/UI/SearchView.swift`
-- Modify: `PlexAVPApp/Music/MusicLibraryView.swift`
-- Modify: `PlexAVPApp/UI/PosterImage.swift`
-- Modify: `PlexAVPApp/UI/DetailView.swift`
-- Modify: `PlexAVPApp/Player/CustomPlayerView.swift`
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
+- Modify: `VisionPlay/UI/HomeView.swift`
+- Modify: `VisionPlay/UI/LibraryGridView.swift`
+- Modify: `VisionPlay/UI/SearchView.swift`
+- Modify: `VisionPlay/Music/MusicLibraryView.swift`
+- Modify: `VisionPlay/UI/PosterImage.swift`
+- Modify: `VisionPlay/UI/DetailView.swift`
+- Modify: `VisionPlay/Player/CustomPlayerView.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
 
 - [ ] **Step 1: Browse branch**
 
@@ -181,7 +181,7 @@ Run the same `xcodebuild ... CODE_SIGNING_ALLOWED=NO -quiet` command.
 Run:
 
 ```bash
-git add PlexAVPApp/UI/HomeView.swift PlexAVPApp/UI/LibraryGridView.swift PlexAVPApp/UI/SearchView.swift PlexAVPApp/Music/MusicLibraryView.swift PlexAVPApp/UI/PosterImage.swift PlexAVPApp/UI/DetailView.swift PlexAVPApp/Player/CustomPlayerView.swift PlexAVPApp/Player/PlaybackController.swift
+git add VisionPlay/UI/HomeView.swift VisionPlay/UI/LibraryGridView.swift VisionPlay/UI/SearchView.swift VisionPlay/Music/MusicLibraryView.swift VisionPlay/UI/PosterImage.swift VisionPlay/UI/DetailView.swift VisionPlay/Player/CustomPlayerView.swift VisionPlay/Player/PlaybackController.swift
 git commit -m "Wire Jellyfin browse and playback mode (#35)"
 ```
 
@@ -203,7 +203,7 @@ Expected: `ci-hygiene: ok`.
 
 - [ ] **Step 3: Run app build**
 
-Run: `xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet`
+Run: `xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet`
 
 Expected: exit 0.
 

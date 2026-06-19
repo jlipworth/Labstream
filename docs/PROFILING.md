@@ -36,8 +36,8 @@ must be repeated on a physical Vision Pro before filing it as a product finding.
 
 ## Exact Xcode / Instruments workflow
 
-1. Open `PlexAVPApp.xcodeproj` in Xcode.
-2. Choose the `PlexAVPApp` scheme.
+1. Open `VisionPlay.xcodeproj` in Xcode.
+2. Choose the `VisionPlay` scheme.
 3. Select either:
    - `Apple Vision Pro` simulator for a repeatable local pass, or
    - a paired Apple Vision Pro for representative performance.
@@ -52,7 +52,7 @@ must be repeated on a physical Vision Pro before filing it as a product finding.
 Command-line build sanity before profiling:
 
 ```sh
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```

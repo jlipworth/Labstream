@@ -27,7 +27,7 @@
 ### Task 2: Restore direct PMS stream URL loading in PlaybackController
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
 
 - [x] Write or reuse a test seam if possible; otherwise use existing PMSKit request tests and app build as the verification boundary because `PlaybackController` is not currently unit-testable.
 - [x] Remove the `MediaSessionProxy` property and `mediaProxyGeneration` from `PlaybackController`.
@@ -40,7 +40,7 @@
 ### Task 3: Add explicit final-target rebuild API and latest-wins safety
 
 **Files:**
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
 
 - [x] Add a small generation-fenced rebuild entry point such as `rebuildAtFinalSeekTarget(seconds:)` that calls existing `restart(resumeOffsetMsOverride:stopPrevious:)` with the final offset.
 - [x] Ensure a new final-target rebuild cancels any older `playbackTask` through existing `playbackGeneration` mechanics.

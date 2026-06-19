@@ -139,7 +139,7 @@ public final class DownloadManager {
                                          identity: appModel.identity,
                                          metadataKey: metadataKey,
                                          maxVideoBitrateKbps: 200_000,
-                                         sessionID: "plex-avp-dl-probe-" + UUID().uuidString,
+                                         sessionID: "visionplay-dl-probe-" + UUID().uuidString,
                                          mediaIndex: mediaIndex, partIndex: partIndex)
         do {
             let decision = try await appModel.client.send(transcode.directPlayProbeRequest(),
@@ -1170,7 +1170,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// The fixed background-session identifier. Shared with the app delegate so it can
     /// route `handleEventsForBackgroundURLSession` to THIS session's completion handler.
-    static let identifier = "com.plexavp.downloads.background"
+    static let identifier = "com.visionplay.downloads.background"
 
     private let store: DownloadStore
     private let fileManager = FileManager.default

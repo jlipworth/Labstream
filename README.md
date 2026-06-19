@@ -46,7 +46,7 @@ a capped HLS stream, not direct-play-only), **theater/cinema playback** on a gia
 
 ```
 VisionPlay/
-├── PlexAVPApp/            # visionOS app (SwiftUI)
+├── VisionPlay/            # visionOS app (SwiftUI)
 │   ├── App/              # app entry + session state
 │   ├── Auth/             # Plex PIN OAuth + Keychain
 │   ├── Networking/       # Plex client wiring
@@ -70,7 +70,7 @@ the first-launch trust prompt are Apple's expected security gate for sideloaded 
 Build the app (visionOS 26.5 simulator, unsigned):
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -93,7 +93,7 @@ hostnames, or LAN IPs.
 Local validation before handing off:
 
 ```bash
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 (cd PMSKit && swift test)

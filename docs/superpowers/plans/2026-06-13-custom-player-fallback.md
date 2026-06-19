@@ -24,8 +24,8 @@
 ### Task 2: Experimental routing setting
 
 **Files:**
-- Modify: `PlexAVPApp/UI/SettingsView.swift`
-- Modify: `PlexAVPApp/UI/DetailView.swift`
+- Modify: `VisionPlay/UI/SettingsView.swift`
+- Modify: `VisionPlay/UI/DetailView.swift`
 
 - [x] Add `@AppStorage("experimentalCustomPlayerEnabled")` to Settings.
 - [x] Add a default-off `Custom player fallback (experimental)` toggle in Playback settings.
@@ -35,8 +35,8 @@
 ### Task 3: AVPlayerLayer custom presenter
 
 **Files:**
-- Create: `PlexAVPApp/Player/CustomPlayerView.swift`
-- Modify: `PlexAVPApp/Player/PlaybackController.swift`
+- Create: `VisionPlay/Player/CustomPlayerView.swift`
+- Modify: `VisionPlay/Player/PlaybackController.swift`
 
 - [x] Add `PlayerLayerView`, a `UIViewRepresentable` whose backing `UIView.layerClass` is `AVPlayerLayer`.
 - [x] Add `CustomPlayerView` that builds a `PlaybackController`, starts/stops it with SwiftUI lifecycle, and renders video via `PlayerLayerView`.

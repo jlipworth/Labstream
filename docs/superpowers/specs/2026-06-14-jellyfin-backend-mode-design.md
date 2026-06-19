@@ -81,7 +81,7 @@ enum MediaBackendKind: String, Codable, CaseIterable, Identifiable {
 - Plex ready when existing Plex fields are ready.
 - Jellyfin ready when server URL, token, and user ID are set.
 
-Existing callers should not need to know about all credentials directly; Jellyfin-specific browse calls should live in `PlexAVPApp/Backend/Jellyfin/JellyfinBrowseService.swift` so view files stay focused.
+Existing callers should not need to know about all credentials directly; Jellyfin-specific browse calls should live in `VisionPlay/Backend/Jellyfin/JellyfinBrowseService.swift` so view files stay focused.
 
 ### Keychain
 
@@ -226,7 +226,7 @@ Verification commands:
 ```bash
 swift test --package-path PMSKit
 ./scripts/ci-hygiene.sh
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 ```

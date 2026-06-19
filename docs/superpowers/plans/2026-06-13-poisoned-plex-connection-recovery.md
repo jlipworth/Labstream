@@ -14,9 +14,9 @@
 
 - Create `PMSKit/Sources/PMSKit/PlexSessionConfiguration.swift`: pure tested URLSessionConfiguration factory for recovery control-plane requests.
 - Create `PMSKit/Tests/PMSKitTests/PlexSessionConfigurationTests.swift`: tests timeout/cache/no-cookie behavior.
-- Modify `PlexAVPApp/Networking/PlexClient.swift`: add app-side recovery client factory using PMSKit policy.
-- Modify `PlexAVPApp/Player/TimelineReporter.swift`: allow PlaybackController to swap the reporter's client after a recovery retry.
-- Modify `PlexAVPApp/Player/PlaybackController.swift`: store player control-plane client as mutable and replace it with a fresh recovery client before user Retry rebuild.
+- Modify `VisionPlay/Networking/PlexClient.swift`: add app-side recovery client factory using PMSKit policy.
+- Modify `VisionPlay/Player/TimelineReporter.swift`: allow PlaybackController to swap the reporter's client after a recovery retry.
+- Modify `VisionPlay/Player/PlaybackController.swift`: store player control-plane client as mutable and replace it with a fresh recovery client before user Retry rebuild.
 - Modify `TESTING-CHECKLIST.md`: add #33 live retry validation.
 
 ## Tasks
@@ -30,7 +30,7 @@
 
 ### Task 2: Wire app recovery client
 
-- [ ] Add `PlexClient.recovery(identity:timeout:)` in `PlexAVPApp/Networking/PlexClient.swift`.
+- [ ] Add `PlexClient.recovery(identity:timeout:)` in `VisionPlay/Networking/PlexClient.swift`.
 - [ ] Change `PlaybackController`'s app control-plane client from `let` to `var`.
 - [ ] Add a `switchToRecoveryControlClient()` helper that creates a fresh recovery `PlexClient`, assigns it, and updates the timeline reporter.
 - [ ] Call the helper at the start of user `retry()` before `beginStreaming(...)`.

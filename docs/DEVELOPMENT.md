@@ -8,7 +8,7 @@ for the basic build/run.
 
 ```sh
 # Build (visionOS 26.5 simulator, unsigned)
-xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
@@ -19,11 +19,11 @@ xcodebuild -project PlexAVPApp.xcodeproj -scheme PlexAVPApp \
 ./scripts/ci-hygiene.sh
 
 # Install + launch on a booted sim
-APP="$HOME/Library/Developer/Xcode/DerivedData/PlexAVPApp-<hash>/Build/Products/Debug-xrsimulator/PlexAVPApp.app"
+APP="$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-<hash>/Build/Products/Debug-xrsimulator/VisionPlay.app"
 xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlay
 
 # After-the-fact logs
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "PlexAVPApp"' --style compact
+xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"' --style compact
 ```
 
 - App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5).
