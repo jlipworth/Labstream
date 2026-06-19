@@ -3,6 +3,76 @@ import PMSKit
 import RealityKit
 import SwiftUI
 
+/// Meter-based layout snapshot for the custom-player Cinema scene.
+struct CustomCinemaGeometry: Equatable, Sendable {
+    static let `default` = CustomCinemaGeometry(aspectRatio: 16.0 / 9.0)
+
+    /// The active picture aspect ratio, clamped to sane flat-video bounds. The old Cinema
+    /// scene hard-coded a 16:9 plane, which made 16:9 content feel too close while narrower
+    /// 4:3-ish content happened to feel better. This snapshot lets the immersive plane and its
+    /// hit target match the actual content instead of one fixed wall.
+    var aspectRatio: Float
+    var screenWidthMeters: Float
+    var screenDistanceMeters: Float
+    var verticalOffsetMeters: Float
+
+    init(aspectRatio rawAspectRatio: Float,
+         screenWidthMeters: Float? = nil,
+         screenDistanceMeters: Float? = nil,
+         verticalOffsetMeters: Float? = nil) {
+        let aspect = rawAspectRatio.isFinite ? rawAspectRatio.clamped(to: 1.0...2.76) : 16.0 / 9.0
+        self.aspectRatio = aspect
+
+        // Preserve the good 4:3-ish feel, but make 16:9 and scope content a little less
+        // face-filling. Values are deliberately conservative because this must be headset-tuned.
+        let defaultHeight: Float
+        let defaultDistance: Float
+        let defaultVertical: Float
+        switch aspect {
+        case ..<1.55:        // 4:3 / Academy-ish
+            defaultHeight = 5.10
+            defaultDistance = 6.80
+            defaultVertical = 0.55
+        case 1.55..<2.05:    // 16:9 / 1.85
+            defaultHeight = 4.75
+            defaultDistance = 7.75
+            defaultVertical = 0.55
+        default:             // 2.20 / 2.35 / scope
+            defaultHeight = 4.05
+            defaultDistance = 7.75
+            defaultVertical = 0.48
+        }
+
+        let computedWidth = defaultHeight * aspect
+        self.screenWidthMeters = (screenWidthMeters ?? computedWidth).clamped(to: 4.2...9.8)
+        self.screenDistanceMeters = (screenDistanceMeters ?? defaultDistance).clamped(to: 4.8...9.0)
+        self.verticalOffsetMeters = (verticalOffsetMeters ?? defaultVertical).clamped(to: (-0.2)...1.1)
+    }
+
+    init(item: MediaItem, mediaIndex: Int) {
+        let aspect: Float? = item.media.flatMap { media in
+            let selected = media.indices.contains(mediaIndex) ? media[mediaIndex] : media.first
+            guard let width = selected?.width, let height = selected?.height,
+                  width > 0, height > 0 else { return nil }
+            return Float(width) / Float(height)
+        }
+        self.init(aspectRatio: aspect ?? 16.0 / 9.0)
+    }
+
+    var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
+    var screenPosition: SIMD3<Float> { SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters) }
+
+    /// Detached near-user controls, inspired by the native AVP player transport. These are not
+    /// below/on the movie plane; they sit close enough to be comfortable to tap, while the movie
+    /// can remain far enough away to feel cinematic.
+    var controlsPosition: SIMD3<Float> { SIMD3<Float>(0, -0.58, -1.22) }
+
+    var debugSummary: String {
+        String(format: "aspect %.2f · width %.1fm · distance %.1fm · vertical %.2fm",
+               aspectRatio, screenWidthMeters, screenDistanceMeters, verticalOffsetMeters)
+    }
+}
+
 /// Shared identifiers and active-session state for the custom-player Cinema scaffold.
 ///
 /// Apple's cinema environment is only available through `AVPlayerViewController`, which the
@@ -24,16 +94,6 @@ enum CustomCinemaMode {
     /// in-immersive control rail for issue #12 headset testing.
     static let isUserVisible = true
 
-    static let screenWidthMeters: Float = 9.4
-    static let screenDistanceMeters: Float = 7.0
-    static let verticalOffsetMeters: Float = 0.65
-    static let aspectRatio: Float = 16.0 / 9.0
-
-    static var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
-    static var screenPosition: SIMD3<Float> {
-        SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters)
-    }
-
     static let videoPlaneName = "custom-cinema-video-plane"
     static let emptyPlaneName = "custom-cinema-empty-plane"
     static let controlsRootName = "custom-cinema-native-controls"
@@ -41,10 +101,6 @@ enum CustomCinemaMode {
     static let playPauseButtonName = "custom-cinema-play-pause-button"
     static let forwardButtonName = "custom-cinema-forward-30-button"
     static let exitButtonName = "custom-cinema-exit-button"
-
-    static var controlsPosition: SIMD3<Float> {
-        SIMD3<Float>(0, verticalOffsetMeters - (screenHeightMeters / 2.0) - 0.38, -screenDistanceMeters + 0.18)
-    }
 }
 
 @Observable
@@ -58,15 +114,17 @@ final class CustomCinemaSessionStore {
 
     var title: String?
     var controller: PlaybackController?
+    var geometry: CustomCinemaGeometry = .default
     var presentationState: PresentationState = .closed
     var shouldReopenMainWindowOnDismiss = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
 
-    func activate(title: String, controller: PlaybackController) {
+    func activate(title: String, controller: PlaybackController, geometry: CustomCinemaGeometry = .default) {
         self.title = title
         self.controller = controller
+        self.geometry = geometry
     }
 
     /// Called by the in-immersive Exit Cinema control.
@@ -92,6 +150,7 @@ final class CustomCinemaSessionStore {
     func clear() {
         title = nil
         controller = nil
+        geometry = .default
         presentationState = .closed
         shouldReopenMainWindowOnDismiss = false
     }
@@ -115,11 +174,13 @@ struct CustomCinemaScaffoldView: View {
     var body: some View {
         RealityView { content in
             content.add(Self.makeRoot(player: session.player,
+                                      geometry: session.geometry,
                                       controlsVisible: controlsVisible,
                                       isPaused: session.controller?.transport.isPaused ?? true))
         } update: { content in
             content.entities.removeAll(where: { $0.name == "custom-cinema-root" })
             content.add(Self.makeRoot(player: session.player,
+                                      geometry: session.geometry,
                                       controlsVisible: controlsVisible,
                                       isPaused: session.controller?.transport.isPaused ?? true))
         }
@@ -130,7 +191,7 @@ struct CustomCinemaScaffoldView: View {
         })
         .preferredSurroundingsEffect(.ultraDark)
         .onAppear {
-            print("[Custom Cinema] black immersive opened: width \(CustomCinemaMode.screenWidthMeters)m · distance \(CustomCinemaMode.screenDistanceMeters)m · vertical \(CustomCinemaMode.verticalOffsetMeters)m; title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
+            print("[Custom Cinema] black immersive opened: \(session.geometry.debugSummary); title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
             session.presentationState = .open
             controlsVisible = false
         }
@@ -214,95 +275,97 @@ struct CustomCinemaScaffoldView: View {
     }
 
     @MainActor
-    private static func makeRoot(player: AVPlayer?, controlsVisible: Bool, isPaused: Bool) -> Entity {
+    private static func makeRoot(player: AVPlayer?, geometry: CustomCinemaGeometry, controlsVisible: Bool, isPaused: Bool) -> Entity {
         let root = Entity()
         root.name = "custom-cinema-root"
 
         let screen: ModelEntity
         if let player {
             let material = VideoMaterial(avPlayer: player)
-            screen = ModelEntity(mesh: .generatePlane(width: CustomCinemaMode.screenWidthMeters,
-                                                      height: CustomCinemaMode.screenHeightMeters),
+            screen = ModelEntity(mesh: .generatePlane(width: geometry.screenWidthMeters,
+                                                      height: geometry.screenHeightMeters),
                                  materials: [material])
             screen.name = CustomCinemaMode.videoPlaneName
         } else {
-            screen = ModelEntity(mesh: .generatePlane(width: CustomCinemaMode.screenWidthMeters,
-                                                      height: CustomCinemaMode.screenHeightMeters),
+            screen = ModelEntity(mesh: .generatePlane(width: geometry.screenWidthMeters,
+                                                      height: geometry.screenHeightMeters),
                                  materials: [SimpleMaterial(color: .black,
                                                             roughness: 1.0,
                                                             isMetallic: false)])
             screen.name = CustomCinemaMode.emptyPlaneName
         }
-        screen.position = CustomCinemaMode.screenPosition
+        screen.position = geometry.screenPosition
         // The visible screen is also the reveal target. Collision is intentionally attached to
         // this rendered plane instead of a separate transparent rectangle so taps cannot be
         // intercepted by an invisible occluder in front of the movie.
         screen.components.set(InputTargetComponent())
         screen.components.set(CollisionComponent(shapes: [
-            .generateBox(width: CustomCinemaMode.screenWidthMeters,
-                         height: CustomCinemaMode.screenHeightMeters,
+            .generateBox(width: geometry.screenWidthMeters,
+                         height: geometry.screenHeightMeters,
                          depth: 0.04)
         ]))
         root.addChild(screen)
 
         if controlsVisible {
-            root.addChild(makeControlsRail(isPaused: isPaused))
+            root.addChild(makeControlsRail(isPaused: isPaused, geometry: geometry))
         }
 
         return root
     }
 
-    private static func makeControlsRail(isPaused: Bool) -> Entity {
+    private static func makeControlsRail(isPaused: Bool, geometry: CustomCinemaGeometry) -> Entity {
         let root = Entity()
         root.name = CustomCinemaMode.controlsRootName
-        root.position = CustomCinemaMode.controlsPosition
+        root.position = geometry.controlsPosition
 
-        let back = ModelEntity(mesh: .generateBox(width: 2.25,
-                                                  height: 0.28,
-                                                  depth: 0.025,
-                                                  cornerRadius: 0.12),
-                               materials: [UnlitMaterial(color: UIColor(white: 0.03, alpha: 0.38))])
+        let back = ModelEntity(mesh: .generateBox(width: 1.72,
+                                                  height: 0.30,
+                                                  depth: 0.030,
+                                                  cornerRadius: 0.15),
+                               materials: [UnlitMaterial(color: UIColor(white: 0.04, alpha: 0.72))])
         back.name = "custom-cinema-controls-background"
         root.addChild(back)
 
         let rewind = makeButton(name: CustomCinemaMode.rewindButtonName,
-                                label: "-30",
-                                x: -0.72,
-                                width: 0.42,
-                                color: UIColor(white: 0.12, alpha: 0.58))
+                                label: "−30",
+                                x: -0.54,
+                                width: 0.30,
+                                color: UIColor(white: 0.16, alpha: 0.88))
         root.addChild(rewind)
 
         let play = makeButton(name: CustomCinemaMode.playPauseButtonName,
-                              label: isPaused ? "Play" : "Pause",
-                              x: -0.20,
-                              width: 0.54,
-                              color: UIColor(white: 0.12, alpha: 0.58))
+                              label: isPaused ? "▶" : "Ⅱ",
+                              x: -0.18,
+                              width: 0.34,
+                              color: UIColor(white: 0.22, alpha: 0.92),
+                              fontSize: 0.070)
         root.addChild(play)
 
         let forward = makeButton(name: CustomCinemaMode.forwardButtonName,
                                  label: "+30",
-                                 x: 0.36,
-                                 width: 0.42,
-                                 color: UIColor(white: 0.12, alpha: 0.58))
+                                 x: 0.18,
+                                 width: 0.30,
+                                 color: UIColor(white: 0.16, alpha: 0.88))
         root.addChild(forward)
 
         let exit = makeButton(name: CustomCinemaMode.exitButtonName,
                               label: "Exit",
-                              x: 0.88,
-                              width: 0.50,
-                              color: UIColor(red: 0.34, green: 0.05, blue: 0.05, alpha: 0.62))
+                              x: 0.62,
+                              width: 0.38,
+                              color: UIColor(red: 0.38, green: 0.07, blue: 0.07, alpha: 0.84),
+                              fontSize: 0.048)
         root.addChild(exit)
 
         return root
     }
 
-    private static func makeButton(name: String, label: String, x: Float, width: Float, color: UIColor) -> Entity {
+    private static func makeButton(name: String, label: String, x: Float, width: Float, color: UIColor, fontSize: CGFloat = 0.056) -> Entity {
         let root = Entity()
         root.name = "\(name)-root"
         root.position = SIMD3<Float>(x, 0, 0.035)
 
-        let height: Float = 0.18
-        let depth: Float = 0.035
+        let height: Float = 0.20
+        let depth: Float = 0.045
         let button = ModelEntity(mesh: .generateBox(width: width,
                                                     height: height,
                                                     depth: depth,
@@ -315,18 +378,24 @@ struct CustomCinemaScaffoldView: View {
 
         let textMesh = MeshResource.generateText(label,
                                                  extrusionDepth: 0.002,
-                                                 font: .systemFont(ofSize: 0.060, weight: .semibold),
+                                                 font: .systemFont(ofSize: fontSize, weight: .semibold),
                                                  containerFrame: CGRect(x: -CGFloat(width) / 2,
-                                                                        y: -0.028,
+                                                                        y: -0.030,
                                                                         width: CGFloat(width),
                                                                         height: 0.08),
                                                  alignment: .center,
                                                  lineBreakMode: .byClipping)
         let text = ModelEntity(mesh: textMesh, materials: [UnlitMaterial(color: UIColor(white: 1, alpha: 0.92))])
         text.name = "\(name)-label"
-        text.position = SIMD3<Float>(0, -0.022, 0.025)
+        text.position = SIMD3<Float>(0, -0.024, 0.032)
         root.addChild(text)
 
         return root
+    }
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
