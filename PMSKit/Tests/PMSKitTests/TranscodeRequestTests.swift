@@ -134,6 +134,21 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(q.first { $0.name == "directPlay" }?.value == "1")
 }
 
+@Test func directPlayProbeProfileMatchesOfflineOriginalContainerPolicy() throws {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 200_000,
+                               sessionID: "SESSION-1",
+                               mediaIndex: 0, partIndex: 0).directPlayProbeRequest()
+    let q = URLComponents(url: req.url, resolvingAgainstBaseURL: false)!.queryItems ?? []
+    let extra = try #require(q.first { $0.name == "X-Plex-Client-Profile-Extra" }?.value)
+    #expect(extra.contains("add-direct-play-profile"))
+    #expect(extra.contains("container=mp4,m4v,mov"))
+    #expect(extra.contains("videoCodec=h264,hevc"))
+    #expect(extra.contains("audioCodec=aac,ac3"))
+    #expect(!extra.contains("container=mkv"))
+}
+
 // MARK: - Extra over-testing (plan: HEVC fMP4, subtitle burn-in, non-zero partIndex)
 
 @Test func deviceProfileDeclaresHEVCInFMP4Container() {

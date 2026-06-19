@@ -87,6 +87,18 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var librarySectionKey: String?
     public var mediaIndex: Int?
     public var partIndex: Int?
+    /// The source part id selected when the download was enqueued. Used to distinguish original
+    /// source parts from later server-rendered optimized parts after an app relaunch.
+    public var sourcePartID: Int?
+    /// Non-nil while/when this row represents a server-side optimize/download route. Lets the
+    /// app resume "Preparing on server…" rows that have no URLSession task yet.
+    public var optimizeTargetName: String?
+    /// VisionPlay-marked server optimize queue title for this row, when known. Persisted so an
+    /// app relaunch can keep protecting/resuming the server-side render.
+    public var optimizeQueueTitle: String?
+    /// Part ids present on the source item immediately before the optimize job was created.
+    /// Any later part not in this set is a candidate optimized output.
+    public var optimizeBaselinePartIDs: [Int]?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
 
@@ -108,6 +120,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 librarySectionKey: String? = nil,
                 mediaIndex: Int? = nil,
                 partIndex: Int? = nil,
+                sourcePartID: Int? = nil,
+                optimizeTargetName: String? = nil,
+                optimizeQueueTitle: String? = nil,
+                optimizeBaselinePartIDs: [Int]? = nil,
                 posterRelativePath: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
@@ -127,6 +143,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.librarySectionKey = librarySectionKey
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
+        self.sourcePartID = sourcePartID
+        self.optimizeTargetName = optimizeTargetName
+        self.optimizeQueueTitle = optimizeQueueTitle
+        self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
         self.posterRelativePath = posterRelativePath
     }
 
@@ -150,6 +170,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
         mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
         partIndex = try c.decodeIfPresent(Int.self, forKey: .partIndex)
+        sourcePartID = try c.decodeIfPresent(Int.self, forKey: .sourcePartID)
+        optimizeTargetName = try c.decodeIfPresent(String.self, forKey: .optimizeTargetName)
+        optimizeQueueTitle = try c.decodeIfPresent(String.self, forKey: .optimizeQueueTitle)
+        optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
     }
 

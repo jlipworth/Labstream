@@ -65,8 +65,10 @@ struct ContentView: View {
             guard isRestoring else { return }
             await authManager.restoreSession()
             isRestoring = false
+            downloadManager.resumePendingServerPrepDownloads()
 #if DEBUG
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
+            await DebugPlexDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
 #endif
         }
         // A Spotlight result was tapped: stash the ratingKey with the router. If

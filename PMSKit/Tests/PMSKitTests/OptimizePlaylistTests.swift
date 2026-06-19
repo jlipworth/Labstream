@@ -122,3 +122,122 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     #expect(absolute.contains("library%3A%2F%2F62bf%2Fitem%2F%252Flibrary%252Fmetadata%252F31518"))
     #expect(!absolute.contains("Vaccine%20Court;%20"))
 }
+
+// MARK: - Stale background-job cleanup (slow-start fix)
+
+@Test func removeBackgroundItemBuildsDeleteUnderItemsKey() {
+    let r = OptimizeRequest.removeBackgroundItem(
+        server: server, token: "tok", identity: id,
+        backgroundProcessingKey: "/playlists/9/items", itemID: "1234")
+    #expect(r.method == "DELETE")
+    #expect(r.url.path == "/playlists/9/items/1234")
+    #expect(r.headers["X-Plex-Token"] == "tok")
+}
+
+@Test func backgroundItemsDecodeLenientlyWithIntIdAndStatusState() throws {
+    let json = """
+    {"MediaContainer":{"size":2,"Item":[
+      {"id":7,"title":"Old Movie [VisionPlay aaaa1111]","Status":{"state":"pending"}},
+      {"id":"8","title":"Library Scan"}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    #expect(q.items.count == 2)
+    #expect(q.items[0].id == "7")           // Int id tolerated
+    #expect(q.items[0].state == "pending")
+    #expect(q.items[1].id == "8")           // String id tolerated
+    #expect(q.items[1].state == nil)
+}
+
+@Test func backgroundItemsGarbageShapeDoesNotThrow() throws {
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self,
+                                     from: #"{"nope":1}"#.data(using: .utf8)!)
+    #expect(q.items.isEmpty)
+}
+
+@Test func staleItemIDsOnlyOurMarkedUnprotectedItems() throws {
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"1","title":"Abandoned A [VisionPlay aaaa1111]"},
+      {"id":"2","title":"In Flight [VisionPlay bbbb2222]"},
+      {"id":"3","title":"Someone Else's Job"},
+      {"id":"4","title":"Abandoned B [VisionPlay cccc3333]"}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    let protected: Set<String> = ["In Flight [VisionPlay bbbb2222]"]
+    let stale = q.staleItemIDs(marker: "[VisionPlay ", protectedTitles: protected)
+    // Deletes our two abandoned items; never the protected in-flight one, never the
+    // non-VisionPlay job (no marker).
+    #expect(Set(stale) == ["1", "4"])
+}
+
+@Test func staleItemIDsSkipsCompletedJobsWhoseFileMayBeDownloading() throws {
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"1","title":"Pending Junk [VisionPlay aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Just Finished [VisionPlay bbbb2222]","Status":{"state":"complete"}},
+      {"id":"3","title":"Failed Junk [VisionPlay cccc3333]","Status":{"state":"error"}}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    let stale = q.staleItemIDs(marker: "[VisionPlay ", protectedTitles: [])
+    // Clears the pending + failed pileup, but NOT the completed job (its file may be in use).
+    #expect(Set(stale) == ["1", "3"])
+}
+
+// MARK: - Clean-slate cleanup (`removableItemIDs`): completed leftovers ARE removable
+
+@Test func removableItemIDsClearsCompletedUnprotectedLeftovers() throws {
+    // The user's clogged-queue scenario: one pending (our new job) + a pile of completed
+    // VisionPlay leftovers from abandoned conversions. With in-flight protection now correct,
+    // ALL of our unprotected items — completed included — are abandoned clutter and removable.
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"1","title":"Pending Junk [VisionPlay aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Leftover A [VisionPlay bbbb2222]","Status":{"state":"complete"}},
+      {"id":"3","title":"Leftover B [VisionPlay cccc3333]","Status":{"state":"completed"}},
+      {"id":"4","title":"Failed Junk [VisionPlay dddd4444]","Status":{"state":"error"}},
+      {"id":"5","title":"Leftover C [VisionPlay eeee5555]","Status":{"state":"successful"}}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: [])
+    // Every marked, unprotected item — pending, failed, AND completed — is cleared for a true
+    // clean slate. (Contrast `staleItemIDs`, which would skip 2/3/5.)
+    #expect(Set(removable) == ["1", "2", "3", "4", "5"])
+}
+
+@Test func removableItemIDsNeverTouchesProtectedActiveDownloadEvenWhenCompleted() throws {
+    // A completed item whose Part an active download is still pulling MUST survive: its title
+    // is in `protectedTitles` for the full download lifetime, so deleting it (which removes the
+    // optimized version + its file on the server) would yank the file out from under the transfer.
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"1","title":"Downloading Now [VisionPlay aaaa1111]","Status":{"state":"complete"}},
+      {"id":"2","title":"Abandoned Leftover [VisionPlay bbbb2222]","Status":{"state":"complete"}}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    let protected: Set<String> = ["Downloading Now [VisionPlay aaaa1111]"]
+    let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: protected)
+    // Only the unprotected leftover is removed; the in-flight (completed, protected) one stays.
+    #expect(Set(removable) == ["2"])
+}
+
+@Test func removableItemIDsNeverTouchesForeignClientItems() throws {
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"1","title":"Ours Pending [VisionPlay aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Ours Completed [VisionPlay bbbb2222]","Status":{"state":"complete"}},
+      {"id":"3","title":"Someone Else's Optimize"},
+      {"id":"4","title":"Another Client's Job","Status":{"state":"complete"}},
+      {"id":"5","title":"Library Scan","Status":{"state":"running"}}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: [])
+    // Only items carrying OUR marker are ever candidates — foreign jobs (no marker) are never
+    // touched, regardless of their state.
+    #expect(Set(removable) == ["1", "2"])
+}

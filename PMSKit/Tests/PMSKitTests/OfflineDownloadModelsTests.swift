@@ -94,6 +94,10 @@ struct OfflineDownloadModelsTests {
             librarySectionKey: "/library/sections/3",
             mediaIndex: 0,
             partIndex: 1,
+            sourcePartID: 42,
+            optimizeTargetName: "Original video quality",
+            optimizeQueueTitle: "Round Trip [VisionPlay 12345678]",
+            optimizeBaselinePartIDs: [42, 43, 44],
             posterRelativePath: "555.poster.jpg")
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)

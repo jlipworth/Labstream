@@ -224,6 +224,21 @@ public enum OptimizeRequest {
                            headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
+    /// `DELETE {backgroundProcessingKey}/{itemID}` — remove a single queued optimize item
+    /// (cancel/clear a stale job). `backgroundProcessingKey` is the type-42 items path
+    /// (e.g. `/playlists/9/items`); `itemID` is the item's `id`. Mirrors python-plexapi
+    /// `Optimized.remove` (`DELETE <items-key>/<id>`).
+    public static func removeBackgroundItem(server: URL, token: String, identity: ClientIdentity,
+                                            backgroundProcessingKey: String,
+                                            itemID: String) -> PlexRequest {
+        let trimmed = backgroundProcessingKey.hasPrefix("/")
+            ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
+        return PlexRequest(url: server.appendingPathComponent("\(trimmed)/\(itemID)"),
+                           method: "DELETE",
+                           queryItems: [],
+                           headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
     /// Build the offline-download URL for an optimized (or any) part.
     ///
     /// `<server><partKey>?download=1&X-Plex-Token=<token>` — token as query param
@@ -301,5 +316,112 @@ public struct MediaProcessingTargets: Decodable, Sendable, Equatable {
     /// Case-insensitive name → targetTagID lookup (used to resolve a chosen preset name).
     public func tagID(forName name: String) -> Int? {
         targets.first { $0.name.lowercased() == name.lowercased() }?.id
+    }
+}
+
+/// The type-42 background-processing queue items (`GET {backgroundProcessing.key}`), used to
+/// find and clear stale optimize jobs that pile up when downloads are abandoned/cancelled and
+/// make new jobs wait behind them. Lenient: degrades to `[]` rather than throwing.
+public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
+    public struct Item: Decodable, Sendable, Equatable {
+        public let id: String?
+        /// PRIVACY-SENSITIVE: carries the media title. Used in memory only — never logged.
+        public let title: String?
+        public let state: String?
+
+        public init(id: String?, title: String?, state: String?) {
+            self.id = id; self.title = title; self.state = state
+        }
+
+        enum CodingKeys: String, CodingKey { case id, title; case status = "Status" }
+        private struct StatusBox: Decodable { let state: String? }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // id may arrive as a String or an Int.
+            self.id = ((try? c.decodeIfPresent(String.self, forKey: .id)) ?? nil)
+                ?? ((try? c.decodeIfPresent(Int.self, forKey: .id)) ?? nil).map(String.init)
+            self.title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? nil
+            let status = (try? c.decodeIfPresent(StatusBox.self, forKey: .status)) ?? nil
+            self.state = status?.state
+        }
+    }
+
+    public let items: [Item]
+
+    enum RootKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
+    enum ContainerKeys: String, CodingKey { case item = "Item" }
+
+    public init(items: [Item]) { self.items = items }
+
+    public init(from decoder: Decoder) throws {
+        guard let root = try? decoder.container(keyedBy: RootKeys.self),
+              let container = try? root.nestedContainer(keyedBy: ContainerKeys.self,
+                                                        forKey: .mediaContainer) else {
+            self.items = []
+            return
+        }
+        self.items = (try? container.decodeIfPresent([Item].self, forKey: .item)) ?? []
+    }
+
+    /// PMS states that mean the job finished — its rendered file may still be downloading, so
+    /// we must NOT delete these even when abandoned.
+    static let completedStates: Set<String> = ["complete", "completed", "successful", "success", "done"]
+
+    /// IDs of items that are SAFE to delete: those whose title carries `marker` (i.e. this
+    /// client created them), whose title is NOT in `protectedTitles` (a currently-active
+    /// download), and whose state is NOT completed (a finished job's file may be in use).
+    /// Never deletes another client's jobs, an in-flight one, or a completed one — only the
+    /// pending/failed pileup that actually blocks the queue.
+    ///
+    /// NOTE: this *completed-skipping* variant is the conservative legacy behavior, kept for
+    /// callers that cannot guarantee a completed item's rendered Part isn't being downloaded.
+    /// The download pipeline now protects an in-flight job's title for its REAL download
+    /// lifetime (not just the optimize kickoff), so it uses `removableItemIDs` instead, which
+    /// also clears completed-but-unprotected leftovers for a true clean slate.
+    public func staleItemIDs(marker: String, protectedTitles: Set<String>) -> [String] {
+        items.compactMap { item in
+            guard let id = item.id, !id.isEmpty,
+                  let title = item.title, title.contains(marker),
+                  !protectedTitles.contains(title) else { return nil }
+            if let s = item.state?.lowercased(), Self.completedStates.contains(s) { return nil }
+            return id
+        }
+    }
+
+    /// IDs of items that are SAFE to delete under the *clean-slate* policy: those whose title
+    /// carries `marker` (this client created them) AND whose title is NOT in `protectedTitles`
+    /// (no currently-active download is pulling that item's rendered Part). Unlike
+    /// `staleItemIDs`, this DOES include items in a completed state — once a job's title is no
+    /// longer protected, its rendered conversion is an abandoned leftover that only clutters the
+    /// type-42 background-processing queue, so removing it (which also deletes its optimized
+    /// version on the server, mirroring python-plexapi `Optimized.remove`) restores a clean
+    /// queue. Hard safety scoping is unchanged: it NEVER touches a foreign client's items (no
+    /// marker) and NEVER touches a protected (in-flight) one — including a protected *completed*
+    /// one whose file is still being downloaded.
+    public func removableItemIDs(marker: String, protectedTitles: Set<String>) -> [String] {
+        items.compactMap { item in
+            guard let id = item.id, !id.isEmpty,
+                  let title = item.title, title.contains(marker),
+                  !protectedTitles.contains(title) else { return nil }
+            return id
+        }
+    }
+
+    /// Number of queue items whose title carries `marker` — privacy-safe COUNT only (never the
+    /// title value). Used by diagnostics to tell "no items matched our marker" (server didn't
+    /// preserve the title we submitted, or jobs predate the marker) apart from "matched but all
+    /// protected/completed". A diagnostic signal, not a deletion gate.
+    public func markedCount(marker: String) -> Int {
+        items.filter { ($0.title?.contains(marker) ?? false) }.count
+    }
+
+    /// Number of items NOT in a completed state (the pending/failed pileup that blocks the queue),
+    /// regardless of marker. Privacy-safe count.
+    public var pendingCount: Int {
+        items.filter { item in
+            guard let s = item.state?.lowercased() else { return true }
+            return !Self.completedStates.contains(s)
+        }.count
     }
 }
