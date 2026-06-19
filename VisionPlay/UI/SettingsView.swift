@@ -44,10 +44,10 @@ struct SettingsView: View {
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
     @AppStorage(AppDiagnostics.enabledDefaultsKey) private var diagnosticLoggingEnabled = false
-    @AppStorage(PlaybackPreferenceKeys.preferredAudioLanguage) private var preferredAudioLanguage = ""
-    @AppStorage(PlaybackPreferenceKeys.preferredSubtitleLanguage) private var preferredSubtitleLanguage = ""
-    @AppStorage(PlaybackPreferenceKeys.subtitleAutoSelectMode) private var subtitleAutoSelectModeRaw = SubtitleAutoSelectMode.manual.rawValue
-    @AppStorage(PlaybackPreferenceKeys.subtitleBurnMode) private var subtitleBurnModeRaw = SubtitleBurnMode.automatic.rawValue
+    @AppStorage(PlaybackPreferences.Keys.preferredAudioLanguage) private var preferredAudioLanguage = ""
+    @AppStorage(PlaybackPreferences.Keys.preferredSubtitleLanguage) private var preferredSubtitleLanguage = ""
+    @AppStorage(PlaybackPreferences.Keys.subtitleAutoSelectMode) private var subtitleAutoSelectModeRaw = SubtitleAutoSelectMode.manual.rawValue
+    @AppStorage(PlaybackPreferences.Keys.subtitleBurnMode) private var subtitleBurnModeRaw = SubtitleBurnMode.automatic.rawValue
 
     var body: some View {
         Form {
@@ -149,7 +149,7 @@ struct SettingsView: View {
                 get: { preferredSubtitleLanguage },
                 set: { language in
                     preferredSubtitleLanguage = language
-                    UserDefaults.standard.set(false, forKey: PlaybackPreferenceKeys.subtitlesOff)
+                    UserDefaults.standard.set(false, forKey: PlaybackPreferences.Keys.subtitlesOff)
                 }
             )) {
                 ForEach(PlaybackLanguageOption.common) { option in
