@@ -243,7 +243,21 @@ public struct OfflineLibraryView: View {
     /// `DownloadManager.refreshRecords` (kept — orthogonal jitter fix).
     private func progressCaption(for record: DownloadRecord, progress: Double?) -> String {
         let isActive = manager.activeJobs.contains(record.ratingKey)
-        if record.bytes == 0 { return isActive ? "Preparing on server…" : "Queued…" }
+        if record.bytes == 0 {
+            // Server-side optimize phase: surface live transcode progress when known.
+            if let p = manager.optimizeProgress[record.ratingKey] {
+                var caption = "Transcoding… \(Int(p * 100))%"
+                if let eta = manager.optimizeETA[record.ratingKey], eta > 0,
+                   let left = minutesLeftString(eta) {
+                    caption += " • ~\(left) left"
+                }
+                return caption
+            }
+            if manager.optimizeState[record.ratingKey] == "queued" {
+                return "Queued on server"
+            }
+            return isActive ? "Preparing on server…" : "Queued…"
+        }
 
         var pieces: [String] = []
         if let progress { pieces.append("\(Int(progress * 100))%") }
@@ -253,6 +267,17 @@ public struct OfflineLibraryView: View {
         }
         if let r = resolutionLabel(for: record) { pieces.append(r) }
         return pieces.joined(separator: " • ")
+    }
+
+    /// Human "~N min"/"~N sec" string for an estimated server-optimize ETA, or nil when
+    /// the estimate is too large/small to be meaningful. Labelled "estimated" by the
+    /// "~" prefix at the call site.
+    private func minutesLeftString(_ seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        if seconds < 60 { return "\(max(1, Int(seconds.rounded()))) sec" }
+        let minutes = Int((seconds / 60).rounded())
+        guard minutes >= 1 else { return nil }
+        return "\(minutes) min"
     }
 
     /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
