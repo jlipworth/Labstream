@@ -71,6 +71,26 @@ public final class DownloadManager {
     /// Last (bytes, time) sample per ratingKey, used to compute `downloadSpeed`.
     private var speedSamples: [String: (bytes: Int, time: Date)] = [:]
 
+    /// Server-side optimize/transcode progress (0.0…1.0) per ratingKey, polled from
+    /// `GET /activities` during the "Preparing on server…" phase. Absent when the server
+    /// reports no matching activity (caller falls back to the indeterminate caption).
+    /// Ephemeral (never persisted); drives the "Transcoding… 37%" readout.
+    public private(set) var optimizeProgress: [String: Double] = [:]
+
+    /// Estimated seconds remaining for the server-side optimize, derived from an EMA over
+    /// the moving percent. Present only when the rate is stable enough to be meaningful;
+    /// suppressed while noisy/indeterminate. Labelled "estimated" in the UI.
+    public private(set) var optimizeETA: [String: TimeInterval] = [:]
+
+    /// Coarse optimize state label per ratingKey: "queued" (job seen but no progress yet)
+    /// or "transcoding" (progress reported). Absent when no matching activity is found.
+    public private(set) var optimizeState: [String: String] = [:]
+
+    /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
+    private var optimizeProgressSamples: [String: (p: Double, time: Date)] = [:]
+    /// Smoothed %/sec rate per ratingKey (EMA), used to derive `optimizeETA`.
+    private var optimizeRate: [String: Double] = [:]
+
     private let appModel: AppModel
     private let store: DownloadStore
     private let session: BackgroundDownloadSession
@@ -794,6 +814,7 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch {
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
@@ -803,6 +824,7 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(String(describing: error))
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         }
     }
@@ -1094,9 +1116,15 @@ public final class DownloadManager {
                                                           token: token, identity: identity) {
                 let allParts = (metadata.media ?? []).flatMap { $0.part }
                 if let newPart = allParts.first(where: { !originalPartIDs.contains($0.id) }) {
+                    clearOptimizeProgress(ratingKey: ratingKey)
                     return newPart
                 }
             }
+            // Surface server-side optimize/transcode progress for the "Preparing on
+            // server…" caption. Best-effort: failures or no-match leave the existing
+            // behavior untouched.
+            await pollOptimizeActivity(ratingKey: ratingKey, queueTitle: queueTitle,
+                                       server: server, token: token, identity: identity)
             if let backgroundProcessingKey,
                let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
                                                        queueTitle: queueTitle, server: server,
@@ -1166,6 +1194,109 @@ public final class DownloadManager {
         guard let response = try? await appModel.client.send(req, as: OptimizerQueueResponse.self)
         else { return nil }
         return response.mediaContainer.item.last(where: { $0.title == queueTitle })?.status
+    }
+
+    // MARK: - Server-side optimize progress (GET /activities)
+
+    /// Fetch `GET /activities`, correlate the matching optimize activity to this job, and
+    /// publish `optimizeProgress`/`optimizeETA`/`optimizeState`. Best-effort: a request
+    /// failure or absent match leaves the current state untouched (graceful fallback).
+    ///
+    /// PRIVACY: media titles in `Activity.title`/`subtitle` are matched in memory ONLY and
+    /// never logged. We emit a single redaction-safe shape probe per poll (structural facts
+    /// + numeric progress only) so the real PMS shape can be confirmed from logs.
+    private func pollOptimizeActivity(ratingKey: String, queueTitle: String,
+                                      server: URL, token: String,
+                                      identity: ClientIdentity) async {
+        let req = ActivitiesRequest.list(server: server, token: token, identity: identity)
+        guard let activities = try? await appModel.client.send(req, as: Activities.self) else {
+            return
+        }
+
+        // PROBE: redaction-safe shape of the raw /activities decode for live validation.
+        // `probeShape` emits ONLY counts / field-presence flags / dotted types / numeric
+        // progress — never a title/subtitle VALUE. The "types" string is a list of dotted
+        // activity types (e.g. "media.optimize,library.update.section"), which are
+        // server-vocabulary identifiers, not media titles, and pass through unredacted.
+        let shape = activities.probeShape(ratingKey: ratingKey, queueTitle: queueTitle)
+        var probeFields: [String: DiagnosticFieldValue] = [
+            "download_id": .identifier(ratingKey),
+            "activity_count": .int(Int(shape["activity_count"] ?? "0") ?? 0),
+            "optimize_count": .int(Int(shape["optimize_count"] ?? "0") ?? 0),
+            "matched": .label(shape["matched"]),
+            // Dotted activity-type vocabulary (NOT media titles); aids shape confirmation.
+            "activity_types": .label(shape["types"]),
+        ]
+        // NOTE: the diagnostic redactor auto-omits any field whose KEY contains "title".
+        // The presence flags below carry only "1"/"0"/"nil" (never a title value), so we
+        // map the title/subtitle presence flags to redactor-safe key names to keep the
+        // boolean visible — the VALUE is structural, not a media title.
+        let probeKeyRemap: [String: String] = [
+            "match_has_title": "match_has_name",
+            "match_has_subtitle": "match_has_subname",
+        ]
+        for k in ["match_progress", "match_has_uuid", "match_has_context_ratingkey",
+                  "match_has_title", "match_has_subtitle", "match_cancellable"] {
+            if let v = shape[k] { probeFields[probeKeyRemap[k] ?? k] = .label(v) }
+        }
+        recordDownloadDiagnostic("downloads.optimize_activity_probe", fields: probeFields)
+
+        guard let activity = activities.optimizeActivity(ratingKey: ratingKey,
+                                                         queueTitle: queueTitle) else {
+            return
+        }
+
+        // progress is 0…100, or -1 indeterminate. -1 / missing → "queued" (job seen but no
+        // measurable progress yet); a real percent → "transcoding".
+        guard let pct = activity.progress, pct >= 0 else {
+            optimizeState[ratingKey] = "queued"
+            optimizeProgress[ratingKey] = nil
+            optimizeETA[ratingKey] = nil
+            return
+        }
+        let p = min(1.0, Double(pct) / 100.0)
+        optimizeProgress[ratingKey] = p
+        optimizeState[ratingKey] = "transcoding"
+        updateOptimizeETA(ratingKey: ratingKey, progress: p)
+    }
+
+    /// Fold the moving optimize percent into an EMA (same 0.75/0.25 weights as the transfer
+    /// speed EMA) to derive a smooth `~N min left`. Suppress the ETA when the instantaneous
+    /// rate is non-positive (progress stalled or went backwards) or implausibly large.
+    private func updateOptimizeETA(ratingKey: String, progress p: Double) {
+        let now = Date()
+        guard let prev = optimizeProgressSamples[ratingKey] else {
+            optimizeProgressSamples[ratingKey] = (p, now)
+            return
+        }
+        let dt = now.timeIntervalSince(prev.time)
+        let dp = p - prev.p
+        // Resample on a ≥1s window for a less-noisy instantaneous rate; require forward
+        // progress. (Matches the transfer-speed EMA cadence in refreshRecords.)
+        guard dt >= 1.0, dp > 0 else {
+            if p >= 1.0 { optimizeETA[ratingKey] = 0 }
+            return
+        }
+        let instantaneous = dp / dt   // fraction per second
+        let smoothed = optimizeRate[ratingKey].map { 0.75 * $0 + 0.25 * instantaneous }
+            ?? instantaneous
+        optimizeRate[ratingKey] = smoothed
+        optimizeProgressSamples[ratingKey] = (p, now)
+        if smoothed > 0 {
+            let eta = (1.0 - p) / smoothed
+            // Only surface a plausible estimate (< 12h); otherwise suppress (too noisy).
+            optimizeETA[ratingKey] = (eta.isFinite && eta < 60 * 60 * 12) ? eta : nil
+        }
+    }
+
+    /// Drop all server-optimize progress state for a ratingKey (part found / job ended).
+    /// Mirrors the `downloadSpeed` prune idiom in `refreshRecords`.
+    private func clearOptimizeProgress(ratingKey: String) {
+        optimizeProgress[ratingKey] = nil
+        optimizeETA[ratingKey] = nil
+        optimizeState[ratingKey] = nil
+        optimizeProgressSamples[ratingKey] = nil
+        optimizeRate[ratingKey] = nil
     }
 }
 
