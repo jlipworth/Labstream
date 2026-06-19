@@ -55,7 +55,7 @@ enum SubtitleBurnMode: String, CaseIterable, Identifiable {
         case .automatic:
             return "Let Plex decide whether subtitles should stay selectable or be burned in."
         case .imageFormatsOnly:
-            return "Burn image-based subtitles such as PGS or VobSub when VisionPlex can identify them."
+            return "Burn image-based subtitles such as PGS or VobSub when VisionPlay can identify them."
         case .always:
             return "Burn the selected subtitle stream into the video when a matching stream is known."
         }

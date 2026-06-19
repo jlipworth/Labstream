@@ -48,7 +48,7 @@ final class DiagnosticLoggingTests: XCTestCase {
             "full_url": .text("https://example.com/library/metadata/1?X-Plex-Token=anothersecret")
         ])
 
-        let context = DiagnosticReportContext(product: "VisionPlex",
+        let context = DiagnosticReportContext(product: "VisionPlay",
                                               appVersion: "1.0",
                                               appBuild: "42",
                                               operatingSystem: "visionOS 26.5",
@@ -63,7 +63,7 @@ final class DiagnosticLoggingTests: XCTestCase {
                                                      events: store.snapshot(),
                                                      generatedAt: Date(timeIntervalSince1970: 1_700_000_010))
 
-        XCTAssertTrue(report.contains("VisionPlex Diagnostic Report"))
+        XCTAssertTrue(report.contains("VisionPlay Diagnostic Report"))
         XCTAssertTrue(report.contains("Diagnostic logging enabled: yes"))
         XCTAssertTrue(report.contains("Adaptive Bitrate: disabled"))
         XCTAssertTrue(report.contains("observed_bitrate_kbps"))

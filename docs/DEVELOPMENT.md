@@ -192,7 +192,7 @@ metadata, and review-specific release automation can be handled in a later publi
   a session that can't keep up (see `SeekRestartBudget`), and a deeper client buffer does NOT help
   here — it cannot pre-fetch segments the server hasn't produced.
 - **PMS HLS is a FULL-TIMELINE playlist with ABSOLUTE-TIME segment URIs and ABSOLUTE PTS, but
-  VisionPlex no longer relies on no-reload segment splicing.** The universal-transcoder media
+  VisionPlay no longer relies on no-reload segment splicing.** The universal-transcoder media
   playlist lists EVERY segment from t=0 to the end (e.g. **10548 one-second segments** for a ~2.9h
   film; master is a tiny one-variant `#EXT-X-STREAM-INF`), each named **`0NNNNN.ts` where NNNNN is
   the absolute second offset** — `02600.ts` is t=2600s in *every* session regardless of prime

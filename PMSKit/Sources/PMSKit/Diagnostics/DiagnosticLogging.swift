@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stable categories used by VisionPlex's opt-in diagnostic report.
+/// Stable categories used by VisionPlay's opt-in diagnostic report.
 ///
 /// Keep these raw values human-readable and durable: they are written into user-exported
 /// reports and are intentionally broader than implementation file names.
@@ -438,7 +438,7 @@ public enum DiagnosticReportRenderer {
                               generatedAt: Date = Date()) -> String {
         let shownEvents = Array(events.suffix(max(0, maxEvents)))
         var lines: [String] = []
-        lines.append("VisionPlex Diagnostic Report")
+        lines.append("VisionPlay Diagnostic Report")
         lines.append("Generated: \(ISO8601DateFormatter().string(from: generatedAt))")
         lines.append("Sensitive values are omitted: tokens, client identifiers, hostnames/IPs, full URLs, usernames, library paths, filenames, and media titles should not appear in this report.")
         lines.append("")

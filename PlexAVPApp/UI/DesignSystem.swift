@@ -10,7 +10,7 @@ import SwiftUI
 /// the whole app from one file and guarantees Home, Libraries, Search and Detail
 /// stay visually in lock-step. Nothing here changes behaviour: it is pure layout.
 enum DS {
-    /// Shared brand palette sampled from the VisionPlex mark. Keep these in one
+    /// Shared brand palette sampled from the VisionPlay mark. Keep these in one
     /// place so the welcome screen, icon previews, and any future empty states
     /// use the same identity instead of slightly different blues/ambers.
     enum Brand {
