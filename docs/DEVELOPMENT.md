@@ -53,9 +53,12 @@ metadata, and review-specific release automation can be handled in a later publi
 
 ## Gotchas we don't want to re-learn
 
-- **CRITICAL — do not revert:** `TranscodeRequest` sends `X-Plex-Client-Profile-Name="Safari"`. An
-  unknown profile name (e.g. "visionOS") makes PMS return a bare **HTTP 400** and playback breaks.
-  The bitrate cap is enforced by `maxVideoBitrate`.
+- **CRITICAL — do not revert:** `TranscodeRequest` sends `X-Plex-Client-Profile-Name="Generic"`
+  (plus an explicit `X-Plex-Client-Profile-Extra`). Safari was tried and regressed high-bitrate 4K
+  HEVC — it hard-limits 10-bit HEVC and forced ~20 Mbps video transcodes on 4K MKV titles even on
+  Direct Play / Maximum — so `Generic` is the proven-correct value. An unknown or missing profile
+  name (e.g. "visionOS") makes PMS return a bare **HTTP 400** and playback breaks, so the name must
+  always resolve to a real built-in profile. The bitrate cap is enforced by `maxVideoBitrate`.
 - **AVKit `contextualActions`** (`visionos(1.0)`) is the only affordance that renders over video in
   **both** inline and expanded cinema states and stays tappable — a floated SwiftUI sibling vanishes
   in the expanded experience, and the ⓘ panel is buried. (See the Close-button placement issue.)

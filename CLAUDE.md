@@ -65,8 +65,12 @@ Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 
 ## Hard constraints (do not regress)
 
-- `X-Plex-Client-Profile-Name=Safari` in TranscodeRequest must NEVER change — an
-  unknown profile makes PMS return a bare HTTP 400.
+- `X-Plex-Client-Profile-Name=Generic` in TranscodeRequest is the proven-correct
+  shipping value — keep it. Safari was tried and regressed high-bitrate 4K HEVC (it
+  hard-limits 10-bit HEVC and forced ~20 Mbps video transcodes on 4K MKV even on
+  Direct Play / Maximum), so we use `Generic` plus an explicit
+  `X-Plex-Client-Profile-Extra`. An unknown or missing profile name makes PMS return a
+  bare HTTP 400, so the name must always resolve to a real built-in profile.
 - Never commit Plex tokens or client identifiers.
 - Never reintroduce the scrubbed real PMS hostname or LAN IP; the repo uses
   `plex.example.internal` / `192.0.2.10` as placeholders.
