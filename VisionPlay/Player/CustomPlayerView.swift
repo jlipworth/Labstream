@@ -123,7 +123,10 @@ struct CustomPlayerView: View {
         await MainActor.run {
             let playback = makeController()
             controller = playback
-            cinemaSession.activate(title: item.title, controller: playback)
+            cinemaSession.activate(title: item.title,
+                                   controller: playback,
+                                   geometry: CustomCinemaGeometry(item: item,
+                                                                  mediaIndex: playback.mediaIndex))
             refreshScrubberClock(from: playback)
             playback.start()
             Task { @MainActor in
