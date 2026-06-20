@@ -3,9 +3,10 @@ import Foundation
 /// Server-side background-conversion probes + the idle-pause toggle.
 ///
 /// The Media Optimizer runs conversions off a SEPARATE ordered queue from the type-42
-/// `Optimized` registry that `OptimizeRequest` reads. Per python-plexapi:
+/// `Optimized` registry that `OptimizeRequest` reads. Per python-plexapi + live PMS checks:
 ///   * `GET /status/sessions/background` → `TranscodeJob`s (the actively running/paused
-///     optimization, "usually one item at a time").
+///     optimizations). Do NOT assume there is only one: PMS can run several optimize
+///     transcoders concurrently, and each job carries its own `ratingKey`.
 ///   * `GET /playQueues/1` → `Conversion`s (the ordered queue of items queued for or being
 ///     actively optimized; `move(after:'-1')` marks the active conversion).
 ///   * The server pref `BackgroundQueueIdlePaused` gates whether the queue runs at all
@@ -82,14 +83,27 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
         /// live shape's key is uncertain, so we decode defensively from the two most likely keys
         /// (`speed`, `transcodeSpeed`), tolerate Int/Double/String, and never throw.
         public let speed: Double?
+        /// Source item ratingKey for this background transcode job, when PMS reports it.
+        /// This is the reliable attribution key when several optimize jobs run concurrently.
+        public let ratingKey: String?
+        /// Transcode-session key (safe server vocabulary/id path, never a media title). Useful
+        /// only for diagnostics/debug correlation; app progress attribution should prefer
+        /// `ratingKey`.
+        public let key: String?
 
-        public init(progress: Int?, state: String?, speed: Double? = nil) {
-            self.progress = progress; self.state = state; self.speed = speed
+        public init(progress: Int?, state: String?, speed: Double? = nil,
+                    ratingKey: String? = nil, key: String? = nil) {
+            self.progress = progress
+            self.state = state
+            self.speed = speed
+            self.ratingKey = ratingKey
+            self.key = key
         }
 
         enum CodingKeys: String, CodingKey {
             case progress; case status = "Status"; case state
             case speed; case transcodeSpeed
+            case ratingKey; case key
         }
         private struct StatusBox: Decodable { let state: String? }
 
@@ -111,6 +125,16 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
                 ?? nested?.state
             // Speed: prefer `speed`, fall back to `transcodeSpeed`. Tolerate Double/Int/String.
             self.speed = Self.decodeSpeed(c, .speed) ?? Self.decodeSpeed(c, .transcodeSpeed)
+            self.ratingKey = Self.string(c, .ratingKey)
+            self.key = (try? c.decodeIfPresent(String.self, forKey: .key)) ?? nil
+        }
+
+        /// Lenient String decode tolerating String or Int (PMS JSON mixes both).
+        private static func string(_ c: KeyedDecodingContainer<CodingKeys>,
+                                   _ key: CodingKeys) -> String? {
+            if let s = (try? c.decodeIfPresent(String.self, forKey: key)) ?? nil { return s }
+            if let i = (try? c.decodeIfPresent(Int.self, forKey: key)) ?? nil { return String(i) }
+            return nil
         }
 
         /// Lenient numeric decode for the speed multiplier: Double, then Int, then a parseable
@@ -156,6 +180,15 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
     public var firstState: String? { jobs.first?.state }
     /// The first job's transcode realtime multiplier, if reported (safe to log — a number).
     public var firstSpeed: Double? { jobs.first?.speed }
+
+    /// The background job for `ratingKey`, when PMS reports per-job rating keys.
+    public func job(ratingKey: String) -> Job? {
+        let wanted = ratingKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else { return nil }
+        return jobs.first { job in
+            job.ratingKey?.trimmingCharacters(in: .whitespacesAndNewlines) == wanted
+        }
+    }
 }
 
 /// `GET /playQueues/1` → the ordered conversion queue. Lenient: degrades to `[]`. We surface
