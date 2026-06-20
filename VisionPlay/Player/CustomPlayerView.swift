@@ -24,7 +24,6 @@ struct CustomPlayerView: View {
     @State private var controller: PlaybackController?
     @State private var scrubState: PlaybackScrubState
     @State private var clockTaskID = UUID()
-    @State private var isReconnecting = false
 
     init(item: MediaItem,
          controllerFactory: @escaping @MainActor () -> PlaybackController,
@@ -84,8 +83,7 @@ struct CustomPlayerView: View {
                                        title: item.title,
                                        scrubState: $scrubState,
                                        trickPlayProvider: trickPlayProvider,
-                                       isReconnecting: isReconnecting,
-                                       onRetry: { retry(controller) },
+                                       onRetry: { controller.retry() },
                                        onClose: onClose,
                                        allowsRealityTheater: allowsRealityTheater)
                 }
@@ -99,7 +97,6 @@ struct CustomPlayerView: View {
             }
         }
         .task(id: clockTaskID) { await runPlayer() }
-        .task(id: isReconnecting) { await reconnectWatchdog() }
         .onDisappear {
             if cinemaSession.presentationState == .closed {
                 controller?.stop()
@@ -115,7 +112,6 @@ struct CustomPlayerView: View {
             let playback = controllerFactory()
             playback.onAdvanceToNext = onRequestPlay
             playback.onPlaybackEnded = onClose
-            playback.onPlaybackActive = { isReconnecting = false }
             controller = playback
             cinemaSession.activate(title: item.title,
                                    item: item,
@@ -143,22 +139,6 @@ struct CustomPlayerView: View {
     @MainActor
     private func refreshScrubberClock(from controller: PlaybackController) {
         tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: item.duration ?? 0)
-    }
-
-    @MainActor
-    private func retry(_ controller: PlaybackController) {
-        isReconnecting = true
-        controller.retry()
-    }
-
-    private func reconnectWatchdog() async {
-        guard isReconnecting else { return }
-        try? await Task.sleep(for: .seconds(20))
-        await MainActor.run {
-            guard isReconnecting, let controller else { return }
-            isReconnecting = false
-            controller.surfaceReconnectTimeout()
-        }
     }
 }
 

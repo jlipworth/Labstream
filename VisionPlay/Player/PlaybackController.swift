@@ -187,11 +187,15 @@ final class PlaybackController {
     /// observable. Seeded from the persisted choice in `init`.
     let speedState = PlaybackSpeedState()
 
-    /// Observable surface for the rebuffer/stall spinner (#21). Modeled as its own
-    /// `@Observable` object (mirroring `playbackError`/`skipMarker`) so PlayerView can float a
-    /// centered loading indicator while playback is stalled, without making the whole
-    /// controller observable. Driven from KVO on the player's `timeControlStatus`.
+    /// Observable surface for the rebuffer/stall spinner (#21). Kept for non-chrome callers and
+    /// diagnostics compatibility; user-facing transport overlays are now derived by
+    /// `transportStatus` so views do not compose buffering + retry + failure booleans.
     let buffering = BufferingState()
+
+    /// Single authoritative transport-status overlay model for all custom player surfaces.
+    /// Windowed, Cinema, and Reality Theater chrome read this instead of each maintaining local
+    /// buffering/reconnecting state.
+    let transportStatus = PlaybackTransportStatusState()
 
     /// Observable mirror of the player's paused state, driven from the same
     /// `timeControlStatus` KVO as the timeline reporting. `PlayerControlSurface` uses it to
@@ -232,7 +236,11 @@ final class PlaybackController {
     /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
     /// state. Cancelled the moment playback genuinely resumes (`.playing`).
     private var stallWatchdog: Timer?
-    private var bufferingDelayTask: Task<Void, Never>?
+    private var reconnectWatchdogTask: Task<Void, Never>?
+    private var reconnectInProgress = false
+    private var hasObservedPlayback = false
+    private var currentTimeControlStatus: AVPlayer.TimeControlStatus = .paused
+    private var lastLoggedTransportStatus: PlaybackTransportStatus = .none
     /// Observer for `AVPlayerItem.timeJumpedNotification` — the only in-process signal of a user
     /// seek on visionOS (#25): AVKit's user-navigation delegate callbacks
     /// (`willResumePlaybackAfterUserNavigatedFromTime:toTime:`) are `API_UNAVAILABLE(visionos)`,
@@ -654,6 +662,7 @@ final class PlaybackController {
         playbackStartupSpan = nil
         playbackTask?.cancel()
         playbackTask = nil
+        endReconnectStatus()
         upNextTask?.cancel()
         upNextTask = nil
         playbackGeneration += 1
@@ -1315,6 +1324,7 @@ final class PlaybackController {
         player.pause()
         buffering.set(false)
         transport.setPauseRequested(true)
+        updateTransportStatus()
         timeline.report(state: .paused, force: true)
         recordPlaybackDiagnostic("playback.pause_requested", fields: [
             "status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
@@ -1331,6 +1341,7 @@ final class PlaybackController {
         ])
         player.play()
         applyPlaybackSpeed()
+        updateTransportStatus()
     }
 
     // MARK: - Quality / bitrate reload
@@ -1383,6 +1394,7 @@ final class PlaybackController {
     /// sessions/static remote streams (nothing to re-fetch).
     func retry() {
         guard isStreaming || remoteStreamReopener != nil else { return }
+        beginReconnectStatus()
         let resumeMs = currentResumeMs
         recordPlaybackDiagnostic("playback.retry", fields: [
             "resume": .millisecondsBucket(resumeMs),
@@ -2081,7 +2093,10 @@ final class PlaybackController {
         // Echo baseline: the resume seek's own `timeJumpedNotification` lands at this offset;
         // suppress nearby jumps so a rebuild does not immediately schedule another rebuild.
         lastPrimedOffsetMs = resumeOffsetMs ?? 0
+        hasObservedPlayback = false
+        currentTimeControlStatus = userWantsPaused ? .paused : .waitingToPlayAtSpecifiedRate
         playbackError.clear()
+        updateTransportStatus()
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
         // unchanged across a Quality reload (same `item`), so we only reset the live UI
         // state here; the new fine-grained observer will re-derive the active marker.
@@ -2135,6 +2150,7 @@ final class PlaybackController {
         } else {
             player.play()
         }
+        updateTransportStatus()
     }
 
     /// Poll the player's access/error logs ~1s for the Stats overlay. A repeating
@@ -2206,6 +2222,7 @@ final class PlaybackController {
                         self.buffering.set(false)
                         self.transport.set(paused: true)
                         self.transport.setPauseRequested(false)
+                        self.updateTransportStatus()
                         self.recordPlaybackDiagnostic("playback.pause_intent_honored", fields: [
                             "status": .label("readyToPlay"),
                         ])
@@ -2378,6 +2395,7 @@ final class PlaybackController {
     /// BEFORE `handleTimeControlBuffering` (see the observer comment).
     @MainActor
     private func handleTimeControlTransport(status: AVPlayer.TimeControlStatus) {
+        currentTimeControlStatus = status
         let paused = status == .paused || self.userWantsPaused
         self.timeline.report(state: paused ? .paused : .playing, force: true)
         self.transport.set(paused: paused)
@@ -2390,6 +2408,7 @@ final class PlaybackController {
                 "status": .label(Self.timeControlStatusLabel(status)),
             ])
         }
+        updateTransportStatus()
     }
 
     /// Rebuffer/stall-spinner half (#21) of the merged `\.timeControlStatus` observation.
@@ -2400,7 +2419,8 @@ final class PlaybackController {
     @MainActor
     private func handleTimeControlBuffering(status: AVPlayer.TimeControlStatus) {
         let isStalled = (status == .waitingToPlayAtSpecifiedRate && !self.userWantsPaused)
-        self.setBufferingVisible(isStalled)
+        self.buffering.set(isStalled)
+        updateTransportStatus()
         // Stall watchdog (#8 hardening): a network-loss stall often never flips
         // item.status to .failed, so arm a timeout while the player is starved and
         // cancel it the instant playback genuinely resumes. We deliberately do NOT
@@ -2409,6 +2429,7 @@ final class PlaybackController {
         if isStalled {
             self.armStallWatchdog()
         } else if status == .playing {
+            self.hasObservedPlayback = true
             self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
             self.playbackStartupSpan = nil
             self.cancelStallWatchdog()
@@ -2419,8 +2440,8 @@ final class PlaybackController {
             // hold — and without this the AVKit Retry/Close pills stay stuck on screen,
             // reading as dead because the state behind them no longer matches (seen live).
             self.playbackError.clear()
-            // Real playback = a successful (re)start: clear any "Reconnecting…" overlay
-            // PlayerView raised for a failure-recovery rebuild (GH #33).
+            self.finishReconnectStatus()
+            self.updateTransportStatus()
             self.onPlaybackActive?()
         }
     }
@@ -2436,8 +2457,6 @@ final class PlaybackController {
         }
         statusObservation = nil
         rateObservation = nil
-        bufferingDelayTask?.cancel()
-        bufferingDelayTask = nil
         // Cancel the stall watchdog so a stale timer can't fire across a reload / Retry /
         // teardown and surface an error against a freshly-loaded item.
         cancelStallWatchdog()
@@ -2449,6 +2468,7 @@ final class PlaybackController {
         cancelPendingFinalTargetRebuild()
         // Clear any lingering spinner state across a reload/teardown so it can't get stuck on.
         buffering.set(false)
+        updateTransportStatus()
         diagnosticsTimer?.invalidate()
         diagnosticsTimer = nil
         if let didEndObserver {
@@ -2461,21 +2481,68 @@ final class PlaybackController {
         }
     }
 
-    private func setBufferingVisible(_ isBuffering: Bool) {
-        bufferingDelayTask?.cancel()
-        bufferingDelayTask = nil
-        guard isBuffering else {
-            buffering.set(false)
-            return
+
+    // MARK: - Transport status overlay
+
+    private func beginReconnectStatus() {
+        reconnectInProgress = true
+        updateTransportStatus()
+        armReconnectWatchdog()
+    }
+
+    private func finishReconnectStatus() {
+        guard reconnectInProgress || reconnectWatchdogTask != nil else { return }
+        reconnectInProgress = false
+        reconnectWatchdogTask?.cancel()
+        reconnectWatchdogTask = nil
+        updateTransportStatus()
+    }
+
+    private func endReconnectStatus() {
+        reconnectInProgress = false
+        reconnectWatchdogTask?.cancel()
+        reconnectWatchdogTask = nil
+        updateTransportStatus()
+    }
+
+    private func armReconnectWatchdog() {
+        reconnectWatchdogTask?.cancel()
+        reconnectWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard let self, !Task.isCancelled, self.reconnectInProgress else { return }
+            self.surfaceReconnectTimeout()
         }
-        // Show feedback for real initial primes/rebuffers, but don't flash the card for the
-        // quick `.waiting → ready` transitions common after Jellyfin HLS seek/reopen.
-        bufferingDelayTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(750))
-            guard let self, !Task.isCancelled, !self.userWantsPaused else { return }
-            guard self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
-            self.buffering.set(true)
+    }
+
+    private func updateTransportStatus() {
+        let nextStatus = resolvedTransportStatus()
+        transportStatus.set(nextStatus)
+        guard nextStatus != lastLoggedTransportStatus else { return }
+        lastLoggedTransportStatus = nextStatus
+        recordPlaybackDiagnostic("playback.transport_status", fields: [
+            "status": .label(nextStatus.diagnosticLabel),
+            "time_control_status": .label(Self.timeControlStatusLabel(currentTimeControlStatus)),
+            "user_wants_paused": .bool(userWantsPaused),
+            "has_observed_playback": .bool(hasObservedPlayback),
+            "reconnecting": .bool(reconnectInProgress),
+            "failed": .bool(playbackError.isFailed),
+        ])
+    }
+
+    private func resolvedTransportStatus() -> PlaybackTransportStatus {
+        if playbackError.isFailed {
+            return .failed(message: playbackError.message)
         }
+        if reconnectInProgress {
+            return .reconnecting
+        }
+        guard currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
+            return .none
+        }
+        if userWantsPaused || transport.pauseRequested || transport.isPaused {
+            return .pausedBuffering
+        }
+        return hasObservedPlayback ? .buffering : .initialLoading
     }
 
     // MARK: - Skip markers (#14)
@@ -2906,6 +2973,8 @@ final class PlaybackController {
         ])
         player.pause()
         playbackError.set(error)
+        endReconnectStatus()
+        updateTransportStatus()
     }
 
     /// Surface a "couldn't reconnect" failure when a recovery rebuild outlasts the View's
@@ -3240,7 +3309,10 @@ final class PlaybackController {
                                           swapRecoveryClient: Bool) {
         if resetFinalTarget { finalTargetRebuildPolicy.reset() }
         if resetAdaptive { adaptiveBitratePolicy.reset() }
-        if clearError { playbackError.clear() }
+        if clearError {
+            playbackError.clear()
+            updateTransportStatus()
+        }
         if shouldRemoveObservers { removeObservers() }
         if remoteStreamReopener != nil {
             reopenRemoteStream(offsetMs: offsetMs, bitrateKbps: bitrateKbps)
@@ -3474,6 +3546,56 @@ final class PlaybackError {
     func clear() {
         isFailed = false
         message = nil
+    }
+}
+
+/// User-facing transport overlay state derived inside `PlaybackController` from AVPlayer status,
+/// user intent, retry lifecycle, and surfaced failures. Kept as a value enum so SwiftUI surfaces
+/// render one mutually-exclusive overlay instead of composing several booleans.
+enum PlaybackTransportStatus: Equatable {
+    case none
+    case initialLoading
+    case buffering
+    case pausedBuffering
+    case reconnecting
+    case failed(message: String?)
+
+    var diagnosticLabel: String {
+        switch self {
+        case .none: "none"
+        case .initialLoading: "initial_loading"
+        case .buffering: "buffering"
+        case .pausedBuffering: "paused_buffering"
+        case .reconnecting: "reconnecting"
+        case .failed: "failed"
+        }
+    }
+
+    var keepsChromeVisible: Bool {
+        switch self {
+        case .none, .initialLoading, .buffering, .pausedBuffering:
+            false
+        case .reconnecting, .failed:
+            true
+        }
+    }
+}
+
+@Observable
+@MainActor
+final class PlaybackTransportStatusState {
+    private(set) var status: PlaybackTransportStatus = .none
+
+    var activeStatus: PlaybackTransportStatus? {
+        status == .none ? nil : status
+    }
+
+    var keepsChromeVisible: Bool {
+        status.keepsChromeVisible
+    }
+
+    func set(_ value: PlaybackTransportStatus) {
+        if status != value { status = value }
     }
 }
 
