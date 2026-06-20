@@ -89,7 +89,17 @@ playhead advance, seek-restart, stall) without UI tapping, use the launch-arg-dr
 
 - `VisionPlay/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
 - `VisionPlay/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
-- `VisionPlay/DebugPlexDownloadProbe.swift` (downloads, not playback)
+- `VisionPlay/DebugPlexDownloadProbe.swift` → `--vp-probe-plex-download` (downloads, not playback)
+- `VisionPlay/DebugEmbyDownloadProbe.swift` → `--vp-probe-emby-download` (add `--vp-probe-start-download` to actually transfer + observe + delete)
+
+⚠️ **The simulator download probe catches what the headless probe cannot.** The headless
+`LiveEmbyDownloadProbe` originally only GET the static *original* and so missed that the
+Emby-minted transcoded-download URL was a codecless `/videos/{id}/stream` remux that ffmpeg
+500s on (HEVC/DTS → mp4 stream-copy). `DebugEmbyDownloadProbe --vp-probe-start-download`
+drove the real `DownloadManager` path on-device and surfaced the immediate `failed`. Lesson:
+when a download lane "validates" headlessly, also run the on-device start-download probe AND
+make the headless probe actually GET the *transcode* URL (use `URLSession.bytes` to read just
+the response headers + one byte, then cancel — never download the multi-GB body).
 
 Each is `#if DEBUG`, inert unless its flag is passed, runs **inside the signed-in app
 process** (so it reuses the app's Keychain session + the *same* `EmbyBrowseService` /
