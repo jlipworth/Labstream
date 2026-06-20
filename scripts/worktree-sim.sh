@@ -11,6 +11,8 @@
 #   setup         clone the golden sim for the current (linked) worktree; idempotent.
 #                 No-op in the main worktree or when a live .simid already exists.
 #   teardown      delete the current worktree's vpwt-* sim and remove .simid.
+#   closeout      safe finish command: teardown an existing linked worktree path, then
+#                 prune orphaned vpwt-* sims. Use this before/after worktree removal.
 #   prune         delete every vpwt-* sim no live worktree references (backstop for
 #                 `git worktree remove`, which has no git hook).
 #   id            print the current worktree's sim UDID (seeds/setups if needed).
@@ -21,6 +23,7 @@ set -euo pipefail
 
 GOLDEN_FALLBACK="D9BD8E9D-8E58-485D-B332-F8CDF37133B5"
 NAME_PREFIX="vpwt-"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 die() { echo "worktree-sim: $*" >&2; exit 1; }
 
@@ -133,10 +136,11 @@ cmd_teardown() {
 }
 
 cmd_prune() {
-  local refs="" wt
+  local refs="" wt tmp count
   while read -r wt; do
     if [ -f "$wt/.simid" ]; then refs+="$(cat "$wt/.simid") "; fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  tmp=$(mktemp "${TMPDIR:-/tmp}/worktree-sim-prune.XXXXXX")
   xcrun simctl list devices -j | python3 -c '
 import json, sys
 prefix = sys.argv[1]
@@ -145,11 +149,41 @@ for devs in json.load(sys.stdin)["devices"].values():
     for d in devs:
         if d["name"].startswith(prefix) and d["udid"] not in refs:
             print(d["udid"], d["name"])
-' "$NAME_PREFIX" "$refs" | while read -r udid name; do
+' "$NAME_PREFIX" "$refs" > "$tmp"
+  count=$(wc -l < "$tmp" | tr -d ' ')
+  if [ "$count" = "0" ]; then
+    echo "worktree-sim: no orphaned ${NAME_PREFIX}* simulators found"
+    rm -f "$tmp"
+    return 0
+  fi
+  while read -r udid name; do
     xcrun simctl shutdown "$udid" 2>/dev/null || true
     xcrun simctl delete "$udid"
     echo "worktree-sim: pruned $name ($udid)"
-  done
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
+cmd_closeout() {
+  local target="${1:-}" root main
+  if [ -z "$target" ]; then
+    target=$(worktree_root)
+  fi
+
+  if [ -d "$target" ] && git -C "$target" rev-parse --show-toplevel >/dev/null 2>&1; then
+    root=$(git -C "$target" rev-parse --show-toplevel)
+    main=$(git -C "$target" worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+    if [ "$root" = "$main" ]; then
+      echo "worktree-sim: closeout target is the main worktree; not tearing down golden sim"
+    else
+      echo "worktree-sim: closeout tearing down simulator for $root"
+      (cd "$root" && "$SCRIPT_PATH" teardown)
+    fi
+  else
+    echo "worktree-sim: closeout target missing or not a git worktree; running prune backstop"
+  fi
+
+  cmd_prune
 }
 
 cmd_id() {
@@ -188,10 +222,11 @@ main() {
   case "$cmd" in
     setup)        cmd_setup "$@" ;;
     teardown)     cmd_teardown "$@" ;;
+    closeout)     cmd_closeout "$@" ;;
     prune)        cmd_prune "$@" ;;
     id)           cmd_id "$@" ;;
     install-hook) cmd_install_hook "$@" ;;
-    *) die "usage: worktree-sim.sh {setup|teardown|prune|id|install-hook}" ;;
+    *) die "usage: worktree-sim.sh {setup|teardown|closeout|prune|id|install-hook}" ;;
   esac
 }
 
