@@ -160,9 +160,16 @@ cmd_id() {
 }
 
 cmd_install_hook() {
-  local common hookdir hook
+  local common hookdir hook hp
   common=$(git rev-parse --git-common-dir); common=$(cd "$common" && pwd)
   hookdir="$common/hooks"; mkdir -p "$hookdir"; hook="$hookdir/post-checkout"
+  # A core.hooksPath override makes git ignore $common/hooks entirely. Warn loudly so
+  # the hook we install here is not silently dead (this repo shipped with a stale one).
+  hp=$(git config --get core.hooksPath || true)
+  if [ -n "$hp" ]; then
+    echo "worktree-sim: WARNING core.hooksPath=$hp is set; git will NOT run $hook." >&2
+    echo "             To enable the auto-clone hook, run: git config --unset core.hooksPath" >&2
+  fi
   cat > "$hook" <<'HOOK'
 #!/usr/bin/env bash
 # Auto-provision a per-worktree simulator after `git worktree add`.
