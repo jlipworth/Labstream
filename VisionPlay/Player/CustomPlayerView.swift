@@ -51,6 +51,7 @@ struct CustomPlayerView: View {
     init(localFile: URL,
          item: MediaItem,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          onClose: (() -> Void)? = nil) {
         let identity = ClientIdentity(clientIdentifier: "offline",
                                       product: "VisionPlay",
@@ -62,7 +63,8 @@ struct CustomPlayerView: View {
                       PlaybackController(localFile: localFile,
                                          item: item,
                                          identity: identity,
-                                         client: client)
+                                         client: client,
+                                         offlineTextSubtitles: offlineTextSubtitles)
                   },
                   trickPlayProvider: trickPlayProvider,
                   onClose: onClose,

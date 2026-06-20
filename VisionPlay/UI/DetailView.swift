@@ -29,6 +29,7 @@ struct DetailView: View {
     @State private var playLocalURL: URL?
     @State private var playLocalTrickPlayURL: URL?
     @State private var playLocalTrickPlayKind: LocalTrickPlayKind?
+    @State private var playLocalTextSubtitles: [OfflineTextSubtitleTrack] = []
     @State private var remotePlayback: JellyfinRemotePlayback?
     @State private var embyRemotePlayback: EmbyRemotePlayback?
     @State private var showDownloadOptions = false
@@ -350,6 +351,7 @@ struct DetailView: View {
                 musicPlayer.pauseForVideo()
                 let key = downloadManager.recordKey(for: detailed)
                 playLocalURL = local
+                playLocalTextSubtitles = downloadManager.records.first { $0.ratingKey == key }?.metadata?.offlineTextSubtitles ?? []
                 if key.hasPrefix("jellyfin:") {
                     playLocalTrickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
                     playLocalTrickPlayKind = .jellyfinTiles
@@ -429,6 +431,7 @@ struct DetailView: View {
             CustomPlayerView(localFile: local,
                              item: playing,
                              trickPlayProvider: localTrickPlayProvider(),
+                             offlineTextSubtitles: playLocalTextSubtitles,
                              onClose: { presentingPlayer = false })
                 .ignoresSafeArea()
         } else if let remote = remotePlayback {
@@ -551,6 +554,7 @@ struct DetailView: View {
                     playLocalURL = nil
                     playLocalTrickPlayURL = nil
                     playLocalTrickPlayKind = nil
+                    playLocalTextSubtitles = []
                     playingItem = next
                 }
 
@@ -647,6 +651,7 @@ struct DetailView: View {
         playLocalURL = nil
         playLocalTrickPlayURL = nil
         playLocalTrickPlayKind = nil
+        playLocalTextSubtitles = []
         playingItem = itemWithResumeRewind(detailed)
         switch appModel.activeBackend {
         case .plex:

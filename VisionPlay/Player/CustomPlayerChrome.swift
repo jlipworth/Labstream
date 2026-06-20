@@ -94,6 +94,12 @@ struct CustomPlayerChrome: View {
                 .padding(40)
                 .transition(.scale(scale: 0.96).combined(with: .opacity))
 
+            offlineSubtitleOverlay
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.horizontal, 80)
+                .padding(.bottom, chromeVisible ? 168 : 64)
+                .animation(.easeInOut(duration: 0.2), value: chromeVisible)
+
             VStack {
                 Spacer()
 
@@ -163,8 +169,21 @@ struct CustomPlayerChrome: View {
         chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
     }
 
-    @ViewBuilder
-    private var transientStatusOverlay: some View {
+    @ViewBuilder private var offlineSubtitleOverlay: some View {
+        if let text = controller.offlineSubtitleOverlay.text, !text.isEmpty {
+            Text(text)
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .shadow(radius: 8)
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder private var transientStatusOverlay: some View {
         // The chrome renders the controller-owned transport status verbatim. It does not compose
         // buffering, retry, and failure booleans, so Cinema cannot show duplicate dialogs when HLS
         // delivery chatters between waiting and playing.

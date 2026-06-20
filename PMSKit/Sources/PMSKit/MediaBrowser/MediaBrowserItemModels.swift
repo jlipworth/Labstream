@@ -289,6 +289,8 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
     public let type: String?
     public let codec: String?
     public let language: String?
+    public let externalURL: String?
+    public let deliveryURL: String?
     public let displayTitle: String?
     public let isDefault: Bool?
     public let isForced: Bool?
@@ -302,6 +304,8 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         case type = "Type"
         case codec = "Codec"
         case language = "Language"
+        case externalURL = "ExternalUrl"
+        case deliveryURL = "DeliveryUrl"
         case displayTitle = "DisplayTitle"
         case isDefault = "IsDefault"
         case isForced = "IsForced"
@@ -317,6 +321,8 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         type = try c.decodeIfPresent(String.self, forKey: .type)
         codec = try c.decodeIfPresent(String.self, forKey: .codec)
         language = try c.decodeIfPresent(String.self, forKey: .language)
+        externalURL = try c.decodeIfPresent(String.self, forKey: .externalURL)
+        deliveryURL = try c.decodeIfPresent(String.self, forKey: .deliveryURL)
         displayTitle = try c.decodeIfPresent(String.self, forKey: .displayTitle)
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault)
         isForced = try c.decodeIfPresent(Bool.self, forKey: .isForced)
@@ -335,6 +341,7 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
                       language: language,
                       languageTag: nil,
                       languageCode: nil,
+                      key: deliveryURL ?? externalURL,
                       displayTitle: displayTitle,
                       extendedDisplayTitle: displayTitle,
                       selected: nil,

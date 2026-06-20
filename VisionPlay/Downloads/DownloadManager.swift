@@ -432,6 +432,7 @@ public final class DownloadManager {
                                         localURL: destination, bytes: 0, progress: 0,
                                         metadata: metadata))
             refreshRecords()
+            cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
             do {
                 recordDownloadDiagnostic("downloads.start", fields: [
                     "download_id": .identifier(ratingKey),
@@ -701,8 +702,13 @@ public final class DownloadManager {
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
         refreshRecords()
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: Self.jellyfinMediaSourceID(media: media, part: part),
+        let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
+        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: mediaSourceID,
                                server: server, token: token, identity: identity)
+        if case .original = choice {
+            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: mediaSourceID,
+                                       part: part, server: server, token: token, identity: identity)
+        }
 
         do {
             recordDownloadDiagnostic("downloads.start", fields: [
@@ -1685,6 +1691,93 @@ public final class DownloadManager {
             .init(name: "X-Plex-Token", value: token),
         ], in: &comps)
         return comps.url
+    }
+
+    private func cachePlexTextSubtitles(ratingKey: String, part: Part, server: URL, token: String) {
+        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+        guard !streams.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            var tracks: [OfflineTextSubtitleTrack] = []
+            for (fallbackIndex, stream) in streams {
+                guard let key = stream.key, let url = Self.plexSubtitleURL(server: server, token: token, key: key) else { continue }
+                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
+                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
+                guard await Self.fetchAndWriteTextSubtitle(request: URLRequest(url: url), to: destination) else { continue }
+                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                     relativePath: destination.lastPathComponent,
+                                                                     fallbackIndex: fallbackIndex) {
+                    tracks.append(track)
+                }
+            }
+            guard !tracks.isEmpty else { return }
+            await MainActor.run {
+                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    private func cacheJellyfinTextSubtitles(ratingKey: String,
+                                           itemId: String,
+                                           mediaSourceId: String?,
+                                           part: Part?,
+                                           server: URL,
+                                           token: String,
+                                           identity: JellyfinClientIdentity) {
+        guard let mediaSourceId, !mediaSourceId.isEmpty, let part else { return }
+        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+        guard !streams.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            var tracks: [OfflineTextSubtitleTrack] = []
+            for (fallbackIndex, stream) in streams {
+                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
+                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
+                let streamIndex = stream.index ?? stream.id
+                guard let request = try? JellyfinLibrary.textSubtitleRequest(server: server,
+                                                                             token: token,
+                                                                             identity: identity,
+                                                                             itemId: itemId,
+                                                                             mediaSourceId: mediaSourceId,
+                                                                             streamIndex: streamIndex,
+                                                                             format: ext),
+                      await Self.fetchAndWriteTextSubtitle(request: request, to: destination) else { continue }
+                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                     relativePath: destination.lastPathComponent,
+                                                                     fallbackIndex: fallbackIndex) {
+                    tracks.append(track)
+                }
+            }
+            guard !tracks.isEmpty else { return }
+            await MainActor.run {
+                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    private nonisolated static func plexSubtitleURL(server: URL, token: String, key: String) -> URL? {
+        let raw = key.hasPrefix("/") ? key : "/\(key)"
+        guard var comps = URLComponents(url: server.appendingPathComponent(raw), resolvingAgainstBaseURL: false) else { return nil }
+        var query = comps.queryItems ?? []
+        query.removeAll { $0.name.caseInsensitiveCompare("X-Plex-Token") == .orderedSame }
+        query.append(URLQueryItem(name: "X-Plex-Token", value: token))
+        comps.queryItems = query
+        return comps.url
+    }
+
+    private nonisolated static func fetchAndWriteTextSubtitle(request: URLRequest, to destination: URL) async -> Bool {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
+            guard let text = String(data: data, encoding: .utf8),
+                  !OfflineTextSubtitleParser.parse(text).isEmpty else { return false }
+            try data.write(to: destination, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Download + cache Plex's BIF trick-play index for the selected source Part so the

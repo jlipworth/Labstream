@@ -94,6 +94,15 @@ Subtitles need feature/backend split; do not treat them as a single checkbox.
 - **Image subtitles:** PGS/VobSub are not good first offline sidecar targets for AVPlayer. Prefer
   burn-in at download time or defer.
 
+Implementation note (#80): VisionPlay now caches only compatible external text sidecars (`srt`,
+`subrip`, `vtt`/`webvtt`) for original downloads. Cached subtitle metadata stores display
+label/language/codec plus a Downloads-relative path only; token-bearing server URLs are never
+persisted. Offline playback shows an `Off` row plus tracks whose local sidecar parsed into cues;
+selecting one renders an app-owned subtitle overlay against the local media clock. Embedded tracks
+remain whatever AVFoundation can discover in the downloaded file. Image subtitles, missing/failed
+sidecars, and optimized/transcoded burn-in choices are documented as unavailable for post-download
+selection rather than shown as selectable offline rows.
+
 ## Proposed storage layout
 
 Keep media files and metadata under the existing Downloads cache. Example for rating key `1234`:

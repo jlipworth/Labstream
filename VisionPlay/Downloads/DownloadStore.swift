@@ -115,6 +115,13 @@ final class DownloadStore: @unchecked Sendable {
         return alnum && allowed.contains(lowered) ? lowered : "mp4"
     }
 
+    private static func safeSubtitleExtension(_ value: String) -> String {
+        let lowered = value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let allowed: Set<String> = ["srt", "vtt"]
+        let alnum = lowered.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) }
+        return alnum && allowed.contains(lowered) ? lowered : "vtt"
+    }
+
     /// Build the on-disk destination for a ratingKey's cached poster (D5). Kept as a
     /// sibling of the media file so `remove` (which deletes the whole base dir entry)
     /// and the relative-path convention both apply uniformly.
@@ -133,6 +140,10 @@ final class DownloadStore: @unchecked Sendable {
 
     func jellyfinTrickPlayTileDestinationURL(ratingKey: String, index: Int) -> URL {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).jf-trickplay-\(index).jpg")
+    }
+
+    func textSubtitleDestinationURL(ratingKey: String, streamID: Int, ext: String) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).sub-\(streamID).\(Self.safeSubtitleExtension(ext))")
     }
 
     /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
@@ -215,6 +226,7 @@ final class DownloadStore: @unchecked Sendable {
             metadata.jellyfinTrickPlayPlaylistRelativePath,
         ].compactMap { $0 })
         relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
+        relatives.append(contentsOf: metadata.offlineTextSubtitles?.map(\.relativePath) ?? [])
         return relatives.reduce(0) { total, relative in
             guard !relative.isEmpty else { return total }
             let url = baseDirectory.appendingPathComponent(relative)
@@ -264,6 +276,11 @@ final class DownloadStore: @unchecked Sendable {
             $0.jellyfinTrickPlayPlaylistRelativePath = playlist
             $0.jellyfinTrickPlayTileRelativePaths = tiles
         }
+    }
+
+    func setOfflineTextSubtitles(ratingKey: String, _ tracks: [OfflineTextSubtitleTrack]) {
+        guard !tracks.isEmpty else { return }
+        updateMetadata(ratingKey: ratingKey) { $0.offlineTextSubtitles = tracks }
     }
 
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
@@ -392,6 +409,7 @@ final class DownloadStore: @unchecked Sendable {
                           row.metadata?.plexBIFRelativePath,
                           row.metadata?.jellyfinTrickPlayPlaylistRelativePath].compactMap { $0 }
             assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
+            assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
             for asset in assets where !asset.isEmpty {
                 try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
             }

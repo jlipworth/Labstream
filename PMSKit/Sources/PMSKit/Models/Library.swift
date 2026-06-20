@@ -565,6 +565,8 @@ public struct Stream: Decodable, Sendable, Identifiable {
     public let languageTag: String?
     /// ISO language code, e.g. "eng".
     public let languageCode: String?
+    /// Backend-relative stream URL/key for externally stored streams such as sidecar subtitles.
+    public let key: String?
     /// Short display label, e.g. "English (AAC Stereo)".
     public let displayTitle: String?
     /// Longer display label including codec/channel detail.
@@ -593,6 +595,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
         case language
         case languageTag
         case languageCode
+        case key
         case displayTitle
         case extendedDisplayTitle
         case selected
@@ -611,6 +614,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.language = try c.decodeIfPresent(String.self, forKey: .language)
         self.languageTag = try c.decodeIfPresent(String.self, forKey: .languageTag)
         self.languageCode = try c.decodeIfPresent(String.self, forKey: .languageCode)
+        self.key = try c.decodeIfPresent(String.self, forKey: .key)
         self.displayTitle = try c.decodeIfPresent(String.self, forKey: .displayTitle)
         self.extendedDisplayTitle = try c.decodeIfPresent(String.self, forKey: .extendedDisplayTitle)
         self.selected = try c.decodeIfPresent(Bool.self, forKey: .selected)
@@ -627,6 +631,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
                 language: String? = nil,
                 languageTag: String? = nil,
                 languageCode: String? = nil,
+                key: String? = nil,
                 displayTitle: String? = nil,
                 extendedDisplayTitle: String? = nil,
                 selected: Bool? = nil,
@@ -641,6 +646,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.language = language
         self.languageTag = languageTag
         self.languageCode = languageCode
+        self.key = key
         self.displayTitle = displayTitle
         self.extendedDisplayTitle = extendedDisplayTitle
         self.selected = selected

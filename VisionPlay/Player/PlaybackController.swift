@@ -127,6 +127,10 @@ final class PlaybackController {
 
     /// The local file URL, when playing offline content.
     private let localFile: URL?
+    private let offlineTextSubtitles: [OfflineTextSubtitleTrack]
+    private let offlineSubtitleBaseURL: URL?
+    private var offlineSubtitleCuesByTrackID: [Int: [OfflineTextSubtitleCue]] = [:]
+    private var selectedOfflineSubtitleTrackID: Int?
 
     /// Already-resolved remote media URL, when a non-Plex backend (currently Jellyfin) has
     /// performed its own playback negotiation and only needs the custom player to open the
@@ -203,6 +207,9 @@ final class PlaybackController {
     /// transport-bar-visibility callback (`API_UNAVAILABLE(visionos)`), so this is the only
     /// signal that keeps the pill off the video during normal playback.
     let transport = TransportState()
+
+    /// Observable text overlay for locally cached offline sidecar subtitles (#80).
+    let offlineSubtitleOverlay = OfflineSubtitleOverlayState()
 
     /// The user's chosen playback rate, persisted across launches and reapplied to each new
     /// item once it reaches `.readyToPlay` (so a Quality reload — which swaps the
@@ -521,6 +528,8 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
+        self.offlineTextSubtitles = []
+        self.offlineSubtitleBaseURL = nil
         self.remoteStreamURL = nil
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
@@ -543,10 +552,13 @@ final class PlaybackController {
          item: MediaItem,
          identity: ClientIdentity,
          client: PlexClient,
+         offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          maxVideoBitrateKbps: Int = 8000,
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = localFile
+        self.offlineTextSubtitles = offlineTextSubtitles
+        self.offlineSubtitleBaseURL = localFile.deletingLastPathComponent()
         self.identity = identity
         self.client = client
         self.server = nil
@@ -588,6 +600,8 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = nil
+        self.offlineTextSubtitles = []
+        self.offlineSubtitleBaseURL = nil
         self.remoteStreamURL = remoteStreamURL
         self.remoteHTTPHeaders = httpHeaders
         self.remotePlaySessionId = remotePlaySessionId
@@ -733,6 +747,7 @@ final class PlaybackController {
         /// `SubtitleStreamIndex`. `nil` for AVFoundation soft renditions and the "Off" row. Used
         /// only when the HLS carries no legible group (see `loadSubtitleTracks`).
         var streamIndex: Int? = nil
+        var offlineTrack: OfflineTextSubtitleTrack? = nil
     }
 
     /// Whether the Subtitles tab should fall back to backend/container metadata + a stream reopen
@@ -754,6 +769,9 @@ final class PlaybackController {
     /// deprecated on visionOS).
     func loadSubtitleTracks() async -> (tracks: [SubtitleTrack], selectedID: Int)? {
         guard let playerItem = player.currentItem else { return nil }
+        if localFile != nil, !offlineTextSubtitles.isEmpty {
+            return loadOfflineSubtitleTracks()
+        }
         let asset = playerItem.asset
         guard let group = try? await asset.loadMediaSelectionGroup(for: .legible),
               !group.options.isEmpty else {
@@ -784,6 +802,55 @@ final class PlaybackController {
         } ?? -1
 
         return (tracks, selectedID)
+    }
+
+    private func loadOfflineSubtitleTracks() -> (tracks: [SubtitleTrack], selectedID: Int)? {
+        var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1, displayName: "Off", option: nil)]
+        for track in offlineTextSubtitles {
+            ensureOfflineSubtitleCuesLoaded(for: track)
+            guard offlineSubtitleCuesByTrackID[track.id]?.isEmpty == false else { continue }
+            tracks.append(SubtitleTrack(id: track.id,
+                                        displayName: track.displayName,
+                                        option: nil,
+                                        streamIndex: nil,
+                                        offlineTrack: track))
+        }
+        guard tracks.count > 1 else { return nil }
+        return (tracks, selectedOfflineSubtitleTrackID ?? -1)
+    }
+
+    private func ensureOfflineSubtitleCuesLoaded(for track: OfflineTextSubtitleTrack) {
+        guard offlineSubtitleCuesByTrackID[track.id] == nil, let offlineSubtitleBaseURL else { return }
+        let url = offlineSubtitleBaseURL.appendingPathComponent(track.relativePath)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            offlineSubtitleCuesByTrackID[track.id] = []
+            return
+        }
+        offlineSubtitleCuesByTrackID[track.id] = OfflineTextSubtitleParser.parse(text)
+    }
+
+    private func updateOfflineSubtitleOverlay(at seconds: Double) {
+        guard localFile != nil, let selectedOfflineSubtitleTrackID else {
+            offlineSubtitleOverlay.set(nil)
+            return
+        }
+        guard seconds.isFinite else { offlineSubtitleOverlay.set(nil); return }
+        let timeMs = Int(seconds * 1000)
+        let cue = offlineSubtitleCuesByTrackID[selectedOfflineSubtitleTrackID]?.first { $0.contains(timeMs) }
+        offlineSubtitleOverlay.set(cue?.text)
+    }
+
+    private func persistOfflineSubtitlePreference(for track: OfflineTextSubtitleTrack?) {
+        let defaults = UserDefaults.standard
+        guard let track else {
+            defaults.set(true, forKey: SubtitlePrefKey.off)
+            defaults.removeObject(forKey: SubtitlePrefKey.language)
+            return
+        }
+        defaults.set(false, forKey: SubtitlePrefKey.off)
+        if let language = track.language, !language.isEmpty {
+            defaults.set(language, forKey: SubtitlePrefKey.language)
+        }
     }
 
     /// Build the Subtitles tab from part metadata for backends whose HLS carries no legible group
@@ -947,6 +1014,12 @@ final class PlaybackController {
     /// `option` is `nil` (the "Off" row) deselects the legible group. This is a soft
     /// switch on the live `AVPlayerItem` — no reload, no playhead snapshot needed.
     func selectSubtitle(_ track: SubtitleTrack) async {
+        if localFile != nil, !offlineTextSubtitles.isEmpty {
+            selectedOfflineSubtitleTrackID = track.offlineTrack?.id
+            persistOfflineSubtitlePreference(for: track.offlineTrack)
+            updateOfflineSubtitleOverlay(at: player.currentTime().seconds)
+            return
+        }
         guard let playerItem = player.currentItem else { return }
 
         // Soft path (Plex/Jellyfin): the HLS carries legible renditions, so switching is an instant
@@ -2211,6 +2284,7 @@ final class PlaybackController {
         currentTimeControlStatus = .paused
         hasObservedTimeControlStatus = false
         playbackError.clear()
+        offlineSubtitleOverlay.set(nil)
         updateTransportStatus()
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
         // unchanged across a Quality reload (same `item`), so we only reset the live UI
@@ -2452,6 +2526,7 @@ final class PlaybackController {
                 self.updateSkipMarker(at: time.seconds)
                 // Drive the Up Next card (#15) off the same fine-grained observer.
                 self.updateUpNext(at: time.seconds)
+                self.updateOfflineSubtitleOverlay(at: time.seconds)
             }
         }
 
@@ -3644,6 +3719,14 @@ struct ReconnectTimeoutError: LocalizedError {
     var errorDescription: String? {
         "Couldn't reconnect to the server. It may be busy or briefly unreachable — try again."
     }
+}
+
+
+@Observable
+@MainActor
+final class OfflineSubtitleOverlayState {
+    var text: String?
+    func set(_ value: String?) { text = value }
 }
 
 @Observable
