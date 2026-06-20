@@ -62,11 +62,6 @@ struct CustomCinemaGeometry: Equatable, Sendable {
     var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
     var screenPosition: SIMD3<Float> { SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters) }
 
-    /// Detached near-user controls, inspired by the native AVP player transport. These are not
-    /// below/on the movie plane; they sit close enough to be comfortable to tap, while the movie
-    /// can remain far enough away to feel cinematic.
-    var controlsPosition: SIMD3<Float> { SIMD3<Float>(0, -0.58, -1.22) }
-
     var debugSummary: String {
         String(format: "aspect %.2f · width %.1fm · distance %.1fm · vertical %.2fm",
                aspectRatio, screenWidthMeters, screenDistanceMeters, verticalOffsetMeters)
@@ -75,38 +70,23 @@ struct CustomCinemaGeometry: Equatable, Sendable {
 
 /// Shared identifiers and active-session state for the custom-player Cinema scaffold.
 ///
-/// Apple's cinema environment is only available through `AVPlayerViewController`, which the
-/// custom `AVPlayerLayer` player cannot reuse — so Cinema Mode is an app-owned visionOS scene
-/// that still leans on Apple primitives: `ImmersiveSpace`, SwiftUI scene content, and the same
+/// Cinema Mode reuses the real SwiftUI player chrome (`CustomPlayerChrome`) hosted as a
+/// `RealityView` attachment over the video surface, so the immersive transport is at visual parity
+/// with the windowed player instead of the old hand-drawn RealityKit button rail.
+///
+/// Apple's own `AVPlayerViewController` cinema environment is only reachable through AVKit, which
+/// this app deliberately removed — so Cinema Mode stays an app-owned visionOS scene that leans on
+/// Apple primitives (`ImmersiveSpace`, `RealityView`, SwiftUI attachments) and renders the same
 /// `AVPlayer` the custom player already owns.
 ///
-/// Do not use this as the issue #12 implementation path. The RealityKit theater work now lives
-/// behind `RealityTheaterFeature` / `RealityTheaterSessionStore` and stays separately hidden until
-/// real-device behavior is proven.
+/// The RealityKit theater work for issue #12 lives separately behind `RealityTheaterFeature` /
+/// `RealityTheaterSessionStore` and stays hidden until real-device behavior is proven.
 enum CustomCinemaMode {
     static let immersiveSpaceID = "custom-player-cinema"
     static let mainWindowID = "main-window"
 
-    /// The custom-player "Cinema" scene is visible while we iterate on a black true-immersive
-    /// theater route.
-    ///
-    /// This branch starts from the proven video plane and adds only a hidden, intentional
-    /// in-immersive control rail for issue #12 headset testing.
+    /// The custom-player "Cinema" scene is visible while we iterate on the immersive theater route.
     static let isUserVisible = true
-
-    static let videoPlaneName = "custom-cinema-video-plane"
-    static let emptyPlaneName = "custom-cinema-empty-plane"
-    static let controlsRootName = "custom-cinema-native-controls"
-    static let rewindButtonName = "custom-cinema-rewind-30-button"
-    static let playPauseButtonName = "custom-cinema-play-pause-button"
-    static let forwardButtonName = "custom-cinema-forward-30-button"
-    static let moreButtonName = "custom-cinema-more-button"
-    static let qualityButtonName = "custom-cinema-quality-button"
-    static let speedButtonName = "custom-cinema-speed-button"
-    static let audioButtonName = "custom-cinema-audio-button"
-    static let subtitlesButtonName = "custom-cinema-subtitles-button"
-    static let backButtonName = "custom-cinema-back-button"
-    static let exitButtonName = "custom-cinema-exit-button"
 }
 
 @Observable
@@ -119,32 +99,30 @@ final class CustomCinemaSessionStore {
     }
 
     var title: String?
+    /// The item being played, kept so Exit Cinema can route back to its detail page (the "content
+    /// submenu") instead of the app home screen. Preserved across `stopAndClearForImmersiveExit`
+    /// (which only tears down the live controller) and only dropped in `clear()`.
+    var item: MediaItem?
     var controller: PlaybackController?
     var geometry: CustomCinemaGeometry = .default
     var presentationState: PresentationState = .closed
-    var shouldReopenMainWindowOnDismiss = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
 
-    func activate(title: String, controller: PlaybackController, geometry: CustomCinemaGeometry = .default) {
+    func activate(title: String, item: MediaItem, controller: PlaybackController, geometry: CustomCinemaGeometry = .default) {
         self.title = title
+        self.item = item
         self.controller = controller
         self.geometry = geometry
     }
 
-    /// Called by the in-immersive Exit Cinema control.
+    /// Tear down the active playback session before the immersive space is dismissed.
     ///
-    /// This deliberately tears down the active playback session before the immersive space is
-    /// dismissed. It may reopen the normal app window after playback has stopped, but it does not
-    /// try to preserve or rehydrate the same player window. Earlier restore hacks caused
-    /// Home-screen bugs plus duplicate audio on device. The control rail owns a clean stop/clear
-    /// boundary instead: one AVPlayer session enters Cinema, and that same session is stopped
-    /// before leaving Cinema.
-    func markMainWindowDetached() {
-        shouldReopenMainWindowOnDismiss = true
-    }
-
+    /// Cinema deliberately does not preserve or rehydrate the player window — earlier restore hacks
+    /// caused Home-screen bugs plus duplicate audio on device. One `AVPlayer` session enters Cinema,
+    /// and that same session is stopped before leaving; the exit then routes to the item's detail
+    /// page (see the scaffold's `onDisappear`).
     func stopAndClearForImmersiveExit() {
         let activeController = controller
         title = nil
@@ -155,445 +133,184 @@ final class CustomCinemaSessionStore {
 
     func clear() {
         title = nil
+        item = nil
         controller = nil
         geometry = .default
         presentationState = .closed
-        shouldReopenMainWindowOnDismiss = false
     }
 }
 
-/// Minimal black immersive theater surface for the custom player.
+/// Black immersive theater surface for the custom player.
 ///
-/// This intentionally does NOT host `PlayerLayerView` or the full `CustomPlayerChrome`. It renders
-/// the active `AVPlayer` as a RealityKit `VideoMaterial` plane and uses native RealityKit button
-/// entities for controls. SwiftUI `RealityView` attachments were tried on device and did not appear
-/// reliably in this black immersive scene; native entities are less pretty, but they avoid both the
-/// attachment visibility failure and the earlier window-reopen duplicate-audio failure.
+/// Cinema Mode renders a single `RealityView` attachment — the real `PlayerLayerView` video surface
+/// with the real `CustomPlayerChrome` composited on top — placed and scaled as a cinema screen in a
+/// dimmed (`.ultraDark`) immersive space. Co-locating the video and the controls in one attachment
+/// gives the immersive transport full parity with the windowed player — the same materials,
+/// scrubber with trick-play, and quality/subtitle/audio/speed/chapter/stats menus — for free.
+///
+/// The screen entity is built once and only repositioned/rescaled; the chrome manages its own
+/// reveal/auto-hide and exit. Nothing here rebuilds the entity tree per frame (the previous
+/// hand-drawn rail did, which is hostile to attachments).
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
-    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
 
-    @State private var controlsVisible = false
-    @State private var menuMode: CinemaControlsMode = .transport
-    @State private var statusMessage: String?
-    @State private var controlsHideTask: Task<Void, Never>?
+    @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
+
+    /// Holds the live attachment entity so the scrubber clock can re-run placement until RealityKit
+    /// has laid the attachment out (and thus reports a real intrinsic size to calibrate against).
+    @State private var entityBox = EntityBox()
+
+    private static let screenAttachmentID = "custom-cinema-screen"
+
+    /// Authoring resolution (in points) of the screen attachment. Higher is crisper at cinema
+    /// scale, at the cost of attachment-texture memory. The physical size comes from
+    /// `CustomCinemaGeometry` via `place(_:geometry:)`, not from this point count — see that method
+    /// for why the point count must NOT be treated as meters.
+    private static let attachmentWidthPoints: CGFloat = 1920
 
     var body: some View {
-        RealityView { content in
-            content.add(Self.makeRoot(player: session.player,
-                                      geometry: session.geometry,
-                                      controlsVisible: controlsVisible,
-                                      isPaused: session.controller?.transport.isPaused ?? true,
-                                      menuMode: menuMode,
-                                      statusMessage: statusMessage))
-        } update: { content in
-            content.entities.removeAll(where: { $0.name == "custom-cinema-root" })
-            content.add(Self.makeRoot(player: session.player,
-                                      geometry: session.geometry,
-                                      controlsVisible: controlsVisible,
-                                      isPaused: session.controller?.transport.isPaused ?? true,
-                                      menuMode: menuMode,
-                                      statusMessage: statusMessage))
-        }
-        .gesture(SpatialTapGesture().targetedToAnyEntity().onEnded { value in
-            Task { @MainActor in
-                handleTap(on: value.entity.name)
+        RealityView { content, attachments in
+            if let screen = attachments.entity(for: Self.screenAttachmentID) {
+                entityBox.entity = screen
+                Self.place(screen, geometry: session.geometry)
+                content.add(screen)
             }
-        })
+        } update: { _, attachments in
+            if let screen = attachments.entity(for: Self.screenAttachmentID) {
+                entityBox.entity = screen
+                Self.place(screen, geometry: session.geometry)
+            }
+        } attachments: {
+            Attachment(id: Self.screenAttachmentID) {
+                CustomCinemaScreen(session: session,
+                                   scrubState: $scrubState,
+                                   widthPoints: Self.attachmentWidthPoints)
+            }
+        }
         .preferredSurroundingsEffect(.ultraDark)
         .onAppear {
-            print("[Custom Cinema] black immersive opened: \(session.geometry.debugSummary); title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
+            print("[Custom Cinema] immersive opened: \(session.geometry.debugSummary); title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
             session.presentationState = .open
-            controlsVisible = false
         }
         .onDisappear {
-            print("[Custom Cinema] black immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer); reopenMain=\(session.shouldReopenMainWindowOnDismiss)")
-            controlsHideTask?.cancel()
-            controlsVisible = false
-            menuMode = .transport
-            statusMessage = nil
-            if session.shouldReopenMainWindowOnDismiss {
-                // Covers system/Crown immersive dismissal after the player WindowGroup was
-                // detached. Stop playback first so returning to Home never leaves hidden audio.
-                session.stopAndClearForImmersiveExit()
-                openWindow(id: CustomCinemaMode.mainWindowID)
-                session.clear()
-            } else if session.presentationState != .closed {
-                session.presentationState = .closed
+            print("[Custom Cinema] immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
+            // Cinema is always entered by detaching the main window, so any dismissal — the chrome's
+            // Exit Cinema button, a single Crown press, or a system collapse — funnels through here
+            // and must reopen the window. Capture the item before tearing the session down so we can
+            // land on its detail page.
+            let returnItem = session.item
+            // Stop the live session: Cinema carries the full transport, so exiting is only ever to
+            // pick something else — there is no windowed player to return to. Stop first so nothing
+            // keeps playing audio after we leave.
+            session.stopAndClearForImmersiveExit()
+            // Land on the item's content detail page (the "content submenu"), not the home screen.
+            if let returnItem {
+                SystemEntryRouter.shared.open(item: returnItem, autoPlay: false)
             }
-        }
-    }
-
-    @MainActor
-    private func handleTap(on entityName: String) {
-        switch entityName {
-        case CustomCinemaMode.videoPlaneName, CustomCinemaMode.emptyPlaneName:
-            print("[Custom Cinema] video plane tapped; revealing native controls")
-            revealControls()
-        case CustomCinemaMode.rewindButtonName:
-            print("[Custom Cinema] native rewind 30 tapped")
-            seekRelative(seconds: -30)
-        case CustomCinemaMode.playPauseButtonName:
-            print("[Custom Cinema] native play/pause tapped")
-            togglePlayback()
-        case CustomCinemaMode.forwardButtonName:
-            print("[Custom Cinema] native forward 30 tapped")
-            seekRelative(seconds: 30)
-        case CustomCinemaMode.moreButtonName:
-            print("[Custom Cinema] native more tapped")
-            openMenu()
-        case CustomCinemaMode.backButtonName:
-            print("[Custom Cinema] native back tapped")
-            closeMenu()
-        case CustomCinemaMode.qualityButtonName:
-            print("[Custom Cinema] native quality tapped")
-            cycleQuality()
-        case CustomCinemaMode.speedButtonName:
-            print("[Custom Cinema] native speed tapped")
-            cycleSpeed()
-        case CustomCinemaMode.audioButtonName:
-            print("[Custom Cinema] native audio tapped")
-            cycleAudio()
-        case CustomCinemaMode.subtitlesButtonName:
-            print("[Custom Cinema] native subtitles tapped")
-            cycleSubtitles()
-        case CustomCinemaMode.exitButtonName:
-            print("[Custom Cinema] native exit tapped")
-            exitCinema()
-        default:
-            break
-        }
-    }
-
-    @MainActor
-    private func revealControls(keepVisible: Bool = false) {
-        guard session.hasActivePlayer else { return }
-        controlsVisible = true
-        controlsHideTask?.cancel()
-        guard !keepVisible, menuMode == .transport else { return }
-        controlsHideTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(6))
-            guard !Task.isCancelled else { return }
-            controlsVisible = false
-            menuMode = .transport
-            statusMessage = nil
-        }
-    }
-
-    @MainActor
-    private func openMenu() {
-        menuMode = .menu
-        statusMessage = nil
-        revealControls(keepVisible: true)
-    }
-
-    @MainActor
-    private func closeMenu() {
-        menuMode = .transport
-        statusMessage = nil
-        revealControls()
-    }
-
-    @MainActor
-    private func showStatus(_ message: String) {
-        statusMessage = message
-        revealControls(keepVisible: true)
-    }
-
-    @MainActor
-    private func togglePlayback() {
-        guard let controller = session.controller else { return }
-        controller.togglePlayback()
-        revealControls()
-    }
-
-    @MainActor
-    private func seekRelative(seconds: Int) {
-        guard let controller = session.controller else { return }
-        controller.performRelativeUserSeek(bySeconds: seconds)
-        revealControls()
-    }
-
-    @MainActor
-    private func cycleQuality() {
-        guard let controller = session.controller else { return }
-        guard controller.supportsQualityReload else {
-            showStatus("Quality unavailable")
-            return
-        }
-        let ladder = StreamingQuality.ladder.map(\.kbps)
-        guard !ladder.isEmpty else { return }
-        let current = controller.activeQualityBitrateKbps
-        let index = ladder.firstIndex(of: current) ?? max(ladder.count - 2, 0)
-        let next = ladder[(index + 1) % ladder.count]
-        controller.reload(bitrateKbps: next)
-        PlaybackPreferences.setQualityKbps(next, forDefaultsKey: controller.qualityPreferenceDefaultsKey)
-        showStatus(StreamingQuality.label(kbps: next))
-    }
-
-    @MainActor
-    private func cycleSpeed() {
-        guard let controller = session.controller else { return }
-        let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-        let current = controller.speedState.speed
-        let index = speeds.firstIndex(where: { abs($0 - current) < 0.01 }) ?? 1
-        let next = speeds[(index + 1) % speeds.count]
-        controller.setPlaybackSpeed(next)
-        showStatus(next == 1.0 ? "Normal speed" : String(format: "%g× speed", next))
-    }
-
-    @MainActor
-    private func cycleAudio() {
-        guard let controller = session.controller else { return }
-        Task { @MainActor in
-            if controller.supportsMetadataAudioSelection {
-                let choices = controller.loadAudioStreamChoices()
-                guard choices.count > 1 else {
-                    showStatus("No other audio")
-                    return
-                }
-                let current = choices.firstIndex(where: \.isSelected) ?? 0
-                let next = choices[(current + 1) % choices.count]
-                await controller.selectAudioStream(next)
-                showStatus("Audio: \(next.displayName)")
-            } else if let result = await controller.loadAudioTracks(), result.tracks.count > 1 {
-                let current = result.tracks.firstIndex(where: { $0.id == result.selectedID }) ?? 0
-                let next = result.tracks[(current + 1) % result.tracks.count]
-                await controller.selectAudio(next)
-                showStatus("Audio: \(next.displayName)")
-            } else {
-                showStatus("No other audio")
-            }
-        }
-    }
-
-    @MainActor
-    private func cycleSubtitles() {
-        guard let controller = session.controller else { return }
-        Task { @MainActor in
-            guard let result = await controller.loadSubtitleTracks(), result.tracks.count > 1 else {
-                showStatus("No subtitles")
-                return
-            }
-            let current = result.tracks.firstIndex(where: { $0.id == result.selectedID }) ?? 0
-            let next = result.tracks[(current + 1) % result.tracks.count]
-            await controller.selectSubtitle(next)
-            showStatus("Subs: \(next.displayName)")
-        }
-    }
-
-    @MainActor
-    private func exitCinema() {
-        controlsHideTask?.cancel()
-        controlsVisible = false
-        session.stopAndClearForImmersiveExit()
-        Task { @MainActor in
-            await dismissImmersiveSpace()
-            if session.shouldReopenMainWindowOnDismiss {
-                openWindow(id: CustomCinemaMode.mainWindowID)
-            }
+            openWindow(id: CustomCinemaMode.mainWindowID)
             session.clear()
         }
+        .task { await runScrubberClock() }
+    }
+
+    private func runScrubberClock() async {
+        while !Task.isCancelled {
+            await MainActor.run { tick() }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
     }
 
     @MainActor
-    private static func makeRoot(player: AVPlayer?,
-                                 geometry: CustomCinemaGeometry,
-                                 controlsVisible: Bool,
-                                 isPaused: Bool,
-                                 menuMode: CinemaControlsMode,
-                                 statusMessage: String?) -> Entity {
-        let root = Entity()
-        root.name = "custom-cinema-root"
-
-        let screen: ModelEntity
-        if let player {
-            let material = VideoMaterial(avPlayer: player)
-            screen = ModelEntity(mesh: .generatePlane(width: geometry.screenWidthMeters,
-                                                      height: geometry.screenHeightMeters),
-                                 materials: [material])
-            screen.name = CustomCinemaMode.videoPlaneName
-        } else {
-            screen = ModelEntity(mesh: .generatePlane(width: geometry.screenWidthMeters,
-                                                      height: geometry.screenHeightMeters),
-                                 materials: [SimpleMaterial(color: .black,
-                                                            roughness: 1.0,
-                                                            isMetallic: false)])
-            screen.name = CustomCinemaMode.emptyPlaneName
+    private func tick() {
+        // Re-run placement each tick until the attachment has a valid laid-out size; `place` is
+        // idempotent once calibrated (it measures intrinsic size, which is independent of the scale
+        // it sets), so this also self-heals if RealityKit lays the attachment out late.
+        if let screen = entityBox.entity {
+            Self.place(screen, geometry: session.geometry)
         }
-        screen.position = geometry.screenPosition
-        // The visible screen is also the reveal target. Collision is intentionally attached to
-        // this rendered plane instead of a separate transparent rectangle so taps cannot be
-        // intercepted by an invisible occluder in front of the movie.
-        screen.components.set(InputTargetComponent())
-        screen.components.set(CollisionComponent(shapes: [
-            .generateBox(width: geometry.screenWidthMeters,
-                         height: geometry.screenHeightMeters,
-                         depth: 0.04)
-        ]))
-        root.addChild(screen)
-
-        if controlsVisible {
-            root.addChild(makeControlsRail(isPaused: isPaused,
-                                           geometry: geometry,
-                                           mode: menuMode,
-                                           statusMessage: statusMessage))
-        }
-
-        return root
+        guard let controller = session.controller else { return }
+        tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
     }
 
-    private static func makeControlsRail(isPaused: Bool,
-                                         geometry: CustomCinemaGeometry,
-                                         mode: CinemaControlsMode,
-                                         statusMessage: String?) -> Entity {
-        let root = Entity()
-        root.name = CustomCinemaMode.controlsRootName
-        root.position = geometry.controlsPosition
+    @MainActor
+    private static func place(_ entity: Entity, geometry: CustomCinemaGeometry) {
+        entity.position = geometry.screenPosition
 
-        let railWidth: Float = mode == .transport ? 2.12 : 2.42
-        let back = ModelEntity(mesh: .generateBox(width: railWidth,
-                                                  height: 0.30,
-                                                  depth: 0.030,
-                                                  cornerRadius: 0.15),
-                               materials: [UnlitMaterial(color: UIColor(white: 0.04, alpha: 0.72))])
-        back.name = "custom-cinema-controls-background"
-        root.addChild(back)
-
-        if mode == .transport {
-            let rewind = makeButton(name: CustomCinemaMode.rewindButtonName,
-                                    label: "−30",
-                                    x: -0.54,
-                                    width: 0.30,
-                                    color: UIColor(white: 0.16, alpha: 0.88))
-            root.addChild(rewind)
-
-            let play = makeButton(name: CustomCinemaMode.playPauseButtonName,
-                                  label: isPaused ? "▶" : "Ⅱ",
-                                  x: -0.18,
-                                  width: 0.34,
-                                  color: UIColor(white: 0.22, alpha: 0.92),
-                                  fontSize: 0.070)
-            root.addChild(play)
-
-            let forward = makeButton(name: CustomCinemaMode.forwardButtonName,
-                                     label: "+30",
-                                     x: 0.18,
-                                     width: 0.30,
-                                     color: UIColor(white: 0.16, alpha: 0.88))
-            root.addChild(forward)
-
-            let more = makeButton(name: CustomCinemaMode.moreButtonName,
-                                  label: "⋯",
-                                  x: 0.56,
-                                  width: 0.30,
-                                  color: UIColor(white: 0.16, alpha: 0.88),
-                                  fontSize: 0.074)
-            root.addChild(more)
-
-            let exit = makeButton(name: CustomCinemaMode.exitButtonName,
-                                  label: "Exit",
-                                  x: 0.86,
-                                  width: 0.38,
-                                  color: UIColor(red: 0.38, green: 0.07, blue: 0.07, alpha: 0.84),
-                                  fontSize: 0.048)
-            root.addChild(exit)
-        } else {
-            root.addChild(makeButton(name: CustomCinemaMode.backButtonName,
-                                     label: "‹",
-                                     x: -0.88,
-                                     width: 0.28,
-                                     color: UIColor(white: 0.16, alpha: 0.88),
-                                     fontSize: 0.085))
-            root.addChild(makeButton(name: CustomCinemaMode.qualityButtonName,
-                                     label: "Quality",
-                                     x: -0.48,
-                                     width: 0.46,
-                                     color: UIColor(white: 0.16, alpha: 0.88),
-                                     fontSize: 0.043))
-            root.addChild(makeButton(name: CustomCinemaMode.speedButtonName,
-                                     label: "Speed",
-                                     x: -0.03,
-                                     width: 0.40,
-                                     color: UIColor(white: 0.16, alpha: 0.88),
-                                     fontSize: 0.043))
-            root.addChild(makeButton(name: CustomCinemaMode.audioButtonName,
-                                     label: "Audio",
-                                     x: 0.38,
-                                     width: 0.40,
-                                     color: UIColor(white: 0.16, alpha: 0.88),
-                                     fontSize: 0.043))
-            root.addChild(makeButton(name: CustomCinemaMode.subtitlesButtonName,
-                                     label: "Subs",
-                                     x: 0.78,
-                                     width: 0.36,
-                                     color: UIColor(white: 0.16, alpha: 0.88),
-                                     fontSize: 0.043))
-        }
-
-        if let statusMessage, !statusMessage.isEmpty {
-            root.addChild(makeStatusLabel(statusMessage))
-        }
-
-        return root
-    }
-
-    private static func makeButton(name: String, label: String, x: Float, width: Float, color: UIColor, fontSize: CGFloat = 0.056) -> Entity {
-        let root = Entity()
-        root.name = "\(name)-root"
-        root.position = SIMD3<Float>(x, 0, 0.035)
-
-        let height: Float = 0.20
-        let depth: Float = 0.045
-        let button = ModelEntity(mesh: .generateBox(width: width,
-                                                    height: height,
-                                                    depth: depth,
-                                                    cornerRadius: height / 2),
-                                 materials: [UnlitMaterial(color: color)])
-        button.name = name
-        button.components.set(InputTargetComponent())
-        button.components.set(CollisionComponent(shapes: [.generateBox(width: width, height: height, depth: depth)]))
-        root.addChild(button)
-
-        let textMesh = MeshResource.generateText(label,
-                                                 extrusionDepth: 0.002,
-                                                 font: .systemFont(ofSize: fontSize, weight: .semibold),
-                                                 containerFrame: CGRect(x: -CGFloat(width) / 2,
-                                                                        y: -0.030,
-                                                                        width: CGFloat(width),
-                                                                        height: 0.08),
-                                                 alignment: .center,
-                                                 lineBreakMode: .byClipping)
-        let text = ModelEntity(mesh: textMesh, materials: [UnlitMaterial(color: UIColor(white: 1, alpha: 0.92))])
-        text.name = "\(name)-label"
-        text.position = SIMD3<Float>(0, -0.024, 0.032)
-        root.addChild(text)
-
-        return root
-    }
-
-    private static func makeStatusLabel(_ label: String) -> Entity {
-        let width: Float = 1.70
-        let mesh = MeshResource.generateText(label,
-                                             extrusionDepth: 0.0015,
-                                             font: .systemFont(ofSize: 0.040, weight: .medium),
-                                             containerFrame: CGRect(x: -CGFloat(width) / 2,
-                                                                    y: -0.022,
-                                                                    width: CGFloat(width),
-                                                                    height: 0.06),
-                                             alignment: .center,
-                                             lineBreakMode: .byTruncatingTail)
-        let text = ModelEntity(mesh: mesh, materials: [UnlitMaterial(color: UIColor(white: 1, alpha: 0.78))])
-        text.name = "custom-cinema-status-label"
-        text.position = SIMD3<Float>(0, -0.245, 0.045)
-        return text
+        // A RealityView attachment is NOT authored at 1 point = 1 meter. RealityKit renders the
+        // SwiftUI view into a mesh whose physical size is the view's point size divided by a system
+        // pixel density (~1360 pt/m), so a 1920-pt-wide attachment is already ~1.4 m wide at
+        // scale 1.0. The previous code scaled by `widthMeters / widthPoints`, i.e. ~1360× too
+        // small, collapsing the whole cinema screen to a few millimeters — present and hit-testable
+        // but invisible at cinema distance (audio plays, screen reads as "pure black, no controls").
+        //
+        // Measure the attachment's actual intrinsic width instead and scale THAT to the target,
+        // so we never hard-code the density. `relativeTo: entity` yields bounds in the entity's own
+        // space, excluding its current scale, so this is stable to call repeatedly.
+        let intrinsicWidth = entity.visualBounds(relativeTo: entity).extents.x
+        guard intrinsicWidth > 0.0001 else { return }   // not laid out yet — a later tick recalibrates
+        let scale = geometry.screenWidthMeters / intrinsicWidth
+        entity.scale = SIMD3<Float>(repeating: scale)
     }
 }
 
-private enum CinemaControlsMode {
-    case transport
-    case menu
+/// Reference holder for the live screen attachment entity.
+///
+/// `Entity` is a class; storing it in a tiny box lets the SwiftUI view keep a stable handle across
+/// RealityView closures and the scrubber clock without re-triggering `@State` invalidation.
+private final class EntityBox {
+    var entity: Entity?
+}
+
+/// The cinema "screen": the shared video surface with the shared player chrome on top.
+private struct CustomCinemaScreen: View {
+    let session: CustomCinemaSessionStore
+    @Binding var scrubState: PlaybackScrubState
+    let widthPoints: CGFloat
+
+    var body: some View {
+        let geometry = session.geometry
+        let height = max(widthPoints / CGFloat(geometry.aspectRatio), 1)
+
+        ZStack {
+            Color.black
+
+            if let controller = session.controller {
+                PlayerLayerView(player: controller.player)
+                    .ignoresSafeArea()
+
+                CustomPlayerChrome(controller: controller,
+                                   title: session.title ?? "Cinema",
+                                   scrubState: $scrubState,
+                                   isReconnecting: false,
+                                   onRetry: { controller.retry() },
+                                   onClose: nil,
+                                   allowsRealityTheater: false)
+            } else {
+                CinemaIdlePlaceholder()
+            }
+        }
+        .frame(width: widthPoints, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 36, style: .continuous))
+    }
+}
+
+/// Shown when Cinema opens without an active player (defensive — entry normally activates one).
+private struct CinemaIdlePlaceholder: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "play.rectangle.on.rectangle")
+                .font(.system(size: 64, weight: .semibold))
+            Text("No active playback")
+                .font(.title3.weight(.semibold))
+            Text("Start a video, then enter Cinema from the player controls.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.white)
+        .padding(40)
+    }
 }
 
 private extension Comparable {

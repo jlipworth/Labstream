@@ -60,6 +60,22 @@ metadata, and review-specific release automation can be handled in a later publi
   Direct Play / Maximum — so `Generic` is the proven-correct value. An unknown or missing profile
   name (e.g. "visionOS") makes PMS return a bare **HTTP 400** and playback breaks, so the name must
   always resolve to a real built-in profile. The bitrate cap is enforced by `maxVideoBitrate`.
+- **RealityView attachments DO render in the full `.ultraDark` Cinema immersive space — the
+  "attachments don't appear reliably" belief was a scale bug, not a platform limitation.** An
+  attachment is NOT authored at 1 pt = 1 m: RealityKit renders the SwiftUI view into a mesh at a
+  system density (~1360 pt/m), so a 1920-pt-wide attachment is already ~1.4 m wide at scale 1.0.
+  Scaling it by `widthMeters / widthPoints` (the original Cinema code — and still the hidden #12
+  prototype's `RealityTheaterEntityFactory.placePlayerSurface`, `width / 1280`) is therefore ~1360×
+  too small and collapses the whole screen to a few millimeters: present and hit-testable, but
+  invisible at cinema distance. The symptom is **audio plays, pure black, no controls even on tap**
+  (the tap target is a sub-millimeter speck). Fix: never hard-code the density — measure the
+  attachment's intrinsic size and scale THAT to the target meters:
+  `entity.scale = .init(repeating: targetWidthMeters / entity.visualBounds(relativeTo: entity).extents.x)`.
+  `relativeTo: entity` excludes the entity's own scale, so it's stable to call repeatedly; re-run
+  placement from a timer/`update` until `visualBounds` is non-zero (the attachment lays out a frame
+  or two after it's added to `content`). Co-locating the video (`AVPlayerLayer` via `PlayerLayerView`)
+  and the real `CustomPlayerChrome` in ONE attachment gives full windowed-player parity for free —
+  same scrubber, trick-play, and Quality/Subtitles/Audio/Speed/Chapters/Stats menus.
 - **AVKit `contextualActions`** (`visionos(1.0)`) is the only affordance that renders over video in
   **both** inline and expanded cinema states and stays tappable — a floated SwiftUI sibling vanishes
   in the expanded experience, and the ⓘ panel is buried. (See the Close-button placement issue.)

@@ -110,20 +110,15 @@ struct CustomPlayerView: View {
         }
     }
 
-    @MainActor
-    private func makeController() -> PlaybackController {
-        let playback = controllerFactory()
-        playback.onAdvanceToNext = onRequestPlay
-        playback.onPlaybackEnded = onClose
-        playback.onPlaybackActive = { isReconnecting = false }
-        return playback
-    }
-
     private func runPlayer() async {
         await MainActor.run {
-            let playback = makeController()
+            let playback = controllerFactory()
+            playback.onAdvanceToNext = onRequestPlay
+            playback.onPlaybackEnded = onClose
+            playback.onPlaybackActive = { isReconnecting = false }
             controller = playback
             cinemaSession.activate(title: item.title,
+                                   item: item,
                                    controller: playback,
                                    geometry: CustomCinemaGeometry(item: item,
                                                                   mediaIndex: playback.mediaIndex))

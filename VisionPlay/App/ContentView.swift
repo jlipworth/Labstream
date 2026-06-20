@@ -10,38 +10,22 @@ import PMSKit
 /// controllers. This view creates the single `DownloadManager(appModel:)` for the
 /// whole app and passes it (with `AppModel`) down to `RootView`.
 struct ContentView: View {
-    @State private var appModel: AppModel
-    @State private var authManager: AuthManager
-    @State private var downloadManager: DownloadManager
-    @State private var musicPlayer: MusicPlayerController
+    // Owned by the `App`, not this view, so they survive the main window being dismissed (entering
+    // Cinema) and reopened (leaving Cinema). That is what makes leaving Cinema instant instead of
+    // re-running server discovery. Browse content does NOT become stale: the browse views are still
+    // recreated with the window and re-fetch on appear (HomeView keys its reload on the window-
+    // lifetime load state), so newly-added media still shows up.
+    let appModel: AppModel
+    let authManager: AuthManager
+    let downloadManager: DownloadManager
+    let musicPlayer: MusicPlayerController
 
-    /// True until the launch-time `restoreSession()` finishes. While restoring we show a
-    /// neutral splash — NOT `LoginView` — because a saved token takes a moment to resolve a
-    /// reachable server (discovery + connection probing), during which `isBrowseReady` is still
-    /// false. Showing the Sign-In button in that window let the user start a second OAuth flow
-    /// whose web sheet then orphaned itself over the restored UI.
-    @State private var isRestoring = true
-
-    init() {
-        // Build a stable identity from the persisted client identifier.
-        // Version comes from the bundle (#26) so the X-Plex-Version header can't
-        // silently drift from the real marketing version.
-        let keychain = KeychainStore()
-        let identity = ClientIdentity(
-            clientIdentifier: keychain.clientIdentifier(),
-            product: "VisionPlay",
-            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
-            deviceName: "Apple Vision Pro"
-        )
-        let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
-        let auth = AuthManager(appModel: model, keychain: keychain)
-        _appModel = State(initialValue: model)
-        _authManager = State(initialValue: auth)
-        _downloadManager = State(initialValue: DownloadManager(appModel: model))
-        // Single long-lived music player (#17): the queue/audio session outlive any
-        // one screen, so it's owned here next to DownloadManager, not per-view.
-        _musicPlayer = State(initialValue: MusicPlayerController(appModel: model))
-    }
+    /// Launch bootstrap state, also app-lifetime so a reopened window never re-runs the one-time
+    /// session restore. While restoring we show a neutral splash — NOT `LoginView` — because a saved
+    /// token takes a moment to resolve a reachable server (discovery + connection probing), during
+    /// which `isBrowseReady` is still false. Showing the Sign-In button in that window let the user
+    /// start a second OAuth flow whose web sheet then orphaned itself over the restored UI.
+    let bootstrap: SessionBootstrap
 
     var body: some View {
         Group {
@@ -50,7 +34,7 @@ struct ContentView: View {
                          authManager: authManager,
                          downloadManager: downloadManager,
                          musicPlayer: musicPlayer)
-            } else if isRestoring || appModel.isSwitchingBackend {
+            } else if bootstrap.isRestoring || appModel.isSwitchingBackend {
                 RestoringSessionView()
             } else {
                 LoginView(authManager: authManager)
@@ -62,9 +46,13 @@ struct ContentView: View {
             // Intents, Spotlight) BEFORE restoring, so an intent that launched the
             // app can await `ensureBrowseReady()` against the real instances.
             SystemEntryRouter.shared.register(appModel: appModel, authManager: authManager)
-            guard isRestoring else { return }
+            // Restore exactly once per app launch. The session objects are app-lifetime, so a window
+            // reopened after Cinema already holds a live, connected session — re-running discovery
+            // here would needlessly re-show "Connecting…" and re-probe the server.
+            guard !bootstrap.didStartRestore else { return }
+            bootstrap.didStartRestore = true
             await authManager.restoreSession()
-            isRestoring = false
+            bootstrap.isRestoring = false
             downloadManager.resumePendingServerPrepDownloads()
 #if DEBUG
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
@@ -87,6 +75,18 @@ struct ContentView: View {
     }
 }
 
+/// App-lifetime launch bootstrap state. Lives above the window (owned by the `App`) so dismissing
+/// and reopening the main window — which entering and leaving Cinema does — never re-triggers the
+/// one-time session restore.
+@MainActor
+@Observable
+final class SessionBootstrap {
+    /// True until the launch-time `restoreSession()` finishes.
+    var isRestoring = true
+    /// Set once the restore has been kicked off, so a reopened window skips it.
+    var didStartRestore = false
+}
+
 /// Neutral launch splash shown while a saved session is being restored (token read +
 /// server discovery/probing), so the Sign-In screen never flashes for an already-signed-in
 /// user.
@@ -104,5 +104,16 @@ private struct RestoringSessionView: View {
 }
 
 #Preview(windowStyle: .plain) {
-    ContentView()
+    let identity = ClientIdentity(clientIdentifier: "preview",
+                                  product: "VisionPlay",
+                                  version: "0.0.0",
+                                  deviceName: "Apple Vision Pro")
+    let model = AppModel(identity: identity)
+    ContentView(appModel: model,
+                authManager: AuthManager(appModel: model),
+                downloadManager: DownloadManager(appModel: model),
+                musicPlayer: MusicPlayerController(appModel: model),
+                bootstrap: SessionBootstrap())
+        .environment(CustomCinemaSessionStore())
+        .environment(RealityTheaterSessionStore())
 }
