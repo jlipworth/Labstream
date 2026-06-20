@@ -118,6 +118,24 @@ public final class DownloadManager {
     /// test so a fast-rendering job isn't mislabelled.
     private var transcodeSourcedDownloads: Set<String> = []
 
+    /// ratingKey -> the Emby `PlaySessionId` minted by the download PlaybackInfo POST for a
+    /// TRANSCODED Emby download. Required for encoder teardown: Emby's
+    /// `POST /Sessions/Playing/Stopped` is state-only — the FFmpeg encoder must be killed with
+    /// `DELETE /Videos/ActiveEncodings?PlaySessionId=..` or the server pod OOMs (CLEANUP
+    /// INVARIANT). Fired terminally from `releaseInFlight` (complete/failed/cancel/delete).
+    /// Original (static) Emby downloads use no encoder, so they are never recorded here.
+    ///
+    /// TODO(orphan-on-kill): this map is in-memory, so a HARD app kill while a transcoded Emby
+    /// download is in flight loses the PlaySessionId and the app cannot tear that encoder down on
+    /// next launch (the reconcile-to-`.failed` path has no PlaySessionId to delete). Not a clean
+    /// mirror of any existing lane (Jellyfin downloads tear down nothing; Plex uses a server-side
+    /// queue), and persisting it would require extending OfflineMetadata + a launch-time sweep, so
+    /// it is deferred. Mitigations already in place: Emby reaps idle FFmpeg encoders server-side
+    /// after its inactivity timeout, and every NORMAL terminal transition (complete/failed/cancel/
+    /// delete) within a session DOES tear down. Revisit if leaked encoders are observed in
+    /// practice — the fix is to persist the PlaySessionId and DELETE ActiveEncodings on reconcile.
+    private var embyPlaySessionByRatingKey: [String: String] = [:]
+
     /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
     private var optimizeProgressSamples: [String: (p: Double, time: Date)] = [:]
     /// Smoothed %/sec rate per ratingKey (EMA), used to derive `optimizeETA`.
@@ -713,6 +731,231 @@ public final class DownloadManager {
         await downloadJellyfin(item, choice: .original, mediaIndex: mediaIndex, partIndex: partIndex)
     }
 
+    /// Emby download entry point. Mirrors `downloadJellyfin`'s structure, with the Emby-specific
+    /// corrections proven live against the worst-case MKV item:
+    ///
+    /// - The route is decided by an AUTHORITATIVE download PlaybackInfo POST (the naked-item
+    ///   `SupportsDirectPlay` is optimistic garbage). We advertise a Static-mp4 DOWNLOAD device
+    ///   profile (NOT the HLS playback profile) so the negotiated transcode URL is a single
+    ///   downloadable file rather than a `.m3u8` playlist.
+    /// - Original ⇔ negotiated `SupportsDirectPlay && isLocallyPlayableOriginal(container)`.
+    ///   Original uses the static `stream.{container}?static=true` GET (HTTP 206, resumable);
+    ///   expected bytes = `MediaSource.Size` (Emby's `Part.size` is always nil).
+    /// - Everything else downloads the SERVER-MINTED `TranscodingUrl` (you cannot hand-build it —
+    ///   Emby requires the PlaybackInfo-minted `PlaySessionId`). Transcoded streams are not
+    ///   range-resumable, so they restart on failure (like Jellyfin), expected bytes are the
+    ///   quality×runtime estimate, and the minted `PlaySessionId` is persisted so the FFmpeg
+    ///   encoder is torn down on every terminal transition (`releaseInFlight`).
+    public func downloadEmby(_ item: MediaItem, choice: DownloadChoice,
+                             mediaIndex: Int = 0,
+                             partIndex: Int = 0) async {
+        let itemId = item.ratingKey
+        let ratingKey = Self.embyRecordKey(itemId)
+        guard let server = appModel.embyServerBaseURL,
+              let token = appModel.embyAccessToken,
+              let userId = appModel.embyUserID else {
+            recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
+                "backend": .label("Emby"),
+                "reason": .label("not_authenticated"),
+            ])
+            lastError[ratingKey] = .notAuthenticated
+            return
+        }
+        guard !activeJobs.contains(ratingKey) else {
+            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "reason": .label("already_active"),
+            ])
+            return
+        }
+        activeJobs.insert(ratingKey)
+        lastError[ratingKey] = nil
+        // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
+        // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
+        // PlaySessionId) is released terminally from `refreshRecords`/`releaseInFlight`.
+
+        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Emby",
+                                    expectedBytes: estimatedBytes(for: item, choice: choice,
+                                                                  mediaIndex: mediaIndex,
+                                                                  partIndex: partIndex)) {
+            releaseInFlight(ratingKey: ratingKey)
+            return
+        }
+
+        let media = item.media?[safe: mediaIndex]
+        let part = media?.part[safe: partIndex]
+        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
+        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
+                                            mediaIndex: mediaIndex, partIndex: partIndex,
+                                            optimizeTargetName: {
+                                                if case .optimize(let targetName) = choice { return targetName }
+                                                return nil
+                                            }())
+        recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
+            item: item,
+            choice: choice,
+            backend: "Emby",
+            mediaIndex: mediaIndex,
+            partIndex: partIndex
+        ))
+        // NOTE: no poster caching here — mirrors the Jellyfin lane, which also skips it (the Plex
+        // `cachePoster` uses a Plex-only `/photo/:/transcode` path that does not apply to Emby).
+
+        let identity = appModel.identity.emby
+        // Authoritative negotiation: POST the DOWNLOAD device profile and read the negotiated
+        // verdict. ~200 Mbps ceiling so a high-bitrate-but-compatible file still qualifies for an
+        // original download — a bitrate cap must NEVER force a transcode verdict for a download.
+        let decision: EmbyPlayback.EmbyDownloadPlaybackDecision
+        do {
+            let infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity,
+                userId: userId, itemId: itemId,
+                mediaSourceId: Self.embyMediaSourceID(media: media, part: part),
+                maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: infoReq)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
+            }
+            let info = try EmbyPlaybackInfoResponse.decode(from: data)
+            decision = try EmbyPlayback.downloadDecision(response: info)
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "phase": .label("playback_info"),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
+        // Two-gate detection rule: original ⇔ negotiated DirectPlay AND locally playable container.
+        // The user's `.optimize` choice always forces the transcode lane; `.original` is honoured
+        // only when the negotiation agrees.
+        let containerGate = Self.isLocallyPlayableOriginal(part: part)
+            || ["mp4", "m4v", "mov"].contains((decision.container ?? "").lowercased())
+        let useOriginal: Bool
+        switch choice {
+        case .original:
+            useOriginal = decision.supportsDirectPlay && containerGate
+        case .optimize:
+            useOriginal = false
+        }
+        recordDownloadDiagnostic("downloads.emby_decision", fields: [
+            "download_id": .identifier(ratingKey),
+            "negotiated_direct_play": .bool(decision.supportsDirectPlay),
+            "container": .label(decision.container ?? "unknown"),
+            "container_gate": .bool(containerGate),
+            "route": .label(useOriginal ? "original" : "transcode"),
+            "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+        ])
+
+        var request: URLRequest
+        var destination: URL
+        var expectedBytes: Int?
+        do {
+            if useOriginal {
+                let ext = decision.container ?? part?.container ?? media?.container ?? "mp4"
+                destination = store.destinationURL(ratingKey: ratingKey,
+                                                   ext: ext.isEmpty ? "mp4" : ext)
+                request = try EmbyLibrary.downloadOriginalRequest(
+                    server: server, token: token, identity: identity, userId: userId,
+                    itemId: itemId, mediaSourceId: decision.mediaSourceId, container: ext)
+                // Emby's Part.size is nil — MediaSource.Size is the only storage signal.
+                expectedBytes = decision.size
+            } else {
+                guard let transcodingURL = decision.transcodingURL else {
+                    throw DownloadError.transferFailed("Emby returned no transcoding URL for an unsupported original.")
+                }
+                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+                request = try EmbyLibrary.transcodedDownloadRequest(
+                    server: server, token: token, identity: identity, userId: userId,
+                    transcodingURL: transcodingURL)
+                // Transcode is rendered as it downloads → estimate, no Content-Length.
+                let profile = Self.jellyfinTranscodeProfile(named: {
+                    if case .optimize(let targetName) = choice { return targetName }
+                    return Self.jellyfinDefaultDownloadPreset
+                }())
+                expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                             videoBitrateBps: profile.videoBitrateBps)
+            }
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: destination, bytes: 0, progress: 0,
+                                    metadata: metadata))
+        refreshRecords()
+
+        do {
+            recordDownloadDiagnostic("downloads.start", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "choice": .label(useOriginal ? "original" : Self.diagnosticChoiceLabel(choice)),
+                "url_shape": .urlShape(request.url),
+                "expected_bytes": .bytes(expectedBytes),
+            ])
+            if !useOriginal {
+                // Transcode download: rate is encoder-gated (served as it renders), and the
+                // minted PlaySessionId MUST be torn down on terminal transition.
+                transcodeSourcedDownloads.insert(ratingKey)
+                embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+            }
+            try session.start(ratingKey: ratingKey,
+                              with: request,
+                              to: destination,
+                              expectedBytes: expectedBytes)
+            refreshRecords()
+        } catch let error as DownloadError {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "error": .label(String(describing: error)),
+            ])
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+        }
+    }
+
+    /// Extract an Emby `mediaSourceId` from a `MediaItem`'s synthesized part keys
+    /// (`emby://item/{itemId}/media/{mediaSourceId}`). The authoritative id comes from the
+    /// download PlaybackInfo decision; this only seeds the PlaybackInfo `MediaSourceId` hint.
+    private static func embyMediaSourceID(media: Media?, part: Part?) -> String? {
+        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
+        for key in keys.compactMap({ $0 }) {
+            guard let marker = key.range(of: "/media/") else { continue }
+            let source = String(key[marker.upperBound...])
+            if !source.isEmpty { return source }
+        }
+        return nil
+    }
+
     /// Whether a download already exists (completed or in-flight) for `ratingKey`.
     /// Lets the options sheet show "Downloaded" / disable re-download.
     public func hasDownload(for ratingKey: String) -> Bool {
@@ -731,6 +974,10 @@ public final class DownloadManager {
         lastError[ratingKey] = nil
         if Self.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record)
+            return
+        }
+        if Self.isEmbyRecordKey(ratingKey) {
+            retryEmby(record: record)
             return
         }
         let metadata = record.metadata
@@ -805,6 +1052,44 @@ public final class DownloadManager {
             await self.downloadJellyfin(item, choice: choice,
                                         mediaIndex: mediaIndex,
                                         partIndex: partIndex)
+            self.refreshRecords()
+        }
+    }
+
+    private func retryEmby(record: DownloadRecord) {
+        let metadata = record.metadata
+        let item = metadata?.makeMediaItem()
+            ?? MediaItem(ratingKey: Self.embyItemID(fromRecordKey: record.ratingKey),
+                         title: record.title,
+                         type: "movie")
+        let mediaIndex = metadata?.mediaIndex ?? 0
+        let partIndex = metadata?.partIndex ?? 0
+        // Choice intent only — `downloadEmby` re-probes PlaybackInfo and decides the real route, so
+        // a now-compatible file goes original even if the failed row had an optimize target. We
+        // pass `.original` unless the row explicitly recorded an optimize preset, in which case we
+        // honour the user's downscale request via the explicit ladder.
+        let choice: DownloadChoice
+        if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
+            choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
+        } else {
+            choice = .original
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            guard self.appModel.embyServerBaseURL != nil,
+                  self.appModel.embyAccessToken != nil,
+                  self.appModel.embyUserID != nil else {
+                self.lastError[record.ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                self.refreshRecords()
+                return
+            }
+            guard !self.activeJobs.contains(record.ratingKey) else { return }
+            self.store.remove(ratingKey: record.ratingKey)
+            await self.downloadEmby(item, choice: choice,
+                                    mediaIndex: mediaIndex,
+                                    partIndex: partIndex)
             self.refreshRecords()
         }
     }
@@ -1119,6 +1404,17 @@ public final class DownloadManager {
         transcodeSourcedDownloads.remove(ratingKey)
         if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
             activeQueueTitles.remove(title)
+        }
+        // CLEANUP INVARIANT: a transcoded Emby download leaves a live FFmpeg encoder running on
+        // the server until ActiveEncodings is deleted. Fire teardown for the minted PlaySessionId
+        // on EVERY terminal transition (complete / failed / cancelled / deleted). Best-effort and
+        // idempotent — the session map entry is removed so it never fires twice.
+        if let playSessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey) {
+            recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
+                "download_id": .identifier(ratingKey),
+            ])
+            let service = EmbyBrowseService(appModel: appModel)
+            Task { await service.stopActiveEncoding(playSessionId: playSessionId) }
         }
     }
 
