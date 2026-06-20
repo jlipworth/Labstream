@@ -259,12 +259,15 @@ public enum JellyfinPlayback {
                                                    audioBitrate: audioBitrate,
                                                    audioStreamIndex: resolvedAudioStreamIndex,
                                                    subtitleStreamIndex: subtitleStreamIndex)
-            let method: JellyfinPlayMethod = source.supportsDirectStream && !source.supportsDirectPlay ? .directStream : .transcode
             return JellyfinPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
-                playMethod: method,
+                // The selected URL is the source of truth here. Some Jellyfin responses report
+                // `SupportsDirectStream=true` for a media source while also handing back an HLS
+                // `TranscodingUrl`; that stream is still server-transcoded and must use the
+                // remote-transcode playback/buffering path.
+                playMethod: .transcode,
                 requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
                 sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: resolvedAudioStreamIndex))
         }

@@ -311,6 +311,7 @@ struct JellyfinLibraryTests {
                                                                     identity: identity,
                                                                     itemId: "item-1",
                                                                     mediaSourceId: "source-1",
+                                                                    playSessionId: "download-session-1",
                                                                     maxVideoBitrate: 4_000_000,
                                                                     maxWidth: 1280,
                                                                     maxHeight: 720)
@@ -328,6 +329,7 @@ struct JellyfinLibraryTests {
         #expect(query["videoBitRate"] == "4000000")
         #expect(query["maxWidth"] == "1280")
         #expect(query["maxHeight"] == "720")
+        #expect(query["playSessionId"] == "download-session-1")
         #expect(query["allowVideoStreamCopy"] == "false")
         #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)

@@ -62,6 +62,44 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
 /// `posterRelativePath` is the locally-cached poster file's path RELATIVE to the
 /// Downloads base directory (same convention as `relativePath`), so a moved sandbox
 /// container doesn't orphan it. `nil` when no poster was cached.
+
+/// Codable chapter snapshot for offline playback. `Chapter` itself is intentionally only
+/// Decodable for server DTOs, so the download index stores this stable app-owned shape.
+public struct OfflineChapter: Codable, Sendable, Equatable {
+    public var chapterID: Int?
+    public var tag: String?
+    public var startTimeOffset: Int?
+    public var endTimeOffset: Int?
+    /// Original server thumbnail key. Binary chapter images are not cached yet; keeping the key
+    /// lets a future online refresh/cache migration identify the source image.
+    public var thumb: String?
+
+    public init(chapterID: Int? = nil, tag: String? = nil, startTimeOffset: Int? = nil,
+                endTimeOffset: Int? = nil, thumb: String? = nil) {
+        self.chapterID = chapterID
+        self.tag = tag
+        self.startTimeOffset = startTimeOffset
+        self.endTimeOffset = endTimeOffset
+        self.thumb = thumb
+    }
+
+    public init(_ chapter: Chapter) {
+        self.init(chapterID: chapter.chapterID,
+                  tag: chapter.tag,
+                  startTimeOffset: chapter.startTimeOffset,
+                  endTimeOffset: chapter.endTimeOffset,
+                  thumb: chapter.thumb)
+    }
+
+    public func makeChapter() -> Chapter {
+        Chapter(id: chapterID,
+                tag: tag,
+                startTimeOffset: startTimeOffset,
+                endTimeOffset: endTimeOffset,
+                thumb: thumb)
+    }
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -89,6 +127,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var thumb: String?
     /// The original Plex `art` (backdrop) path.
     public var art: String?
+    /// Text chapter markers captured at download time so local playback can populate the
+    /// existing Chapters tab without requiring network access. Chapter images are not cached yet.
+    public var chapters: [OfflineChapter]?
     /// Human resolution label of the downloaded file (e.g. "1080p", "4K", "1920×1080"),
     /// captured from the chosen `Media` at download time. Drives the offline caption.
     /// Replaces the retired bitrate-cap `quality` marker (offline-download redesign).
@@ -133,6 +174,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 index: Int? = nil,
                 thumb: String? = nil,
                 art: String? = nil,
+                chapters: [OfflineChapter]? = nil,
                 resolutionLabel: String? = nil,
                 librarySectionID: Int? = nil,
                 librarySectionKey: String? = nil,
@@ -164,6 +206,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.index = index
         self.thumb = thumb
         self.art = art
+        self.chapters = chapters
         self.resolutionLabel = resolutionLabel
         self.librarySectionID = librarySectionID
         self.librarySectionKey = librarySectionKey
@@ -199,6 +242,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         index = try c.decodeIfPresent(Int.self, forKey: .index)
         thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
         art = try c.decodeIfPresent(String.self, forKey: .art)
+        chapters = try c.decodeIfPresent([OfflineChapter].self, forKey: .chapters)
         resolutionLabel = try c.decodeIfPresent(String.self, forKey: .resolutionLabel)
         librarySectionID = try c.decodeIfPresent(Int.self, forKey: .librarySectionID)
         librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
@@ -225,6 +269,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                   summary: summary,
                   thumb: thumb,
                   art: art,
+                  chapters: chapters?.map { $0.makeChapter() },
                   contentRating: contentRating,
                   tagline: tagline,
                   grandparentTitle: grandparentTitle,
