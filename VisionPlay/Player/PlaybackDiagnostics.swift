@@ -81,14 +81,16 @@ final class PlaybackDiagnostics {
         return indicatedBitrateKbps
     }
 
-    /// Message for the #32 presentation-only bandwidth toast. The chrome still decides when to
-    /// display/debounce it; diagnostics only answers whether the latest AccessLog sample is
-    /// materially below the bitrate the selected quality needs.
+    /// Message for the #32 presentation-only bandwidth toast.
+    ///
+    /// Disabled intentionally: AVFoundation's `observedBitrate` is useful as a diagnostic value
+    /// in Stats for Nerds, but during Plex transcoded HLS startup/stalls it can report the
+    /// paced segment delivery rate (or a partial early sample), not the actual network capacity.
+    /// That produced false "0.1 Mbps cannot sustain 3 Mbps" warnings while playback was in fact
+    /// advancing. ABR/failure handling should continue to use concrete playback symptoms
+    /// (stalls, buffer progress, and server segment success), not this presentation-only toast.
     var bandwidthMismatchMessage: String? {
-        let required = requiredBitrateKbps
-        guard observedBitrateKbps > 0, required > 0 else { return nil }
-        guard observedBitrateKbps < required * 0.80 else { return nil }
-        return "Observed bandwidth ~\(Self.mbps(observedBitrateKbps)) may not sustain this quality (~\(Self.mbps(required))). Consider lowering quality."
+        nil
     }
 
     // MARK: Updates
@@ -185,14 +187,6 @@ final class PlaybackDiagnostics {
     /// to each stream — copy (remux) vs transcode (re-encode) — which the decision
     /// response carries per stream. Prefer that; fall back to the part decision, then the
     /// raw English text, then "—".
-    private static func mbps(_ kbps: Double) -> String {
-        let mbps = kbps / 1000
-        if mbps >= 10 {
-            return String(format: "%.0f Mbps", mbps)
-        }
-        return String(format: "%.1f Mbps", mbps)
-    }
-
     private static func composeDecisionText(_ decision: DecisionResponse) -> String {
         func friendly(_ s: String?) -> String? {
             guard let s = s?.lowercased(), !s.isEmpty else { return nil }
