@@ -657,7 +657,7 @@ struct CustomPlayerChrome: View {
                 cinemaSession.presentationState = .closed
             }
         case .open:
-            cinemaSession.presentationState = .inTransition
+            cinemaSession.prepareExit(returningTo: cinemaSession.item, autoPlay: false)
             // Just dismiss; the cinema scaffold's onDisappear owns the exit (stop the session, route
             // to the content detail page, reopen the window). It fires for every dismissal — this
             // button, a single Crown press, or a system collapse — so the exit path lives in one place.

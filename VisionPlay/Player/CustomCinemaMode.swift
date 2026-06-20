@@ -259,19 +259,13 @@ struct CustomCinemaScaffoldView: View {
 
     @MainActor
     private func finishCinemaDismissal() {
-        // If visionOS tears the immersive scene down while the app is no longer active, stop cleanly
-        // but do not force-open a foreground window. Foreground/Crown/Exit dismissals still reopen
-        // the app and route back to content.
-        let shouldReopen = scenePhase == .active
         let returnItem = session.pendingReturnItem ?? session.item
         let autoPlay = session.pendingReturnAutoPlay
         session.stopAndClearForImmersiveExit()
-        if shouldReopen {
-            if let returnItem {
-                SystemEntryRouter.shared.open(item: returnItem, autoPlay: autoPlay)
-            }
-            openWindow(id: CustomCinemaMode.mainWindowID)
+        if let returnItem {
+            SystemEntryRouter.shared.open(item: returnItem, autoPlay: autoPlay)
         }
+        openWindow(id: CustomCinemaMode.mainWindowID)
         session.clear()
     }
 
