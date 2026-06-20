@@ -53,23 +53,35 @@ struct EmbyDownloadTests {
 
     // MARK: - Transcoded download request (from server-minted TranscodingUrl)
 
-    @Test func transcodedDownloadRequestJoinsServerMintedURLOntoBase() throws {
-        let transcodingURL = "/videos/item-1/stream?DeviceId=device-123&MediaSourceId=mediasource_1&PlaySessionId=sess-1&api_key=token-abc&AudioStreamIndex=1&TranscodeReasons=ContainerNotSupported"
+    @Test func transcodedDownloadRequestBuildsExplicitStaticMp4WithForcedCodecs() throws {
         let request = try EmbyLibrary.transcodedDownloadRequest(
             server: server,
             token: "token-abc",
             identity: identity,
             userId: "user-9",
-            transcodingURL: transcodingURL)
+            itemId: "item-1",
+            mediaSourceId: "mediasource_1",
+            playSessionId: "sess-1",
+            videoBitrate: 8_000_000,
+            audioBitrate: 192_000)
 
         let url = try #require(request.url)
-        // Server base path (/emby) is preserved; relative server URL is joined, not duplicated.
-        #expect(url.path == "/emby/videos/item-1/stream")
+        // EXPLICIT static stream.mp4 (NOT the codecless server-minted /stream remux that 500s).
+        // Server base path (/emby) is preserved.
+        #expect(url.path == "/emby/videos/item-1/stream.mp4")
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-        // PlaySessionId rides through verbatim — required for teardown.
+        // Forced re-encode params — without explicit codecs Emby stream-copies and ffmpeg fails.
+        #expect(q["Static"] == "false")
+        #expect(q["Container"] == "mp4")
+        #expect(q["VideoCodec"] == "h264")
+        #expect(q["AudioCodec"] == "aac")
+        #expect(q["VideoBitrate"] == "8000000")
+        #expect(q["AudioBitrate"] == "192000")
+        // The minted PlaySessionId is what makes this hand-built URL valid (else Emby 400s).
         #expect(q["PlaySessionId"] == "sess-1")
         #expect(q["MediaSourceId"] == "mediasource_1")
+        #expect(q["api_key"] == "token-abc")
         #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
     }
 

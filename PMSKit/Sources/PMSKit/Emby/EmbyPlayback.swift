@@ -641,12 +641,21 @@ public enum EmbyPlayback {
     /// already-compatible mp4/m4v/mov file still qualifies for a direct-play (original) download —
     /// a bitrate cap must NEVER force a transcode verdict for a download.
     static func visionOSDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+        // CRITICAL (caught by the on-device download probe — see DebugEmbyDownloadProbe): the
+        // DirectPlayProfile must NOT advertise `hevc`/`ac3`/`eac3` for downloads. If it does, an
+        // MKV/HEVC/DTS source negotiates to a stream-COPY remux (`ffmpeg -c:v copy -c:a copy`) into
+        // the static mp4 container, which fails ("Error starting ffmpeg", HTTP 500) because DTS
+        // (and copied HEVC) can't be muxed into mp4 that way. Restricting DirectPlay to the codecs
+        // that are both AVPlayer-locally-playable AND mp4-copy-safe (h264 + aac/ac3) forces every
+        // other source to a REAL re-encode via the TranscodingProfile, producing a guaranteed
+        // single-file h264/aac mp4. A clean h264 mp4 still downloads as a byte-exact original
+        // (the two-gate `original` path), so this only changes which sources transcode.
         [
             "Name": "VisionPlay-Download",
             "MaxStaticBitrate": maxStaticBitrate,
             "MaxStreamingBitrate": maxStaticBitrate,
             "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
+                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264", "AudioCodec": "aac,ac3"],
             ],
             "TranscodingProfiles": [
                 [

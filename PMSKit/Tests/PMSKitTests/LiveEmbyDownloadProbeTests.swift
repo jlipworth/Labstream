@@ -123,5 +123,34 @@ struct LiveEmbyDownloadProbeTests {
             // worst-case MKV original is range-resumable per the captured facts.
             #expect(http.statusCode == 206 || http.statusCode == 200)
         }
+
+        // (c) Transcode GET — the single-file transcoded download must actually START (HTTP 200),
+        // not 500. The on-device probe caught that Emby's *default-minted* download `TranscodingUrl`
+        // is a codecless `/videos/{id}/stream` remux that makes ffmpeg attempt a stream-COPY of
+        // HEVC/DTS into mp4 and fail ("Error starting ffmpeg", HTTP 500). The fix (and what the app
+        // builds) is an EXPLICIT static `stream.mp4` URL with forced h264/aac carrying the minted
+        // PlaySessionId — this re-encodes properly. Use the streaming `bytes` API to read just the
+        // response headers (+ one byte to confirm the encoder produced output), then cancel before
+        // downloading the multi-GB body.
+        do {
+            let req = try EmbyLibrary.transcodedDownloadRequest(
+                server: cfg.server, token: cfg.token, identity: cfg.identity, userId: cfg.userId,
+                itemId: cfg.itemId, mediaSourceId: decision.mediaSourceId,
+                playSessionId: decision.playSessionId,
+                videoBitrate: 8_000_000, audioBitrate: 192_000)
+            let (bytes, response) = try await URLSession.shared.bytes(for: req)
+            let http = response as! HTTPURLResponse
+            let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "nil"
+            var firstByteOK = false
+            var iterator = bytes.makeAsyncIterator()
+            firstByteOK = (try? await iterator.next()) != nil
+            bytes.task.cancel()
+            print(">>> LIVE [transcodeGET] HTTP \(http.statusCode) content-type=\(contentType) firstByte=\(firstByteOK)")
+            #expect((200..<300).contains(http.statusCode),
+                    "transcoded download must START with a success status, got \(http.statusCode)")
+            #expect(firstByteOK, "transcoded download should produce at least one byte of output")
+            #expect(contentType.contains("mp4") || contentType.contains("video"),
+                    "transcoded download should be a video container, got \(contentType)")
+        }
     }
 }

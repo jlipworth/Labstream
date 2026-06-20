@@ -178,17 +178,42 @@ public enum EmbyLibrary {
     /// rides in the `api_key` query, so no extra header is required. REDACT `api_key` in logs.
     /// NOT range-resumable (Emby transcoded streams report `accept-ranges: none`); restart on
     /// failure, and ALWAYS tear the encoder down with `activeEncodingStopRequest`.
+    /// Build the single-file transcoded-download request as an EXPLICIT static `stream.mp4` URL
+    /// with forced h264/aac, carrying the `PlaySessionId` minted by the download PlaybackInfo.
+    ///
+    /// WHY NOT the server-minted `TranscodingUrl`: for a transcode-required source Emby mints a
+    /// codecless `/videos/{id}/stream` URL that ffmpeg treats as a stream-COPY remux — which fails
+    /// ("Error starting ffmpeg", HTTP 500) when the source codecs (HEVC/DTS) can't be copied into
+    /// mp4. Caught on-device by `DebugEmbyDownloadProbe`; the headless `LiveEmbyDownloadProbe`
+    /// transcode-GET step now asserts this returns 200. Specifying `stream.mp4` + explicit
+    /// `VideoCodec=h264&AudioCodec=aac&Static=false` forces a real re-encode. The minted
+    /// `PlaySessionId` is what makes this hand-built URL valid (without it Emby returns HTTP 400).
+    /// `api_key` rides in the query (mirrors Emby's own stream URLs); the token is NOT duplicated
+    /// into the header path.
     public static func transcodedDownloadRequest(server: URL,
                                                  token: String,
                                                  identity: EmbyClientIdentity,
                                                  userId: String,
-                                                 transcodingURL: String) throws -> URLRequest {
-        let url = try EmbyPlayback.embyURL(server: server, pathOrURLString: transcodingURL)
+                                                 itemId: String,
+                                                 mediaSourceId: String,
+                                                 playSessionId: String,
+                                                 videoBitrate: Int,
+                                                 audioBitrate: Int) throws -> URLRequest {
+        let query: [URLQueryItem] = [
+            URLQueryItem(name: "Static", value: "false"),
+            URLQueryItem(name: "Container", value: "mp4"),
+            URLQueryItem(name: "VideoCodec", value: "h264"),
+            URLQueryItem(name: "AudioCodec", value: "aac"),
+            URLQueryItem(name: "VideoBitrate", value: String(videoBitrate)),
+            URLQueryItem(name: "AudioBitrate", value: String(audioBitrate)),
+            URLQueryItem(name: "MediaSourceId", value: mediaSourceId),
+            URLQueryItem(name: "PlaySessionId", value: playSessionId),
+            URLQueryItem(name: "DeviceId", value: identity.deviceId),
+            URLQueryItem(name: "api_key", value: token),
+        ]
+        let url = try EmbyPlayback.embyURL(server: server, path: "/videos/\(itemId)/stream.mp4", queryItems: query)
         var req = URLRequest(url: url)
         req.setValue("*/*", forHTTPHeaderField: "Accept")
-        // The transcoding URL already carries api_key; still attach the identity header so the
-        // request is well-formed (mirrors authenticatedRequest), but do NOT duplicate the token
-        // anywhere it isn't already present.
         req.setValue(EmbyAuth.authorizationHeader(identity: identity, userId: userId, token: token),
                      forHTTPHeaderField: "Authorization")
         return req

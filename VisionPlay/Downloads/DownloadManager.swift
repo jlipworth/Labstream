@@ -868,18 +868,21 @@ public final class DownloadManager {
                 // Emby's Part.size is nil — MediaSource.Size is the only storage signal.
                 expectedBytes = decision.size
             } else {
-                guard let transcodingURL = decision.transcodingURL else {
-                    throw DownloadError.transferFailed("Emby returned no transcoding URL for an unsupported original.")
-                }
+                // Emby mints a codecless `/videos/{id}/stream` URL that ffmpeg stream-COPIES and
+                // fails on (HTTP 500) for HEVC/DTS sources; build the EXPLICIT static `stream.mp4`
+                // transcode URL with the minted PlaySessionId instead (see transcodedDownloadRequest).
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                request = try EmbyLibrary.transcodedDownloadRequest(
-                    server: server, token: token, identity: identity, userId: userId,
-                    transcodingURL: transcodingURL)
                 // Transcode is rendered as it downloads → estimate, no Content-Length.
                 let profile = Self.jellyfinTranscodeProfile(named: {
                     if case .optimize(let targetName) = choice { return targetName }
                     return Self.jellyfinDefaultDownloadPreset
                 }())
+                request = try EmbyLibrary.transcodedDownloadRequest(
+                    server: server, token: token, identity: identity, userId: userId,
+                    itemId: itemId, mediaSourceId: decision.mediaSourceId,
+                    playSessionId: decision.playSessionId,
+                    videoBitrate: profile.videoBitrateBps,
+                    audioBitrate: 192_000)
                 expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
             }
