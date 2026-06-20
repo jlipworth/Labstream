@@ -2928,7 +2928,13 @@ final class PlaybackController {
     /// How long (seconds) a continuous stall may last before we treat it as a failure. Generous
     /// enough not to trip a slow-but-working initial prime, short enough to replace AVKit's dead
     /// placeholder glyph with a recoverable Retry promptly.
-    private let stallTimeoutSeconds: TimeInterval = 15
+    /// Slow server-side software transcodes (for example 4K HEVC Main10 + TrueHD/Atmos remuxes
+    /// capped down to 720p HLS) can legitimately show the first decoded frame and then spend
+    /// tens of seconds producing the next fMP4 segments. A 15s watchdog killed that still-working
+    /// Plex session, after which AVPlayer kept requesting the now-deleted segment URLs and surfaced
+    /// a false playback failure. Keep the watchdog finite, but give these initial primes enough
+    /// room to prove whether the server is still moving.
+    private let stallTimeoutSeconds: TimeInterval = 45
     private let directPlayMaximumStallTimeoutSeconds: TimeInterval = 90
     private let remoteTranscodeStallTimeoutSeconds: TimeInterval = 45
 
