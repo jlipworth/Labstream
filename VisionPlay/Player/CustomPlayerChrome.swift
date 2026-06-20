@@ -151,15 +151,19 @@ struct CustomPlayerChrome: View {
             }
 
             if let selectedMenu {
-                VStack {
-                    Spacer()
-                    CustomPlayerMenuPopover(menu: selectedMenu,
-                                            controller: controller,
-                                            menuState: menuState,
-                                            onClose: { closeMenu() })
-                        .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
-                        .padding(.horizontal, 54)
-                        .padding(.bottom, 176)
+                GeometryReader { geo in
+                    VStack {
+                        Spacer()
+                        CustomPlayerMenuPopover(menu: selectedMenu,
+                                                controller: controller,
+                                                menuState: menuState,
+                                                widthOverride: adaptiveMenuWidth(for: selectedMenu,
+                                                                                 available: geo.size.width),
+                                                onClose: { closeMenu() })
+                            .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
+                            .padding(.horizontal, 54)
+                            .padding(.bottom, 176)
+                    }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -644,9 +648,8 @@ struct CustomPlayerChrome: View {
             switch await openImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
             case .opened:
                 // Detach the normal player window after the immersive surface is open so its
-                // translucent pane does not sit in front of Cinema. This is not the failed restore
-                // hack: the immersive Exit control stops/clears playback before reopening the app.
-                cinemaSession.markMainWindowDetached()
+                // translucent pane does not sit in front of Cinema. The immersive Exit path
+                // stops/clears playback before reopening the app, so there is nothing to preserve.
                 onClose?()
                 dismissWindow(id: CustomCinemaMode.mainWindowID)
             case .userCancelled, .error:
@@ -656,9 +659,10 @@ struct CustomPlayerChrome: View {
             }
         case .open:
             cinemaSession.presentationState = .inTransition
-            cinemaSession.stopAndClearForImmersiveExit()
+            // Just dismiss; the cinema scaffold's onDisappear owns the exit (stop the session, route
+            // to the content detail page, reopen the window). It fires for every dismissal — this
+            // button, a single Crown press, or a system collapse — so the exit path lives in one place.
             await dismissImmersiveSpace()
-            cinemaSession.clear()
         case .inTransition:
             break
         }
@@ -686,6 +690,17 @@ struct CustomPlayerChrome: View {
         case .opening:
             break
         }
+    }
+
+    /// Chapters is a horizontal filmstrip; unlike the small fixed menus it should fill most of the
+    /// player width and stay centered. A fixed 1120-pt width looked right in the windowed player but
+    /// narrow and right-shifted on the much wider Cinema canvas, so size it to the available width
+    /// (capped) to keep the same proportion in both. Returns nil for menus that keep a fixed size.
+    private func adaptiveMenuWidth(for menu: CustomPlayerMenuKind, available: CGFloat) -> CGFloat? {
+        guard menu == .chapters, available > 0 else { return nil }
+        // Footprint outside the content: the popover's internal +44 frame and 54-pt padding each side.
+        let chrome: CGFloat = 44 + 54 * 2
+        return min(1680, max(720, available - chrome))
     }
 
     private func openMenu(_ menu: CustomPlayerMenuKind) {
@@ -828,8 +843,8 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var popoverAlignment: Alignment {
         switch self {
-        case .quality, .subtitles, .audio: .center
-        case .chapters, .speed, .stats: .trailing
+        case .quality, .subtitles, .audio, .chapters: .center
+        case .speed, .stats: .trailing
         }
     }
 }
@@ -838,10 +853,14 @@ private struct CustomPlayerMenuPopover: View {
     let menu: CustomPlayerMenuKind
     let controller: PlaybackController
     @Bindable var menuState: PlayerMenuState
+    /// When set (Chapters), overrides the menu's fixed authored width so a horizontal filmstrip can
+    /// fill the available player width instead of sitting narrow on the wider Cinema canvas.
+    var widthOverride: CGFloat? = nil
     let onClose: () -> Void
 
     var body: some View {
-        let size = menu.popoverSize
+        let base = menu.popoverSize
+        let size = CGSize(width: widthOverride ?? base.width, height: base.height)
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Label(menu.title, systemImage: menu.systemImage)
