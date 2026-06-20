@@ -88,6 +88,10 @@ struct DownloadOptionsSheet: View {
             runJellyfinProbe()
             return
         }
+        if appModel.activeBackend == .emby {
+            await runEmbyProbe()
+            return
+        }
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             let presets = defaultPresets
             selectedChoice = .optimize(presets[0])
@@ -132,6 +136,63 @@ struct DownloadOptionsSheet: View {
                             originalStreamableButOfflineUnsupported: original == nil)
     }
 
+    /// Emby probe: POST the DOWNLOAD PlaybackInfo (Static-mp4 device profile) and read the
+    /// AUTHORITATIVE negotiated verdict — `SupportsDirectPlay` + container — to decide whether to
+    /// offer the original. Mirrors `runJellyfinProbe`'s outcome shape but, unlike Jellyfin (which
+    /// only checks the container locally), Emby must ask the server because the naked-item
+    /// direct-play flag is optimistic and untrustworthy. On any failure we fall back to presets
+    /// only (probeFailed), exactly like the Plex path.
+    private func runEmbyProbe() async {
+        let media = item.media?[safe: mediaIndex]
+        let part = media?.part[safe: partIndex]
+        let presets = embyPresets
+        guard let server = appModel.embyServerBaseURL,
+              let token = appModel.embyAccessToken,
+              let userId = appModel.embyUserID else {
+            selectedChoice = .optimize(presets[0])
+            probeState = .ready(original: nil, presets: presets, probeFailed: true,
+                                originalStreamableButOfflineUnsupported: false)
+            return
+        }
+
+        let identity = appModel.identity.emby
+        var negotiatedDirectPlay = false
+        var negotiatedContainer: String?
+        var probeFailed = false
+        do {
+            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity,
+                userId: userId, itemId: item.ratingKey,
+                maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw URLError(.badServerResponse)
+            }
+            let info = try EmbyPlaybackInfoResponse.decode(from: data)
+            let decision = try EmbyPlayback.downloadDecision(response: info)
+            negotiatedDirectPlay = decision.supportsDirectPlay
+            negotiatedContainer = decision.container
+        } catch {
+            probeFailed = true
+        }
+
+        let containerPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
+            || ["mp4", "m4v", "mov"].contains((negotiatedContainer ?? "").lowercased())
+        let original = (negotiatedDirectPlay && containerPlayable)
+            ? OriginalOption(sizeBytes: part?.size,
+                             resolution: DownloadManager.resolutionLabel(for: media))
+            : nil
+        // "Streamable but offline-unsupported" = the server would direct-play it but the container
+        // can't be a raw offline local file (e.g. mkv) → steer the user to a preset.
+        let unsupportedOriginal = !probeFailed && negotiatedDirectPlay && original == nil
+
+        selectedChoice = preferredSelection(originalAvailable: original != nil, presets: presets)
+        probeState = .ready(original: original,
+                            presets: presets,
+                            probeFailed: probeFailed,
+                            originalStreamableButOfflineUnsupported: unsupportedOriginal)
+    }
+
     private var defaultPresets: [String] {
         filteredOptimizePresets([
             "Original video quality",
@@ -154,6 +215,16 @@ struct DownloadOptionsSheet: View {
     }
 
     private var jellyfinPresets: [String] {
+        [
+            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
+            "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
+            "720p 2 Mbps", "480p 1.5 Mbps"
+        ]
+    }
+
+    // Emby has no server-side optimize-target list (Plex-only), so the picker uses the same
+    // hard-coded bitrate ladder as Jellyfin; the manager maps each preset to a transcode profile.
+    private var embyPresets: [String] {
         [
             "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
@@ -350,9 +421,9 @@ struct DownloadOptionsSheet: View {
                                                           mediaIndex: mediaIndex,
                                                           partIndex: partIndex) }
         case .emby:
-            // No Emby download lane in slice 1; the button is hidden in DetailView, so this
-            // is unreachable in practice. Do nothing rather than fall into the Plex path.
-            break
+            // Re-run the full Emby lane, which re-probes PlaybackInfo and re-decides original vs
+            // transcode (a now-compatible file goes original). `.original` is intent-only here.
+            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item))
         }
     }
 
@@ -370,9 +441,9 @@ struct DownloadOptionsSheet: View {
                                                           mediaIndex: mediaIndex,
                                                           partIndex: partIndex) }
         case .emby:
-            // No Emby download lane in slice 1; the button is hidden in DetailView, so this
-            // is unreachable in practice. Do nothing rather than fall into the Plex path.
-            break
+            Task { await downloadManager.downloadEmby(item, choice: choice,
+                                                      mediaIndex: mediaIndex,
+                                                      partIndex: partIndex) }
         }
         dismiss()
     }
