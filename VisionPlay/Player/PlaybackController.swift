@@ -3178,7 +3178,7 @@ final class PlaybackController {
             userSelectedMaximumKbps: userSelectedMaxVideoBitrateKbps,
             bufferedAheadSeconds: diagnostics.bufferedAheadSeconds,
             likelyToKeepUp: diagnostics.likelyToKeepUp,
-            observedBitrateKbps: diagnostics.observedBitrateKbps) else { return }
+            observedBitrateKbps: diagnostics.currentObservedBitrateForAdaptationKbps) else { return }
         _ = applyAdaptiveBitrateDecision(decision, baseFields: runtimeSnapshotFields())
     }
 

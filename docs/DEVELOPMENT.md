@@ -218,3 +218,31 @@ metadata, and review-specific release automation can be handled in a later publi
 
 - **Never commit** Plex tokens or client identifiers.
 - Never `NSLog` a raw string containing `%` (format-string crash) — use `NSLog("%@", str)`.
+
+## Stats for Nerds bitrate semantics
+
+Stats for Nerds uses decimal network units throughout: AVFoundation bit/s values are divided by
+`1000` to kbps and by another `1000` to Mbps. Do not mix these labels with KiB/MiB-style binary
+file-size math.
+
+- **Target** is the app-requested streaming cap. For capped HLS transcodes this is the selected
+  rung in kbps. `Direct Play / Maximum` means no app cap, not a measured bitrate.
+- **Source** is the backend media bitrate when available. Plex media rows expose kbps. Jellyfin
+  `Bitrate` values arrive as bit/s and are normalized to kbps in `JellyfinPlaybackSourceMetadata`.
+  These are usually whole-media/container rates, not necessarily video-only rates.
+- **Observed** is AVFoundation `observedBitrate`: empirical transfer throughput while the player is
+  actively downloading bytes. It is not encoded stream bitrate or sustained internet capacity. When
+  access-log byte/transfer progress stops advancing because the buffer is full, the UI labels the
+  value idle/stale instead of treating it as live bandwidth. Local HLS proxy playback hides Observed
+  because it would measure localhost/proxy burst rate.
+- **Indicated** is AVFoundation `indicatedBitrate`: the server-advertised throughput required for
+  the selected variant, commonly the HLS `BANDWIDTH`/peak-style value.
+- **Indicated avg** is AVFoundation `indicatedAverageBitrate` when the playlist advertises an
+  average variant bitrate.
+- **Avg video** is AVFoundation `averageVideoBitrate`, which may be video-only for unmuxed tracks or
+  combined content for muxed streams. It is closer to encoded-content rate than Observed, but it is
+  still whatever AVFoundation reports for the current access-log event.
+
+Adaptive upshift logic may use Observed as an extra headroom check only while the access-log event is
+actively advancing. Stale/idle Observed samples are treated as missing so a healthy full buffer does
+not block an upshift or produce a false bandwidth warning.

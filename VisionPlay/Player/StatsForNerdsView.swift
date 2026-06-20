@@ -45,8 +45,14 @@ struct StatsForNerdsView: View {
                 row("Audio", diagnostics.audioCodec)
                 Divider().gridCellUnsizedAxes(.horizontal)
                 row("Target", diagnostics.targetBitrateLabel)
-                row("Observed", kbps(diagnostics.observedBitrateKbps))
+                row("Observed", diagnostics.observedBitrateLabel)
                 row("Indicated", kbps(diagnostics.indicatedBitrateKbps))
+                if diagnostics.indicatedAverageBitrateKbps > 0 {
+                    row("Indicated avg", kbps(diagnostics.indicatedAverageBitrateKbps))
+                }
+                if diagnostics.averageVideoBitrateKbps > 0 {
+                    row("Avg video", kbps(diagnostics.averageVideoBitrateKbps))
+                }
                 row("Dropped frames", "\(diagnostics.droppedFrames)")
                 row("Stalls", "\(diagnostics.stalls)")
                 row("Buffer ahead", String(format: "%.1f s", diagnostics.bufferedAheadSeconds))

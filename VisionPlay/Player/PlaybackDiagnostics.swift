@@ -48,10 +48,22 @@ final class PlaybackDiagnostics {
 
     /// The requested hard cap (kbps). 0 means "Direct Play / Maximum" (no cap).
     var targetBitrateKbps: Int = 0
-    /// Observed throughput of the current variant (kbps), from the access log.
+    /// Last active observed throughput sample (kbps), from the access log. This is empirical
+    /// transfer throughput while AVFoundation is downloading, not encoded stream bitrate.
     var observedBitrateKbps: Double = 0
-    /// The variant bitrate AVFoundation indicates it is playing (kbps).
+    /// Whether the Observed row is current, stale because downloads are idle, unavailable, or hidden
+    /// because the app's local HLS proxy would make it a localhost/proxy number.
+    var observedBitrateState: ObservedBitrateState = .unavailable
+    /// The variant peak bitrate AVFoundation indicates it is playing (kbps).
     var indicatedBitrateKbps: Double = 0
+    /// The variant average bitrate AVFoundation indicates, when the playlist advertises one (kbps).
+    var indicatedAverageBitrateKbps: Double = 0
+    /// The media average video bitrate AVFoundation reports for the current event (kbps).
+    var averageVideoBitrateKbps: Double = 0
+    /// Cumulative bytes transferred in the current access-log event.
+    var transferredBytes: Int64 = 0
+    /// Cumulative active network transfer time in the current access-log event.
+    var transferDurationSeconds: Double = 0
     /// Cumulative dropped video frames reported by the access log.
     var droppedFrames: Int = 0
     /// Cumulative stall count reported by the access log.
@@ -81,6 +93,28 @@ final class PlaybackDiagnostics {
         return indicatedBitrateKbps
     }
 
+    /// Observed throughput value that is safe for adaptation logic. Stale/idle samples are
+    /// intentionally treated as missing: a full buffer is healthy, not evidence that bandwidth is
+    /// too low to upshift.
+    var currentObservedBitrateForAdaptationKbps: Double {
+        observedBitrateState == .active ? observedBitrateKbps : 0
+    }
+
+    /// Human-readable Observed row for Stats for Nerds.
+    var observedBitrateLabel: String {
+        switch observedBitrateState {
+        case .unavailable:
+            return "—"
+        case .localProxy:
+            return "— (proxy)"
+        case .active:
+            return Self.bitrateLabel(observedBitrateKbps)
+        case .idle:
+            guard observedBitrateKbps > 0 else { return "idle" }
+            return "idle (last \(Self.bitrateLabel(observedBitrateKbps)))"
+        }
+    }
+
     /// Message for the #32 presentation-only bandwidth toast.
     ///
     /// Disabled intentionally: AVFoundation's `observedBitrate` is useful as a diagnostic value
@@ -101,6 +135,7 @@ final class PlaybackDiagnostics {
                      decision: DecisionResponse?,
                      server: URL?,
                      targetBitrateKbps: Int) {
+        resetDynamicAccessLogFacts()
         sourceBitrateKbps = 0
         if let mediaItems = item.media,
            let media = mediaItems.indices.contains(mediaIndex) ? mediaItems[mediaIndex] : mediaItems.first {
@@ -209,6 +244,23 @@ final class PlaybackDiagnostics {
         return decision.generalDecisionText ?? "—"
     }
 
+    private var lastAccessLogProgress: AccessLogProgressSignature?
+
+    private func resetDynamicAccessLogFacts() {
+        observedBitrateKbps = 0
+        observedBitrateState = .unavailable
+        indicatedBitrateKbps = 0
+        indicatedAverageBitrateKbps = 0
+        averageVideoBitrateKbps = 0
+        transferredBytes = 0
+        transferDurationSeconds = 0
+        droppedFrames = 0
+        stalls = 0
+        likelyToKeepUp = false
+        bufferedAheadSeconds = 0
+        lastAccessLogProgress = nil
+    }
+
     /// Scrape the dynamic numbers from the current player item (call ~1s).
     func sample(player: AVPlayer) {
         guard let item = player.currentItem else { return }
@@ -224,15 +276,71 @@ final class PlaybackDiagnostics {
 
         guard let access = item.accessLog(), let event = access.events.last else { return }
         if event.indicatedBitrate > 0 { indicatedBitrateKbps = event.indicatedBitrate / 1000 }
+        if event.indicatedAverageBitrate > 0 { indicatedAverageBitrateKbps = event.indicatedAverageBitrate / 1000 }
+        if event.averageVideoBitrate > 0 { averageVideoBitrateKbps = event.averageVideoBitrate / 1000 }
+        if event.numberOfBytesTransferred >= 0 { transferredBytes = event.numberOfBytesTransferred }
+        if event.transferDuration >= 0 { transferDurationSeconds = event.transferDuration }
+
+        let progress = AccessLogProgressSignature(event: event)
+        let progressAdvanced = progress.isAhead(of: lastAccessLogProgress)
+        let firstProgressSample = lastAccessLogProgress == nil && progress.hasProgress
+        lastAccessLogProgress = progress
+
         // AVFoundation reports bits/sec; show kbps. -1 means "not available". When the app's
         // loopback proxy fronts a Jellyfin HLS seek, this value is localhost/proxy burst rate,
         // not the server/network bitrate; leave Observed blank and rely on Indicated/Target.
         if usesLocalMediaProxy {
+            observedBitrateState = .localProxy
             observedBitrateKbps = 0
         } else if event.observedBitrate > 0 {
-            observedBitrateKbps = event.observedBitrate / 1000
+            if progressAdvanced || firstProgressSample {
+                observedBitrateKbps = event.observedBitrate / 1000
+                observedBitrateState = .active
+            } else {
+                observedBitrateState = .idle
+            }
+        } else {
+            observedBitrateState = .unavailable
         }
         if event.numberOfDroppedVideoFrames >= 0 { droppedFrames = event.numberOfDroppedVideoFrames }
         if event.numberOfStalls >= 0 { stalls = event.numberOfStalls }
+    }
+
+    private static func bitrateLabel(_ value: Double) -> String {
+        guard value > 0 else { return "—" }
+        if value >= 1000 {
+            return String(format: "%.1f Mbps", value / 1000)
+        }
+        return String(format: "%.0f kbps", value)
+    }
+}
+
+enum ObservedBitrateState: Equatable {
+    case unavailable
+    case localProxy
+    case active
+    case idle
+}
+
+private struct AccessLogProgressSignature: Equatable {
+    let transferredBytes: Int64
+    let transferDurationMs: Int
+    let downloadedDurationMs: Int
+
+    init(event: AVPlayerItemAccessLogEvent) {
+        transferredBytes = max(0, event.numberOfBytesTransferred)
+        transferDurationMs = Int(max(0, event.transferDuration) * 1000)
+        downloadedDurationMs = Int(max(0, event.segmentsDownloadedDuration) * 1000)
+    }
+
+    var hasProgress: Bool {
+        transferredBytes > 0 || transferDurationMs > 0 || downloadedDurationMs > 0
+    }
+
+    func isAhead(of previous: AccessLogProgressSignature?) -> Bool {
+        guard let previous else { return false }
+        return transferredBytes > previous.transferredBytes
+            || transferDurationMs > previous.transferDurationMs
+            || downloadedDurationMs > previous.downloadedDurationMs
     }
 }
