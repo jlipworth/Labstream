@@ -538,7 +538,12 @@ final class AuthManager {
     func selectEmbyConnectServer(id: String) async {
         guard let attemptID = activeEmbyConnectAttemptID,
               let pending = pendingEmbyConnect,
-              let server = pending.servers.first(where: { serverChoiceID($0) == id }) else { return }
+              let server = pending.servers.first(where: { serverChoiceID($0) == id }) else {
+            // The attempt ended out from under the picker (cancel / backend switch / expiry).
+            // Drop back to the chooser instead of leaving the user tapping a dead list.
+            if case .awaitingEmbyServerSelection = state { state = .idle }
+            return
+        }
         await exchangeAndPersistEmbyConnect(server: server,
                                             connectUserId: pending.connectUserId,
                                             attemptID: attemptID)
@@ -563,6 +568,11 @@ final class AuthManager {
                 return
             } catch EmbyAuthError.http(404) {
                 failEmbyConnect(attemptID, "Emby Connect code expired or was cancelled. Try again.")
+                return
+            } catch EmbyAuthError.unauthorized {
+                // A rejected device/app won't recover by polling — fail fast instead of
+                // spinning for the full timeout.
+                failEmbyConnect(attemptID, "Emby Connect rejected this device. Try again or use a server URL.")
                 return
             } catch {
                 // Transient network/server errors can happen while the user is still
@@ -598,6 +608,8 @@ final class AuthManager {
                                                     connectUserId: connectUserId,
                                                     attemptID: attemptID)
             } else {
+                // The PIN poll is finished; the attempt now waits on the user's pick.
+                pollTask = nil
                 pendingEmbyConnect = PendingEmbyConnect(connectUserId: connectUserId, servers: servers)
                 state = .awaitingEmbyServerSelection(servers: servers.map(serverChoice))
             }
@@ -648,20 +660,45 @@ final class AuthManager {
         }
     }
 
-    /// Prefer the LAN address when it actually answers (fast, on-network in the headset);
-    /// otherwise fall back to the WAN URL. Degrades to WAN-only when there is no LAN address.
+    /// Resolve the address used for the access-key exchange + the saved session. Prefer the
+    /// LAN address (fast, on-network in the headset) but ONLY when the host proves it is THIS
+    /// server: its public `System/Info` `Id` must equal the Connect-supplied `SystemId`. This
+    /// mirrors the Plex `firstReachable` identity binding and ensures the per-server access key
+    /// is never sent to a wrong/spoofed host — the cloud-supplied `LocalAddress` is otherwise
+    /// trusted blindly. Falls back to the WAN URL, verified the same way. Returns nil (→ a
+    /// clear "couldn't reach" error) when neither address binds to the expected server, rather
+    /// than persisting an unreachable/unverified address.
     private func resolveEmbyServerBaseURL(_ server: EmbyConnectServer) async -> URL? {
-        let localBase = server.localAddress.flatMap { $0.isEmpty ? nil : try? EmbyConnect.apiBaseURL(forConnectAddress: $0) }
-        let wanBase = server.url.flatMap { $0.isEmpty ? nil : try? EmbyConnect.apiBaseURL(forConnectAddress: $0) }
-        if let localBase, await embyServerReachable(localBase) { return localBase }
-        return wanBase ?? localBase
+        let expectedID = server.systemId
+        let localBase = embyConnectBase(server.localAddress)
+        let wanBase = embyConnectBase(server.url)
+        // Short timeout on the LAN probe so it fails over fast when away from home; the WAN
+        // probe uses the normal session so a slow internet path isn't cut off prematurely.
+        if let localBase, await embyServerIdentityMatches(localBase, expectedID: expectedID, session: Self.probeSession) {
+            return localBase
+        }
+        if let wanBase, await embyServerIdentityMatches(wanBase, expectedID: expectedID, session: Self.jellyfinSession) {
+            return wanBase
+        }
+        return nil
     }
 
-    private func embyServerReachable(_ base: URL) async -> Bool {
+    private func embyConnectBase(_ address: String?) -> URL? {
+        guard let address, !address.isEmpty else { return nil }
+        return try? EmbyConnect.apiBaseURL(forConnectAddress: address)
+    }
+
+    private func embyServerIdentityMatches(_ base: URL, expectedID: String?, session: URLSession) async -> Bool {
         guard let request = try? EmbyAuth.serverInfoRequest(server: base),
-              let (_, response) = try? await Self.embyConnectProbeSession.data(for: request),
-              let http = response as? HTTPURLResponse else { return false }
-        return (200..<300).contains(http.statusCode)
+              let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return false
+        }
+        // When Connect supplied a SystemId, require the probed server to match before we
+        // trust it with the per-server access key. Missing/garbled info → reject.
+        guard let expectedID, !expectedID.isEmpty else { return true }
+        guard let info = try? JSONDecoder().decode(EmbyServerInfo.self, from: data) else { return false }
+        return info.id == expectedID
     }
 
     private func failEmbyConnect(_ attemptID: UUID, _ message: String) {
@@ -983,16 +1020,6 @@ final class AuthManager {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
-        cfg.waitsForConnectivity = false
-        return URLSession(configuration: cfg)
-    }()
-
-    /// Short-timeout session for the LAN reachability probe — must fail fast when the headset
-    /// is away from the home network so we can fall back to the WAN address without hanging.
-    private static let embyConnectProbeSession: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 3
-        cfg.timeoutIntervalForResource = 4
         cfg.waitsForConnectivity = false
         return URLSession(configuration: cfg)
     }()
