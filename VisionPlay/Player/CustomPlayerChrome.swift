@@ -176,16 +176,25 @@ struct CustomPlayerChrome: View {
 
     @ViewBuilder
     private var transientStatusOverlay: some View {
-        // Keep transport status as a single centered surface. A slow start can move from
-        // "buffering" to "reconnecting" and back as AVPlayer reports stalls, but the app
-        // should not render a bottom buffering card plus a second modal-looking spinner.
-        if !controller.playbackError.isFailed {
-            if isReconnecting {
-                CustomReconnectingOverlay(onClose: onClose)
-            } else if controller.buffering.isBuffering {
-                bufferingCard
-            }
+        // Keep transport status as a single centered surface and a single SwiftUI view type.
+        // A slow Plex transcode start can flip from "buffering" to "reconnecting" and back;
+        // swapping two different card views makes that look like two buffering dialogs.
+        if !controller.playbackError.isFailed, let status = transientPlaybackStatus {
+            CustomTransportStatusOverlay(status: status,
+                                         onClose: onClose,
+                                         onTogglePause: {
+                                             revealChrome(keepVisible: true)
+                                             controller.togglePlayback()
+                                         })
         }
+    }
+
+    private var transientPlaybackStatus: CustomTransportStatusOverlay.Status? {
+        if isReconnecting { return .reconnecting }
+        if controller.buffering.isBuffering {
+            return controller.transport.showsPausedControl ? .pausedBuffering : .buffering
+        }
+        return nil
     }
 
     private var topChrome: some View {
@@ -476,31 +485,6 @@ struct CustomPlayerChrome: View {
         // instead of stretching the card across the screen.
         .frame(maxWidth: 360)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-
-    private var bufferingCard: some View {
-        VStack(spacing: 10) {
-            ProgressView(controller.transport.showsPausedControl ? "Paused — buffering…" : "Buffering…")
-            Text(controller.transport.showsPausedControl
-                 ? "Playback will stay paused once the stream is ready."
-                 : "You can pause now and let the stream build buffer before playing.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button {
-                revealChrome(keepVisible: true)
-                controller.togglePlayback()
-            } label: {
-                Label(controller.transport.showsPausedControl ? "Play when ready" : "Pause while loading",
-                      systemImage: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(maxWidth: 340)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private func upNextCard(_ next: MediaItem) -> some View {
@@ -874,16 +858,67 @@ private struct CustomPlayerMenuPopover: View {
     }
 }
 
-struct CustomReconnectingOverlay: View {
+struct CustomTransportStatusOverlay: View {
+    enum Status: Equatable {
+        case buffering
+        case pausedBuffering
+        case reconnecting
+
+        var title: String {
+            switch self {
+            case .buffering: "Buffering…"
+            case .pausedBuffering: "Paused — buffering…"
+            case .reconnecting: "Reconnecting…"
+            }
+        }
+
+        var detail: String? {
+            switch self {
+            case .buffering:
+                "You can pause now and let the stream build buffer before playing."
+            case .pausedBuffering:
+                "Playback will stay paused once the stream is ready."
+            case .reconnecting:
+                nil
+            }
+        }
+    }
+
+    let status: Status
     let onClose: (() -> Void)?
+    let onTogglePause: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
-            ProgressView()
+            ProgressView(status.title)
                 .controlSize(.large)
-            Text("Reconnecting…")
-                .font(.headline.weight(.semibold))
-            if let onClose {
+            if let detail = status.detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            switch status {
+            case .buffering, .pausedBuffering:
+                Button {
+                    onTogglePause()
+                } label: {
+                    Label(status == .pausedBuffering ? "Play when ready" : "Pause while loading",
+                          systemImage: status == .pausedBuffering ? "play.fill" : "pause.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            case .reconnecting:
+                if let onClose {
+                    Button(role: .cancel, action: onClose) {
+                        Text("Close")
+                            .frame(width: 150)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                }
+            }
+            if status != .reconnecting, let onClose {
                 Button(role: .cancel, action: onClose) {
                     Text("Close")
                         .frame(width: 150)
@@ -894,7 +929,7 @@ struct CustomReconnectingOverlay: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 22)
-        .frame(width: 260)
+        .frame(width: 340)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(radius: 18)
     }
