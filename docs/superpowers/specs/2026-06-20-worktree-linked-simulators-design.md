@@ -96,14 +96,16 @@ Per-worktree file at the worktree root containing only the UDID. Git-ignored
 ## Agent integration
 
 - **CLAUDE.md** — Add a "Worktree simulators" subsection documenting `setup` /
-  `teardown` / `prune` / `install-hook`, and the rule: after creating a worktree run
-  `scripts/worktree-sim.sh setup`; when finishing/removing a worktree run
-  `scripts/worktree-sim.sh teardown`. Update the build / install / screenshot /
-  `log show` command block to derive `SIMID=$(scripts/worktree-sim.sh id)` and target
-  `"$SIMID"` instead of `booted` / the hardcoded UDID. The link-skip and stale-process
-  guards stay; they now target `$SIMID`.
-- **AGENTS.md** (new, repo root) — Mirror the worktree create/teardown rule for Codex,
-  pointing at the same script.
+  `teardown` / `closeout` / `prune` / `install-hook`, and the rule: after creating a
+  worktree run `scripts/worktree-sim.sh setup`; when finishing/removing a worktree run
+  `scripts/worktree-sim.sh teardown` before `git worktree remove`, or run
+  `scripts/worktree-sim.sh closeout <worktree>` / `prune` immediately after removal.
+  Update the build / install / screenshot / `log show` command block to derive
+  `SIMID=$(scripts/worktree-sim.sh id)` and target `"$SIMID"` instead of `booted` /
+  the hardcoded UDID. The link-skip and stale-process guards stay; they now target
+  `$SIMID`.
+- **AGENTS.md** (new, repo root) — Mirror the worktree create/teardown/closeout rule
+  for Codex, pointing at the same script.
 
 ## Data flow
 
@@ -115,8 +117,17 @@ agent "start worktree" ───────────────────
 build/install/log ─► SIMID=$(worktree-sim.sh id) ─► simctl ... "$SIMID"
 
 agent "finish worktree" / manual ─► worktree-sim.sh teardown ─► delete vpwt-* sim, rm .simid
-git worktree remove (no hook) ────────────────────► worktree-sim.sh prune (backstop) ─► delete orphaned vpwt-* sims
+safer closeout helper ─────────────► worktree-sim.sh closeout PATH ─► teardown if present + prune orphans
+git worktree remove (no hook) ─────► worktree-sim.sh prune (backstop) ─► delete orphaned vpwt-* sims
 ```
+
+## Agent closeout invariant
+
+A worktree is not fully cleaned up until both the git worktree and its linked simulator
+are gone. Agents should prefer `worktree-sim.sh teardown` before `git worktree remove`;
+if the worktree has already been removed, they must run `worktree-sim.sh prune` or
+`worktree-sim.sh closeout <removed-path>` and verify no matching `vpwt-*` simulator
+remains. The golden main-worktree simulator is never deleted by linked-worktree closeout.
 
 ## Error handling
 

@@ -55,13 +55,38 @@ the same script backs both the git hook and these agent steps.
 scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on `git worktree add`
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
+scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-* sims
 scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone (backstop after a bare `git worktree remove`)
 ```
 
 **Agent rule:** after creating a worktree, run `setup`; when finishing/removing one, run
-`teardown` (or `prune` later). `setup` clones from the golden sim, which `simctl` can only
-do while the golden is **shut down**, so it briefly bounces your booted main sim — expect
-a ~10s blip in the main worktree's simulator when a new worktree is provisioned.
+`teardown` **before** `git worktree remove`, or run `closeout PATH` / `prune` immediately
+afterward. `setup` clones from the golden sim, which `simctl` can only do while the
+golden is **shut down**, so it briefly bounces your booted main sim — expect a ~10s
+blip in the main worktree's simulator when a new worktree is provisioned.
+
+### Worktree closeout checklist
+
+Never call worktree cleanup done until the linked simulator is gone. Preferred flow:
+
+```sh
+# Before removing a linked worktree:
+cd <worktree>
+scripts/worktree-sim.sh teardown
+cd <main>
+git worktree remove <worktree>
+git branch -D <branch>
+
+# Safer one-command helper from any repo worktree:
+scripts/worktree-sim.sh closeout <worktree>
+
+# If the worktree was already removed or you are unsure:
+scripts/worktree-sim.sh prune
+xcrun simctl list devices | rg 'vpwt|<branch-fragment>' || true
+```
+
+Closeout invariant: only the main worktree owns the golden sim; linked-worktree closeout
+must remove the relevant `vpwt-*` clone and must not remove the golden sim.
 
 ## Live-testing workflow (semi-automated)
 
