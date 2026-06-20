@@ -87,6 +87,14 @@ struct OfflineDownloadModelsTests {
             summary: "A summary.",
             contentRating: "TV-14",
             tagline: "tag",
+            grandparentTitle: "The Show",
+            grandparentRatingKey: "show-1",
+            grandparentThumb: "/show/thumb",
+            parentTitle: "Season 2",
+            parentRatingKey: "season-2",
+            parentThumb: "/season/thumb",
+            parentIndex: 2,
+            index: 5,
             thumb: "/thumb/1",
             art: "/art/1",
             resolutionLabel: "1080p",
@@ -109,8 +117,8 @@ struct OfflineDownloadModelsTests {
         let meta = OfflineMetadata(
             ratingKey: "777",
             key: "/library/metadata/777",
-            title: "Movie",
-            type: "movie",
+            title: "Episode Title",
+            type: "episode",
             year: 1999,
             duration: 7_200_000,
             viewOffset: 60_000,
@@ -118,13 +126,21 @@ struct OfflineDownloadModelsTests {
             summary: "S",
             contentRating: "R",
             tagline: "T",
+            grandparentTitle: "The Show",
+            grandparentRatingKey: "show-1",
+            grandparentThumb: "/show/thumb",
+            parentTitle: "Season 2",
+            parentRatingKey: "season-2",
+            parentThumb: "/season/thumb",
+            parentIndex: 2,
+            index: 5,
             thumb: "/t",
             art: "/a")
         let item = meta.makeMediaItem()
         #expect(item.ratingKey == "777")
         #expect(item.key == "/library/metadata/777")
-        #expect(item.title == "Movie")
-        #expect(item.type == "movie")
+        #expect(item.title == "Episode Title")
+        #expect(item.type == "episode")
         #expect(item.year == 1999)
         #expect(item.duration == 7_200_000)
         #expect(item.viewOffset == 60_000)
@@ -134,6 +150,16 @@ struct OfflineDownloadModelsTests {
         #expect(item.tagline == "T")
         #expect(item.thumb == "/t")
         #expect(item.art == "/a")
+        #expect(item.grandparentTitle == "The Show")
+        #expect(item.grandparentRatingKey == "show-1")
+        #expect(item.grandparentThumb == "/show/thumb")
+        #expect(item.parentTitle == "Season 2")
+        #expect(item.parentRatingKey == "season-2")
+        #expect(item.parentThumb == "/season/thumb")
+        #expect(item.parentIndex == 2)
+        #expect(item.index == 5)
+        #expect(item.seasonEpisodeCode == "S2E5")
+        #expect(item.displaySubtitleLine == "The Show · S2E5 · Episode Title")
     }
 
     @Test("DownloadRecord round-trips through encode/decode")

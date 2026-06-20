@@ -53,9 +53,9 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
 /// taken at enqueue time (D5).
 ///
 /// Stored on each row so the offline library renders richly WITHOUT the server
-/// (title, year, type, runtime, summary, content rating, tagline) and so `retry()`
-/// + offline playback can reconstruct a faithful `MediaItem` instead of fabricating
-/// a minimal movie. Every field beyond `ratingKey`/`title`/`type` is optional and
+/// (title, TV episode context, year, type, runtime, summary, content rating, tagline)
+/// and so `retry()` + offline playback can reconstruct a faithful `MediaItem`
+/// instead of fabricating a minimal movie. Every field beyond `ratingKey`/`title`/`type` is optional and
 /// decoded with `decodeIfPresent`, and the whole snapshot is itself decoded with
 /// `decodeIfPresent` on the row, so libraries persisted before D5 keep loading.
 ///
@@ -74,6 +74,16 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var summary: String?
     public var contentRating: String?
     public var tagline: String?
+    /// Show/season context for episode rows. Persisted so the Offline tab can keep showing
+    /// an ordered context line like "Show · S1E3 · Episode Title" without asking the server.
+    public var grandparentTitle: String?
+    public var grandparentRatingKey: String?
+    public var grandparentThumb: String?
+    public var parentTitle: String?
+    public var parentRatingKey: String?
+    public var parentThumb: String?
+    public var parentIndex: Int?
+    public var index: Int?
     /// The original Plex `thumb` path, kept so we can re-fetch the poster if the
     /// local cache is missing and the server is reachable again.
     public var thumb: String?
@@ -113,6 +123,14 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 summary: String? = nil,
                 contentRating: String? = nil,
                 tagline: String? = nil,
+                grandparentTitle: String? = nil,
+                grandparentRatingKey: String? = nil,
+                grandparentThumb: String? = nil,
+                parentTitle: String? = nil,
+                parentRatingKey: String? = nil,
+                parentThumb: String? = nil,
+                parentIndex: Int? = nil,
+                index: Int? = nil,
                 thumb: String? = nil,
                 art: String? = nil,
                 resolutionLabel: String? = nil,
@@ -136,6 +154,14 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.summary = summary
         self.contentRating = contentRating
         self.tagline = tagline
+        self.grandparentTitle = grandparentTitle
+        self.grandparentRatingKey = grandparentRatingKey
+        self.grandparentThumb = grandparentThumb
+        self.parentTitle = parentTitle
+        self.parentRatingKey = parentRatingKey
+        self.parentThumb = parentThumb
+        self.parentIndex = parentIndex
+        self.index = index
         self.thumb = thumb
         self.art = art
         self.resolutionLabel = resolutionLabel
@@ -163,6 +189,14 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
         tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
+        grandparentTitle = try c.decodeIfPresent(String.self, forKey: .grandparentTitle)
+        grandparentRatingKey = try c.decodeIfPresent(String.self, forKey: .grandparentRatingKey)
+        grandparentThumb = try c.decodeIfPresent(String.self, forKey: .grandparentThumb)
+        parentTitle = try c.decodeIfPresent(String.self, forKey: .parentTitle)
+        parentRatingKey = try c.decodeIfPresent(String.self, forKey: .parentRatingKey)
+        parentThumb = try c.decodeIfPresent(String.self, forKey: .parentThumb)
+        parentIndex = try c.decodeIfPresent(Int.self, forKey: .parentIndex)
+        index = try c.decodeIfPresent(Int.self, forKey: .index)
         thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
         art = try c.decodeIfPresent(String.self, forKey: .art)
         resolutionLabel = try c.decodeIfPresent(String.self, forKey: .resolutionLabel)
@@ -192,7 +226,15 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                   thumb: thumb,
                   art: art,
                   contentRating: contentRating,
-                  tagline: tagline)
+                  tagline: tagline,
+                  grandparentTitle: grandparentTitle,
+                  grandparentRatingKey: grandparentRatingKey,
+                  grandparentThumb: grandparentThumb,
+                  parentTitle: parentTitle,
+                  parentRatingKey: parentRatingKey,
+                  parentThumb: parentThumb,
+                  parentIndex: parentIndex,
+                  index: index)
     }
 }
 
