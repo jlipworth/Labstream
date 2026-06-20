@@ -7,23 +7,29 @@ live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the 
 ## Build / install / test loop
 
 ```sh
+# This worktree's simulator. In the main worktree this resolves to the golden
+# D9BD8E9D…; in a linked worktree it's that worktree's own cloned sim (see
+# "Worktree simulators" below). It may be Shutdown — boot it first.
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
+
 # Build (simulator UDID may differ; `xcrun simctl list devices booted` to check).
 # ⚠️ LINK-SKIP TRAP (bit us live): after a source edit xcodebuild may recompile the .o
 # but SKIP the Ld step — exit 0, no new binary, and the "fix" you then install is the OLD
 # app. Guard every fix build: delete the .app product first, and verify afterwards that
 # the binary mtime is fresh (and matches the installed copy via
-# `xcrun simctl get_app_container booted com.jlipworth.VisionPlay app`).
+# `xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app`).
 rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
 xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,id=D9BD8E9D-8E58-485D-B332-F8CDF37133B5' \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 
-# Install + relaunch on the booted simulator (upgrade in place — login survives).
+# Install + relaunch on this worktree's simulator (upgrade in place — login survives).
 # Multiple stale VisionPlay-* DerivedData dirs exist — always pick the newest, and use
 # /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
-xcrun simctl install booted "$APP"
-xcrun simctl terminate booted com.jlipworth.VisionPlay; xcrun simctl launch booted com.jlipworth.VisionPlay
+xcrun simctl install "$SIMID" "$APP"
+xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay; xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
 
 # PMSKit unit tests
 cd PMSKit && swift test
@@ -31,6 +37,31 @@ cd PMSKit && swift test
 
 New Swift files are picked up automatically (file-system-synchronized groups) — never
 edit the pbxproj to add one.
+
+## Worktree simulators
+
+Each worktree gets its own visionOS simulator so parallel worktrees don't clobber each
+other's app container / login. `scripts/worktree-sim.sh` is the single source of truth;
+the same script backs both the git hook and these agent steps.
+
+- The **main** worktree owns the *golden* logged-in sim (`D9BD8E9D…`, recorded in
+  `<main>/.simid`). Never delete it.
+- A **linked** worktree gets a `vpwt-<branch>` clone of the golden, created **shut down**
+  (boot it yourself when building). Its UDID lives in `<worktree>/.simid` (git-ignored).
+- `scripts/worktree-sim.sh id` prints this worktree's UDID — used as `$SIMID` above.
+  Always target `"$SIMID"`, never `booted` (which errors once two sims are up).
+
+```sh
+scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on `git worktree add`
+scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
+scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
+scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone (backstop after a bare `git worktree remove`)
+```
+
+**Agent rule:** after creating a worktree, run `setup`; when finishing/removing one, run
+`teardown` (or `prune` later). `setup` clones from the golden sim, which `simctl` can only
+do while the golden is **shut down**, so it briefly bounces your booted main sim — expect
+a ~10s blip in the main worktree's simulator when a new worktree is provisioned.
 
 ## Live-testing workflow (semi-automated)
 
@@ -40,11 +71,15 @@ self-serves the passive half — screenshots and logs. Don't ask the user for sc
 or log dumps:
 
 ```sh
+# SIMID is this worktree's sim (see Build block / "Worktree simulators"); in the main
+# worktree `booted` still works, but $SIMID is always correct.
+SIMID=$(scripts/worktree-sim.sh id)
+
 # Claude takes its own screenshots after the user interacts
-xcrun simctl io booted screenshot /tmp/visionplay-test.png   # then Read the PNG
+xcrun simctl io "$SIMID" screenshot /tmp/visionplay-test.png   # then Read the PNG
 
 # Claude reads app logs itself (NSLog instrumentation shows up here)
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"'
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"'
 ```
 
 ⚠️ STALE-PROCESS TRAP (bit us live): a running copy of the app can survive
