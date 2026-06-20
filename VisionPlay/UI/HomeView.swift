@@ -9,6 +9,8 @@ struct HomeView: View {
     @State private var hubs: [Hub] = []
     @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var jellyfinRails: [JellyfinHomeRail] = []
+    @State private var embyViews: [EmbyLibraryLink] = []
+    @State private var embyRails: [EmbyHomeRail] = []
     @State private var loadState: LoadState = .idle
     /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can resolve through the same URL.
@@ -33,6 +35,8 @@ struct HomeView: View {
             case .loaded:
                 if appModel.activeBackend == .jellyfin {
                     jellyfinHome
+                } else if appModel.activeBackend == .emby {
+                    embyHome
                 } else if hubs.isEmpty {
                     ContentUnavailableView("Nothing here yet",
                                            systemImage: "house",
@@ -54,6 +58,9 @@ struct HomeView: View {
         .navigationTitle("Home")
         .navigationDestination(for: JellyfinLibraryLink.self) { view in
             LibraryGridView(jellyfin: view)
+        }
+        .navigationDestination(for: EmbyLibraryLink.self) { view in
+            LibraryGridView(emby: view)
         }
         .navigationDestination(for: MediaItem.self) { item in
             // Music items route into the music module, never the video detail/player
@@ -77,6 +84,34 @@ struct HomeView: View {
             return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
         case .jellyfin:
             return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+        case .emby:
+            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil")"
+        }
+    }
+
+    @ViewBuilder
+    private var embyHome: some View {
+        if embyViews.isEmpty {
+            ContentUnavailableView("No Emby libraries",
+                                   systemImage: "rectangle.stack",
+                                   description: Text("This Emby user has no visible libraries."))
+            .frame(maxWidth: .infinity, minHeight: 360)
+        } else {
+            LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
+                if embyRails.isEmpty {
+                    ContentUnavailableView("Open a library to browse",
+                                           systemImage: "rectangle.stack",
+                                           description: Text("Emby did not return preview items for these libraries."))
+                    .frame(maxWidth: .infinity, minHeight: 260)
+                } else {
+                    ForEach(embyRails) { rail in
+                        HubRail(hub: Hub(title: rail.title,
+                                         hubIdentifier: "emby-\(rail.id)",
+                                         metadata: rail.items))
+                    }
+                }
+            }
+            .padding(.vertical, DS.Space.xl)
         }
     }
 
@@ -129,6 +164,27 @@ struct HomeView: View {
                     "view_count": views.count,
                     "rail_count": jellyfinRails.count,
                     "item_count": jellyfinRails.reduce(0) { $0 + $1.items.count },
+                ])
+            } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
+        if appModel.activeBackend == .emby {
+            loadState = .loading
+            do {
+                let service = EmbyBrowseService(appModel: appModel)
+                let views = try await service.userViewLinks()
+                embyViews = views
+                embyRails = try await service.homeRails(for: views)
+                loadedIdentity = activeIdentity
+                loadState = .loaded
+                span.end(fields: [
+                    "view_count": views.count,
+                    "rail_count": embyRails.count,
+                    "item_count": embyRails.reduce(0) { $0 + $1.items.count },
                 ])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])

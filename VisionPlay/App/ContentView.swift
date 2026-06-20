@@ -55,6 +55,7 @@ struct ContentView: View {
             downloadManager.resumePendingServerPrepDownloads()
 #if DEBUG
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
+            await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugPlexDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
 #endif
         }

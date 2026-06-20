@@ -3,6 +3,7 @@ import Foundation
 public enum MediaBackendChoice: String, Sendable, Equatable {
     case plex
     case jellyfin
+    case emby
 }
 
 public struct MediaBackendCredentialSnapshot: Sendable, Equatable {
@@ -10,15 +11,24 @@ public struct MediaBackendCredentialSnapshot: Sendable, Equatable {
     public let jellyfinServerURLString: String?
     public let jellyfinAccessToken: String?
     public let jellyfinUserID: String?
+    public let embyServerURLString: String?
+    public let embyAccessToken: String?
+    public let embyUserID: String?
 
     public init(plexToken: String?,
                 jellyfinServerURLString: String?,
                 jellyfinAccessToken: String?,
-                jellyfinUserID: String?) {
+                jellyfinUserID: String?,
+                embyServerURLString: String? = nil,
+                embyAccessToken: String? = nil,
+                embyUserID: String? = nil) {
         self.plexToken = plexToken
         self.jellyfinServerURLString = jellyfinServerURLString
         self.jellyfinAccessToken = jellyfinAccessToken
         self.jellyfinUserID = jellyfinUserID
+        self.embyServerURLString = embyServerURLString
+        self.embyAccessToken = embyAccessToken
+        self.embyUserID = embyUserID
     }
 
     public func hasSavedSession(for backend: MediaBackendChoice) -> Bool {
@@ -29,6 +39,10 @@ public struct MediaBackendCredentialSnapshot: Sendable, Equatable {
             return !(jellyfinServerURLString ?? "").isEmpty &&
                 !(jellyfinAccessToken ?? "").isEmpty &&
                 !(jellyfinUserID ?? "").isEmpty
+        case .emby:
+            return !(embyServerURLString ?? "").isEmpty &&
+                !(embyAccessToken ?? "").isEmpty &&
+                !(embyUserID ?? "").isEmpty
         }
     }
 }

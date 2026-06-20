@@ -34,6 +34,9 @@ struct LoginView: View {
     @State private var jellyfinUsername = ""
     @State private var jellyfinPassword = ""
     @State private var jellyfinSignInMethod: JellyfinSignInMethod?
+    @State private var embyServer = ""
+    @State private var embyUsername = ""
+    @State private var embyPassword = ""
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
@@ -147,9 +150,12 @@ struct LoginView: View {
 
     @ViewBuilder
     private var content: some View {
-        if appModel.activeBackend == .jellyfin {
+        switch appModel.activeBackend {
+        case .jellyfin:
             jellyfinLoginForm
-        } else {
+        case .emby:
+            embyLoginForm
+        case .plex:
             plexLoginFlow
         }
     }
@@ -397,6 +403,51 @@ struct LoginView: View {
         }
     }
 
+    // MARK: - Emby (username/password only — no Quick Connect in slice 1)
+
+    private var embyLoginForm: some View {
+        VStack(spacing: DS.Space.md) {
+            TextField("https://emby.example.com", text: $embyServer)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.URL)
+                .keyboardType(.URL)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+
+            TextField("Username", text: $embyUsername)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.username)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+
+            SecureField("Password", text: $embyPassword)
+                .textContentType(.password)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+
+            Button {
+                Task { await startEmbyLogin() }
+            } label: {
+                if working {
+                    ProgressView()
+                } else {
+                    Label("Sign in with Emby", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(working || !hasEmbyServerInput)
+        }
+    }
+
+    private var hasEmbyServerInput: Bool {
+        !embyServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var hasJellyfinServerInput: Bool {
         !jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -474,6 +525,28 @@ struct LoginView: View {
         }
         working = true
         await authManager.startJellyfinQuickConnect(server: server)
+        working = false
+    }
+
+    private func startEmbyLogin() async {
+        errorMessage = nil
+        let server: URL
+        do {
+            // DIVERGENCE: EmbyServerURL preserves any user-entered base path (e.g. /emby).
+            server = try EmbyServerURL.normalized(embyServer)
+        } catch {
+            errorMessage = "Enter a valid Emby server URL."
+            return
+        }
+        let username = embyUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty, !embyPassword.isEmpty else {
+            errorMessage = "Enter your Emby username and password."
+            return
+        }
+        working = true
+        await authManager.loginToEmby(server: server,
+                                      username: username,
+                                      password: embyPassword)
         working = false
     }
 }

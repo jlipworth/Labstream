@@ -113,7 +113,8 @@ struct PosterImage: View {
     }
 
     private var artworkBackendLabel: String {
-        parsedJellyfinImagePath == nil ? "Plex" : "Jellyfin"
+        if parsedEmbyImagePath != nil { return "Emby" }
+        return parsedJellyfinImagePath == nil ? "Plex" : "Jellyfin"
     }
 
     /// Neutral fallback when there's no artwork or it fails to load.
@@ -141,6 +142,7 @@ struct PosterImage: View {
     }
 
     private var imageRequest: URLRequest? {
+        if let emby = embyImageRequest { return emby }
         if let jellyfin = jellyfinImageRequest { return jellyfin }
         guard let url = transcodeURL else { return nil }
         return URLRequest(url: url)
@@ -181,6 +183,39 @@ struct PosterImage: View {
                                                       height: Int(height * scale)) else { return nil }
         let identity = appModel.identity.jellyfin
         return JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity)
+    }
+
+    /// Resolve an `emby://item/{id}/{Type}?tag=` synthetic ref to a live, authenticated
+    /// image request. The token rides only on the live request (via the Emby auth header),
+    /// never in the stored ref, and is never logged.
+    private var embyImageRequest: URLRequest? {
+        guard let parsed = parsedEmbyImagePath,
+              let base = appModel.embyServerBaseURL,
+              let token = appModel.embyAccessToken else { return nil }
+        let scale = requestScale
+        guard let url = try? EmbyLibrary.imageURL(server: base,
+                                                  itemId: parsed.itemId,
+                                                  imageType: parsed.type,
+                                                  tag: parsed.tag,
+                                                  width: Int(width * scale),
+                                                  height: Int(height * scale)) else { return nil }
+        let identity = appModel.identity.emby
+        return EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity, userId: appModel.embyUserID)
+    }
+
+    private var parsedEmbyImagePath: (itemId: String, type: EmbyImageType, tag: String?)? {
+        guard let path,
+              let url = URL(string: path),
+              url.scheme == "emby",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 2 else { return nil }
+        guard let type = EmbyImageType(rawValue: parts[1]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return (parts[0], type, tag)
     }
 
     private var parsedJellyfinImagePath: (itemId: String, type: JellyfinImageType, tag: String?)? {

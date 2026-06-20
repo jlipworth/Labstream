@@ -93,6 +93,8 @@ final class AuthManager {
             return await restorePlexSession()
         case .jellyfin:
             return await restoreJellyfinSession()
+        case .emby:
+            return await restoreEmbySession()
         }
     }
 
@@ -142,6 +144,42 @@ final class AuthManager {
             return false
         } catch {
             state = .failed("Signed in, but the Jellyfin server could not be reached.")
+            return true
+        }
+    }
+
+    private func restoreEmbySession() async -> Bool {
+        guard let urlString = keychain.embyServerURLString,
+              let server = URL(string: urlString),
+              let token = keychain.embyAccessToken,
+              let userID = keychain.embyUserID else { return false }
+        appModel.embyServerBaseURL = server
+        appModel.embyAccessToken = token
+        appModel.embyUserID = userID
+        appModel.embyServerID = keychain.embyServerID
+        do {
+            let req = try EmbyLibrary.userViewsRequest(server: server,
+                                                       token: token,
+                                                       identity: embyIdentity,
+                                                       userId: userID)
+            let (_, response) = try await Self.jellyfinSession.data(for: req)
+            if let http = response as? HTTPURLResponse {
+                switch http.statusCode {
+                case 200..<300: break
+                case 401, 403: throw EmbyAuthError.unauthorized
+                default: throw EmbyAuthError.http(http.statusCode)
+                }
+            }
+            state = .authenticated
+            return true
+        } catch EmbyAuthError.unauthorized {
+            // Invalid/expired creds — drop the saved session and require re-login.
+            signOutEmby()
+            return false
+        } catch {
+            // Unreachable host (or other transient error) — keep the saved session so a
+            // later launch with connectivity restores cleanly.
+            state = .failed("Signed in, but the Emby server could not be reached.")
             return true
         }
     }
@@ -388,6 +426,58 @@ final class AuthManager {
         appModel.jellyfinServerID = result.serverId
     }
 
+    /// Emby username/password sign-in (NO Quick Connect — slice 1 is password-only).
+    /// Mirrors `loginToJellyfin` but uses the Emby-specific auth/header lane.
+    func loginToEmby(server: URL, username: String, password: String) async {
+        cancelPendingLogin()
+        appModel.activeBackend = .emby
+        keychain.selectedBackend = .emby
+        state = .idle
+        do {
+            let request = try EmbyAuth.authenticateByNameRequest(server: server,
+                                                                 username: username,
+                                                                 password: password,
+                                                                 identity: embyIdentity)
+            let (data, response) = try await Self.jellyfinSession.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                switch http.statusCode {
+                case 200..<300:
+                    break
+                case 401, 403:
+                    throw EmbyAuthError.unauthorized
+                default:
+                    throw EmbyAuthError.http(http.statusCode)
+                }
+            }
+            let result = try JSONDecoder().decode(EmbyAuthenticationResult.self, from: data)
+            try persistEmbyAuthentication(result, server: server)
+            state = .authenticated
+        } catch EmbyAuthError.unauthorized {
+            state = .failed("Invalid Emby username or password.")
+        } catch EmbyAuthError.http(let status) {
+            state = .failed("Emby sign-in failed (HTTP \(status)).")
+        } catch EmbyAuthError.missingCredentials {
+            state = .failed("Emby did not return a usable session.")
+        } catch {
+            state = .failed("Couldn’t reach Emby server.")
+        }
+    }
+
+    private func persistEmbyAuthentication(_ result: EmbyAuthenticationResult, server: URL) throws {
+        guard let token = result.accessToken, !token.isEmpty,
+              let userID = result.user?.id, !userID.isEmpty else {
+            throw EmbyAuthError.missingCredentials
+        }
+        keychain.embyServerURLString = server.absoluteString
+        keychain.embyAccessToken = token
+        keychain.embyUserID = userID
+        keychain.embyServerID = result.serverId
+        appModel.embyServerBaseURL = server
+        appModel.embyAccessToken = token
+        appModel.embyUserID = userID
+        appModel.embyServerID = result.serverId
+    }
+
     private func jellyfinData(for request: URLRequest, disabledMeansUnauthorized: Bool) async throws -> Data {
         let (data, response) = try await Self.jellyfinSession.data(for: request)
         if let http = response as? HTTPURLResponse {
@@ -605,6 +695,8 @@ final class AuthManager {
             signOutPlex()
         case .jellyfin:
             signOutJellyfin()
+        case .emby:
+            signOutEmby()
         }
         state = .idle
     }
@@ -623,6 +715,14 @@ final class AuthManager {
         clearRuntimeState(for: .jellyfin)
     }
 
+    private func signOutEmby() {
+        keychain.embyServerURLString = nil
+        keychain.embyAccessToken = nil
+        keychain.embyUserID = nil
+        keychain.embyServerID = nil
+        clearRuntimeState(for: .emby)
+    }
+
     private func clearRuntimeState(for backend: MediaBackendKind) {
         switch backend {
         case .plex:
@@ -638,6 +738,11 @@ final class AuthManager {
             appModel.jellyfinAccessToken = nil
             appModel.jellyfinUserID = nil
             appModel.jellyfinServerID = nil
+        case .emby:
+            appModel.embyServerBaseURL = nil
+            appModel.embyAccessToken = nil
+            appModel.embyUserID = nil
+            appModel.embyServerID = nil
         }
     }
 
@@ -650,6 +755,10 @@ final class AuthManager {
 
     private var jellyfinIdentity: JellyfinClientIdentity {
         appModel.identity.jellyfin
+    }
+
+    private var embyIdentity: EmbyClientIdentity {
+        appModel.identity.emby
     }
 
     private static let jellyfinSession: URLSession = {
@@ -668,11 +777,18 @@ private enum JellyfinAuthError: Error {
     case missingCredentials
 }
 
+private enum EmbyAuthError: Error {
+    case unauthorized
+    case http(Int)
+    case missingCredentials
+}
+
 private extension MediaBackendKind {
     var switchChoice: MediaBackendChoice {
         switch self {
         case .plex: return .plex
         case .jellyfin: return .jellyfin
+        case .emby: return .emby
         }
     }
 }
@@ -682,6 +798,9 @@ private extension KeychainStore {
         MediaBackendCredentialSnapshot(plexToken: token,
                                        jellyfinServerURLString: jellyfinServerURLString,
                                        jellyfinAccessToken: jellyfinAccessToken,
-                                       jellyfinUserID: jellyfinUserID)
+                                       jellyfinUserID: jellyfinUserID,
+                                       embyServerURLString: embyServerURLString,
+                                       embyAccessToken: embyAccessToken,
+                                       embyUserID: embyUserID)
     }
 }

@@ -215,6 +215,8 @@ struct SettingsView: View {
             return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. Adaptive Bitrate may reopen the stream at a lower or higher capped quality after sustained stalls or healthy playback. \(subtitleMode.help) \(burnMode.help)"
         case .jellyfin:
             return active + " Jellyfin currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback. Skip modes are honored when marker data exists."
+        case .emby:
+            return active + " Emby currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback."
         }
     }
 
@@ -359,6 +361,22 @@ struct SettingsView: View {
                     authManager.signOut()
                 } label: {
                     Label("Sign in to a different Jellyfin server", systemImage: "arrow.triangle.2.circlepath")
+                }
+            case .emby:
+                if let url = appModel.embyServerBaseURL {
+                    LabeledContent("Connection", value: url.absoluteString)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let userID = appModel.embyUserID {
+                    LabeledContent("User ID", value: userID)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Button {
+                    authManager.signOut()
+                } label: {
+                    Label("Sign in to a different Emby server", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
         }
@@ -708,6 +726,8 @@ struct SettingsView: View {
             return "Plex Media Server\(version)"
         case .jellyfin:
             return "Jellyfin"
+        case .emby:
+            return "Emby"
         }
     }
 
@@ -717,6 +737,8 @@ struct SettingsView: View {
             return appModel.serverBaseURL?.scheme
         case .jellyfin:
             return appModel.jellyfinServerBaseURL?.scheme
+        case .emby:
+            return appModel.embyServerBaseURL?.scheme
         }
     }
 
@@ -728,6 +750,8 @@ struct SettingsView: View {
             return "Signing back in requires authorizing this device with plex.tv again."
         case .jellyfin:
             return "Signing back in requires connecting to your Jellyfin server again."
+        case .emby:
+            return "Signing back in requires connecting to your Emby server again."
         }
     }
 
@@ -752,6 +776,8 @@ struct SettingsView: View {
                     Label("Refresh account identity", systemImage: "person.crop.circle.badge.checkmark")
                 }
             case .jellyfin:
+                EmptyView()
+            case .emby:
                 EmptyView()
             }
 

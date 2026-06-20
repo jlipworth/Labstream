@@ -5,6 +5,7 @@ import PMSKit
 enum MediaBackendKind: String, Codable, CaseIterable, Identifiable {
     case plex
     case jellyfin
+    case emby
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum MediaBackendKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .plex: return "Plex"
         case .jellyfin: return "Jellyfin"
+        case .emby: return "Emby"
         }
     }
 }
@@ -70,6 +72,14 @@ final class AppModel {
     var jellyfinUserID: String?
     var jellyfinServerID: String?
 
+    /// Emby session state. A separate parallel lane from Jellyfin (different auth header
+    /// scheme, base-path preservation, PlaybackInfo semantics) so the two never clobber
+    /// each other.
+    var embyServerBaseURL: URL?
+    var embyAccessToken: String?
+    var embyUserID: String?
+    var embyServerID: String?
+
     /// Shared live executor for all Plex API requests.
     let client: PlexClient
 
@@ -79,6 +89,8 @@ final class AppModel {
             return token != nil
         case .jellyfin:
             return jellyfinAccessToken != nil
+        case .emby:
+            return embyAccessToken != nil
         }
     }
 
@@ -91,6 +103,9 @@ final class AppModel {
         case .jellyfin:
             // Jellyfin does not yet carry Plex resource-locality metadata; use the
             // internet/remote cap so the default stays conservative.
+            return PlaybackPreferences.Keys.remoteQualityKbps
+        case .emby:
+            // Emby likewise has no locality metadata; conservative remote cap.
             return PlaybackPreferences.Keys.remoteQualityKbps
         }
     }
@@ -105,6 +120,8 @@ final class AppModel {
             return selectedServerConnectionIsLocal ? "Home/Local" : "Internet/Remote"
         case .jellyfin:
             return "Internet/Remote"
+        case .emby:
+            return "Internet/Remote"
         }
     }
 
@@ -114,6 +131,8 @@ final class AppModel {
             return token != nil && serverToken != nil && serverBaseURL != nil
         case .jellyfin:
             return jellyfinServerBaseURL != nil && jellyfinAccessToken != nil && jellyfinUserID != nil
+        case .emby:
+            return embyServerBaseURL != nil && embyAccessToken != nil && embyUserID != nil
         }
     }
 

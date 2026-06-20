@@ -5,21 +5,21 @@ import Testing
 @Suite("Jellyfin server URL")
 struct JellyfinServerURLTests {
     @Test func bareHostDefaultsToHTTPS() throws {
-        let url = try JellyfinServerURL.normalized("jelly.crapmaster.org")
+        let url = try JellyfinServerURL.normalized("jellyfin.example.internal")
 
-        #expect(url == URL(string: "https://jelly.crapmaster.org"))
+        #expect(url == URL(string: "https://jellyfin.example.internal"))
     }
 
     @Test func trimsWhitespaceBeforeNormalizing() throws {
-        let url = try JellyfinServerURL.normalized("  jelly.crapmaster.org  ")
+        let url = try JellyfinServerURL.normalized("  jellyfin.example.internal  ")
 
-        #expect(url == URL(string: "https://jelly.crapmaster.org"))
+        #expect(url == URL(string: "https://jellyfin.example.internal"))
     }
 
     @Test func preservesExplicitHTTPSURL() throws {
-        let url = try JellyfinServerURL.normalized("https://jelly.crapmaster.org/base")
+        let url = try JellyfinServerURL.normalized("https://jellyfin.example.internal/base")
 
-        #expect(url == URL(string: "https://jelly.crapmaster.org/base"))
+        #expect(url == URL(string: "https://jellyfin.example.internal/base"))
     }
 
     @Test func preservesExplicitHTTPForLocalTesting() throws {
