@@ -28,6 +28,7 @@ struct DetailView: View {
     @State private var presentingPlayer = false
     @State private var playLocalURL: URL?
     @State private var playLocalTrickPlayURL: URL?
+    @State private var playLocalTrickPlayKind: LocalTrickPlayKind?
     @State private var remotePlayback: JellyfinRemotePlayback?
     @State private var embyRemotePlayback: EmbyRemotePlayback?
     @State private var showDownloadOptions = false
@@ -349,7 +350,13 @@ struct DetailView: View {
                 musicPlayer.pauseForVideo()
                 let key = downloadManager.recordKey(for: detailed)
                 playLocalURL = local
-                playLocalTrickPlayURL = downloadManager.plexBIFURL(for: key)
+                if key.hasPrefix("jellyfin:") {
+                    playLocalTrickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
+                    playLocalTrickPlayKind = .jellyfinTiles
+                } else {
+                    playLocalTrickPlayURL = downloadManager.plexBIFURL(for: key)
+                    playLocalTrickPlayKind = .plexBIF
+                }
                 remotePlayback = nil
                 embyRemotePlayback = nil
                 playingItem = itemWithResumeRewind(detailed)
@@ -421,7 +428,7 @@ struct DetailView: View {
         if let local = playLocalURL {
             CustomPlayerView(localFile: local,
                              item: playing,
-                             trickPlayProvider: LocalBIFTrickPlayThumbnailProvider(bifURL: playLocalTrickPlayURL),
+                             trickPlayProvider: localTrickPlayProvider(),
                              onClose: { presentingPlayer = false })
                 .ignoresSafeArea()
         } else if let remote = remotePlayback {
@@ -543,6 +550,7 @@ struct DetailView: View {
                     // for the new episode, keeping the cover up for a continuous experience.
                     playLocalURL = nil
                     playLocalTrickPlayURL = nil
+                    playLocalTrickPlayKind = nil
                     playingItem = next
                 }
 
@@ -638,6 +646,7 @@ struct DetailView: View {
         musicPlayer.pauseForVideo()
         playLocalURL = nil
         playLocalTrickPlayURL = nil
+        playLocalTrickPlayKind = nil
         playingItem = itemWithResumeRewind(detailed)
         switch appModel.activeBackend {
         case .plex:
@@ -716,6 +725,22 @@ struct DetailView: View {
     private func itemWithResumeRewind(_ item: MediaItem) -> MediaItem {
         guard item.viewOffset != nil, resumeRewindSeconds > 0 else { return item }
         return item.copyWith(viewOffset: adjustedResumeOffsetMs(item.viewOffset))
+    }
+
+    private enum LocalTrickPlayKind {
+        case plexBIF
+        case jellyfinTiles
+    }
+
+    private func localTrickPlayProvider() -> (any TrickPlayThumbnailProviding)? {
+        switch playLocalTrickPlayKind {
+        case .plexBIF:
+            return LocalBIFTrickPlayThumbnailProvider(bifURL: playLocalTrickPlayURL)
+        case .jellyfinTiles:
+            return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playLocalTrickPlayURL)
+        case nil:
+            return nil
+        }
     }
 
     private var localURL: URL? {

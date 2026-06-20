@@ -157,6 +157,26 @@ public enum JellyfinTrickPlayPlaylistParser {
     }
 }
 
+
+/// Pure helpers for caching Jellyfin trickplay playlists offline. Keeps token-stripping and
+/// storage estimates headlessly testable outside the app target.
+public enum JellyfinTrickPlayOfflineCachePlanner {
+    public static func sanitizedPlaylist(_ text: String,
+                                         tileFilenamesByURI: [String: String]) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { rawLine -> String in
+            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#") else { return String(rawLine) }
+            return tileFilenamesByURI[line] ?? URL(fileURLWithPath: line).lastPathComponent
+        }.joined(separator: "\n")
+    }
+
+    public static func estimatedTileBytes(durationMs: Int?) -> Int {
+        guard let durationMs, durationMs > 0 else { return 0 }
+        let sheetCount = max(1, Int(ceil(Double(durationMs) / 1_000_000.0)))
+        return sheetCount * 300_000
+    }
+}
+
 public enum TrickPlayRequest {
     /// Plex BIF endpoint for the requested Part. `quality` is usually `sd` when the Part's
     /// `indexes` attribute advertises `sd`.

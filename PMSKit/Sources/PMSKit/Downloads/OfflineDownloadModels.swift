@@ -186,6 +186,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Locally-cached Plex BIF index path, relative to the Downloads base directory.
     /// Populated only for Plex items/parts that advertise a standard-definition BIF.
     public var plexBIFRelativePath: String?
+    /// Locally-cached Jellyfin trickplay playlist path, relative to the Downloads base directory.
+    /// The cached playlist is sanitized: tile lines are rewritten to local filenames and never
+    /// contain token-bearing server URLs.
+    public var jellyfinTrickPlayPlaylistRelativePath: String?
+    /// Locally-cached Jellyfin trickplay tile sheet paths, relative to the Downloads base directory.
+    public var jellyfinTrickPlayTileRelativePaths: [String]?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -219,7 +225,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 optimizeQueueTitle: String? = nil,
                 optimizeBaselinePartIDs: [Int]? = nil,
                 posterRelativePath: String? = nil,
-                plexBIFRelativePath: String? = nil) {
+                plexBIFRelativePath: String? = nil,
+                jellyfinTrickPlayPlaylistRelativePath: String? = nil,
+                jellyfinTrickPlayTileRelativePaths: [String]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -253,6 +261,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
         self.posterRelativePath = posterRelativePath
         self.plexBIFRelativePath = plexBIFRelativePath
+        self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
+        self.jellyfinTrickPlayTileRelativePaths = jellyfinTrickPlayTileRelativePaths
     }
 
     public init(from decoder: Decoder) throws {
@@ -290,6 +300,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
+        jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
+        jellyfinTrickPlayTileRelativePaths = try c.decodeIfPresent([String].self, forKey: .jellyfinTrickPlayTileRelativePaths)
     }
 
     /// Reconstruct a faithful `MediaItem` for offline playback + retry. Only the
@@ -341,6 +353,10 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var metadata: OfflineMetadata?
     public var posterURL: URL?
     public var plexBIFURL: URL?
+    public var jellyfinTrickPlayPlaylistURL: URL?
+    /// Bytes occupied by sidecar/offline assets (poster, trickplay, subtitles). Filled by the app
+    /// store when records are hydrated; not persisted in the media row itself.
+    public var sideAssetBytes: Int
 
     public var id: String { ratingKey }
 
@@ -356,7 +372,9 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 status: DownloadStatus = .queued,
                 metadata: OfflineMetadata? = nil,
                 posterURL: URL? = nil,
-                plexBIFURL: URL? = nil) {
+                plexBIFURL: URL? = nil,
+                jellyfinTrickPlayPlaylistURL: URL? = nil,
+                sideAssetBytes: Int = 0) {
         self.ratingKey = ratingKey
         self.title = title
         self.localURL = localURL
@@ -366,5 +384,43 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         self.metadata = metadata
         self.posterURL = posterURL
         self.plexBIFURL = plexBIFURL
+        self.jellyfinTrickPlayPlaylistURL = jellyfinTrickPlayPlaylistURL
+        self.sideAssetBytes = sideAssetBytes
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ratingKey, title, localURL, bytes, progress, status, metadata, posterURL, plexBIFURL
+        case jellyfinTrickPlayPlaylistURL, sideAssetBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ratingKey = try c.decode(String.self, forKey: .ratingKey)
+        title = try c.decode(String.self, forKey: .title)
+        localURL = try c.decode(URL.self, forKey: .localURL)
+        bytes = try c.decodeIfPresent(Int.self, forKey: .bytes) ?? 0
+        progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
+        status = try c.decodeIfPresent(DownloadStatus.self, forKey: .status)
+            ?? DownloadStatus.migratedStatus(forLegacyProgress: progress)
+        metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
+        posterURL = try c.decodeIfPresent(URL.self, forKey: .posterURL)
+        plexBIFURL = try c.decodeIfPresent(URL.self, forKey: .plexBIFURL)
+        jellyfinTrickPlayPlaylistURL = try c.decodeIfPresent(URL.self, forKey: .jellyfinTrickPlayPlaylistURL)
+        sideAssetBytes = try c.decodeIfPresent(Int.self, forKey: .sideAssetBytes) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(ratingKey, forKey: .ratingKey)
+        try c.encode(title, forKey: .title)
+        try c.encode(localURL, forKey: .localURL)
+        try c.encode(bytes, forKey: .bytes)
+        try c.encode(progress, forKey: .progress)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(metadata, forKey: .metadata)
+        try c.encodeIfPresent(posterURL, forKey: .posterURL)
+        try c.encodeIfPresent(plexBIFURL, forKey: .plexBIFURL)
+        try c.encodeIfPresent(jellyfinTrickPlayPlaylistURL, forKey: .jellyfinTrickPlayPlaylistURL)
+        try c.encode(sideAssetBytes, forKey: .sideAssetBytes)
     }
 }

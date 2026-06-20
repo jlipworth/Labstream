@@ -199,6 +199,11 @@ public final class DownloadManager {
         store.plexBIFURL(for: ratingKey)
     }
 
+    /// Absolute cached Jellyfin trickplay playlist URL for a completed download, if present on disk.
+    public func jellyfinTrickPlayPlaylistURL(for ratingKey: String) -> URL? {
+        store.jellyfinTrickPlayPlaylistURL(for: ratingKey)
+    }
+
     /// Whether an active download's byte stream is gated by the server's transcoder (the file
     /// is served as it renders) rather than by the network — so a slow rate means "server still
     /// transcoding", not "slow connection". True only for a transcode-SOURCED download (marked
@@ -696,6 +701,8 @@ public final class DownloadManager {
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
         refreshRecords()
+        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: Self.jellyfinMediaSourceID(media: media, part: part),
+                               server: server, token: token, identity: identity)
 
         do {
             recordDownloadDiagnostic("downloads.start", fields: [
@@ -742,6 +749,77 @@ public final class DownloadManager {
                                          mediaIndex: Int = 0,
                                          partIndex: Int = 0) async {
         await downloadJellyfin(item, choice: .original, mediaIndex: mediaIndex, partIndex: partIndex)
+    }
+
+    /// Best-effort cache of Jellyfin trickplay assets for offline scrubbing (#79). Fetches the
+    /// playlist, downloads each referenced tile through header auth (stripping ApiKey from tile
+    /// URLs in the request builder), then writes a sanitized local playlist whose tile lines are
+    /// only local filenames. A miss/corrupt playlist never fails the media download.
+    private func cacheJellyfinTrickPlay(ratingKey: String,
+                                        itemId: String,
+                                        mediaSourceId: String?,
+                                        server: URL,
+                                        token: String,
+                                        identity: JellyfinClientIdentity,
+                                        width: Int = 320) {
+        guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            do {
+                let playlistReq = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
+                                                                               token: token,
+                                                                               identity: identity,
+                                                                               itemId: itemId,
+                                                                               mediaSourceId: mediaSourceId,
+                                                                               width: width)
+                let (playlistData, playlistResponse) = try await URLSession.shared.data(for: playlistReq)
+                guard let playlistHTTP = playlistResponse as? HTTPURLResponse,
+                      (200..<300).contains(playlistHTTP.statusCode),
+                      let playlistText = String(data: playlistData, encoding: .utf8) else { return }
+                let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
+                var tileRelatives: [String] = []
+                var tileFilenamesByURI: [String: String] = [:]
+                for (index, tile) in playlist.tiles.enumerated() {
+                    let tileReq = try JellyfinLibrary.trickPlayTileRequest(server: server,
+                                                                           token: token,
+                                                                           identity: identity,
+                                                                           itemId: itemId,
+                                                                           mediaSourceId: mediaSourceId,
+                                                                           width: width,
+                                                                           tileURI: tile.uri)
+                    let (tileData, tileResponse) = try await URLSession.shared.data(for: tileReq)
+                    guard let tileHTTP = tileResponse as? HTTPURLResponse,
+                          (200..<300).contains(tileHTTP.statusCode),
+                          !tileData.isEmpty else { continue }
+                    let destination = store.jellyfinTrickPlayTileDestinationURL(ratingKey: ratingKey, index: index)
+                    try tileData.write(to: destination, options: .atomic)
+                    tileFilenamesByURI[tile.uri] = destination.lastPathComponent
+                    tileRelatives.append(destination.lastPathComponent)
+                }
+                guard !tileRelatives.isEmpty else { return }
+                let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlistText, tileFilenamesByURI: tileFilenamesByURI)
+                guard !sanitized.localizedCaseInsensitiveContains("apikey=") else { return }
+                let playlistURL = store.jellyfinTrickPlayPlaylistDestinationURL(ratingKey: ratingKey)
+                try sanitized.data(using: .utf8)?.write(to: playlistURL, options: .atomic)
+                await MainActor.run {
+                    store.setJellyfinTrickPlayRelativePaths(ratingKey: ratingKey,
+                                                            playlist: playlistURL.lastPathComponent,
+                                                            tiles: tileRelatives)
+                    self?.refreshRecords()
+                }
+            } catch {
+                // Optional asset cache. Never log token-bearing playlist/tile URLs.
+            }
+        }
+    }
+
+
+    private static func estimatedJellyfinTrickPlayBytes(durationMs: Int?) -> Int {
+        guard let durationMs, durationMs > 0 else { return 0 }
+        // Jellyfin's default 320px trickplay is typically 10s/frame in 10x10 sheets: roughly one
+        // JPEG sheet per ~1000s. Use a conservative 300 KB/sheet for storage preflight; actual
+        // sidecar usage is accounted from disk via `DownloadRecord.sideAssetBytes` after caching.
+        return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs)
     }
 
     /// Emby download entry point. Mirrors `downloadJellyfin`'s structure, with the Emby-specific
@@ -1231,7 +1309,7 @@ public final class DownloadManager {
     }
 
     public var totalDownloadedBytes: Int {
-        records.reduce(0) { $0 + $1.bytes }
+        records.reduce(0) { $0 + $1.bytes + $1.sideAssetBytes }
     }
 
     public var storageLimitBytes: Int {
@@ -1254,21 +1332,29 @@ public final class DownloadManager {
                                mediaIndex: Int = 0, partIndex: Int = 0) -> Int? {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
+        let mediaBytes: Int?
         switch choice {
         case .original:
-            return part?.size
+            mediaBytes = part?.size
         case .optimize(let targetName):
             if targetName.localizedCaseInsensitiveCompare("Original Quality") == .orderedSame {
-                return part?.size
+                mediaBytes = part?.size
+            } else if let profile = Self.customDownloadProfile(named: targetName) {
+                if let kbps = profile.settings.maxVideoBitrateKbps {
+                    mediaBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                             videoBitrateBps: kbps * 1_000)
+                } else {
+                    mediaBytes = part?.size
+                }
+            } else {
+                mediaBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                          videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
             }
-            if let profile = Self.customDownloadProfile(named: targetName) {
-                guard let kbps = profile.settings.maxVideoBitrateKbps else { return part?.size }
-                return Self.estimatedTranscodeBytes(durationMs: item.duration,
-                                                    videoBitrateBps: kbps * 1_000)
-            }
-            return Self.estimatedTranscodeBytes(durationMs: item.duration,
-                                                videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
         }
+        guard appModel.activeBackend == .jellyfin else { return mediaBytes }
+        let trickplayBytes = Self.estimatedJellyfinTrickPlayBytes(durationMs: item.duration)
+        guard trickplayBytes > 0 else { return mediaBytes }
+        return (mediaBytes ?? 0) + trickplayBytes
     }
 
     private func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {

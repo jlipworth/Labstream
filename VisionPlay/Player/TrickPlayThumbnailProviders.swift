@@ -229,6 +229,82 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
+
+/// Local Jellyfin tile-sheet provider for offline downloads.
+///
+/// The cached playlist is a sanitized copy of Jellyfin's trickplay m3u8 whose tile lines are
+/// local JPEG filenames, never server URLs or ApiKey query strings. The provider crops the
+/// requested tile from those local sheets using the same timing math as the online provider, so
+/// preview times align with the downloaded media timeline.
+actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private let playlistURL: URL
+    private var loadedPlaylist: JellyfinTrickPlayPlaylist?
+    private var playlistTask: Task<JellyfinTrickPlayPlaylist?, Never>?
+    private var tileImages: [String: UIImage] = [:]
+    private var tileOrder: [String] = []
+    private let tileCacheLimit = 4
+
+    init?(playlistURL: URL?) {
+        guard let playlistURL else { return nil }
+        self.playlistURL = playlistURL
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard let playlist = await playlist(), let frame = playlist.frame(nearMs: targetMs) else { return nil }
+        guard let sheet = await tileImage(for: frame.tile) else { return nil }
+        guard let cropped = crop(sheet: sheet, frame: frame),
+              let data = cropped.jpegData(compressionQuality: 0.82) else { return nil }
+        return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
+    }
+
+    private func playlist() async -> JellyfinTrickPlayPlaylist? {
+        if let loadedPlaylist { return loadedPlaylist }
+        if playlistTask == nil {
+            let playlistURL = playlistURL
+            playlistTask = Task {
+                do {
+                    let text = try String(contentsOf: playlistURL, encoding: .utf8)
+                    return try JellyfinTrickPlayPlaylistParser.parse(text)
+                } catch {
+                    return nil
+                }
+            }
+        }
+        let value = await playlistTask?.value
+        loadedPlaylist = value ?? nil
+        return value ?? nil
+    }
+
+    private func tileImage(for tile: JellyfinTrickPlayTile) async -> UIImage? {
+        if let cached = tileImages[tile.uri] { return cached }
+        let url = playlistURL.deletingLastPathComponent().appendingPathComponent(tile.uri)
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { return nil }
+        insertTile(image, for: tile.uri)
+        return image
+    }
+
+    private func insertTile(_ image: UIImage, for uri: String) {
+        if tileImages[uri] == nil { tileOrder.append(uri) }
+        tileImages[uri] = image
+        while tileOrder.count > tileCacheLimit, let oldest = tileOrder.first {
+            tileOrder.removeFirst()
+            tileImages[oldest] = nil
+        }
+    }
+
+    private nonisolated func crop(sheet: UIImage, frame: JellyfinTrickPlayFrame) -> UIImage? {
+        guard let cgImage = sheet.cgImage else { return nil }
+        let scaleX = CGFloat(cgImage.width) / CGFloat(frame.tile.columns * frame.tile.tileWidth)
+        let scaleY = CGFloat(cgImage.height) / CGFloat(frame.tile.rows * frame.tile.tileHeight)
+        let rect = CGRect(x: CGFloat(frame.column * frame.tile.tileWidth) * scaleX,
+                          y: CGFloat(frame.row * frame.tile.tileHeight) * scaleY,
+                          width: CGFloat(frame.tile.tileWidth) * scaleX,
+                          height: CGFloat(frame.tile.tileHeight) * scaleY).integral
+        guard let cropped = cgImage.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.imageOrientation)
+    }
+}
+
 /// Emby chapter-image trick-play provider.
 ///
 /// Emby exposes no Jellyfin-style trickplay tile sheets (`/Trickplay/.../tiles.m3u8` 404s), so
