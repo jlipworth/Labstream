@@ -95,12 +95,10 @@ struct CustomPlayerChrome: View {
                     .transition(.opacity)
             }
 
-            if isReconnecting, controller.playbackError.isFailed != true {
-                CustomReconnectingOverlay(onClose: onClose)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .padding(40)
-                    .transition(.scale(scale: 0.96).combined(with: .opacity))
-            }
+            transientStatusOverlay
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .padding(40)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
 
             VStack {
                 Spacer()
@@ -113,11 +111,6 @@ struct CustomPlayerChrome: View {
 
                 if controller.playbackError.isFailed {
                     failureCard
-                        .padding(.bottom, 18)
-                } else if controller.buffering.isBuffering, !isReconnecting {
-                    // One status at a time: the reconnecting overlay already owns the screen
-                    // while a reconnect is in flight, so don't stack a buffering card under it.
-                    bufferingCard
                         .padding(.bottom, 18)
                 }
 
@@ -194,6 +187,20 @@ struct CustomPlayerChrome: View {
 
     private var shouldShowChrome: Bool {
         chromeVisible || controller.transport.showsPausedControl || controller.playbackError.isFailed || isReconnecting || selectedMenu != nil
+    }
+
+    @ViewBuilder
+    private var transientStatusOverlay: some View {
+        // Keep transport status as a single centered surface. A slow start can move from
+        // "buffering" to "reconnecting" and back as AVPlayer reports stalls, but the app
+        // should not render a bottom buffering card plus a second modal-looking spinner.
+        if !controller.playbackError.isFailed {
+            if isReconnecting {
+                CustomReconnectingOverlay(onClose: onClose)
+            } else if controller.buffering.isBuffering {
+                bufferingCard
+            }
+        }
     }
 
     private var topChrome: some View {
