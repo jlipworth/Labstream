@@ -66,6 +66,47 @@ actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
+
+/// Local BIF-backed trick-play provider for offline Plex downloads.
+///
+/// Loads the cached `.bif` once from disk and then serves scrub previews without any
+/// server/client dependency. Missing or corrupt cache files simply produce no previews.
+actor LocalBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private let bifURL: URL
+    private var loadedIndex: BIFIndex?
+    private var loadTask: Task<BIFIndex?, Never>?
+
+    init?(bifURL: URL?) {
+        guard let bifURL else { return nil }
+        self.bifURL = bifURL
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard let index = await index(), let frame = index.frame(nearMs: targetMs) else { return nil }
+        return TrickPlayThumbnail(timeMs: frame.timeMs,
+                                  imageData: frame.data,
+                                  contentType: "image/jpeg")
+    }
+
+    private func index() async -> BIFIndex? {
+        if let loadedIndex { return loadedIndex }
+        if loadTask == nil {
+            let bifURL = bifURL
+            loadTask = Task {
+                do {
+                    let data = try Data(contentsOf: bifURL)
+                    return try BIFParser.parse(data)
+                } catch {
+                    return nil
+                }
+            }
+        }
+        let value = await loadTask?.value
+        loadedIndex = value ?? nil
+        return value ?? nil
+    }
+}
+
 /// Jellyfin image-tile trick-play provider.
 ///
 /// Jellyfin exposes generated trickplay as an image-only HLS playlist plus 10x10 JPEG tile sheets.

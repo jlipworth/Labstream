@@ -63,6 +63,37 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
 /// Downloads base directory (same convention as `relativePath`), so a moved sandbox
 /// container doesn't orphan it. `nil` when no poster was cached.
 
+/// Pure timing policy for offline-download playback validation. Keeps AVFoundation
+/// probes duration/source-aware without hiding magic constants in app delegates.
+public struct OfflinePlaybackValidationPolicy: Sendable, Equatable {
+    public let timeoutSeconds: Double
+    public let requiredPlaybackSeconds: Double
+    public let pollIntervalMilliseconds: Int
+
+    public init(timeoutSeconds: Double, requiredPlaybackSeconds: Double,
+                pollIntervalMilliseconds: Int = 250) {
+        self.timeoutSeconds = timeoutSeconds
+        self.requiredPlaybackSeconds = requiredPlaybackSeconds
+        self.pollIntervalMilliseconds = pollIntervalMilliseconds
+    }
+
+    /// - Parameters:
+    ///   - durationMs: optional media duration. Short clips should not need to advance 0.5s.
+    ///   - isRemotePreflight: true for source-URL preflight before downloading; remote startup can
+    ///     be slower than validating a local completed file, so it gets a longer timeout.
+    public static func make(durationMs: Int?, isRemotePreflight: Bool = false) -> Self {
+        let required: Double
+        if let durationMs, durationMs > 0 {
+            let durationSeconds = Double(durationMs) / 1000.0
+            required = min(0.5, max(0.05, durationSeconds * 0.10))
+        } else {
+            required = 0.5
+        }
+        return Self(timeoutSeconds: isRemotePreflight ? 12.0 : 8.0,
+                    requiredPlaybackSeconds: required)
+    }
+}
+
 /// Codable chapter snapshot for offline playback. `Chapter` itself is intentionally only
 /// Decodable for server DTOs, so the download index stores this stable app-owned shape.
 public struct OfflineChapter: Codable, Sendable, Equatable {
@@ -152,6 +183,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var optimizeBaselinePartIDs: [Int]?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
+    /// Locally-cached Plex BIF index path, relative to the Downloads base directory.
+    /// Populated only for Plex items/parts that advertise a standard-definition BIF.
+    public var plexBIFRelativePath: String?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -184,7 +218,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 optimizeTargetName: String? = nil,
                 optimizeQueueTitle: String? = nil,
                 optimizeBaselinePartIDs: [Int]? = nil,
-                posterRelativePath: String? = nil) {
+                posterRelativePath: String? = nil,
+                plexBIFRelativePath: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -217,6 +252,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.optimizeQueueTitle = optimizeQueueTitle
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
         self.posterRelativePath = posterRelativePath
+        self.plexBIFRelativePath = plexBIFRelativePath
     }
 
     public init(from decoder: Decoder) throws {
@@ -253,6 +289,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         optimizeQueueTitle = try c.decodeIfPresent(String.self, forKey: .optimizeQueueTitle)
         optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
+        plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
     }
 
     /// Reconstruct a faithful `MediaItem` for offline playback + retry. Only the
@@ -292,7 +329,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
 /// updated live by `DownloadManager` from the background-session delegate.
 /// `status` is the authoritative lifecycle flag the UI drives off of (D2).
 /// `metadata` is the D5 snapshot of the source item (nil for rows persisted before
-/// D5); `posterURL` is the re-resolved absolute path to the cached poster, if any.
+/// D5); `posterURL` is the re-resolved absolute path to the cached poster, if any,
+/// and `plexBIFURL` is the re-resolved cached Plex trick-play index for offline scrubbing.
 public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public let ratingKey: String
     public let title: String
@@ -302,6 +340,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var status: DownloadStatus
     public var metadata: OfflineMetadata?
     public var posterURL: URL?
+    public var plexBIFURL: URL?
 
     public var id: String { ratingKey }
 
@@ -316,7 +355,8 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 progress: Double = 0,
                 status: DownloadStatus = .queued,
                 metadata: OfflineMetadata? = nil,
-                posterURL: URL? = nil) {
+                posterURL: URL? = nil,
+                plexBIFURL: URL? = nil) {
         self.ratingKey = ratingKey
         self.title = title
         self.localURL = localURL
@@ -325,5 +365,6 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         self.status = status
         self.metadata = metadata
         self.posterURL = posterURL
+        self.plexBIFURL = plexBIFURL
     }
 }
