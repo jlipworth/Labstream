@@ -18,6 +18,10 @@ final class KeychainStore {
     static let jellyfinAccessTokenKey = "jellyfinAccessToken"
     static let jellyfinUserIDKey = "jellyfinUserID"
     static let jellyfinServerIDKey = "jellyfinServerID"
+    static let embyServerURLKey = "embyServerURL"
+    static let embyAccessTokenKey = "embyAccessToken"
+    static let embyUserIDKey = "embyUserID"
+    static let embyServerIDKey = "embyServerID"
 
     private let service: String
 
@@ -161,6 +165,26 @@ final class KeychainStore {
     var jellyfinServerID: String? {
         get { read(Self.jellyfinServerIDKey) }
         set { setOptional(newValue, for: Self.jellyfinServerIDKey) }
+    }
+
+    var embyServerURLString: String? {
+        get { read(Self.embyServerURLKey) }
+        set { setOptional(newValue, for: Self.embyServerURLKey) }
+    }
+
+    var embyAccessToken: String? {
+        get { read(Self.embyAccessTokenKey) }
+        set { setOptional(newValue, for: Self.embyAccessTokenKey) }
+    }
+
+    var embyUserID: String? {
+        get { read(Self.embyUserIDKey) }
+        set { setOptional(newValue, for: Self.embyUserIDKey) }
+    }
+
+    var embyServerID: String? {
+        get { read(Self.embyServerIDKey) }
+        set { setOptional(newValue, for: Self.embyServerIDKey) }
     }
 
     private func setOptional(_ value: String?, for key: String) {

@@ -77,6 +77,45 @@ Covers pure Foundation/URLSession only. It does **not** exercise AVPlayer/AVKit:
 playback, buffering depth, stall watchdog firing, seek-restart-during-play. Headless AVPlayer
 (even on macOS) fetches segments, fills the buffer, and populates `AVPlayerItemAccessLog`, but
 the **playhead does not advance without an on-screen render surface** (verified empirically).
-For the playback half, the path is a `-VPAutoPlay <ratingKey>` launch-arg hook that drives the
-real app on the booted sim hands-free (then read logs via `simctl spawn booted log show`) —
-see `docs/DEVELOPMENT.md`. UI-tap automation is shelved (see the `sim-driving` skill).
+For the playback half, see the next section. UI-tap automation is shelved (see the
+`sim-driving` skill).
+
+## The playback half — in-process simulator probe (real AVPlayer, hands-free)
+
+The simulator **is** an on-screen render surface, so AVPlayer's playhead **does** advance
+there — the headless limitation above is macOS-CLI only. To exercise real playback (start,
+playhead advance, seek-restart, stall) without UI tapping, use the launch-arg-driven
+**in-process debug probes** that already exist per backend:
+
+- `VisionPlay/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
+- `VisionPlay/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
+- `VisionPlay/DebugPlexDownloadProbe.swift` (downloads, not playback)
+
+Each is `#if DEBUG`, inert unless its flag is passed, runs **inside the signed-in app
+process** (so it reuses the app's Keychain session + the *same* `EmbyBrowseService` /
+`JellyfinBrowseService` → `PlaybackController` → AVPlayer path as the UI), and is invoked
+from `ContentView`'s startup task. It resolves an item by search query, opens playback,
+waits for `readyToPlay` + `rate > 0`, performs a seek, then asserts the playhead actually
+advanced during a hold — failing loudly if it stalls. All events go to `os.Logger`
+(subsystem `com.jlipworth.VisionPlay`, category e.g. `EmbyProbe`) and `AppDiagnostics`.
+
+Run loop (Claude self-serves; the USER must sign in to that backend **once** first, since
+the probe does not authenticate):
+
+```sh
+# 1. Guarded build + install (see CLAUDE.md link-skip / stale-process traps)
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+xcrun simctl install booted "$APP"
+# 2. Launch with the probe flag (launch args go AFTER the bundle id). Optional overrides:
+#    --vp-probe-query "<title>"  --vp-probe-bitrate-kbps N  --vp-probe-seek-ms N
+xcrun simctl terminate booted com.jlipworth.VisionPlay 2>/dev/null
+xcrun simctl launch booted com.jlipworth.VisionPlay --vp-probe-emby-playback --vp-probe-query "Some Movie"
+# 3. Read the probe's own log lines (probe.start / probe.item_resolved / probe.progress / probe.pass|fail)
+xcrun simctl spawn booted log show --last 2m --predicate 'process == "VisionPlay"' | grep -iE 'EmbyProbe|probe\.'
+```
+
+To add a probe for a new backend, mirror `DebugEmbyPlaybackProbe.swift` (swap the browse
+service, the `--vp-probe-…` flag, and the `activeBackend ==` guard) and add one
+`runIfRequested` call in `ContentView`. The xcode MCP (`mcp__xcode__BuildProject`, etc.)
+can drive the build instead of `xcodebuild` if preferred, but the install/launch/log loop
+above is `simctl`.

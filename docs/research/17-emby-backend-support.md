@@ -1,6 +1,6 @@
 # 17 — Emby backend support research
 
-Status: research only. Emby is not implemented in VisionPlay yet.
+Status: IMPLEMENTED (first slice) on `feature/emby-backend` and live-validated against a real Emby server. Sign-in (password), browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are built as a parallel Emby lane (`PMSKit/Sources/PMSKit/Emby/*`, `VisionPlay/Backend/Emby/EmbyBrowseService.swift`) and verified by the opt-in `LiveEmbyProbe` test. Proven behavior has been promoted into [`docs/BACKENDS.md`](../BACKENDS.md), [`docs/PERSISTENCE.md`](../PERSISTENCE.md), [`docs/PLAYBACK-ARCHITECTURE.md`](../PLAYBACK-ARCHITECTURE.md), [`docs/TESTING-STRATEGY.md`](../TESTING-STRATEGY.md), and [`docs/DEVELOPMENT.md`](../DEVELOPMENT.md). Still unbuilt: Emby downloads/offline, Emby Connect, and LAN discovery — this doc remains the planning map for those. The open documentation ambiguities below were resolved by the live probe and are annotated inline as RESOLVED.
 
 Issue: https://github.com/jlipworth/VisionPlay/issues/68
 
@@ -50,6 +50,8 @@ Authorization: Emby UserId="...", Client="VisionPlay", Device="Apple Vision Pro"
 ```
 
 Some docs and endpoints also mention `X-Emby-Authorization` and `X-Emby-Token`. Implementation must live-probe which combination is accepted by current Emby Server versions. For planning, keep this as an Emby-specific auth seam rather than reusing Jellyfin's `MediaBrowser` header builder.
+
+**RESOLVED (live):** The implemented `EmbyAuth` sends `Authorization: Emby UserId="…", Client, Device, DeviceId, Version, Token="…"` AND, on authenticated calls, the `X-Emby-Token: <token>` header. That combination was accepted live. Notably the live server also accepted the Jellyfin-style `MediaBrowser ` scheme (Jellyfin being an upstream fork of Emby), but the lane keeps its own canonical `Emby ` builder. This overlap motivates the future shared "emby-family" seam proposed in [`../proposals/emby-jellyfin-code-sharing.md`](../proposals/emby-jellyfin-code-sharing.md) — not implemented here.
 
 Successful auth returns at least:
 
@@ -106,6 +108,8 @@ GET /System/Info/Public
 ```
 
 The docs conflict on whether this is truly unauthenticated. Verify live before relying on it for pre-login validation.
+
+**RESOLVED (live):** `GET /System/Info/Public` IS unauthenticated. `EmbyAuth.serverInfoRequest` sends it with no token and the `LiveEmbyProbe` returns HTTP 200 with a decodable `EmbyServerInfo` body. It is used for pre-login validation. The base-path-preservation rule above was also confirmed: the user-entered `/emby` base path is stored verbatim and joined onto relative stream URLs (`EmbyServerURL.normalized` does not strip it).
 
 ## Emby Connect
 
@@ -216,6 +220,8 @@ Common query parameters include:
 
 For AVFoundation, verify whether auth headers propagate to HLS child playlists and segments. If Emby requires header auth only on the master playlist, playback may appear to start and then fail on child resources. Token-bearing URLs may be necessary for HLS, but query-string tokens are more leak-prone and must be redacted from diagnostics/logs.
 
+**RESOLVED (live):** The server-generated `TranscodingUrl`/HLS URL already carries the token as an `api_key=` query value, so AVPlayer's child playlists and segments inherit auth from the URL — VisionPlay does NOT inject a per-child `Authorization` header. This sidesteps the header-only-on-master failure mode entirely. The trade-off is exactly the leak risk noted: `api_key`/`X-Emby-Token` must be redacted from every logged URL/header (the probe and `live-emby-probe.sh` do this; see the DEVELOPMENT.md invariant). For the direct-stream fallback where the server does NOT add the key to the URL (`AddApiKeyToDirectStreamUrl == false`), the token is attached via the `X-Emby-Token` header instead.
+
 ## Direct Play, Direct Stream, and Transcode
 
 Emby support docs use the normal media-server meanings:
@@ -269,14 +275,14 @@ Live Emby validation should cover:
 
 ## Current-doc promotion targets
 
-When Emby work starts, update these current docs as behavior becomes implemented/proven:
+Promotion status as of the first implemented slice:
 
-- `docs/BACKENDS.md` — backend comparison and Emby-specific rules.
-- `docs/PERSISTENCE.md` — Emby Keychain/session fields.
-- `docs/PLAYBACK-ARCHITECTURE.md` — Emby playback-info/open/reopen/cleanup lifecycle.
-- `docs/DOWNLOADS-OFFLINE.md` — only after offline download route is researched and proven.
-- `docs/TESTING-STRATEGY.md` — live Emby gates.
-- `docs/DEVELOPMENT.md` — easy-to-forget Emby auth/cleanup invariants after they are proven.
+- `docs/BACKENDS.md` — DONE: Emby promoted to a supported column with auth/stream/cleanup specifics.
+- `docs/PERSISTENCE.md` — DONE: Emby Keychain/session fields and restore semantics.
+- `docs/PLAYBACK-ARCHITECTURE.md` — DONE: implemented playback-info/stream/progress/cleanup lifecycle.
+- `docs/DOWNLOADS-OFFLINE.md` — NOT DONE: Emby offline/download route is not implemented.
+- `docs/TESTING-STRATEGY.md` — DONE: `LiveEmbyProbe` gate + `scripts/live-emby-probe.sh`; remaining device-only gates listed.
+- `docs/DEVELOPMENT.md` — DONE: `Stopped` != encoder stop, `api_key` redaction, `Emby ` scheme invariants.
 
 ## Sources
 

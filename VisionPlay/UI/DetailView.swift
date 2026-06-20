@@ -28,6 +28,7 @@ struct DetailView: View {
     @State private var presentingPlayer = false
     @State private var playLocalURL: URL?
     @State private var remotePlayback: JellyfinRemotePlayback?
+    @State private var embyRemotePlayback: EmbyRemotePlayback?
     @State private var showDownloadOptions = false
     @State private var playbackErrorMessage: String?
     @State private var isResolvingPlayback = false
@@ -346,6 +347,7 @@ struct DetailView: View {
                 musicPlayer.pauseForVideo()
                 playLocalURL = local
                 remotePlayback = nil
+                embyRemotePlayback = nil
                 playingItem = itemWithResumeRewind(detailed)
                 presentingPlayer = true
             } label: {
@@ -353,6 +355,12 @@ struct DetailView: View {
                     .font(.title3)
             }
             .buttonStyle(.bordered)
+        } else if appModel.activeBackend == .emby {
+            // Slice 1 has no Emby offline-download lane (DownloadManager only implements the
+            // Plex and Jellyfin paths). Showing the button would route Emby into the Plex
+            // download path, which silently fails on the (nil) Plex creds. Omit it until the
+            // Emby download lane lands rather than offer a dead control.
+            EmptyView()
         } else {
             Button {
                 showDownloadOptions = true
@@ -465,6 +473,55 @@ struct DetailView: View {
                              allowsRealityTheater: false)
                 .id(remote.id)
                 .ignoresSafeArea()
+        } else if let remote = embyRemotePlayback {
+            CustomPlayerView(item: playing,
+                             controllerFactory: {
+                                 PlaybackController(remoteStreamURL: remote.url,
+                                                    item: playing,
+                                                    identity: appModel.identity,
+                                                    client: appModel.client,
+                                                    httpHeaders: remote.headers,
+                                                    remotePlaySessionId: remote.playSessionId,
+                                                    sourceMetadata: remote.sourceMetadata.asRemoteCarrier(),
+                                                    playMethod: remote.playMethod.asRemoteCarrier(),
+                                                    onStopRemoteSession: {
+                                                        Task {
+                                                            await EmbyBrowseService(appModel: appModel)
+                                                                .stopActiveEncoding(playSessionId: remote.playSessionId)
+                                                        }
+                                                    },
+                                                    remoteStreamReopener: { request in
+                                                        let result = try await EmbyBrowseService(appModel: appModel)
+                                                            .playbackOpen(item: playing,
+                                                                          maxVideoBitrateKbps: request.bitrateKbps,
+                                                                          resumeOffsetMs: request.offsetMs,
+                                                                          audioStreamIndex: request.audioStreamIndex,
+                                                                          subtitleStreamIndex: request.subtitleStreamIndex)
+                                                        return RemoteStreamOpenResult(
+                                                            url: result.url,
+                                                            headers: result.requiredHTTPHeaders,
+                                                            playSessionId: result.playSessionId,
+                                                            sourceMetadata: result.sourceMetadata.asRemoteCarrier(),
+                                                            playMethod: result.playMethod.asRemoteCarrier(),
+                                                            onStop: {
+                                                                // Active-encoding cleanup only when the source used
+                                                                // server-side encoding; harmless no-op otherwise.
+                                                                Task {
+                                                                    if result.usesServerEncoding {
+                                                                        await EmbyBrowseService(appModel: appModel)
+                                                                            .stopActiveEncoding(playSessionId: result.playSessionId)
+                                                                    }
+                                                                }
+                                                            })
+                                                    },
+                                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
+                             },
+                             trickPlayProvider: nil,
+                             onClose: { presentingPlayer = false },
+                             allowsRealityTheater: false)
+                .id(remote.id)
+                .ignoresSafeArea()
         } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
             // The custom player owns its own chrome, including a top-leading Close affordance,
             // so a `.fullScreenCover` is always escapable (the old AVKit path had no system
@@ -548,6 +605,9 @@ struct DetailView: View {
             case .jellyfin:
                 try await JellyfinBrowseService(appModel: appModel)
                     .setPlayed(itemId: detailed.ratingKey, played: !wasWatched)
+            case .emby:
+                try await EmbyBrowseService(appModel: appModel)
+                    .setPlayed(itemId: detailed.ratingKey, played: !wasWatched)
             }
         } catch {
             // Roll back the optimistic flip; the server rejected the change.
@@ -572,10 +632,12 @@ struct DetailView: View {
         switch appModel.activeBackend {
         case .plex:
             remotePlayback = nil
+            embyRemotePlayback = nil
             presentingPlayer = true
             span.end(fields: ["path_mode": "plex_stream"])
         case .jellyfin:
             isResolvingPlayback = true
+            embyRemotePlayback = nil
             do {
                 let service = JellyfinBrowseService(appModel: appModel)
                 let fetched = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
@@ -584,6 +646,31 @@ struct DetailView: View {
                 let result = try await service
                     .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
                 remotePlayback = JellyfinRemotePlayback(url: result.url,
+                                                        headers: result.requiredHTTPHeaders,
+                                                        playSessionId: result.playSessionId,
+                                                        sourceMetadata: result.sourceMetadata,
+                                                        playMethod: result.playMethod)
+                presentingPlayer = true
+                span.end(fields: [
+                    "path_mode": "remote_stream",
+                    "play_method": result.playMethod.rawValue,
+                ])
+            } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
+                playbackErrorMessage = friendlyMessage(error)
+            }
+            isResolvingPlayback = false
+        case .emby:
+            isResolvingPlayback = true
+            remotePlayback = nil
+            do {
+                let service = EmbyBrowseService(appModel: appModel)
+                let fetched = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                let playbackItem = itemWithResumeRewind(fetched)
+                playingItem = playbackItem
+                let result = try await service
+                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
+                embyRemotePlayback = EmbyRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
                                                         sourceMetadata: result.sourceMetadata,
@@ -649,7 +736,7 @@ struct DetailView: View {
 
     private var supportsWatchedToggle: Bool {
         switch appModel.activeBackend {
-        case .plex, .jellyfin:
+        case .plex, .jellyfin, .emby:
             return true
         }
     }
@@ -720,6 +807,17 @@ struct DetailView: View {
             }
             return
         }
+        if appModel.activeBackend == .emby {
+            if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
+                detailed = full
+                selectedMediaIndex = 0
+                watchedOverride = nil
+                span.end(fields: ["media_count": full.media?.count ?? 0])
+            } else {
+                span.end(result: "failure", fields: ["error": "metadata_unavailable"])
+            }
+            return
+        }
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             span.end(result: "failure", fields: ["error": "missing_plex_server"])
             return
@@ -750,6 +848,39 @@ private struct JellyfinRemotePlayback: Identifiable, Equatable {
     let playSessionId: String
     let sourceMetadata: JellyfinPlaybackSourceMetadata
     let playMethod: JellyfinPlayMethod
+}
+
+private struct EmbyRemotePlayback: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    let headers: [String: String]
+    let playSessionId: String
+    let sourceMetadata: EmbyPlaybackSourceMetadata
+    let playMethod: EmbyPlayMethod
+}
+
+// The shared remote-stream player path (`RemoteStreamOpenResult`/`PlaybackController`)
+// carries Jellyfin-typed metadata. Bridge the Emby lane's own types onto that neutral
+// carrier at this seam so the player path is reused verbatim (no PlaybackController change).
+extension EmbyPlaybackSourceMetadata {
+    func asRemoteCarrier() -> JellyfinPlaybackSourceMetadata {
+        JellyfinPlaybackSourceMetadata(container: container,
+                                       width: width,
+                                       height: height,
+                                       bitrate: bitrate,
+                                       videoCodec: videoCodec,
+                                       audioCodec: audioCodec)
+    }
+}
+
+extension EmbyPlayMethod {
+    func asRemoteCarrier() -> JellyfinPlayMethod {
+        switch self {
+        case .directPlay: return .directPlay
+        case .directStream: return .directStream
+        case .transcode: return .transcode
+        }
+    }
 }
 
 /// Browser for a TV CONTAINER (a `show` or a `season`).
@@ -842,6 +973,16 @@ struct ContainerBrowserView: View {
             loadState = .loading
             do {
                 children = try await JellyfinBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
+                loadState = .loaded
+            } catch {
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+        if appModel.activeBackend == .emby {
+            loadState = .loading
+            do {
+                children = try await EmbyBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))

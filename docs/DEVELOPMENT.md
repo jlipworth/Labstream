@@ -208,6 +208,26 @@ metadata, and review-specific release automation can be handled in a later publi
   `ImmersiveSpace` and may reopen the main window on exit. Do not add unrelated secondary windows.
 - **Server:** configured per-user at sign-in (a Cloudflare-fronted PMS over `:443`). The real
   hostname/LAN IP are intentionally kept out of the repo.
+- **Emby `Stopped` is NOT encoder cleanup.** `POST /Sessions/Playing/Stopped` reports session/progress
+  state only; it does not terminate a server-side encoder. Any Emby source that used server-side encoding
+  (the transcode/HLS path — `EmbyPlaybackOpenResult.usesServerEncoding == true`) MUST also be torn down with
+  `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=` (`EmbyBrowseService.stopActiveEncoding`). Same
+  failure class as the Plex stacked-FFmpeg/OOM problem — do not collapse the two calls.
+- **Emby tokens leak through URLs, not just headers — redact `api_key`.** The Emby auth token rides three
+  ways: the `Authorization: Emby … Token="…"` header, the `X-Emby-Token` header, AND the server-generated
+  HLS/direct-stream URL as an `api_key=` query value. That last one is why diagnostics/log output must scrub
+  `api_key=` (and `X-Emby-Token`) — a logged stream URL otherwise prints the live token. The repo is going
+  public; `LiveEmbyProbe`/`live-emby-probe.sh` already redact token, `api_key`, and the live scheme/host, and
+  the same discipline applies anywhere an Emby URL or header set is logged. (Per the general rule, also never
+  `NSLog` a raw `%`.)
+- **Emby is its own auth scheme — `Emby `, not `MediaBrowser `.** `EmbyAuth.authorizationHeader` emits
+  `Authorization: Emby UserId="…", Client, Device, DeviceId, Version, Token="…"` and authenticated calls also
+  set `X-Emby-Token`. Do not reuse Jellyfin's `MediaBrowser` builder. (The live server happens to accept the
+  `MediaBrowser` header too — that overlap is the basis of the proposed future shared seam, but the Emby lane
+  still sends the canonical `Emby` scheme.) Two more Emby divergences from Jellyfin that bite silently:
+  PlaybackInfo needs `UserId` in BOTH the query and the body and uses `AutoOpenLiveStream:false`; and the
+  user-entered base path (e.g. `/emby`) must be PRESERVED, because PlaybackInfo returns relative stream URLs
+  joined back onto `server.path`.
 - **No volume control in the MiniPlayerBar (deliberate, MUSIC-DESIGN scope fence):** visionOS
   Digital Crown + system volume own loudness; an AVPlayer-level slider would diverge from the
   system volume. The bar's 3-pt progress hairline is likewise **passive** — a 3-pt drag target

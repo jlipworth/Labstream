@@ -205,6 +205,8 @@ public final class DownloadManager {
             return item.ratingKey
         case .jellyfin:
             return Self.jellyfinRecordKey(item.ratingKey)
+        case .emby:
+            return Self.embyRecordKey(item.ratingKey)
         }
     }
 
@@ -219,6 +221,20 @@ public final class DownloadManager {
     private static func jellyfinItemID(fromRecordKey ratingKey: String) -> String {
         isJellyfinRecordKey(ratingKey)
             ? String(ratingKey.dropFirst("jellyfin:".count))
+            : ratingKey
+    }
+
+    fileprivate static func embyRecordKey(_ itemId: String) -> String {
+        "emby:\(itemId)"
+    }
+
+    private static func isEmbyRecordKey(_ ratingKey: String) -> Bool {
+        ratingKey.hasPrefix("emby:")
+    }
+
+    private static func embyItemID(fromRecordKey ratingKey: String) -> String {
+        isEmbyRecordKey(ratingKey)
+            ? String(ratingKey.dropFirst("emby:".count))
             : ratingKey
     }
 

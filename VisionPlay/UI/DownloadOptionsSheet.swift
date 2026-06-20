@@ -339,27 +339,40 @@ struct DownloadOptionsSheet: View {
     // MARK: - Action
 
     private func retryDownload() {
-        if appModel.activeBackend == .jellyfin {
+        // Exhaustive over the backend so a new lane is a compile error here, not a silent
+        // fall-through into the Plex retry path (which would mis-key and no-op for Emby).
+        switch appModel.activeBackend {
+        case .plex:
+            downloadManager.retry(ratingKey: item.ratingKey)
+        case .jellyfin:
             Task { await downloadManager.downloadJellyfin(item,
                                                           choice: .optimize(targetName: "1080p 8 Mbps"),
                                                           mediaIndex: mediaIndex,
                                                           partIndex: partIndex) }
-        } else {
-            downloadManager.retry(ratingKey: item.ratingKey)
+        case .emby:
+            // No Emby download lane in slice 1; the button is hidden in DetailView, so this
+            // is unreachable in practice. Do nothing rather than fall into the Plex path.
+            break
         }
     }
 
     private func startDownload() {
         guard let selectedChoice else { return }
-        if appModel.activeBackend == .jellyfin {
-            let choice = managerChoice(for: selectedChoice)
+        let choice = managerChoice(for: selectedChoice)
+        // Exhaustive over the backend so a new lane is a compile error here, not a silent
+        // fall-through into the Plex download path (which fails quietly on nil Plex creds).
+        switch appModel.activeBackend {
+        case .plex:
+            Task { await downloadManager.download(item, choice: choice,
+                                                  mediaIndex: mediaIndex, partIndex: partIndex) }
+        case .jellyfin:
             Task { await downloadManager.downloadJellyfin(item, choice: choice,
                                                           mediaIndex: mediaIndex,
                                                           partIndex: partIndex) }
-        } else {
-            let choice = managerChoice(for: selectedChoice)
-            Task { await downloadManager.download(item, choice: choice,
-                                                  mediaIndex: mediaIndex, partIndex: partIndex) }
+        case .emby:
+            // No Emby download lane in slice 1; the button is hidden in DetailView, so this
+            // is unreachable in practice. Do nothing rather than fall into the Plex path.
+            break
         }
         dismiss()
     }

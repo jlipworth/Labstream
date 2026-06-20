@@ -148,6 +148,31 @@ struct SearchView: View {
             return
         }
 
+        if appModel.activeBackend == .emby {
+            loadState = .loading
+            do {
+                let items = try await EmbyBrowseService(appModel: appModel)
+                    .items(parentId: nil,
+                           recursive: true,
+                           limit: 50,
+                           searchTerm: trimmed,
+                           sortBy: "SortName",
+                           sortOrder: "Ascending")
+                if Task.isCancelled { return }
+                hubs = items.isEmpty ? [] : [
+                    Hub(title: "Emby Results",
+                        hubIdentifier: "emby-search-\(trimmed)",
+                        metadata: items),
+                ]
+                loadedQuery = searchKey
+                loadState = .loaded
+            } catch {
+                if Task.isCancelled { return }
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return

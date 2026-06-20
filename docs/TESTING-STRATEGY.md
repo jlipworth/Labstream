@@ -29,6 +29,22 @@ The simulator is useful for compile/runtime smoke, browse flows, settings, downl
 
 Use live probes to confirm wire shape and server behavior before documenting a behavior as “proven.”
 
+### LiveEmbyProbe gate
+
+The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](../scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
+
+It is opt-in and a no-op unless `EMBY_LIVE_SERVER`, `EMBY_LIVE_TOKEN`, `EMBY_LIVE_USER_ID`, and `EMBY_LIVE_ITEM_ID` are set, so plain `swift test` and CI stay hermetic. Credentials live ONLY in the gitignored `scripts/emby-live.env`; the script refuses to run if that file is somehow tracked by git. The probe redacts the token, `api_key`, `X-Emby-Token`, and the live scheme/host before printing any URL or header.
+
+```sh
+# fill scripts/emby-live.env (gitignored) once, then:
+./scripts/live-emby-probe.sh
+# or directly:
+set -a; source scripts/emby-live.env; set +a
+cd PMSKit && swift test --filter LiveEmbyProbe
+```
+
+The probe confirmed against a real Emby server: `GET /System/Info/Public` is unauthenticated (used for pre-login validation), authenticated `/Users/{UserId}/Items` browse + DTO mapping, and `POST /Items/{Id}/PlaybackInfo` → `resolveStream` producing a token-bearing HLS URL.
+
 ## Device-only gates
 
 Keep these as manual Apple Vision Pro checks:
@@ -39,7 +55,7 @@ Keep these as manual Apple Vision Pro checks:
 - Spotlight and Shortcuts/App Intents end-to-end behavior
 - background downloads and headset sleep/off-head transfer behavior
 - server-specific Plex/Jellyfin live download behavior
-- future Emby URL/auth/playback validation before documenting Emby as supported
+- Emby headset playback validation (the PMSKit wire shape is proven via `LiveEmbyProbe`, but in-headset playback/progress/cleanup behavior is still a device-only gate)
 
 ## Current validation boundaries
 
@@ -47,9 +63,10 @@ Keep these as manual Apple Vision Pro checks:
 - Plex raw original download is intentionally offered only for compatible local containers.
 - Plex compatible original-quality copies use the server optimizer/rendered-part route.
 - Jellyfin browse/playback/download request paths are implemented and unit-tested, but Jellyfin downloads still need explicit live validation before being called headset-proven.
+- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are implemented (parallel lane), unit-tested, and the wire shape is live-proven via `LiveEmbyProbe`. Emby downloads/offline are not implemented. In-headset Emby playback/progress/cleanup remains a device-only gate.
 
 The manual checklist remains in [`../TESTING-CHECKLIST.md`](../TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
 
-## Future Emby validation gates
+## Remaining Emby validation gates
 
-Before Emby support is described as implemented, live validation must cover manual URL handling with both origin-root and `/emby` base-path servers, HTTP `8096` and HTTPS `8920` where available, username/password auth restore, browse mapping, Direct Play, Direct Stream/remux, HLS transcode, HLS child-resource auth, subtitle/audio selection, progress/resume, and `DELETE /Videos/ActiveEncodings` actually stopping server-side work.
+The PMSKit wire shape is proven via `LiveEmbyProbe`. Still device-only before Emby playback is called headset-proven: HTTP `8096` vs HTTPS `8920` where available, in-headset Direct Play / Direct Stream-remux / HLS transcode playback, HLS child-resource auth holding in AVPlayer, subtitle/audio selection, progress/resume round-tripping, and `DELETE /Videos/ActiveEncodings` actually stopping server-side work on a live transcode.

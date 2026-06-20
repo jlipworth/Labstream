@@ -60,3 +60,4 @@ Carthage/Build/
 .venv/
 __pycache__/
 *.py[cod]
+scripts/emby-live.env

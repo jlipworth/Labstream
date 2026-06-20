@@ -2039,6 +2039,20 @@ final class PlaybackController {
                                                         height: 270)
         }
 
+        // Emby mirrors the Jellyfin synthetic-chapter scheme (`emby://item/{id}/Chapter/{index}?tag=`).
+        // Resolve it through Emby's native chapter-image endpoint, deriving the server base from the
+        // resolved remote HLS URL exactly as the Jellyfin branch does (the /videos/ + /items/ split is
+        // case-insensitive and already covers Emby's lowercase playable paths).
+        if let emby = parsedEmbyChapterImagePath(imagePath),
+           let base = remoteStreamURL.flatMap(jellyfinServerBaseURL(from:)) {
+            return try? EmbyLibrary.chapterImageURL(server: base,
+                                                    itemId: emby.itemId,
+                                                    chapterIndex: emby.index,
+                                                    tag: emby.tag,
+                                                    width: 480,
+                                                    height: 270)
+        }
+
         guard let server, let token else { return nil }
         guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
                                         resolvingAgainstBaseURL: false) else { return nil }
@@ -2056,6 +2070,19 @@ final class PlaybackController {
     private func parsedJellyfinChapterImagePath(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
         guard let url = URL(string: imagePath),
               url.scheme == "jellyfin",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return (parts[0], index, tag)
+    }
+
+    private func parsedEmbyChapterImagePath(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
+        guard let url = URL(string: imagePath),
+              url.scheme == "emby",
               url.host == "item" else { return nil }
         let parts = url.path.split(separator: "/").map(String.init)
         guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }

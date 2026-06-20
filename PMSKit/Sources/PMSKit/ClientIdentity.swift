@@ -18,4 +18,11 @@ extension ClientIdentity {
                                deviceId: clientIdentifier,
                                version: version)
     }
+
+    public var emby: EmbyClientIdentity {
+        EmbyClientIdentity(client: product,
+                           device: deviceName,
+                           deviceId: clientIdentifier,
+                           version: version)
+    }
 }

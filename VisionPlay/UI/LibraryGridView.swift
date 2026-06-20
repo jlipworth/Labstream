@@ -8,6 +8,7 @@ struct LibrariesView: View {
 
     @State private var sections: [PlexSection] = []
     @State private var jellyfinViews: [JellyfinLibraryLink] = []
+    @State private var embyViews: [EmbyLibraryLink] = []
     @State private var loadState: HomeView.LoadState = .idle
     @State private var loadedIdentity: String?
 
@@ -25,6 +26,8 @@ struct LibrariesView: View {
             case .loaded:
                 if appModel.activeBackend == .jellyfin {
                     jellyfinLibrariesList
+                } else if appModel.activeBackend == .emby {
+                    embyLibrariesList
                 } else if sections.isEmpty {
                     ContentUnavailableView("No libraries",
                                            systemImage: "rectangle.stack",
@@ -51,6 +54,9 @@ struct LibrariesView: View {
         .navigationDestination(for: JellyfinLibraryLink.self) { view in
             LibraryGridView(jellyfin: view)
         }
+        .navigationDestination(for: EmbyLibraryLink.self) { view in
+            LibraryGridView(emby: view)
+        }
         .navigationDestination(for: MediaItem.self) { item in
             DetailView(item: item)
         }
@@ -64,6 +70,8 @@ struct LibrariesView: View {
             return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
         case .jellyfin:
             return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+        case .emby:
+            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil")"
         }
     }
 
@@ -100,6 +108,29 @@ struct LibrariesView: View {
         }
     }
 
+    @ViewBuilder
+    private var embyLibrariesList: some View {
+        if embyViews.isEmpty {
+            ContentUnavailableView("No Emby libraries",
+                                   systemImage: "rectangle.stack",
+                                   description: Text("This Emby user has no visible libraries."))
+        } else {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260, maximum: 340),
+                                    spacing: DS.Space.xl)],
+                          spacing: DS.Space.xl) {
+                    ForEach(embyViews) { view in
+                        NavigationLink(value: view) {
+                            EmbyLibraryCard(view: view)
+                        }
+                        .cardLink(cornerRadius: DS.Radius.card)
+                    }
+                }
+                .padding(DS.Space.xl)
+            }
+        }
+    }
+
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back; the section list doesn't change mid-session,
         // so only first load and pull-to-refresh fetch.
@@ -115,6 +146,19 @@ struct LibrariesView: View {
                 loadedIdentity = loadIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": jellyfinViews.count])
+            } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
+                loadState = .failed(friendlyMessage(error))
+            }
+            return
+        }
+
+        if appModel.activeBackend == .emby {
+            do {
+                embyViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                loadedIdentity = loadIdentity
+                loadState = .loaded
+                span.end(fields: ["library_count": embyViews.count])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
@@ -148,11 +192,13 @@ struct LibrariesView: View {
 enum LibraryGridSource: Hashable {
     case plex(PlexSection)
     case jellyfin(JellyfinLibraryLink)
+    case emby(EmbyLibraryLink)
 
     var title: String {
         switch self {
         case .plex(let section): return section.title
         case .jellyfin(let view): return view.title
+        case .emby(let view): return view.title
         }
     }
 }
@@ -183,6 +229,10 @@ struct LibraryGridView: View {
 
     init(jellyfin view: JellyfinLibraryLink) {
         self.source = .jellyfin(view)
+    }
+
+    init(emby view: EmbyLibraryLink) {
+        self.source = .emby(view)
     }
 
     var body: some View {
@@ -258,6 +308,8 @@ struct LibraryGridView: View {
             await loadPlex(section: section)
         case .jellyfin(let view):
             await loadJellyfin(view: view)
+        case .emby(let view):
+            await loadEmby(view: view)
         }
     }
 
@@ -334,6 +386,37 @@ struct LibraryGridView: View {
         }
     }
 
+    private func loadEmby(view: EmbyLibraryLink) async {
+        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
+                                                     backend: "Emby",
+                                                     fields: ["page_size": pageSize])
+        do {
+            let page = try await EmbyBrowseService(appModel: appModel)
+                .itemsPage(parentId: view.id,
+                           recursive: false,
+                           startIndex: 0,
+                           limit: pageSize,
+                           includeItemTypes: embyLibraryItemTypes(for: view),
+                           fields: EmbyLibrary.gridItemFields)
+            let total = max(page.total ?? page.items.count, page.items.count)
+            var fresh = [MediaItem?](repeating: nil, count: total)
+            for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
+                fresh[i] = item
+            }
+            slots = fresh
+            firstCharacters = []
+            loadState = .loaded
+            span.end(fields: [
+                "item_count": page.items.count,
+                "total_count": total,
+            ])
+            Task { await loadEmbyFirstCharacters(view: view, total: total) }
+        } catch {
+            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
+            loadState = .failed(friendlyMessage(error))
+        }
+    }
+
     private func loadFirstCharacters(server: URL, token: String,
                                      section: PlexSection) async -> FirstCharacterResponse? {
         let req = BrowseAPI.firstCharacters(server: server, token: token,
@@ -398,6 +481,27 @@ struct LibraryGridView: View {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
             }
+        case .emby(let view):
+            let span = PerformanceInstrumentation.begin(.libraryGridPage,
+                                                         backend: "Emby",
+                                                         fields: ["page": page, "page_size": pageSize])
+            do {
+                let page = try await EmbyBrowseService(appModel: appModel)
+                    .itemsPage(parentId: view.id,
+                               recursive: false,
+                               startIndex: start,
+                               limit: pageSize,
+                               includeItemTypes: embyLibraryItemTypes(for: view),
+                               fields: EmbyLibrary.gridItemFields)
+                for (i, item) in page.items.enumerated()
+                where slots.indices.contains(start + i) {
+                    slots[start + i] = item
+                }
+                span.end(fields: ["item_count": page.items.count])
+            } catch {
+                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
+                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+            }
         }
         loadingPages.remove(page)
     }
@@ -425,6 +529,41 @@ struct LibraryGridView: View {
         firstCharacters = entries
     }
 
+    private func loadEmbyFirstCharacters(view: EmbyLibraryLink, total: Int) async {
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
+        let service = EmbyBrowseService(appModel: appModel)
+        var counts: [(display: String, count: Int)] = []
+        for letter in letters {
+            let page = try? await service.itemsPage(parentId: view.id,
+                                                    recursive: false,
+                                                    limit: 1,
+                                                    nameStartsWith: letter,
+                                                    includeItemTypes: embyLibraryItemTypes(for: view),
+                                                    fields: EmbyLibrary.gridItemFields)
+            let count = page?.total ?? 0
+            if count > 0 { counts.append((letter, count)) }
+        }
+        var offset = 0
+        let entries = counts.map { entry -> LibraryFirstCharacter in
+            defer { offset += entry.count }
+            return LibraryFirstCharacter(display: entry.display,
+                                         count: entry.count,
+                                         offset: min(offset, max(total - 1, 0)))
+        }
+        firstCharacters = entries
+    }
+
+}
+
+private func embyLibraryItemTypes(for view: EmbyLibraryLink) -> String {
+    switch view.collectionType?.lowercased() {
+    case "movies":
+        return "Movie"
+    case "tvshows":
+        return "Series"
+    default:
+        return "Movie,Series,Season,Episode"
+    }
 }
 
 private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {
@@ -545,6 +684,43 @@ private extension KeyedDecodingContainer {
 
 struct JellyfinLibraryCard: View {
     let view: JellyfinLibraryLink
+
+    var body: some View {
+        HStack(spacing: DS.Space.lg) {
+            ZStack {
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .fill(.tint.opacity(0.18))
+                Image(systemName: jellyfinLibraryIcon(collectionType: view.collectionType))
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+            .frame(width: 76, height: 76)
+
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text(view.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text(jellyfinLibrarySubtitle(collectionType: view.collectionType))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Space.lg)
+        .frame(width: 300, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+        )
+        .posterHover()
+    }
+}
+
+struct EmbyLibraryCard: View {
+    let view: EmbyLibraryLink
 
     var body: some View {
         HStack(spacing: DS.Space.lg) {
