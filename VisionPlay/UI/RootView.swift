@@ -125,6 +125,7 @@ struct RootView: View {
                 guard let server = appModel.serverBaseURL,
                       let token = appModel.serverToken else {
                     autoPlay = false
+                    await Task.yield()
                     homePath.append(item)
                     return
                 }
@@ -151,6 +152,13 @@ struct RootView: View {
                 // `.task` and presents the player.
                 router.requestAutoPlay(forRatingKey: item.ratingKey)
             }
+            // Cinema exit calls `SystemEntryRouter.open(item:)` while the main window is being
+            // recreated. Unlike Spotlight/intent rating-key routes, the `.item` case has no
+            // network fetch delay, so appending in the same transaction as `selection = .home`
+            // and `homePath = NavigationPath()` can land before the Home NavigationStack is
+            // mounted on device. Yield one turn, matching the proven Music-tab navigation
+            // pattern above, so Exit Cinema reliably lands on the item's detail page.
+            await Task.yield()
             homePath.append(item)
         }
     }
