@@ -61,3 +61,6 @@ Carthage/Build/
 __pycache__/
 *.py[cod]
 scripts/emby-live.env
+
+# Per-worktree simulator UDID (worktree-sim.sh)
+.simid
