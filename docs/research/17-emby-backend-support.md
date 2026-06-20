@@ -113,16 +113,89 @@ The docs conflict on whether this is truly unauthenticated. Verify live before r
 
 ## Emby Connect
 
-Emby Connect is optional and should come after manual server support. It is not Jellyfin Quick Connect parity.
+Emby Connect is optional and should come after manual server support. It is **not** Jellyfin
+Quick Connect parity — Jellyfin's server-local `/QuickConnect/*` endpoints do **not** exist on
+Emby (they 404). Quick Connect was added to Jellyfin *after* the fork.
 
-High-level flow from Emby docs:
+**Emby's headset-friendly "short code" login IS Emby Connect PIN sign-in** (the flow Emby's
+own TV apps use), not Quick Connect. Tracked as GH #72. The username/password Connect path
+(`/service/user/authenticate`) is a separate Connect method; the PIN flow below is the
+convenience-login we want for visionOS.
 
-1. authenticate to `https://connect.emby.media/service/user/authenticate` with `X-Application`,
-2. fetch linked servers from `/service/servers?userId=...`,
-3. exchange per-server `AccessKey` via server `/Connect/Exchange`,
-4. persist connect/server identity carefully per server.
+### PIN flow — verified wire shape (RESEARCHED, GH #72)
 
-Keep Connect tokens/access keys scoped by server id so VisionPlay never sends a token to the wrong server.
+Reverse-engineered from two official Emby clients — `MediaBrowser/Emby.ApiClient.Javascript`
+(`connectionmanager.js`) and `MediaBrowser/Emby.ApiClient.Java` (`ConnectService` / model
+POJOs) — which agree on every endpoint, param, and field name. **All six steps are now live-verified
+end-to-end** (June 2026) against `connect.emby.media` plus a real Connect-linked Emby Server
+4.9.x: created a PIN, confirmed it at `emby.media/pin.html`, exchanged it for a Connect token,
+listed the linked server, exchanged the server's `AccessKey` for a local server token, and
+confirmed that token authenticates a normal `GET /Users/{id}` call (HTTP 200).
+
+Two hosts: the **cloud** account service `https://connect.emby.media/service/...` (steps 1–5)
+and the **target Emby server** itself (step 6). `X-Application: <AppName>/<AppVersion>` is sent
+on every cloud call (the JS/Java clients always send it; live probe shows create still returns
+200 without it, but send it anyway).
+
+| # | Purpose | Host | Method | Path | Auth header | Params | Response fields |
+|---|---------|------|--------|------|-------------|--------|-----------------|
+| 1 | Create PIN | cloud | POST | `/service/pin?deviceId=<id>` | `X-Application` | `deviceId` (query + form body) | `Id, Pin, DeviceId, IsExpired, IsConfirmed, AccessToken` (all nullable) |
+| 2 | Poll status | cloud | GET | `/service/pin?deviceId=<id>&pin=<code>` | `X-Application` | `deviceId, pin` | `Id, Pin, DeviceId, IsExpired, IsConfirmed, AccessToken` |
+| 3 | Exchange PIN → Connect token | cloud | POST | `/service/pin/authenticate` | `X-Application` | `deviceId, pin` (form body) | `UserId` (Connect user id), `AccessToken` (Connect token) |
+| 4 | Get Connect user (optional) | cloud | GET | `/service/user?id=<connectUserId>` | `X-Application` + `X-Connect-UserToken` | `id` | Connect user profile (`Id`, …) |
+| 5 | List linked servers | cloud | GET | `/service/servers?userId=<connectUserId>` | `X-Application` + `X-Connect-UserToken` | `userId` | array: `Id, SystemId, Name, Url, LocalAddress, AccessKey, UserType` |
+| 6 | Per-server exchange | **target server** | GET | `<server>/emby/Connect/Exchange?format=json&ConnectUserId=<connectUserId>` | `X-Emby-Token: <AccessKey>` + identity header | `format=json, ConnectUserId` | `LocalUserId`, `AccessToken` (local server token) |
+
+**Token chain:** PIN → (step 3) `ConnectAccessToken` + `ConnectUserId` → (step 5) per-server
+`AccessKey` → (step 6) local server `AccessToken` + `LocalUserId`. The Connect token rides in
+`X-Connect-UserToken`; the per-server `AccessKey` rides in `X-Emby-Token` for the Exchange call;
+the returned local `AccessToken` then drives all normal Emby API calls to that server (reuse the
+existing `EmbyAuth.applyAuth` path).
+
+Live-probe findings (cloud, steps 1–2):
+- Create returns `AccessToken: null` and `Id: null`; once the record persists, poll returns the
+  populated `Id` and `AccessToken: "none"` (the **string** `"none"`, not null) until confirmed.
+- **Wrong/expired/unknown PIN → bare HTTP 404, no body.** So poll error handling has two stop
+  conditions: a 200 body with `IsExpired: true`, *and* a 404 (gone/mismatch). `IsConfirmed: true`
+  is the success signal — then proceed to step 3.
+- Poll cadence: the client libraries don't encode an interval; Emby's Roku client polls every
+  **5s** repeating. Use ~5s; rely on `IsExpired`/404 for the stop condition, not a local timer.
+
+Live findings, steps 3–6 (real Connect-linked server):
+- The **confirmed poll response already carries the Connect `AccessToken`** (identical to what
+  step 3 returns) — but step 3 (`/service/pin/authenticate`) is still needed because it returns
+  the `UserId` (ConnectUserId), which the poll does not. Response of step 3 is exactly
+  `{UserId, AccessToken}`.
+- `GET /service/user?id=` returns `{Id, Name, Email, IsActive}`.
+- The `/service/servers` array item carries one field the client source didn't surface:
+  **`SupporterKey`** (empty string when none). Full observed shape:
+  `{Id, Url, Name, SystemId, AccessKey, LocalAddress, UserType, SupporterKey}`, with
+  `UserType: "Linked"` for the account owner. `Url` is the WAN address, `LocalAddress` the LAN
+  `http://<ip>:8096`.
+- Step 6 succeeded against the **WAN `Url`** with just `X-Emby-Token: <AccessKey>` + our existing
+  `Emby …` identity `Authorization` header — the discrete `X-Emby-Client*` headers were **not**
+  required on 4.9.x. Response is exactly `{LocalUserId, AccessToken}`.
+- The exchanged local `AccessToken` authenticates normal calls. The `/Users/{LocalUserId}` object
+  includes `ConnectUserName` and `ConnectLinkType` — usable to surface "signed in via Emby
+  Connect as <name>" in the UI.
+
+Implementation gotchas:
+- POST bodies (steps 1, 3) are `application/x-www-form-urlencoded` (`deviceId`, `pin`). The Java
+  client also appends `deviceId` to the query on create — harmless to mirror.
+- Header alias: the JS client uses `X-Emby-Token` for step 6, the Java client uses the older
+  `X-MediaBrowser-Token` — Emby accepts both; prefer `X-Emby-Token` (matches our existing lane).
+- Server-list mapping: `AccessKey` → per-server exchange token; `Url` → remote/WAN address;
+  `LocalAddress` → LAN; `SystemId` → the server's stable id; `Id` → cloud-side connect-server id.
+  (The JS client has an upstream typo `i.LocalAddres` that drops `LocalAddress`; read the correct
+  field name.)
+- Step 6 is version-gated in the clients: on Emby ≥ 4.4.0.21 the identity goes as discrete
+  `X-Emby-Client` / `X-Emby-Device-Name` / `X-Emby-Device-Id` / `X-Emby-Client-Version` headers;
+  older servers use the single `X-Emby-Authorization`/`MediaBrowser …` header. Our targets are
+  modern (4.9.x), so the discrete headers (or our existing `Emby …` identity header) apply.
+
+Keep Connect tokens/access keys scoped by server id so VisionPlay never sends a token to the
+wrong server. Never log the Connect token, per-server `AccessKey`, or the exchanged local token;
+never persist the raw account password (the PIN flow never sees it).
 
 ## Persistence planning
 
