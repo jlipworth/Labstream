@@ -207,6 +207,23 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     #expect(q.hasActiveConversion == true)
 }
 
+@Test func decodesConcurrentBackgroundJobsWithRatingKeys() throws {
+    let json = """
+    {"MediaContainer":{"size":3,"TranscodeJob":[
+      {"ratingKey":"34003","key":"/transcode/sessions/a","progress":3.7,"speed":1.0},
+      {"ratingKey":"34002","key":"/transcode/sessions/b","progress":95.1},
+      {"ratingKey":31910,"key":"/transcode/sessions/c","progress":4,"speed":"0.7"}
+    ]}}
+    """.data(using: .utf8)!
+    let jobs = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: json)
+    #expect(jobs.jobs.count == 3)
+    #expect(jobs.job(ratingKey: "34003")?.progress == 3)
+    #expect(jobs.job(ratingKey: "34003")?.speed == 1.0)
+    #expect(jobs.job(ratingKey: "31910")?.ratingKey == "31910")
+    #expect(jobs.job(ratingKey: "31910")?.speed == 0.7)
+    #expect(jobs.job(ratingKey: "missing") == nil)
+}
+
 // Selected id pointing at a non-head element still resolves the active item to the selection.
 @Test func selectedItemIDOverridesOrderForActiveItem() throws {
     let json = """
