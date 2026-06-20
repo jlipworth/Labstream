@@ -16,6 +16,11 @@ required**.
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
       plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
       **VisionPlay**. Both paths land in the library.
+- [ ] **Emby Connect PIN sign-in (GH #72)** — select Emby, choose "Sign in with Emby Connect,"
+      confirm the code at `emby.media/pin.html`, and verify the app lands in the Emby library
+      with the exchanged local server token. If the account has multiple linked servers, verify
+      the picker disables after one tap, shows progress on the selected row, and either signs in
+      to the chosen server or returns a clear error without leaking Connect tokens/access keys.
 - [ ] **Welcome screen polish (GH #18)** — at the next natural sign-out, before signing back in:
       logo tile shows the real artwork with a blue/amber two-tone glow (no flat circle); title reads
       "Vision**Plex**" with amber "Plex"; tagline "Your whole Plex library, in your space."; the

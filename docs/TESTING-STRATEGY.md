@@ -63,10 +63,10 @@ Keep these as manual Apple Vision Pro checks:
 - Plex raw original download is intentionally offered only for compatible local containers.
 - Plex compatible original-quality copies use the server optimizer/rendered-part route.
 - Jellyfin browse/playback/download request paths are implemented and unit-tested, but Jellyfin downloads still need explicit live validation before being called headset-proven.
-- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are implemented (parallel lane), unit-tested, and the wire shape is live-proven via `LiveEmbyProbe`. Emby downloads/offline are not implemented. In-headset Emby playback/progress/cleanup remains a device-only gate.
+- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are implemented (parallel lane), unit-tested, and the wire shape is live-proven via `LiveEmbyProbe`. Emby Connect PIN request/exchange shape is implemented and live-verified, with in-headset PIN UX still tracked in the manual checklist. Emby downloads/offline are not implemented. In-headset Emby playback/progress/cleanup remains a device-only gate.
 
 The manual checklist remains in [`../TESTING-CHECKLIST.md`](../TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
 
 ## Remaining Emby validation gates
 
-The PMSKit wire shape is proven via `LiveEmbyProbe`. Still device-only before Emby playback is called headset-proven: HTTP `8096` vs HTTPS `8920` where available, in-headset Direct Play / Direct Stream-remux / HLS transcode playback, HLS child-resource auth holding in AVPlayer, subtitle/audio selection, progress/resume round-tripping, and `DELETE /Videos/ActiveEncodings` actually stopping server-side work on a live transcode.
+The PMSKit wire shape is proven via `LiveEmbyProbe`. Still device-only before Emby playback is called headset-proven: Emby Connect PIN UX, HTTP `8096` vs HTTPS `8920` where available, in-headset Direct Play / Direct Stream-remux / HLS transcode playback, HLS child-resource auth holding in AVPlayer, subtitle/audio selection, progress/resume round-tripping, and `DELETE /Videos/ActiveEncodings` actually stopping server-side work on a live transcode.

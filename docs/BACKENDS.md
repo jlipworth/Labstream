@@ -1,14 +1,14 @@
 # Backends
 
-VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but the app has real Jellyfin and Emby login, browse, and playback code. Emby playback (sign-in, browse, playback-info stream resolution, progress, and active-encoding cleanup) is implemented on `feature/emby-backend` and was live-validated against a real Emby server; the original planning map lives in [`research/17-emby-backend-support.md`](research/17-emby-backend-support.md). Emby downloads/offline are not implemented yet.
+VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but the app has real Jellyfin and Emby login, browse, and playback code. Emby playback (sign-in, browse, playback-info stream resolution, progress, and active-encoding cleanup) was live-validated against a real Emby server; the original planning map lives in [`research/17-emby-backend-support.md`](research/17-emby-backend-support.md). Emby downloads/offline are not implemented yet.
 
 ## Comparison
 
 | Area | Plex | Jellyfin | Emby |
 | --- | --- | --- | --- |
-| Sign-in | Plex PIN OAuth via in-app web auth | Server URL + username/password login | Manual server URL + username/password (`POST /Users/AuthenticateByName`). No Emby Connect / no Quick Connect in slice 1 |
+| Sign-in | Plex PIN OAuth via in-app web auth | Server URL + username/password login | Emby Connect PIN sign-in (`emby.media/pin.html`) is the primary path; manual server URL + username/password (`POST /Users/AuthenticateByName`) remains the fallback. Emby does **not** have Jellyfin Quick Connect |
 | Auth header | `X-Plex-Token` family | `Authorization: MediaBrowser …` | `Authorization: Emby UserId="…", Client, Device, DeviceId, Version, Token="…"` (scheme is `Emby `, not `MediaBrowser `) **plus** `X-Emby-Token: <token>` on authenticated calls |
-| Secrets | Plex account token, selected server token/resource | Jellyfin access token, user ID, server URL, server ID | Emby access token, user ID, server URL (base path preserved), server ID; stable device id from `ClientIdentity` |
+| Secrets | Plex account token, selected server token/resource | Jellyfin access token, user ID, server URL, server ID | Emby local server access token, user ID, server URL (base path preserved), server ID; stable device id from `ClientIdentity`. Emby Connect tokens/access keys stay in memory only during PIN sign-in and are not persisted |
 | Browse | `PlexClient` actor + PMSKit request builders | `JellyfinBrowseService` + PMSKit request builders | `EmbyBrowseService` + `EmbyLibrary` request builders — an explicit parallel lane, not a shared abstraction |
 | Shared model | PMS metadata mapped to `MediaItem` | Jellyfin DTOs mapped to `MediaItem` | `EmbyBaseItemDto` mapped to `MediaItem` (own decoder lane) |
 | Playback | Universal transcode/direct-stream HLS, `Generic` profile | Resolved stream URL + headers + reopener | `POST /Items/{Id}/PlaybackInfo` → `resolveStream` prefers server-generated `TranscodingUrl`, then `DirectStreamUrl`, then synthesized `stream.{container}`; relative URLs joined onto the server base path |
@@ -31,4 +31,6 @@ Emby uses `EmbyBrowseService` and the `EmbyLibrary`/`EmbyPlayback`/`EmbyAuth` re
 
 ## Emby promotion rule
 
-Only behavior that is implemented on `feature/emby-backend` AND live-validated against a real Emby server is documented here as supported. Emby downloads/offline, Emby Connect, and LAN discovery remain unimplemented and must not be presented as supported. Keep [`research/17-emby-backend-support.md`](research/17-emby-backend-support.md) as the planning map for the unbuilt slices.
+Only behavior that is implemented AND live-validated against a real Emby server is documented here as supported. Emby Connect PIN request/exchange shape is implemented and live-verified, but the in-headset PIN UX still needs the checklist smoke pass before calling it user-validated.
+
+Emby downloads/offline and LAN discovery remain unimplemented and must not be presented as supported. Keep [`research/17-emby-backend-support.md`](research/17-emby-backend-support.md) as the planning map for detailed wire notes and unbuilt slices.
