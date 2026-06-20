@@ -190,11 +190,11 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         guard !audioStreams.isEmpty else { return nil }
 
         let current = audioStreams.first { $0.isDefault == true } ?? audioStreams.first
-        if let current, current.isLowRiskEmbyTranscodeAudio {
+        if let current, current.isLowRiskTranscodeAudio {
             return nil
         }
 
-        let compatible = audioStreams.filter(\.isLowRiskEmbyTranscodeAudio)
+        let compatible = audioStreams.filter(\.isLowRiskTranscodeAudio)
         guard !compatible.isEmpty else { return nil }
 
         let currentLanguage = current?.language?.lowercased()
@@ -691,26 +691,9 @@ public enum EmbyPlayback {
     /// URL, PRESERVING the server's base path (for example `/emby`). Mirrors Jellyfin's
     /// join helper.
     static func embyURL(server: URL, pathOrURLString: String) throws -> URL {
-        if let absolute = URL(string: pathOrURLString), absolute.scheme != nil {
-            return absolute
-        }
-        guard var comps = URLComponents(url: server, resolvingAgainstBaseURL: false) else {
+        guard let url = MediaBrowserURL.join(server: server, pathOrURLString: pathOrURLString) else {
             throw EmbyPlaybackError.invalidURL
         }
-        let basePath = comps.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let relativePath: String
-        let query: String?
-        if let qIndex = pathOrURLString.firstIndex(of: "?") {
-            relativePath = String(pathOrURLString[..<qIndex])
-            query = String(pathOrURLString[pathOrURLString.index(after: qIndex)...])
-        } else {
-            relativePath = pathOrURLString
-            query = nil
-        }
-        let cleanRelative = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        comps.percentEncodedPath = "/" + [basePath, cleanRelative].filter { !$0.isEmpty }.joined(separator: "/")
-        comps.percentEncodedQuery = query
-        guard let url = comps.url else { throw EmbyPlaybackError.invalidURL }
         return url
     }
 }

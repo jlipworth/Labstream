@@ -1,12 +1,38 @@
 import Foundation
 
-public enum EmbyImageType: String, Sendable, Equatable {
+// Emby and Jellyfin share a forked HTTP API, so their item-model DTOs are identical
+// except for one thing: the synthetic URI scheme baked into image/media references
+// (`emby://…` vs `jellyfin://…`), which downstream consumers (PosterImage,
+// PlaybackController, TrickPlayThumbnailProviders, DownloadManager) parse to route.
+//
+// We model that single delta with a phantom `Flavor` type and define the DTOs once,
+// generically. Each backend keeps its familiar public type names via the typealiases
+// at the bottom of this file, so call sites and tests are unchanged.
+//
+// The struct fields are a superset of both backends: Emby-only fields (seasonId/
+// seasonName on items, supportsDirect* on media sources, playCount/isFavorite on user
+// data) simply decode as nil for Jellyfin payloads, which never carry them.
+
+public protocol MediaBrowserFlavor: Sendable {
+    /// Scheme used to mint synthetic image/media URIs, e.g. "emby" -> `emby://item/…`.
+    static var syntheticScheme: String { get }
+}
+
+public enum EmbyFlavor: MediaBrowserFlavor {
+    public static let syntheticScheme = "emby"
+}
+
+public enum JellyfinFlavor: MediaBrowserFlavor {
+    public static let syntheticScheme = "jellyfin"
+}
+
+public enum MediaBrowserImageType: String, Sendable, Equatable {
     case primary = "Primary"
     case backdrop = "Backdrop"
 }
 
-public struct EmbyUserViewsResponse: Decodable, Sendable, Equatable {
-    public let items: [EmbyBaseItemDto]
+public struct MediaBrowserUserViewsResponse<Flavor: MediaBrowserFlavor>: Decodable, Sendable, Equatable {
+    public let items: [MediaBrowserBaseItemDto<Flavor>]
     public let totalRecordCount: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -16,13 +42,13 @@ public struct EmbyUserViewsResponse: Decodable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        items = try c.decodeIfPresent([EmbyBaseItemDto].self, forKey: .items) ?? []
+        items = try c.decodeIfPresent([MediaBrowserBaseItemDto<Flavor>].self, forKey: .items) ?? []
         totalRecordCount = try c.decodeIfPresent(Int.self, forKey: .totalRecordCount)
     }
 }
 
-public struct EmbyItemsResponse: Decodable, Sendable, Equatable {
-    public let items: [EmbyBaseItemDto]
+public struct MediaBrowserItemsResponse<Flavor: MediaBrowserFlavor>: Decodable, Sendable, Equatable {
+    public let items: [MediaBrowserBaseItemDto<Flavor>]
     public let totalRecordCount: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -32,16 +58,16 @@ public struct EmbyItemsResponse: Decodable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        items = try c.decodeIfPresent([EmbyBaseItemDto].self, forKey: .items) ?? []
+        items = try c.decodeIfPresent([MediaBrowserBaseItemDto<Flavor>].self, forKey: .items) ?? []
         totalRecordCount = try c.decodeIfPresent(Int.self, forKey: .totalRecordCount)
     }
 
-    public static func decode(from data: Data) throws -> EmbyItemsResponse {
-        try JSONDecoder().decode(EmbyItemsResponse.self, from: data)
+    public static func decode(from data: Data) throws -> MediaBrowserItemsResponse<Flavor> {
+        try JSONDecoder().decode(MediaBrowserItemsResponse<Flavor>.self, from: data)
     }
 }
 
-public struct EmbyBaseItemDto: Decodable, Sendable, Equatable, Identifiable {
+public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Sendable, Equatable, Identifiable {
     public let id: String
     public let name: String
     public let type: String?
@@ -53,9 +79,9 @@ public struct EmbyBaseItemDto: Decodable, Sendable, Equatable, Identifiable {
     public let communityRating: Double?
     public let taglines: [String]
     public let genres: [String]
-    public let chapters: [EmbyChapterDto]
-    public let mediaSources: [EmbyItemMediaSourceDto]
-    public let userData: EmbyUserDataDto?
+    public let chapters: [MediaBrowserChapterDto<Flavor>]
+    public let mediaSources: [MediaBrowserItemMediaSourceDto<Flavor>]
+    public let userData: MediaBrowserUserDataDto?
     public let imageTags: [String: String]
     public let backdropImageTags: [String]
     public let parentId: String?
@@ -105,9 +131,9 @@ public struct EmbyBaseItemDto: Decodable, Sendable, Equatable, Identifiable {
         communityRating = try c.decodeIfPresent(Double.self, forKey: .communityRating)
         taglines = try c.decodeIfPresent([String].self, forKey: .taglines) ?? []
         genres = try c.decodeIfPresent([String].self, forKey: .genres) ?? []
-        chapters = try c.decodeIfPresent([EmbyChapterDto].self, forKey: .chapters) ?? []
-        mediaSources = try c.decodeIfPresent([EmbyItemMediaSourceDto].self, forKey: .mediaSources) ?? []
-        userData = try c.decodeIfPresent(EmbyUserDataDto.self, forKey: .userData)
+        chapters = try c.decodeIfPresent([MediaBrowserChapterDto<Flavor>].self, forKey: .chapters) ?? []
+        mediaSources = try c.decodeIfPresent([MediaBrowserItemMediaSourceDto<Flavor>].self, forKey: .mediaSources) ?? []
+        userData = try c.decodeIfPresent(MediaBrowserUserDataDto.self, forKey: .userData)
         imageTags = try c.decodeIfPresent([String: String].self, forKey: .imageTags) ?? [:]
         backdropImageTags = try c.decodeIfPresent([String].self, forKey: .backdropImageTags) ?? []
         parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
@@ -130,7 +156,7 @@ public struct EmbyBaseItemDto: Decodable, Sendable, Equatable, Identifiable {
             viewCount: userData?.played == true ? 1 : 0,
             year: productionYear,
             summary: overview,
-            thumb: syntheticImagePath(type: .primary, tag: imageTags[EmbyImageType.primary.rawValue]),
+            thumb: syntheticImagePath(type: .primary, tag: imageTags[MediaBrowserImageType.primary.rawValue]),
             art: syntheticImagePath(type: .backdrop, tag: backdropImageTags.first),
             media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
             chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset, itemId: id) },
@@ -165,13 +191,13 @@ public struct EmbyBaseItemDto: Decodable, Sendable, Equatable, Identifiable {
         }
     }
 
-    private func syntheticImagePath(type: EmbyImageType, tag: String?) -> String? {
+    private func syntheticImagePath(type: MediaBrowserImageType, tag: String?) -> String? {
         guard let tag, !tag.isEmpty else { return nil }
-        return "emby://item/\(id)/\(type.rawValue)?tag=\(tag)"
+        return "\(Flavor.syntheticScheme)://item/\(id)/\(type.rawValue)?tag=\(tag)"
     }
 }
 
-public struct EmbyChapterDto: Decodable, Sendable, Equatable {
+public struct MediaBrowserChapterDto<Flavor: MediaBrowserFlavor>: Decodable, Sendable, Equatable {
     public let startPositionTicks: Int?
     public let name: String?
     public let imageTag: String?
@@ -192,11 +218,11 @@ public struct EmbyChapterDto: Decodable, Sendable, Equatable {
 
     private func syntheticChapterImagePath(index: Int, itemId: String) -> String? {
         guard let imageTag, !imageTag.isEmpty else { return nil }
-        return "emby://item/\(itemId)/Chapter/\(index)?tag=\(imageTag)"
+        return "\(Flavor.syntheticScheme)://item/\(itemId)/Chapter/\(index)?tag=\(imageTag)"
     }
 }
 
-public struct EmbyItemMediaSourceDto: Decodable, Sendable, Equatable {
+public struct MediaBrowserItemMediaSourceDto<Flavor: MediaBrowserFlavor>: Decodable, Sendable, Equatable {
     public let id: String?
     public let container: String?
     public let bitrate: Int?
@@ -207,7 +233,7 @@ public struct EmbyItemMediaSourceDto: Decodable, Sendable, Equatable {
     public let supportsDirectPlay: Bool?
     public let supportsDirectStream: Bool?
     public let supportsTranscoding: Bool?
-    public let mediaStreams: [EmbyItemMediaStreamDto]
+    public let mediaStreams: [MediaBrowserItemMediaStreamDto]
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
@@ -235,12 +261,12 @@ public struct EmbyItemMediaSourceDto: Decodable, Sendable, Equatable {
         supportsDirectPlay = try c.decodeIfPresent(Bool.self, forKey: .supportsDirectPlay)
         supportsDirectStream = try c.decodeIfPresent(Bool.self, forKey: .supportsDirectStream)
         supportsTranscoding = try c.decodeIfPresent(Bool.self, forKey: .supportsTranscoding)
-        mediaStreams = try c.decodeIfPresent([EmbyItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
+        mediaStreams = try c.decodeIfPresent([MediaBrowserItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
     }
 
     func toPlexMedia(index: Int, itemId: String) -> Media {
         let part = Part(id: index + 1,
-                        key: "emby://item/\(itemId)/media/\(id ?? String(index))",
+                        key: "\(Flavor.syntheticScheme)://item/\(itemId)/media/\(id ?? String(index))",
                         duration: nil,
                         file: nil,
                         size: nil,
@@ -258,7 +284,7 @@ public struct EmbyItemMediaSourceDto: Decodable, Sendable, Equatable {
     }
 }
 
-public struct EmbyItemMediaStreamDto: Decodable, Sendable, Equatable {
+public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
     public let index: Int?
     public let type: String?
     public let codec: String?
@@ -327,7 +353,7 @@ public struct EmbyItemMediaStreamDto: Decodable, Sendable, Equatable {
         }
     }
 
-    var isLowRiskEmbyTranscodeAudio: Bool {
+    var isLowRiskTranscodeAudio: Bool {
         guard type == "Audio", let codec = codec?.lowercased() else { return false }
         guard ["aac", "ac3", "eac3"].contains(codec) else { return false }
         return (channels ?? 0) <= 6 || channels == nil
@@ -343,7 +369,7 @@ public struct EmbyItemMediaStreamDto: Decodable, Sendable, Equatable {
     }
 }
 
-public struct EmbyUserDataDto: Decodable, Sendable, Equatable {
+public struct MediaBrowserUserDataDto: Decodable, Sendable, Equatable {
     public let playbackPositionTicks: Int?
     public let played: Bool?
     public let playCount: Int?
@@ -356,3 +382,23 @@ public struct EmbyUserDataDto: Decodable, Sendable, Equatable {
         case isFavorite = "IsFavorite"
     }
 }
+
+// MARK: - Backend-specific names (preserve existing call sites & tests)
+
+public typealias EmbyImageType = MediaBrowserImageType
+public typealias EmbyUserViewsResponse = MediaBrowserUserViewsResponse<EmbyFlavor>
+public typealias EmbyItemsResponse = MediaBrowserItemsResponse<EmbyFlavor>
+public typealias EmbyBaseItemDto = MediaBrowserBaseItemDto<EmbyFlavor>
+public typealias EmbyChapterDto = MediaBrowserChapterDto<EmbyFlavor>
+public typealias EmbyItemMediaSourceDto = MediaBrowserItemMediaSourceDto<EmbyFlavor>
+public typealias EmbyItemMediaStreamDto = MediaBrowserItemMediaStreamDto
+public typealias EmbyUserDataDto = MediaBrowserUserDataDto
+
+public typealias JellyfinImageType = MediaBrowserImageType
+public typealias JellyfinUserViewsResponse = MediaBrowserUserViewsResponse<JellyfinFlavor>
+public typealias JellyfinItemsResponse = MediaBrowserItemsResponse<JellyfinFlavor>
+public typealias JellyfinBaseItemDto = MediaBrowserBaseItemDto<JellyfinFlavor>
+public typealias JellyfinChapterDto = MediaBrowserChapterDto<JellyfinFlavor>
+public typealias JellyfinItemMediaSourceDto = MediaBrowserItemMediaSourceDto<JellyfinFlavor>
+public typealias JellyfinItemMediaStreamDto = MediaBrowserItemMediaStreamDto
+public typealias JellyfinUserDataDto = MediaBrowserUserDataDto
