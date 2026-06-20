@@ -141,6 +141,22 @@ git worktree remove (no hook) ────────────────�
 - Confirm `simctl list devices booted` and a per-`$SIMID` build/install still work for
   the main worktree (no behavior change there).
 
+## Implementation notes (verified during build)
+
+- **`simctl clone` requires the SOURCE sim to be shut down** (error 405 otherwise). The
+  golden sim is normally booted, so `setup` briefly bounces it: shutdown → clone →
+  reboot. Login/auth lives on disk in the data container and survives the bounce. Net
+  effect: provisioning a new worktree causes a ~10s blip in the main worktree's running
+  sim. `clone_golden` guarantees the golden is rebooted even if the clone fails.
+- **`core.hooksPath` shadows the hook.** This repo shipped with a stale
+  `core.hooksPath = …/visionplex/.git/hooks` (a non-existent, misspelled path) that
+  silently disabled *all* git hooks. It was unset so hooks resolve to `.git/hooks`.
+  `install-hook` now warns loudly if any `core.hooksPath` override is present, since a
+  hook written to `.git/hooks` would otherwise be dead.
+- `set -e` + `pipefail`: the `prune` ref-collection loop must not let a per-worktree
+  `[ -f .simid ]` miss bubble up as a pipeline failure — it's written as an
+  `if`/`then` over process substitution so a missing `.simid` doesn't abort the sweep.
+
 ## Files touched
 
 - `scripts/worktree-sim.sh` (new, checked in, executable)
