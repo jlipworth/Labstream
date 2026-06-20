@@ -188,6 +188,125 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
+/// Emby chapter-image trick-play provider.
+///
+/// Emby exposes no Jellyfin-style trickplay tile sheets (`/Trickplay/.../tiles.m3u8` 404s), so
+/// there is no fine-grained sprite source. Emby DOES expose a per-chapter image endpoint, which
+/// is exactly the data the chapter list already uses. This provider reuses the item's chapter
+/// markers (each carries a synthetic `emby://item/{id}/Chapter/{index}?tag=` thumb key plus a
+/// `startTimeOffset`) to serve a coarse, chapter-granularity scrub preview: it maps the scrub
+/// target to the chapter it falls within and fetches that chapter's image once, caching it.
+///
+/// This is intentionally coarse (one frame per chapter, not per-second) — matching the project's
+/// design constraint of never pressuring the transcoder for previews. Like the other providers it
+/// is playback-passive: it only fetches images and never touches the media session.
+actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private struct Frame: Sendable {
+        let timeMs: Int
+        let itemId: String
+        let index: Int
+        let tag: String?
+    }
+
+    private let frames: [Frame]
+    private let server: URL
+    private let token: String
+    private let identity: EmbyClientIdentity
+    private let userId: String?
+    private let session: URLSession
+
+    private var imageCache: [Int: Data] = [:]
+    private var cacheOrder: [Int] = []
+    private let cacheLimit = 12
+
+    init?(item: MediaItem,
+          server: URL?,
+          token: String?,
+          identity: EmbyClientIdentity,
+          userId: String?,
+          session: URLSession = .shared) {
+        guard let server, let token, !token.isEmpty else { return nil }
+        let frames = (item.chapters ?? []).compactMap { chapter -> Frame? in
+            guard let thumb = chapter.thumb, let parsed = Self.parse(thumb) else { return nil }
+            return Frame(timeMs: max(0, chapter.startTimeOffset ?? 0),
+                         itemId: parsed.itemId,
+                         index: parsed.index,
+                         tag: parsed.tag)
+        }.sorted { $0.timeMs < $1.timeMs }
+        // No chapters carry images (e.g. container-derived chapters without thumbnails) → nothing
+        // to preview; let the player fall back to the timecode-only scrubber.
+        guard !frames.isEmpty else { return nil }
+        self.frames = frames
+        self.server = server
+        self.token = token
+        self.identity = identity
+        self.userId = userId
+        self.session = session
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard let frame = nearestFrame(to: targetMs) else { return nil }
+        if let data = imageCache[frame.index] {
+            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
+        }
+        do {
+            let url = try EmbyLibrary.chapterImageURL(server: server,
+                                                      itemId: frame.itemId,
+                                                      chapterIndex: frame.index,
+                                                      tag: frame.tag,
+                                                      width: 480,
+                                                      height: 270)
+            var req = EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
+            req.httpMethod = "GET"
+            // Image endpoint, not JSON — override the helper's `Accept: application/json`.
+            req.setValue("*/*", forHTTPHeaderField: "Accept")
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+                return nil
+            }
+            insert(data, for: frame.index)
+            let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "image/jpeg"
+            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: contentType)
+        } catch {
+            // Unavailable chapter images are expected; keep silent and graceful and never log the
+            // URL (it carries the auth token on the live request).
+            return nil
+        }
+    }
+
+    /// The chapter the scrub target falls within: the last chapter whose start is at or before the
+    /// target, falling back to the first chapter for targets before the first marker.
+    private func nearestFrame(to targetMs: Int) -> Frame? {
+        guard !frames.isEmpty else { return nil }
+        let clamped = max(0, targetMs)
+        return frames.last { $0.timeMs <= clamped } ?? frames.first
+    }
+
+    private func insert(_ data: Data, for index: Int) {
+        if imageCache[index] == nil { cacheOrder.append(index) }
+        imageCache[index] = data
+        while cacheOrder.count > cacheLimit, let oldest = cacheOrder.first {
+            cacheOrder.removeFirst()
+            imageCache[oldest] = nil
+        }
+    }
+
+    /// Parses the synthetic `emby://item/{itemId}/Chapter/{index}?tag=` chapter-image key produced
+    /// by `EmbyChapterDto.toPlexChapter`. Mirrors `PlaybackController.parsedEmbyChapterImagePath`.
+    private static func parse(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
+        guard let url = URL(string: imagePath),
+              url.scheme == "emby",
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return (parts[0], index, tag)
+    }
+}
+
 @MainActor
 final class TrickPlayPreviewImageCache {
     private let limit: Int
