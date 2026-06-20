@@ -240,6 +240,7 @@ final class PlaybackController {
     private var reconnectInProgress = false
     private var hasObservedPlayback = false
     private var currentTimeControlStatus: AVPlayer.TimeControlStatus = .paused
+    private var hasObservedTimeControlStatus = false
     private var lastLoggedTransportStatus: PlaybackTransportStatus = .none
     /// Observer for `AVPlayerItem.timeJumpedNotification` — the only in-process signal of a user
     /// seek on visionOS (#25): AVKit's user-navigation delegate callbacks
@@ -2094,7 +2095,8 @@ final class PlaybackController {
         // suppress nearby jumps so a rebuild does not immediately schedule another rebuild.
         lastPrimedOffsetMs = resumeOffsetMs ?? 0
         hasObservedPlayback = false
-        currentTimeControlStatus = userWantsPaused ? .paused : .waitingToPlayAtSpecifiedRate
+        currentTimeControlStatus = .paused
+        hasObservedTimeControlStatus = false
         playbackError.clear()
         updateTransportStatus()
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
@@ -2396,6 +2398,7 @@ final class PlaybackController {
     @MainActor
     private func handleTimeControlTransport(status: AVPlayer.TimeControlStatus) {
         currentTimeControlStatus = status
+        hasObservedTimeControlStatus = true
         let paused = status == .paused || self.userWantsPaused
         self.timeline.report(state: paused ? .paused : .playing, force: true)
         self.transport.set(paused: paused)
@@ -2522,6 +2525,7 @@ final class PlaybackController {
         recordPlaybackDiagnostic("playback.transport_status", fields: [
             "status": .label(nextStatus.diagnosticLabel),
             "time_control_status": .label(Self.timeControlStatusLabel(currentTimeControlStatus)),
+            "has_observed_time_control_status": .bool(hasObservedTimeControlStatus),
             "user_wants_paused": .bool(userWantsPaused),
             "has_observed_playback": .bool(hasObservedPlayback),
             "reconnecting": .bool(reconnectInProgress),
@@ -2536,13 +2540,14 @@ final class PlaybackController {
         if reconnectInProgress {
             return .reconnecting
         }
-        guard currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
+        guard hasObservedTimeControlStatus,
+              currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
             return .none
         }
         if userWantsPaused || transport.pauseRequested || transport.isPaused {
             return .pausedBuffering
         }
-        return hasObservedPlayback ? .buffering : .initialLoading
+        return .buffering
     }
 
     // MARK: - Skip markers (#14)
@@ -3554,7 +3559,6 @@ final class PlaybackError {
 /// render one mutually-exclusive overlay instead of composing several booleans.
 enum PlaybackTransportStatus: Equatable {
     case none
-    case initialLoading
     case buffering
     case pausedBuffering
     case reconnecting
@@ -3563,7 +3567,6 @@ enum PlaybackTransportStatus: Equatable {
     var diagnosticLabel: String {
         switch self {
         case .none: "none"
-        case .initialLoading: "initial_loading"
         case .buffering: "buffering"
         case .pausedBuffering: "paused_buffering"
         case .reconnecting: "reconnecting"
@@ -3573,7 +3576,7 @@ enum PlaybackTransportStatus: Equatable {
 
     var keepsChromeVisible: Bool {
         switch self {
-        case .none, .initialLoading, .buffering, .pausedBuffering:
+        case .none, .buffering, .pausedBuffering:
             false
         case .reconnecting, .failed:
             true
