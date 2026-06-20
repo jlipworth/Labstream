@@ -48,7 +48,10 @@ struct CustomPlayerView: View {
     /// client for type symmetry, so we synthesize a throwaway pair here. Callers that already
     /// hold an `AppModel` can use `init(item:controllerFactory:…)` with a local-file factory if
     /// they prefer their real identity/client.
-    init(localFile: URL, item: MediaItem, onClose: (() -> Void)? = nil) {
+    init(localFile: URL,
+         item: MediaItem,
+         trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         onClose: (() -> Void)? = nil) {
         let identity = ClientIdentity(clientIdentifier: "offline",
                                       product: "VisionPlay",
                                       version: "0.1.0",
@@ -61,7 +64,7 @@ struct CustomPlayerView: View {
                                          identity: identity,
                                          client: client)
                   },
-                  trickPlayProvider: nil,
+                  trickPlayProvider: trickPlayProvider,
                   onClose: onClose,
                   onRequestPlay: nil,
                   allowsRealityTheater: true)

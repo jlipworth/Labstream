@@ -53,6 +53,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.type == "movie")          // defaulted
         #expect(meta.year == nil)
         #expect(meta.posterRelativePath == nil)
+        #expect(meta.plexBIFRelativePath == nil)
         #expect(meta.resolutionLabel == nil)
     }
 
@@ -107,7 +108,8 @@ struct OfflineDownloadModelsTests {
             optimizeTargetName: "Original video quality",
             optimizeQueueTitle: "Round Trip [VisionPlay 12345678]",
             optimizeBaselinePartIDs: [42, 43, 44],
-            posterRelativePath: "555.poster.jpg")
+            posterRelativePath: "555.poster.jpg",
+            plexBIFRelativePath: "555.plex-sd.bif")
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)
@@ -181,8 +183,10 @@ struct OfflineDownloadModelsTests {
             bytes: 1234,
             progress: 0.5,
             status: .downloading,
-            metadata: OfflineMetadata(ratingKey: "1", title: "Title", type: "movie"),
-            posterURL: URL(fileURLWithPath: "/tmp/1.poster.jpg"))
+            metadata: OfflineMetadata(ratingKey: "1", title: "Title", type: "movie",
+                                      plexBIFRelativePath: "1.plex-sd.bif"),
+            posterURL: URL(fileURLWithPath: "/tmp/1.poster.jpg"),
+            plexBIFURL: URL(fileURLWithPath: "/tmp/1.plex-sd.bif"))
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(DownloadRecord.self, from: data)
         #expect(decoded == original)
@@ -227,4 +231,25 @@ struct OfflineDownloadModelsTests {
             }
         }
     }
+
+    @Test("validation policy shortens required playback for short clips")
+    func validationPolicyShortClipRequiredPlayback() {
+        let short = OfflinePlaybackValidationPolicy.make(durationMs: 2_000)
+        #expect(short.requiredPlaybackSeconds == 0.2)
+        #expect(short.timeoutSeconds == 8.0)
+
+        let tiny = OfflinePlaybackValidationPolicy.make(durationMs: 300)
+        #expect(tiny.requiredPlaybackSeconds == 0.05)
+    }
+
+    @Test("validation policy uses longer timeout for remote preflight")
+    func validationPolicyRemotePreflightTimeout() {
+        let local = OfflinePlaybackValidationPolicy.make(durationMs: nil)
+        let remote = OfflinePlaybackValidationPolicy.make(durationMs: nil, isRemotePreflight: true)
+        #expect(local.requiredPlaybackSeconds == 0.5)
+        #expect(remote.requiredPlaybackSeconds == 0.5)
+        #expect(local.timeoutSeconds == 8.0)
+        #expect(remote.timeoutSeconds == 12.0)
+    }
+
 }

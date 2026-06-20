@@ -27,6 +27,7 @@ struct DetailView: View {
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
     @State private var playLocalURL: URL?
+    @State private var playLocalTrickPlayURL: URL?
     @State private var remotePlayback: JellyfinRemotePlayback?
     @State private var embyRemotePlayback: EmbyRemotePlayback?
     @State private var showDownloadOptions = false
@@ -210,6 +211,7 @@ struct DetailView: View {
                !detailed.isMusic {
                 musicPlayer.pauseForVideo()
                 playLocalURL = nil
+                playLocalTrickPlayURL = nil
                 playingItem = itemWithResumeRewind(detailed)
                 presentingPlayer = true
             }
@@ -345,7 +347,9 @@ struct DetailView: View {
         if let local = localURL {
             Button {
                 musicPlayer.pauseForVideo()
+                let key = downloadManager.recordKey(for: detailed)
                 playLocalURL = local
+                playLocalTrickPlayURL = downloadManager.plexBIFURL(for: key)
                 remotePlayback = nil
                 embyRemotePlayback = nil
                 playingItem = itemWithResumeRewind(detailed)
@@ -415,7 +419,9 @@ struct DetailView: View {
         // episode on Up Next autoplay (#15). Fall back to `detailed` defensively.
         let playing = playingItem ?? detailed
         if let local = playLocalURL {
-            CustomPlayerView(localFile: local, item: playing,
+            CustomPlayerView(localFile: local,
+                             item: playing,
+                             trickPlayProvider: LocalBIFTrickPlayThumbnailProvider(bifURL: playLocalTrickPlayURL),
                              onClose: { presentingPlayer = false })
                 .ignoresSafeArea()
         } else if let remote = remotePlayback {
@@ -536,6 +542,7 @@ struct DetailView: View {
                     // keyed on ratingKey tears down the old controller and rebuilds the player
                     // for the new episode, keeping the cover up for a continuous experience.
                     playLocalURL = nil
+                    playLocalTrickPlayURL = nil
                     playingItem = next
                 }
 
@@ -630,6 +637,7 @@ struct DetailView: View {
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
         playLocalURL = nil
+        playLocalTrickPlayURL = nil
         playingItem = itemWithResumeRewind(detailed)
         switch appModel.activeBackend {
         case .plex:

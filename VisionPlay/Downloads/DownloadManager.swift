@@ -194,6 +194,11 @@ public final class DownloadManager {
         store.localURL(for: ratingKey)
     }
 
+    /// Absolute cached Plex BIF index URL for a completed download, if present on disk.
+    public func plexBIFURL(for ratingKey: String) -> URL? {
+        store.plexBIFURL(for: ratingKey)
+    }
+
     /// Whether an active download's byte stream is gated by the server's transcoder (the file
     /// is served as it renders) rather than by the network — so a slow rate means "server still
     /// transcoding", not "slow connection". True only for a transcode-SOURCED download (marked
@@ -379,6 +384,8 @@ public final class DownloadManager {
         // failure is not a download failure — it just leaves the row without a poster.
         cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
                     server: server, token: token)
+        cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
+                     server: server, token: token)
 
         switch choice {
         case .original:
@@ -395,7 +402,8 @@ public final class DownloadManager {
             // The original file is a STATIC GET with a real Content-Length + valid moov atom.
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
             let preflight = await preflightOriginalPlayback(ratingKey: ratingKey, url: url,
-                                                            token: token, expectedBytes: part.size)
+                                                            token: token, expectedBytes: part.size,
+                                                            durationMs: part.duration ?? item.duration)
             guard preflight else {
                 let fallback = Self.originalFallbackOptimizeTarget()
                 recordDownloadDiagnostic("downloads.original_preflight_fallback", fields: [
@@ -508,13 +516,15 @@ public final class DownloadManager {
     /// the source in a muted `AVPlayer`. Passing means the original path continues; failing means
     /// we transparently fall back to the server optimizer.
     private func preflightOriginalPlayback(ratingKey: String, url: URL, token: String,
-                                           expectedBytes: Int?) async -> Bool {
-        let timeoutSeconds: TimeInterval = 6
+                                           expectedBytes: Int?, durationMs: Int?) async -> Bool {
+        let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs, isRemotePreflight: true)
         recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
             "download_id": .identifier(ratingKey),
             "phase": .label("start"),
             "url_shape": .urlShape(url),
             "expected_bytes": .bytes(expectedBytes),
+            "required_playback_seconds": .secondsBucket(policy.requiredPlaybackSeconds),
+            "timeout_seconds": .secondsBucket(policy.timeoutSeconds),
         ])
 
         let asset = AVURLAsset(url: url, options: [
@@ -541,7 +551,7 @@ public final class DownloadManager {
             player.replaceCurrentItem(with: nil)
         }
 
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(timeoutSeconds * 1000)))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(policy.timeoutSeconds * 1000)))
         var sawReady = false
         while ContinuousClock.now < deadline {
             switch item.status {
@@ -562,7 +572,7 @@ public final class DownloadManager {
             }
 
             let seconds = player.currentTime().seconds
-            if sawReady, seconds.isFinite, seconds >= 0.5 {
+            if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
                 recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
                     "download_id": .identifier(ratingKey),
                     "phase": .label("passed"),
@@ -570,7 +580,7 @@ public final class DownloadManager {
                 ])
                 return true
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
 
         recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
@@ -1589,6 +1599,44 @@ public final class DownloadManager {
             .init(name: "X-Plex-Token", value: token),
         ], in: &comps)
         return comps.url
+    }
+
+    /// Download + cache Plex's BIF trick-play index for the selected source Part so the
+    /// local custom player can keep showing scrub previews fully offline (#78). Best-effort:
+    /// a missing/invalid BIF never fails the media download. The request carries the token in
+    /// query, so do not log the URL or surfaced error.
+    private func cachePlexBIF(ratingKey: String, item: MediaItem, mediaIndex: Int,
+                              server: URL, token: String) {
+        guard let part = Self.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
+        let destination = store.plexBIFDestinationURL(ratingKey: ratingKey)
+        let request = TrickPlayRequest.plexBIFIndex(server: server,
+                                                    token: token,
+                                                    identity: appModel.identity,
+                                                    partID: part.id,
+                                                    quality: "sd")
+        let client = appModel.client
+        let store = self.store
+        Task { [weak self] in
+            do {
+                let data = try await client.send(request)
+                guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
+                try data.write(to: destination, options: .atomic)
+                await MainActor.run {
+                    store.setPlexBIFRelativePath(ratingKey: ratingKey, destination.lastPathComponent)
+                    self?.refreshRecords()
+                }
+            } catch {
+                // Expected for items/servers without BIFs, auth churn, or cache races.
+                // Keep silent and never log token-bearing URLs.
+            }
+        }
+    }
+
+    private static func selectedPlexBIFPart(from item: MediaItem, mediaIndex: Int) -> Part? {
+        guard let media = item.media, !media.isEmpty else { return nil }
+        let selectedMedia = media.indices.contains(mediaIndex) ? media[mediaIndex] : media[0]
+        guard let part = selectedMedia.part.first, part.hasStandardDefinitionBIFIndex else { return nil }
+        return part
     }
 
     // MARK: - Optimize path (HIGH UNCERTAINTY — isolated; Phase 0 confirms the contract)

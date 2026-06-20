@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import PMSKit
 
 /// Wraps a background `URLSession` so transfers survive app suspension and
 /// relaunch. On visionOS the OS pauses background transfers while the headset is
@@ -413,6 +414,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let asset = AVURLAsset(url: url)
         let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
         guard assetPlayable else { return (false, "asset_not_playable") }
+        let durationMs: Int?
+        if let duration = try? await asset.load(.duration),
+           duration.seconds.isFinite, duration.seconds > 0 {
+            durationMs = Int(duration.seconds * 1000)
+        } else {
+            durationMs = nil
+        }
+        let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs)
 
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
@@ -425,7 +434,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             player.replaceCurrentItem(with: nil)
         }
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(policy.timeoutSeconds * 1000)))
         var sawReady = false
         while ContinuousClock.now < deadline {
             switch item.status {
@@ -439,10 +448,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 break
             }
             let seconds = player.currentTime().seconds
-            if sawReady, seconds.isFinite, seconds >= 0.5 {
+            if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
                 return (true, "played")
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
         return (false, sawReady ? "no_playback_progress" : "timeout_not_ready")
     }

@@ -122,8 +122,13 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).poster.jpg")
     }
 
-    /// Re-resolve a stored relative poster path to an absolute URL that exists on disk.
-    private func resolvedPosterURL(_ relative: String?) -> URL? {
+    /// Build the on-disk destination for a ratingKey's cached Plex BIF trick-play index (#78).
+    func plexBIFDestinationURL(ratingKey: String) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).plex-sd.bif")
+    }
+
+    /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
+    private func resolvedDownloadAssetURL(_ relative: String?) -> URL? {
         guard let relative, !relative.isEmpty else { return nil }
         let url = baseDirectory.appendingPathComponent(relative)
         return fileManager.fileExists(atPath: url.path) ? url : nil
@@ -147,7 +152,8 @@ final class DownloadStore: @unchecked Sendable {
                                progress: row.progress,
                                status: row.status,
                                metadata: row.metadata,
-                               posterURL: resolvedPosterURL(row.metadata?.posterRelativePath))
+                               posterURL: resolvedDownloadAssetURL(row.metadata?.posterRelativePath),
+                               plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath))
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
@@ -176,6 +182,13 @@ final class DownloadStore: @unchecked Sendable {
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Absolute local Plex BIF cache URL for a completed download, if present on disk.
+    func plexBIFURL(for ratingKey: String) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        return resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath)
+    }
+
     /// Insert/replace a record. `localURL` must live under `baseDirectory`.
     ///
     /// D5: preserves an already-stored `metadata` snapshot if the incoming record
@@ -201,9 +214,19 @@ final class DownloadStore: @unchecked Sendable {
     /// metadata snapshot (D5). No-op if the row or its metadata is gone — a missing
     /// poster is never a download failure.
     func setPosterRelativePath(ratingKey: String, _ relativePath: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.posterRelativePath = relativePath }
+    }
+
+    /// Record the locally-cached Plex BIF path (relative to the base dir) on a row's
+    /// metadata snapshot (#78). No-op if the row or metadata is gone.
+    func setPlexBIFRelativePath(ratingKey: String, _ relativePath: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.plexBIFRelativePath = relativePath }
+    }
+
+    private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
         guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }
-        meta.posterRelativePath = relativePath
+        mutate(&meta)
         row.metadata = meta
         rows[ratingKey] = row
         lock.unlock()
@@ -321,9 +344,11 @@ final class DownloadStore: @unchecked Sendable {
                 NSLog("DownloadStore: failed to delete media for %@ (%@); file orphaned at %@",
                       ratingKey, String(describing: error), url.path)
             } catch {} // already absent — nothing to clean up
-            // D5: also delete the cached poster so a removed download leaves nothing behind.
-            if let poster = row.metadata?.posterRelativePath, !poster.isEmpty {
-                try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(poster))
+            // D5/#78: also delete cached side assets so a removed download leaves nothing behind.
+            for asset in [row.metadata?.posterRelativePath, row.metadata?.plexBIFRelativePath] {
+                if let asset, !asset.isEmpty {
+                    try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
+                }
             }
         }
         persist()

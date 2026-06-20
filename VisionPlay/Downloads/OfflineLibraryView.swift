@@ -49,6 +49,7 @@ public struct OfflineLibraryView: View {
         .fullScreenCover(item: $playing) { record in
             CustomPlayerView(localFile: record.localURL,
                              item: offlineItem(from: record),
+                             trickPlayProvider: LocalBIFTrickPlayThumbnailProvider(bifURL: record.plexBIFURL),
                              onClose: { playing = nil })
         }
     }
