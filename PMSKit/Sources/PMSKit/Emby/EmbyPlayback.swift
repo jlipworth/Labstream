@@ -510,6 +510,25 @@ public enum EmbyPlayback {
                     "BreakOnNonKeyFrames": false,
                 ],
             ],
+            // We do not render external sidecars or in-manifest WebVTT (Emby 4.9.3 does not embed
+            // subtitle renditions in its HLS manifest), so every subtitle we ask for must be
+            // burned into the video by the server. Declaring all common text and image subtitle
+            // formats with Method "Encode" makes Emby resolve a selected `SubtitleStreamIndex` to
+            // a burn-in transcode deterministically, for both text (SRT/ASS) and image (PGS/VOBSUB)
+            // subtitles. Only consulted when a subtitle is actually selected.
+            "SubtitleProfiles": [
+                ["Format": "srt", "Method": "Encode"],
+                ["Format": "subrip", "Method": "Encode"],
+                ["Format": "ass", "Method": "Encode"],
+                ["Format": "ssa", "Method": "Encode"],
+                ["Format": "vtt", "Method": "Encode"],
+                ["Format": "webvtt", "Method": "Encode"],
+                ["Format": "sub", "Method": "Encode"],
+                ["Format": "idx", "Method": "Encode"],
+                ["Format": "pgssub", "Method": "Encode"],
+                ["Format": "dvdsub", "Method": "Encode"],
+                ["Format": "dvbsub", "Method": "Encode"],
+            ],
         ]
     }
 

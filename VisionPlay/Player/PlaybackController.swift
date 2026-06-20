@@ -729,7 +729,20 @@ final class PlaybackController {
         let displayName: String
         /// The underlying option, or `nil` for the "Off" (deselect) row.
         let option: AVMediaSelectionOption?
+        /// Backend subtitle stream index for metadata-driven (burn-in reopen) tracks, e.g. Emby's
+        /// `SubtitleStreamIndex`. `nil` for AVFoundation soft renditions and the "Off" row. Used
+        /// only when the HLS carries no legible group (see `loadSubtitleTracks`).
+        var streamIndex: Int? = nil
     }
+
+    /// Whether the Subtitles tab should fall back to backend/container metadata + a stream reopen
+    /// instead of AVFoundation's legible group. Mirrors `supportsMetadataAudioSelection`, but scoped
+    /// to backend-reopen sessions (Jellyfin/Emby): Emby's HLS transcode exposes no legible subtitle
+    /// renditions, so the only way to show a subtitle is to reopen the stream with the chosen
+    /// `SubtitleStreamIndex` (server burn-in). Jellyfin embeds soft renditions and so keeps using the
+    /// instant AVFoundation path; this fallback only engages when the loaded asset has no legible
+    /// group.
+    var supportsMetadataSubtitleSelection: Bool { remoteStreamReopener != nil }
 
     /// Load the current item's legible (subtitle/closed-caption) selection group and its
     /// options, plus which one is active. Returns `nil` for the group when the HLS carries
@@ -744,7 +757,10 @@ final class PlaybackController {
         let asset = playerItem.asset
         guard let group = try? await asset.loadMediaSelectionGroup(for: .legible),
               !group.options.isEmpty else {
-            return nil
+            // No soft renditions in the HLS (e.g. Emby, which never embeds subtitle renditions in
+            // its transcode manifest). Fall back to part metadata + a stream reopen so the menu
+            // still populates and a chosen track is server-burned-in.
+            return loadMetadataSubtitleTracks()
         }
 
         // "Off" is always offered first. It maps to deselecting the group entirely.
@@ -767,6 +783,37 @@ final class PlaybackController {
             group.options.firstIndex(of: selected)
         } ?? -1
 
+        return (tracks, selectedID)
+    }
+
+    /// Build the Subtitles tab from part metadata for backends whose HLS carries no legible group
+    /// (Emby). Each row maps to a backend subtitle stream index; selecting one reopens the stream
+    /// with that `SubtitleStreamIndex` so the server burns it in. The track id IS the stream index
+    /// (always ≥ 0, distinct from the "Off" row's -1), so the UI checkmark and the reopen agree.
+    /// Returns `nil` when metadata selection isn't supported or no subtitle streams exist, so the
+    /// tab shows its graceful empty state.
+    private func loadMetadataSubtitleTracks() -> (tracks: [SubtitleTrack], selectedID: Int)? {
+        guard supportsMetadataSubtitleSelection, let part = streamingPart else { return nil }
+        let streams = part.subtitleStreams
+        guard !streams.isEmpty else { return nil }
+
+        // "Off" first. Playback opens with no subtitle, so "Off" is the default until the user
+        // picks one (or carries the live override after a switch this session).
+        var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1, displayName: "Off", option: nil)]
+        var seenCounts: [String: Int] = [:]
+        for (index, stream) in streams.enumerated() {
+            var label = stream.displayTitle
+                ?? stream.extendedDisplayTitle
+                ?? stream.language
+                ?? "Subtitle \(index + 1)"
+            if stream.forced == true, !label.lowercased().contains("forced") { label += " (Forced)" }
+            let priorCount = seenCounts[label, default: 0]
+            seenCounts[label] = priorCount + 1
+            if priorCount > 0 { label += " \(priorCount + 1)" }
+            tracks.append(SubtitleTrack(id: stream.id, displayName: label, option: nil, streamIndex: stream.id))
+        }
+
+        let selectedID = subtitleStreamIndexOverride ?? -1
         return (tracks, selectedID)
     }
 
@@ -901,15 +948,54 @@ final class PlaybackController {
     /// switch on the live `AVPlayerItem` — no reload, no playhead snapshot needed.
     func selectSubtitle(_ track: SubtitleTrack) async {
         guard let playerItem = player.currentItem else { return }
-        guard let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible) else {
+
+        // Soft path (Plex/Jellyfin): the HLS carries legible renditions, so switching is an instant
+        // AVMediaSelection — no reload.
+        if let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
+           !group.options.isEmpty {
+            playerItem.select(track.option, in: group)
+            // Remember this choice (language code, or the "Off" flag) so it's reapplied to the
+            // next item. A manual pick is authoritative for this session too: mark the auto-select
+            // gate spent so a later readyToPlay (e.g. mid-stream re-ready) won't override the user.
+            persistSubtitlePreference(for: track.option)
+            didApplySavedSubtitle = true
             return
         }
-        playerItem.select(track.option, in: group)
-        // Remember this choice (language code, or the "Off" flag) so it's reapplied to the
-        // next item. A manual pick is authoritative for this session too: mark the auto-select
-        // gate spent so a later readyToPlay (e.g. mid-stream re-ready) won't override the user.
-        persistSubtitlePreference(for: track.option)
+
+        // Metadata burn-in path (Emby): no legible renditions exist, so the only way to render a
+        // subtitle is to reopen the stream with the chosen `SubtitleStreamIndex` (server burns it
+        // in). The "Off" row (streamIndex nil) reopens with no subtitle.
+        guard supportsMetadataSubtitleSelection else { return }
+        guard track.streamIndex != subtitleStreamIndexOverride else { return }
+        subtitleStreamIndexOverride = track.streamIndex
+        persistMetadataSubtitlePreference(for: track)
         didApplySavedSubtitle = true
+
+        let resumeMs = currentResumeMs
+        restartAtCurrentPosition(offsetMs: resumeMs,
+                                 bitrateKbps: maxVideoBitrateKbps,
+                                 resetFinalTarget: true,
+                                 resetAdaptive: false,
+                                 clearError: false,
+                                 removeObservers: true,
+                                 swapRecoveryClient: false)
+    }
+
+    /// Persist a metadata-driven subtitle choice (Emby burn-in path) so the language preference
+    /// carries to later items, mirroring `persistSubtitlePreference` for the AVFoundation path.
+    /// The "Off" row (no stream index) records the explicit-off flag.
+    private func persistMetadataSubtitlePreference(for track: SubtitleTrack) {
+        let defaults = UserDefaults.standard
+        guard let streamIndex = track.streamIndex,
+              let stream = streamingPart?.subtitleStreams.first(where: { $0.id == streamIndex }) else {
+            defaults.set(true, forKey: SubtitlePrefKey.off)
+            defaults.removeObject(forKey: SubtitlePrefKey.language)
+            return
+        }
+        defaults.set(false, forKey: SubtitlePrefKey.off)
+        if let lang = stream.languageTag ?? stream.language, !lang.isEmpty {
+            defaults.set(lang, forKey: SubtitlePrefKey.language)
+        }
     }
 
     // MARK: - Audio (soundtrack / language)

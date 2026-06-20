@@ -166,5 +166,68 @@ struct LiveEmbyProbeTests {
             #expect(resolved.url.scheme != nil, "resolved stream URL should be absolute")
             #expect(!resolved.playSessionId.isEmpty, "resolved result should carry a PlaySessionId")
         }
+
+        // (d) Subtitle burn-in reopen: discover a subtitle stream index, POST PlaybackInfo WITH
+        // that SubtitleStreamIndex (mirrors `PlaybackController.selectSubtitle`'s Emby path), and
+        // confirm the server returns a usable stream that fetches 200. Emby 4.9.3 does not embed
+        // subtitle renditions in its HLS, so the only way to render a subtitle is server burn-in,
+        // which forces a transcode. Skips gracefully when the item carries no subtitle streams.
+        do {
+            // Discover a subtitle index from a no-subtitle PlaybackInfo.
+            let discoverReq = try EmbyPlayback.playbackInfoRequest(
+                server: cfg.server,
+                token: cfg.token,
+                identity: cfg.identity,
+                userId: cfg.userId,
+                itemId: cfg.itemId,
+                maxStreamingBitrate: cfg.maxStreamingBitrate)
+            let (discoverData, discoverStatus) = try await send(discoverReq)
+            #expect(discoverStatus == 200, "discover playbackInfo expected HTTP 200, got \(discoverStatus)")
+            let discover = try EmbyPlaybackInfoResponse.decode(from: discoverData)
+            let subtitleIndices = discover.mediaSources
+                .flatMap { $0.mediaStreams }
+                .filter { $0.type == "Subtitle" }
+                .compactMap { $0.index }
+            print(">>> LIVE [subtitle] discovered subtitle stream indices=\(subtitleIndices)")
+            guard let subtitleIndex = subtitleIndices.first else {
+                print(">>> LIVE [subtitle] item has no subtitle streams — skipping burn-in check.")
+                return
+            }
+
+            let subReq = try EmbyPlayback.playbackInfoRequest(
+                server: cfg.server,
+                token: cfg.token,
+                identity: cfg.identity,
+                userId: cfg.userId,
+                itemId: cfg.itemId,
+                maxStreamingBitrate: cfg.maxStreamingBitrate,
+                subtitleStreamIndex: subtitleIndex)
+            let (subData, subStatus) = try await send(subReq)
+            print(">>> LIVE [subtitle] PlaybackInfo(subtitleStreamIndex=\(subtitleIndex)) HTTP \(subStatus), \(subData.count) bytes")
+            #expect(subStatus == 200, "subtitle playbackInfo expected HTTP 200, got \(subStatus)")
+            let subResponse = try EmbyPlaybackInfoResponse.decode(from: subData)
+
+            let resolvedSub = try EmbyPlayback.resolveStream(
+                response: subResponse,
+                server: cfg.server,
+                identity: cfg.identity,
+                token: cfg.token,
+                userId: cfg.userId,
+                itemId: cfg.itemId,
+                subtitleStreamIndex: subtitleIndex)
+            print(">>> LIVE [subtitle] resolved playMethod=\(resolvedSub.playMethod) usesServerEncoding=\(resolvedSub.usesServerEncoding)")
+            // Burning a subtitle into the picture requires re-encoding the video → transcode.
+            #expect(resolvedSub.playMethod == .transcode,
+                    "selecting a subtitle should force a transcode (server burn-in), got \(resolvedSub.playMethod)")
+
+            // The burned-in stream URL must actually fetch. GET it and confirm a success status
+            // (HLS playlists are small; this just proves the server accepts the burn-in request).
+            var fetch = URLRequest(url: resolvedSub.url)
+            for (k, v) in resolvedSub.requiredHTTPHeaders { fetch.setValue(v, forHTTPHeaderField: k) }
+            let (_, fetchStatus) = try await send(fetch)
+            print(">>> LIVE [subtitle] burn-in stream GET HTTP \(fetchStatus)")
+            #expect((200..<400).contains(fetchStatus),
+                    "burn-in stream should fetch with a success status, got \(fetchStatus)")
+        }
     }
 }

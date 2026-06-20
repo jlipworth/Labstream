@@ -517,7 +517,15 @@ struct DetailView: View {
                                                     maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
                                                     qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
                              },
-                             trickPlayProvider: nil,
+                             // Emby has no Jellyfin-style trickplay tiles; serve coarse,
+                             // chapter-granularity scrub previews from the per-chapter image
+                             // endpoint instead (nil when the item has no chapter images).
+                             trickPlayProvider: EmbyChapterTrickPlayThumbnailProvider(
+                                item: playing,
+                                server: appModel.embyServerBaseURL,
+                                token: appModel.embyAccessToken,
+                                identity: appModel.identity.emby,
+                                userId: appModel.embyUserID),
                              onClose: { presentingPlayer = false },
                              allowsRealityTheater: false)
                 .id(remote.id)
