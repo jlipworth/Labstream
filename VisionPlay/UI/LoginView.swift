@@ -21,6 +21,11 @@ private enum JellyfinSignInMethod: Equatable {
     case credentials
 }
 
+private enum EmbySignInMethod: Equatable {
+    case connectPin
+    case credentials
+}
+
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -37,6 +42,7 @@ struct LoginView: View {
     @State private var embyServer = ""
     @State private var embyUsername = ""
     @State private var embyPassword = ""
+    @State private var embySignInMethod: EmbySignInMethod?
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
@@ -66,7 +72,7 @@ struct LoginView: View {
                 // linger over the now-authenticated app.
                 working = false
                 webAuth.cancel()
-            case .awaitingJellyfinQuickConnect:
+            case .awaitingJellyfinQuickConnect, .awaitingEmbyConnectPin, .awaitingEmbyServerSelection:
                 working = false
             default:
                 break
@@ -136,6 +142,7 @@ struct LoginView: View {
                 working = false
                 webAuth.cancel()
                 jellyfinSignInMethod = nil
+                embySignInMethod = nil
                 authManager.selectBackend(backend)
             })) {
                 ForEach(MediaBackendKind.allCases) { backend in
@@ -403,9 +410,192 @@ struct LoginView: View {
         }
     }
 
-    // MARK: - Emby (username/password only — no Quick Connect in slice 1)
+    // MARK: - Emby (Emby Connect PIN — primary — or server URL + username/password)
 
+    @ViewBuilder
     private var embyLoginForm: some View {
+        switch authManager.state {
+        case .awaitingEmbyConnectPin(let code):
+            embyConnectWaiting(code: code)
+        case .awaitingEmbyServerSelection(let servers):
+            embyServerPicker(servers)
+        default:
+            embyMethodForm
+        }
+    }
+
+    @ViewBuilder
+    private var embyMethodForm: some View {
+        switch embySignInMethod {
+        case nil:
+            embyMethodChooser
+        case .connectPin:
+            embyConnectStart
+        case .credentials:
+            embyCredentialsForm
+        }
+    }
+
+    /// Emby Connect PIN is the headset-friendly primary path (needs no server address);
+    /// the server-URL + username/password form is the secondary option.
+    private var embyMethodChooser: some View {
+        VStack(spacing: DS.Space.sm) {
+            Text("Choose how to sign in.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: DS.Space.sm) {
+                Button {
+                    embySignInMethod = .connectPin
+                    Task { await startEmbyConnect() }
+                } label: {
+                    Label("Sign in with Emby Connect", systemImage: "link.badge.plus")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(working)
+
+                Button {
+                    errorMessage = nil
+                    embySignInMethod = .credentials
+                } label: {
+                    Label("Sign in with server URL", systemImage: "server.rack")
+                        .font(.title3.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                }
+                .buttonStyle(.bordered)
+                .disabled(working)
+            }
+            .frame(maxWidth: 340)
+
+            Text("Emby Connect uses a code at emby.media/pin.html — no server address needed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+    }
+
+    private var embyConnectStart: some View {
+        VStack(spacing: DS.Space.sm) {
+            if working {
+                HStack(spacing: DS.Space.sm) {
+                    ProgressView()
+                    Text("Starting Emby Connect…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Button {
+                    Task { await startEmbyConnect() }
+                } label: {
+                    Label("Start Emby Connect", systemImage: "link.badge.plus")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            Button("Choose a different sign-in method") {
+                errorMessage = nil
+                working = false
+                authManager.cancelCurrentAuthorization()
+                embySignInMethod = nil
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func embyConnectWaiting(code: String) -> some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
+                    .font(.title3)
+                Text("on your phone, tablet, or computer — sign in to Emby Connect there")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            HStack(spacing: DS.Space.md) {
+                ForEach(Array(code.enumerated()), id: \.offset) { _, character in
+                    Text(String(character))
+                        .font(.system(size: 44, weight: .semibold, design: .monospaced))
+                        .frame(width: 64, height: 82)
+                        .background(.thinMaterial, in: codeCellShape)
+                        .overlay(codeCellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                }
+            }
+            .padding(.vertical, DS.Space.xs)
+
+            HStack(spacing: DS.Space.sm) {
+                ProgressView()
+                Text("Waiting for authorization…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Use a server URL instead") {
+                authManager.cancelCurrentAuthorization()
+                embySignInMethod = .credentials
+                working = false
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func embyServerPicker(_ servers: [AuthManager.EmbyConnectServerChoice]) -> some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Choose a server")
+                    .font(.title3.weight(.semibold))
+                Text("Your Emby Connect account is linked to more than one server.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            VStack(spacing: DS.Space.sm) {
+                ForEach(servers) { server in
+                    Button {
+                        Task { await authManager.selectEmbyConnectServer(id: server.id) }
+                    } label: {
+                        HStack(spacing: DS.Space.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name)
+                                    .font(.headline)
+                                if !server.addressLabel.isEmpty {
+                                    Text(server.addressLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: DS.Space.sm)
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, DS.Space.xs)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .frame(maxWidth: 420)
+
+            Button("Cancel") {
+                authManager.cancelCurrentAuthorization()
+                embySignInMethod = nil
+                working = false
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var embyCredentialsForm: some View {
         VStack(spacing: DS.Space.md) {
             TextField("https://emby.example.com", text: $embyServer)
                 .textInputAutocapitalization(.never)
@@ -441,6 +631,13 @@ struct LoginView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(working || !hasEmbyServerInput)
+
+            Button("Choose a different sign-in method") {
+                errorMessage = nil
+                working = false
+                embySignInMethod = nil
+            }
+            .buttonStyle(.bordered)
         }
     }
 
@@ -525,6 +722,13 @@ struct LoginView: View {
         }
         working = true
         await authManager.startJellyfinQuickConnect(server: server)
+        working = false
+    }
+
+    private func startEmbyConnect() async {
+        errorMessage = nil
+        working = true
+        await authManager.startEmbyConnect()
         working = false
     }
 

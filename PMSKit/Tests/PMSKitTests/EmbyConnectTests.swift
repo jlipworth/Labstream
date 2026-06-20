@@ -156,4 +156,27 @@ struct EmbyConnectTests {
         #expect(result.localUserId == "local-user-1")
         #expect(result.accessToken == "server-token")
     }
+
+    // MARK: API base from a Connect address
+
+    @Test func apiBaseAppendsEmbyToBareWanAddress() throws {
+        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "https://emby.example.org")
+        #expect(url == URL(string: "https://emby.example.org/emby"))
+    }
+
+    @Test func apiBaseAppendsEmbyToLanAddressWithPort() throws {
+        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "http://192.0.2.10:8096")
+        #expect(url == URL(string: "http://192.0.2.10:8096/emby"))
+    }
+
+    @Test func apiBaseDoesNotDoubleEmbyWhenAlreadyPresent() throws {
+        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "https://emby.example.org/emby")
+        #expect(url == URL(string: "https://emby.example.org/emby"))
+    }
+
+    @Test func apiBaseThrowsOnGarbage() {
+        #expect(throws: (any Error).self) {
+            try EmbyConnect.apiBaseURL(forConnectAddress: "not a url")
+        }
+    }
 }

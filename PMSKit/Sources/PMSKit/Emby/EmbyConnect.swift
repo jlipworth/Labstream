@@ -153,6 +153,18 @@ public enum EmbyConnect {
         return req
     }
 
+    /// Turn a Connect server address (the bare `Url`/`LocalAddress` from `/service/servers`,
+    /// e.g. `https://host` or `http://192.0.2.10:8096`) into the Emby API base by appending the
+    /// `/emby` path segment Emby's clients always use — unless it is already present. The
+    /// result is what the rest of the Emby lane treats as `server` (path-preserving joins
+    /// then produce `…/emby/<handler>`).
+    public static func apiBaseURL(forConnectAddress address: String) throws -> URL {
+        let normalized = try EmbyServerURL.normalized(address)
+        let lastComponent = normalized.lastPathComponent.lowercased()
+        if lastComponent == "emby" { return normalized }
+        return normalized.appendingPathComponent("emby")
+    }
+
     // MARK: Helpers
 
     private static func cloudRequest(handler: String,
