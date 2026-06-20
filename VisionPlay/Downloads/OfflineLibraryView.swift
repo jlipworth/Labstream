@@ -68,7 +68,7 @@ public struct OfflineLibraryView: View {
             offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.title).font(.headline)
+                Text(displayTitle(for: record)).font(.headline)
                 if let subtitle = subtitle(for: record) {
                     Text(subtitle)
                         .font(.caption)
@@ -184,6 +184,15 @@ public struct OfflineLibraryView: View {
                         .foregroundStyle(isComplete ? .green : (isFailed ? .red : .secondary))
                 }
         }
+    }
+
+    /// Keep downloaded episodes self-identifying and sortable by eye even without the server:
+    /// "Show · S1E3 · Episode Title" instead of only the episode title.
+    private func displayTitle(for record: DownloadRecord) -> String {
+        guard let item = record.metadata?.makeMediaItem(), item.kind == .episode else {
+            return record.title
+        }
+        return item.displaySubtitleLine
     }
 
     /// A secondary line built from the persisted snapshot (D5): year + runtime +
