@@ -271,10 +271,16 @@ final class DownloadStore: @unchecked Sendable {
             let hasLiveTask = liveRatingKeys.contains(key)
             let fileExists = fileManager.fileExists(
                 atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
+            // Only Plex has a server-side "prepare then static download" optimize queue that can
+            // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
+            // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
+            // missing task means the render is gone — they must demote to retryable `.failed`, not
+            // resume as `.queued`. Hence both backend prefixes are excluded here.
             let isPlexServerPrepOptimizedJob = !hasLiveTask
                 && (row.status == .queued || row.status == .downloading)
                 && row.metadata?.optimizeTargetName?.isEmpty == false
                 && !row.ratingKey.hasPrefix("jellyfin:")
+                && !row.ratingKey.hasPrefix("emby:")
             let newStatus = isPlexServerPrepOptimizedJob
                 ? .queued
                 : DownloadStatus.reconciledStatus(

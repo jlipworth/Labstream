@@ -133,6 +133,67 @@ public enum EmbyLibrary {
         return req
     }
 
+    /// `GET /Videos/{itemId}/stream.{container}?static=true&MediaSourceId=..&DeviceId=..`
+    ///
+    /// The static ORIGINAL download — byte-for-byte source file, no server encoding. Validated
+    /// live: HTTP 206, range-RESUMABLE, with a real Content-Length. Only offer this when the
+    /// negotiated download PlaybackInfo says `SupportsDirectPlay == true` AND the container is
+    /// locally playable (mp4/m4v/mov) — otherwise the file won't open as an offline local asset.
+    /// Auth rides in the header (token is NOT baked into the stored URL).
+    public static func downloadOriginalRequest(server: URL,
+                                               token: String,
+                                               identity: EmbyClientIdentity,
+                                               userId: String,
+                                               itemId: String,
+                                               mediaSourceId: String?,
+                                               container: String?) throws -> URLRequest {
+        let cleanContainer = (container ?? "mp4")
+            .split(separator: ",").first.map(String.init) ?? "mp4"
+        let ext = cleanContainer
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+        let safeExt = ext.isEmpty ? "mp4" : ext
+        var query = [
+            URLQueryItem(name: "static", value: "true"),
+            URLQueryItem(name: "DeviceId", value: identity.deviceId),
+        ]
+        if let mediaSourceId, !mediaSourceId.isEmpty {
+            query.append(URLQueryItem(name: "MediaSourceId", value: mediaSourceId))
+        }
+        let url = try url(server: server, path: "/Videos/\(itemId)/stream.\(safeExt)", queryItems: query)
+        var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
+    /// Build the transcoded-download request from the server-minted `TranscodingUrl` returned by
+    /// `EmbyPlayback.downloadPlaybackInfoRequest`.
+    ///
+    /// CRITICAL: you CANNOT hand-build this URL the way Jellyfin does. A hand-built
+    /// `stream.mp4?static=false&videoCodec=h264…` returns HTTP 400 ("Value cannot be null.
+    /// Parameter 'key'") because Emby requires a `PlaySessionId` minted by PlaybackInfo. So we
+    /// take the server's `TranscodingUrl` verbatim (it already carries `api_key`, `PlaySessionId`,
+    /// `MediaSourceId`, `DeviceId`) and only join it onto the server base URL. The token already
+    /// rides in the `api_key` query, so no extra header is required. REDACT `api_key` in logs.
+    /// NOT range-resumable (Emby transcoded streams report `accept-ranges: none`); restart on
+    /// failure, and ALWAYS tear the encoder down with `activeEncodingStopRequest`.
+    public static func transcodedDownloadRequest(server: URL,
+                                                 token: String,
+                                                 identity: EmbyClientIdentity,
+                                                 userId: String,
+                                                 transcodingURL: String) throws -> URLRequest {
+        let url = try EmbyPlayback.embyURL(server: server, pathOrURLString: transcodingURL)
+        var req = URLRequest(url: url)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        // The transcoding URL already carries api_key; still attach the identity header so the
+        // request is well-formed (mirrors authenticatedRequest), but do NOT duplicate the token
+        // anywhere it isn't already present.
+        req.setValue(EmbyAuth.authorizationHeader(identity: identity, userId: userId, token: token),
+                     forHTTPHeaderField: "Authorization")
+        return req
+    }
+
     /// Bare image URL — token is NOT baked in (mirror Jellyfin's no-token-in-stored-URL
     /// rule). The caller attaches the Emby auth header (or `api_key` query) on the live
     /// request.
