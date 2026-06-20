@@ -1893,10 +1893,13 @@ public final class DownloadManager {
             // Surface server-side optimize/transcode progress for the "Preparing on
             // server…" caption. Best-effort: failures or no-match leave the existing
             // behavior untouched.
-            // The sole-optimizer fallback is only safe when THIS client has a single active
-            // download — otherwise an unrelated server optimize job could be mis-attributed.
+            // Do not use the historical sole-optimizer fallback here. Live PMS can run several
+            // background transcodes while `/activities` exposes only one `media.download` entry,
+            // so "one VisionPlay active job" is not enough to prove that lone activity belongs
+            // to us. `recordServerQueueProbe` below reads `/status/sessions/background`, whose
+            // per-job `ratingKey` is the safer progress source under concurrency.
             await pollOptimizeActivity(ratingKey: ratingKey, mediaTitle: mediaTitle,
-                                       allowSoleFallback: activeJobs.count == 1,
+                                       allowSoleFallback: false,
                                        server: server, token: token, identity: identity)
             // Disambiguation probe: distinguish "completed-item clutter" (inert) from a genuinely
             // stalled or idle-paused server conversion queue. Privacy-safe COUNTS + short state
@@ -2145,25 +2148,24 @@ public final class DownloadManager {
                                         identity: ClientIdentity) async {
         var fields: [String: DiagnosticFieldValue] = ["download_id": .identifier(ratingKey)]
 
-        // 1. /playQueues/1 → ordered conversion queue (Conversion). Decoded FIRST so we learn
-        //    which conversion the server is ACTIVELY working — it processes ONE at a time, so the
-        //    single bg_progress/bg_speed below belongs to whichever item is active. With several
-        //    of OUR jobs queued at once this is the only way to attribute that one progress value
-        //    to the right row (and to tell the others they're genuinely waiting, not "preparing").
-        var activeConversionRatingKey: String? = nil
+        // 1. /playQueues/1 → ordered conversion queue (Conversion). This tells us whether this
+        //    row is still in the optimize queue, but it is NOT a complete active-job signal:
+        //    live PMS can run several optimizations concurrently while playQueues/1 exposes only
+        //    one selected item. Use /status/sessions/background below for per-job attribution.
         var thisIsQueuedConversion = false
         if let queue = try? await appModel.client.send(
             BackgroundQueueRequest.conversionQueueRequest(server: server, token: token, identity: identity),
             as: ConversionQueue.self) {
             fields["conversion_count"] = .int(queue.count)
             fields["active_conversion_present"] = .bool(queue.hasActiveConversion)
-            activeConversionRatingKey = queue.activeItem?.ratingKey
             let inQueue = queue.items.contains { $0.ratingKey == ratingKey }
-            if let ark = activeConversionRatingKey {
-                fields["active_rk_match"] = .bool(ark == ratingKey)
+            fields["conversion_contains_rk"] = .bool(inQueue)
+            if let selected = queue.activeItem?.ratingKey {
+                // Historical/diagnostic only: this may be ONE selected conversion, not the full
+                // set of active conversions. Do not use it to decide this row is inactive.
+                fields["selected_rk_match"] = .bool(selected == ratingKey)
             }
-            // "Queued behind" = our item is in the queue but isn't the one being worked.
-            thisIsQueuedConversion = inQueue && activeConversionRatingKey != ratingKey
+            thisIsQueuedConversion = inQueue
         }
 
         // 2. /status/sessions/background → running/paused optimization jobs (TranscodeJob).
@@ -2171,24 +2173,19 @@ public final class DownloadManager {
             BackgroundQueueRequest.transcodeJobsRequest(server: server, token: token, identity: identity),
             as: BackgroundTranscodeJobs.self) {
             fields["bg_job_count"] = .int(jobs.jobs.count)
-            if let p = jobs.firstProgress { fields["bg_progress"] = .int(p) }
+            let matchingJob = jobs.job(ratingKey: ratingKey)
+            let attributedJob: BackgroundTranscodeJobs.Job? = matchingJob
+                // Legacy fallback for older PMS shapes without per-job ratingKey: if there is
+                // exactly one background job and exactly one active VisionPlay download, it is
+                // unambiguous. Never use first-job fallback when PMS reports multiple jobs.
+                ?? ((jobs.jobs.count == 1 && activeJobs.count == 1) ? jobs.jobs.first : nil)
+            let isActiveConversion = attributedJob != nil
+            if matchingJob != nil { fields["bg_rk_match"] = .bool(true) }
+            if let p = attributedJob?.progress { fields["bg_progress"] = .int(p) }
             // `state` is a queued/running/paused-style vocabulary token, not a media title.
-            if let s = jobs.firstState { fields["bg_state"] = .label(s) }
+            if let s = attributedJob?.state { fields["bg_state"] = .label(s) }
             // Server-reported realtime multiplier (a number, never a title) — preferred ETA source.
-            if let speed = jobs.firstSpeed { fields["bg_speed"] = .double(speed) }
-
-            // ATTRIBUTION: the server transcodes ONE conversion at a time, so bg_progress/bg_speed
-            // describe whichever conversion is active. Attribute them to THIS download when the
-            // conversion queue names it as the active item (by ratingKey). Fall back to the old
-            // single-job heuristic only when the queue exposed no usable ratingKey — then a lone
-            // in-flight job is unambiguously the active one. When the queue DID name an active item
-            // and it isn't us, we are NOT active (no mis-attribution under concurrency).
-            let isActiveConversion: Bool
-            if let ark = activeConversionRatingKey {
-                isActiveConversion = (ark == ratingKey)
-            } else {
-                isActiveConversion = (activeJobs.count == 1)
-            }
+            if let speed = attributedJob?.speed { fields["bg_speed"] = .double(speed) }
             fields["bg_attributed"] = .label(isActiveConversion ? "active"
                                              : (thisIsQueuedConversion ? "queued" : "none"))
 
@@ -2197,8 +2194,8 @@ public final class DownloadManager {
                 // the progress-rate EMA), written into the SINGLE published `optimizeETA` store —
                 // superseding the EMA set earlier this poll by `pollOptimizeActivity` (last write
                 // wins), falling back to the EMA when the server reports no usable speed.
-                if let speed = jobs.firstSpeed, speed > 0,
-                   let pct = jobs.firstProgress, pct >= 0, pct < 100,
+                if let speed = attributedJob?.speed, speed > 0,
+                   let pct = attributedJob?.progress, pct >= 0, pct < 100,
                    let etaSeconds = speedBasedTranscodeETA(ratingKey: ratingKey,
                                                            progressPercent: pct, speed: speed) {
                     optimizeETA[ratingKey] = etaSeconds
@@ -2215,7 +2212,7 @@ public final class DownloadManager {
                 // (here) keeps climbing, so feed it into the SAME store — last-write-wins with the
                 // activity match. Monotonic for display: never let it visibly step backward (prefer
                 // the larger), so a brief disagreement with the activity match can't jitter the bar.
-                if let pct = jobs.firstProgress, pct >= 0, pct <= 100 {
+                if let pct = attributedJob?.progress, pct >= 0, pct <= 100 {
                     let bgFraction = min(1.0, Double(pct) / 100.0)
                     optimizeProgress[ratingKey] = max(bgFraction, optimizeProgress[ratingKey] ?? 0)
                     if optimizeState[ratingKey] == nil { optimizeState[ratingKey] = "transcoding" }
