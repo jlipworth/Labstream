@@ -2117,7 +2117,13 @@ public final class DownloadManager {
     private func speedBasedTranscodeETA(ratingKey: String, progressPercent pct: Int,
                                         speed: Double) -> TimeInterval? {
         guard speed > 0, pct >= 0, pct < 100,
-              let durationMs = records.first(where: { $0.ratingKey == ratingKey })?.metadata?.duration,
+              // Prefer the already-published snapshot, but fall back to the store in case this
+              // probe races a refresh during optimize resume/retry. Without a duration the
+              // server-speed estimate cannot be converted into wall-clock seconds; the progress
+              // EMA below still covers subsequent polls.
+              let durationMs = (records.first(where: { $0.ratingKey == ratingKey })
+                    ?? store.records.first(where: { $0.ratingKey == ratingKey }))?
+                    .metadata?.duration,
               durationMs > 0 else { return nil }
         let durationSec = Double(durationMs) / 1000.0
         let remainingVideoSeconds = durationSec * (1.0 - Double(pct) / 100.0)
@@ -2190,32 +2196,33 @@ public final class DownloadManager {
                                              : (thisIsQueuedConversion ? "queued" : "none"))
 
             if isActiveConversion {
+                // FROZEN-% FIX: the UI's "Transcoding NN%" reads `optimizeProgress`, normally set by
+                // `pollOptimizeActivity` matching the `/activities` feed. Under concurrent/ambiguous
+                // jobs that match returns none and the value FREEZES. The server's own `bg_progress`
+                // (here) keeps climbing, so feed it into the SAME store — last-write-wins with the
+                // activity match. Also feed the same background progress into the ETA EMA: the
+                // activity feed can expose only one optimize activity even while PMS runs several
+                // background transcoders, so a row could show "Transcoding 7%" from this endpoint
+                // but never get a time estimate if ETA sampling stayed activity-only.
+                if let pct = attributedJob?.progress, pct >= 0, pct <= 100 {
+                    let bgFraction = min(1.0, Double(pct) / 100.0)
+                    updateOptimizeETA(ratingKey: ratingKey, progress: bgFraction)
+                    // Monotonic for display: never let it visibly step backward (prefer the
+                    // larger), so a brief disagreement with the activity match can't jitter the bar.
+                    optimizeProgress[ratingKey] = max(bgFraction, optimizeProgress[ratingKey] ?? 0)
+                    if optimizeState[ratingKey] == nil { optimizeState[ratingKey] = "transcoding" }
+                }
+
                 // PREFERRED transcode-ETA source: remaining_video_seconds / speed (steadier than
                 // the progress-rate EMA), written into the SINGLE published `optimizeETA` store —
-                // superseding the EMA set earlier this poll by `pollOptimizeActivity` (last write
-                // wins), falling back to the EMA when the server reports no usable speed.
+                // superseding the EMA set above/earlier this poll by `pollOptimizeActivity` (last
+                // write wins), falling back to the EMA when the server reports no usable speed.
                 if let speed = attributedJob?.speed, speed > 0,
                    let pct = attributedJob?.progress, pct >= 0, pct < 100,
                    let etaSeconds = speedBasedTranscodeETA(ratingKey: ratingKey,
                                                            progressPercent: pct, speed: speed) {
                     optimizeETA[ratingKey] = etaSeconds
-                    if optimizeProgress[ratingKey] == nil {
-                        optimizeProgress[ratingKey] = min(1.0, Double(pct) / 100.0)
-                        optimizeState[ratingKey] = "transcoding"
-                    }
                     fields["bg_speed_eta_sec"] = .int(Int(etaSeconds))
-                }
-
-                // FROZEN-% FIX: the UI's "Transcoding NN%" reads `optimizeProgress`, normally set by
-                // `pollOptimizeActivity` matching the `/activities` feed. Under concurrent/ambiguous
-                // jobs that match returns none and the value FREEZES. The server's own `bg_progress`
-                // (here) keeps climbing, so feed it into the SAME store — last-write-wins with the
-                // activity match. Monotonic for display: never let it visibly step backward (prefer
-                // the larger), so a brief disagreement with the activity match can't jitter the bar.
-                if let pct = attributedJob?.progress, pct >= 0, pct <= 100 {
-                    let bgFraction = min(1.0, Double(pct) / 100.0)
-                    optimizeProgress[ratingKey] = max(bgFraction, optimizeProgress[ratingKey] ?? 0)
-                    if optimizeState[ratingKey] == nil { optimizeState[ratingKey] = "transcoding" }
                 }
             } else if thisIsQueuedConversion {
                 // Waiting behind the active conversion — say so honestly ("Queued on server")
