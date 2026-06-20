@@ -242,7 +242,6 @@ private struct RealityTheaterPlayerAttachment: View {
                 CustomPlayerChrome(controller: controller,
                                    title: title,
                                    scrubState: $scrubState,
-                                   isReconnecting: false,
                                    onRetry: { controller.retry() },
                                    onClose: nil,
                                    allowsRealityTheater: true)

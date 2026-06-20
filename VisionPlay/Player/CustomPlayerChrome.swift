@@ -41,7 +41,6 @@ struct CustomPlayerChrome: View {
     let title: String
     @Binding var scrubState: PlaybackScrubState
     let trickPlayProvider: (any TrickPlayThumbnailProviding)?
-    let isReconnecting: Bool
     let onRetry: () -> Void
     let onClose: (() -> Void)?
     let allowsRealityTheater: Bool
@@ -60,7 +59,6 @@ struct CustomPlayerChrome: View {
          title: String,
          scrubState: Binding<PlaybackScrubState>,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
-         isReconnecting: Bool,
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?,
          allowsRealityTheater: Bool = false) {
@@ -68,7 +66,6 @@ struct CustomPlayerChrome: View {
         self.title = title
         _scrubState = scrubState
         self.trickPlayProvider = trickPlayProvider
-        self.isReconnecting = isReconnecting
         self.onRetry = onRetry
         self.onClose = onClose
         self.allowsRealityTheater = allowsRealityTheater
@@ -99,11 +96,6 @@ struct CustomPlayerChrome: View {
 
             VStack {
                 Spacer()
-
-                if controller.playbackError.isFailed {
-                    failureCard
-                        .padding(.bottom, 18)
-                }
 
                 if let marker = controller.skipMarker.active {
                     HStack {
@@ -162,39 +154,32 @@ struct CustomPlayerChrome: View {
         }
         .onChange(of: controller.transport.isPaused) { _, _ in scheduleChromeHideIfNeeded() }
         .onChange(of: controller.transport.pauseRequested) { _, _ in scheduleChromeHideIfNeeded() }
-        .onChange(of: controller.playbackError.isFailed) { _, _ in
-            scheduleChromeHideIfNeeded()
-        }
-        .onChange(of: isReconnecting) { _, _ in
+        .onChange(of: controller.transportStatus.status) { _, _ in
             scheduleChromeHideIfNeeded()
         }
     }
 
     private var shouldShowChrome: Bool {
-        chromeVisible || controller.transport.showsPausedControl || controller.playbackError.isFailed || isReconnecting || selectedMenu != nil
+        chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
     }
 
     @ViewBuilder
     private var transientStatusOverlay: some View {
-        // Keep transport status as a single centered surface and a single SwiftUI view type.
-        // A slow Plex transcode start can flip from "buffering" to "reconnecting" and back;
-        // swapping two different card views makes that look like two buffering dialogs.
-        if !controller.playbackError.isFailed, let status = transientPlaybackStatus {
+        // The chrome renders the controller-owned transport status verbatim. It does not compose
+        // buffering, retry, and failure booleans, so Cinema cannot show duplicate dialogs when HLS
+        // delivery chatters between waiting and playing.
+        if let status = controller.transportStatus.activeStatus {
             CustomTransportStatusOverlay(status: status,
+                                         onRetry: {
+                                             revealChrome()
+                                             onRetry()
+                                         },
                                          onClose: onClose,
                                          onTogglePause: {
                                              revealChrome(keepVisible: true)
                                              controller.togglePlayback()
                                          })
         }
-    }
-
-    private var transientPlaybackStatus: CustomTransportStatusOverlay.Status? {
-        if isReconnecting { return .reconnecting }
-        if controller.buffering.isBuffering {
-            return controller.transport.showsPausedControl ? .pausedBuffering : .buffering
-        }
-        return nil
     }
 
     private var topChrome: some View {
@@ -451,42 +436,6 @@ struct CustomPlayerChrome: View {
         }
     }
 
-    private var failureCard: some View {
-        VStack(spacing: 12) {
-            Label("Playback failed", systemImage: "exclamationmark.triangle")
-                .font(.headline)
-            if let message = controller.playbackError.message, !message.isEmpty {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            VStack(spacing: 8) {
-                Button(action: {
-                    revealChrome()
-                    onRetry()
-                }) {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                        .frame(minWidth: 160)
-                }
-                .buttonStyle(.borderedProminent)
-                if let onClose {
-                    Button(action: onClose) {
-                        Text("Close")
-                            .frame(minWidth: 160)
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            .padding(.top, 2)
-        }
-        .padding(22)
-        // Cap the width so a long server message wraps onto multiple centered lines
-        // instead of stretching the card across the screen.
-        .frame(maxWidth: 360)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-
     private func upNextCard(_ next: MediaItem) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
@@ -678,15 +627,13 @@ struct CustomPlayerChrome: View {
     private func scheduleChromeHideIfNeeded() {
         hideTask?.cancel()
         guard !controller.transport.showsPausedControl,
-              !controller.playbackError.isFailed,
-              !isReconnecting,
+              !controller.transportStatus.keepsChromeVisible,
               selectedMenu == nil else { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled,
                   !controller.transport.showsPausedControl,
-                  !controller.playbackError.isFailed,
-                  !isReconnecting,
+                  !controller.transportStatus.keepsChromeVisible,
                   selectedMenu == nil else { return }
             chromeVisible = false
         }
@@ -859,52 +806,62 @@ private struct CustomPlayerMenuPopover: View {
 }
 
 struct CustomTransportStatusOverlay: View {
-    enum Status: Equatable {
-        case buffering
-        case pausedBuffering
-        case reconnecting
-
-        var title: String {
-            switch self {
-            case .buffering: "Buffering…"
-            case .pausedBuffering: "Paused — buffering…"
-            case .reconnecting: "Reconnecting…"
-            }
-        }
-
-        var detail: String? {
-            switch self {
-            case .buffering:
-                "You can pause now and let the stream build buffer before playing."
-            case .pausedBuffering:
-                "Playback will stay paused once the stream is ready."
-            case .reconnecting:
-                nil
-            }
-        }
-    }
-
-    let status: Status
+    let status: PlaybackTransportStatus
+    let onRetry: () -> Void
     let onClose: (() -> Void)?
     let onTogglePause: () -> Void
 
+    private var title: String {
+        switch status {
+        case .none: ""
+        case .initialLoading: "Loading…"
+        case .buffering: "Buffering…"
+        case .pausedBuffering: "Paused — buffering…"
+        case .reconnecting: "Reconnecting…"
+        case .failed: "Playback failed"
+        }
+    }
+
+    private var detail: String? {
+        switch status {
+        case .none:
+            nil
+        case .initialLoading:
+            "Opening the stream. You can pause now and let it build buffer before playing."
+        case .buffering:
+            "You can pause now and let the stream build buffer before playing."
+        case .pausedBuffering:
+            "Playback will stay paused once the stream is ready."
+        case .reconnecting:
+            nil
+        case .failed(let message):
+            message?.isEmpty == false ? message : nil
+        }
+    }
+
     var body: some View {
         VStack(spacing: 14) {
-            ProgressView(status.title)
-                .controlSize(.large)
-            if let detail = status.detail {
+            switch status {
+            case .failed:
+                Label(title, systemImage: "exclamationmark.triangle")
+                    .font(.headline)
+            default:
+                ProgressView(title)
+                    .controlSize(.large)
+            }
+            if let detail {
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
             switch status {
-            case .buffering, .pausedBuffering:
+            case .initialLoading, .buffering, .pausedBuffering:
                 Button {
                     onTogglePause()
                 } label: {
-                    Label(status == .pausedBuffering ? "Play when ready" : "Pause while loading",
-                          systemImage: status == .pausedBuffering ? "play.fill" : "pause.fill")
+                    Label(isPausedBuffering ? "Play when ready" : "Pause while loading",
+                          systemImage: isPausedBuffering ? "play.fill" : "pause.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -917,6 +874,24 @@ struct CustomTransportStatusOverlay: View {
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
                 }
+            case .failed:
+                VStack(spacing: 8) {
+                    Button(action: onRetry) {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .frame(minWidth: 160)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    if let onClose {
+                        Button(action: onClose) {
+                            Text("Close")
+                                .frame(minWidth: 160)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(.top, 2)
+            case .none:
+                EmptyView()
             }
         }
         .padding(.horizontal, 24)
@@ -924,5 +899,10 @@ struct CustomTransportStatusOverlay: View {
         .frame(width: 340)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(radius: 18)
+    }
+
+    private var isPausedBuffering: Bool {
+        if case .pausedBuffering = status { return true }
+        return false
     }
 }

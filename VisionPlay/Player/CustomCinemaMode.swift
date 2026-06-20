@@ -178,7 +178,6 @@ struct CustomCinemaScaffoldView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
-    @State private var isReconnecting = false
 
     /// Holds the live attachment entity so the scrubber clock can re-run placement until RealityKit
     /// has laid the attachment out (and thus reports a real intrinsic size to calibrate against).
@@ -208,8 +207,7 @@ struct CustomCinemaScaffoldView: View {
             Attachment(id: Self.screenAttachmentID) {
                 CustomCinemaScreen(session: session,
                                    scrubState: $scrubState,
-                                   isReconnecting: isReconnecting,
-                                   onRetry: { retryCinemaPlayback() },
+                                   onRetry: { session.controller?.retry() },
                                    widthPoints: Self.attachmentWidthPoints)
             }
         }
@@ -222,7 +220,6 @@ struct CustomCinemaScaffoldView: View {
             finishCinemaDismissal()
         }
         .task { await runScrubberClock() }
-        .task(id: isReconnecting) { await reconnectWatchdog() }
     }
 
     private func runScrubberClock() async {
@@ -245,9 +242,6 @@ struct CustomCinemaScaffoldView: View {
                 await requestCinemaExit(returningTo: session.item, autoPlay: false)
             }
         }
-        controller.onPlaybackActive = {
-            isReconnecting = false
-        }
     }
 
     @MainActor
@@ -267,23 +261,6 @@ struct CustomCinemaScaffoldView: View {
         }
         openWindow(id: CustomCinemaMode.mainWindowID)
         session.clear()
-    }
-
-    @MainActor
-    private func retryCinemaPlayback() {
-        guard let controller = session.controller else { return }
-        isReconnecting = true
-        controller.retry()
-    }
-
-    private func reconnectWatchdog() async {
-        guard isReconnecting else { return }
-        try? await Task.sleep(for: .seconds(20))
-        await MainActor.run {
-            guard isReconnecting, let controller = session.controller else { return }
-            isReconnecting = false
-            controller.surfaceReconnectTimeout()
-        }
     }
 
     @MainActor
@@ -332,7 +309,6 @@ private final class EntityBox {
 private struct CustomCinemaScreen: View {
     let session: CustomCinemaSessionStore
     @Binding var scrubState: PlaybackScrubState
-    let isReconnecting: Bool
     let onRetry: () -> Void
     let widthPoints: CGFloat
 
@@ -351,7 +327,6 @@ private struct CustomCinemaScreen: View {
                                    title: session.title ?? "Cinema",
                                    scrubState: $scrubState,
                                    trickPlayProvider: session.trickPlayProvider,
-                                   isReconnecting: isReconnecting,
                                    onRetry: onRetry,
                                    onClose: nil,
                                    allowsRealityTheater: false)
