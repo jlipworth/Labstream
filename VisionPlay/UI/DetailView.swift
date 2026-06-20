@@ -355,12 +355,6 @@ struct DetailView: View {
                     .font(.title3)
             }
             .buttonStyle(.bordered)
-        } else if appModel.activeBackend == .emby {
-            // Slice 1 has no Emby offline-download lane (DownloadManager only implements the
-            // Plex and Jellyfin paths). Showing the button would route Emby into the Plex
-            // download path, which silently fails on the (nil) Plex creds. Omit it until the
-            // Emby download lane lands rather than offer a dead control.
-            EmptyView()
         } else {
             Button {
                 showDownloadOptions = true

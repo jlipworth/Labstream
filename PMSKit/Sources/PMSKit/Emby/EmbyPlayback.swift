@@ -97,6 +97,14 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
     public let requiresOpening: Bool?
     public let requiresClosing: Bool?
     public let liveStreamID: String?
+    /// Total byte size of the original source file. `Part.size` is always nil on Emby
+    /// (see `EmbyItemMediaSourceDto`), so this is the only storage-preflight / expected-bytes
+    /// signal for a downloadable original. Absent on some sources.
+    public let size: Int?
+    /// Why the server chose to transcode (e.g. `ContainerNotSupported`). Decoded as raw
+    /// strings so the download decision can surface a privacy-safe reason; never gates the
+    /// download by itself (the negotiated booleans do).
+    public let transcodeReasons: [String]
     public let bitrate: Int?
     public let width: Int?
     public let height: Int?
@@ -121,6 +129,8 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         case requiresOpening = "RequiresOpening"
         case requiresClosing = "RequiresClosing"
         case liveStreamID = "LiveStreamId"
+        case size = "Size"
+        case transcodeReasons = "TranscodeReasons"
         case bitrate = "Bitrate"
         case width = "Width"
         case height = "Height"
@@ -147,6 +157,8 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         requiresOpening = try c.decodeIfPresent(Bool.self, forKey: .requiresOpening)
         requiresClosing = try c.decodeIfPresent(Bool.self, forKey: .requiresClosing)
         liveStreamID = try c.decodeIfPresent(String.self, forKey: .liveStreamID)
+        size = try c.decodeIfPresent(Int.self, forKey: .size)
+        transcodeReasons = try c.decodeIfPresent([String].self, forKey: .transcodeReasons) ?? []
         bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
         width = try c.decodeIfPresent(Int.self, forKey: .width)
         height = try c.decodeIfPresent(Int.self, forKey: .height)
@@ -249,6 +261,89 @@ public enum EmbyPlayback {
 
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req
+    }
+
+    /// `POST /Items/{Id}/PlaybackInfo` for an OFFLINE DOWNLOAD.
+    ///
+    /// Identical wire shape to `playbackInfoRequest` except it posts the DOWNLOAD device
+    /// profile (Static-context mp4 transcode, NOT HLS) so the negotiated `TranscodingUrl` is a
+    /// single downloadable file. POST is required so Emby mints the `PlaySessionId` that the
+    /// transcoded-download URL needs (a hand-built `stream.mp4?static=false` returns HTTP 400
+    /// "Parameter 'key'") — and that same session must later be torn down via
+    /// `EmbyLibrary.activeEncodingStopRequest`.
+    public static func downloadPlaybackInfoRequest(server: URL,
+                                                   token: String,
+                                                   identity: EmbyClientIdentity,
+                                                   userId: String,
+                                                   itemId: String,
+                                                   mediaSourceId: String? = nil,
+                                                   maxStaticBitrate: Int) throws -> URLRequest {
+        let url = try embyURL(server: server,
+                              path: "/Items/\(itemId)/PlaybackInfo",
+                              queryItems: [URLQueryItem(name: "UserId", value: userId)])
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
+
+        var body: [String: Any] = [
+            "UserId": userId,
+            "MaxStreamingBitrate": maxStaticBitrate,
+            "EnableDirectPlay": true,
+            "EnableDirectStream": true,
+            "EnableTranscoding": true,
+            "AllowVideoStreamCopy": true,
+            "AllowAudioStreamCopy": true,
+            "AutoOpenLiveStream": false,
+            "DeviceProfile": visionOSDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
+        ]
+        if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return req
+    }
+
+    /// Typed negotiated verdict for an offline download, distilled from a download PlaybackInfo
+    /// response. The crux of the detection rule:
+    /// - `supportsDirectPlay` is the AUTHORITATIVE negotiated value (NOT the optimistic naked-item
+    ///   value, NOT URL presence) — true ⇔ the whole source file is byte-for-byte downloadable.
+    /// - `transcodingURL` is the server-minted single-file transcode URL to download when the
+    ///   original is not direct-play-eligible.
+    /// - `size` is the original's byte size for storage preflight (`Part.size` is nil on Emby).
+    public struct EmbyDownloadPlaybackDecision: Sendable, Equatable {
+        public let playSessionId: String
+        public let mediaSourceId: String
+        public let supportsDirectPlay: Bool
+        public let transcodingURL: String?
+        public let size: Int?
+        public let container: String?
+        public let bitrate: Int?
+        public let transcodeReasons: [String]
+    }
+
+    /// Distill a download PlaybackInfo response into the typed verdict above. Throws when the
+    /// response lacks a `PlaySessionId` / media source / source id (all required to either
+    /// download the transcode or tear down the encoder afterwards).
+    public static func downloadDecision(response: EmbyPlaybackInfoResponse,
+                                        preferredMediaSourceId: String? = nil) throws -> EmbyDownloadPlaybackDecision {
+        guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
+            throw EmbyPlaybackError.missingPlaySessionId
+        }
+        guard let source = chooseSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
+            throw EmbyPlaybackError.noMediaSources
+        }
+        guard let mediaSourceId = source.id, !mediaSourceId.isEmpty else {
+            throw EmbyPlaybackError.missingMediaSourceId
+        }
+        return EmbyDownloadPlaybackDecision(
+            playSessionId: playSessionId,
+            mediaSourceId: mediaSourceId,
+            supportsDirectPlay: source.supportsDirectPlay,
+            transcodingURL: source.transcodingURL.flatMap { $0.isEmpty ? nil : $0 },
+            size: source.size,
+            container: source.container?.split(separator: ",").first.map(String.init),
+            bitrate: source.bitrate,
+            transcodeReasons: source.transcodeReasons)
     }
 
     /// Resolve a playable URL from a PlaybackInfo response.
@@ -528,6 +623,41 @@ public enum EmbyPlayback {
                 ["Format": "pgssub", "Method": "Encode"],
                 ["Format": "dvdsub", "Method": "Encode"],
                 ["Format": "dvbsub", "Method": "Encode"],
+            ],
+        ]
+    }
+
+    /// DOWNLOAD-ONLY device profile.
+    ///
+    /// DIVERGENCE FROM PLAYBACK: the playback profile (`visionOSDeviceProfile`) advertises an
+    /// HLS (`Protocol: hls`) TranscodingProfile, so PlaybackInfo returns a `master.m3u8`
+    /// TranscodingUrl — a segment playlist, NOT a single downloadable file. For offline
+    /// downloads we instead advertise a **Static-context, http mp4** TranscodingProfile, which
+    /// makes the server hand back a single-file `/videos/{id}/stream?...` TranscodingUrl that a
+    /// background `URLSession` download task can pull as one body. Confirmed live against the
+    /// MKV worst case: `subProtocol=nil`, `Size` populated.
+    ///
+    /// `MaxStaticBitrate` is advertised generously (≈200 Mbps default) so a high-bitrate but
+    /// already-compatible mp4/m4v/mov file still qualifies for a direct-play (original) download —
+    /// a bitrate cap must NEVER force a transcode verdict for a download.
+    static func visionOSDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+        [
+            "Name": "VisionPlay-Download",
+            "MaxStaticBitrate": maxStaticBitrate,
+            "MaxStreamingBitrate": maxStaticBitrate,
+            "DirectPlayProfiles": [
+                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
+            ],
+            "TranscodingProfiles": [
+                [
+                    "Type": "Video",
+                    "Container": "mp4",
+                    "Protocol": "http",
+                    "VideoCodec": "h264",
+                    "AudioCodec": "aac",
+                    "Context": "Static",
+                    "BreakOnNonKeyFrames": false,
+                ],
             ],
         ]
     }
