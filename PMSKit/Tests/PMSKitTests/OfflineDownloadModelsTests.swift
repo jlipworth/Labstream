@@ -56,6 +56,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.plexBIFRelativePath == nil)
         #expect(meta.jellyfinTrickPlayPlaylistRelativePath == nil)
         #expect(meta.jellyfinTrickPlayTileRelativePaths == nil)
+        #expect(meta.offlineTextSubtitles == nil)
         #expect(meta.resolutionLabel == nil)
     }
 
@@ -113,7 +114,8 @@ struct OfflineDownloadModelsTests {
             posterRelativePath: "555.poster.jpg",
             plexBIFRelativePath: "555.plex-sd.bif",
             jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",
-            jellyfinTrickPlayTileRelativePaths: ["555.jf-trickplay-0.jpg"])
+            jellyfinTrickPlayTileRelativePaths: ["555.jf-trickplay-0.jpg"],
+            offlineTextSubtitles: [OfflineTextSubtitleTrack(id: 1, displayName: "English", language: "eng", codec: "srt", relativePath: "555.sub.1.srt")])
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)

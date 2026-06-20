@@ -192,6 +192,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var jellyfinTrickPlayPlaylistRelativePath: String?
     /// Locally-cached Jellyfin trickplay tile sheet paths, relative to the Downloads base directory.
     public var jellyfinTrickPlayTileRelativePaths: [String]?
+    /// Locally-cached external text subtitles for original downloads. Embedded subtitles remain
+    /// discoverable through AVFoundation; image/burned-in/unavailable tracks are intentionally
+    /// not represented here.
+    public var offlineTextSubtitles: [OfflineTextSubtitleTrack]?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -227,7 +231,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 posterRelativePath: String? = nil,
                 plexBIFRelativePath: String? = nil,
                 jellyfinTrickPlayPlaylistRelativePath: String? = nil,
-                jellyfinTrickPlayTileRelativePaths: [String]? = nil) {
+                jellyfinTrickPlayTileRelativePaths: [String]? = nil,
+                offlineTextSubtitles: [OfflineTextSubtitleTrack]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -263,6 +268,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.plexBIFRelativePath = plexBIFRelativePath
         self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
         self.jellyfinTrickPlayTileRelativePaths = jellyfinTrickPlayTileRelativePaths
+        self.offlineTextSubtitles = offlineTextSubtitles
     }
 
     public init(from decoder: Decoder) throws {
@@ -302,6 +308,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
         jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
         jellyfinTrickPlayTileRelativePaths = try c.decodeIfPresent([String].self, forKey: .jellyfinTrickPlayTileRelativePaths)
+        offlineTextSubtitles = try c.decodeIfPresent([OfflineTextSubtitleTrack].self, forKey: .offlineTextSubtitles)
     }
 
     /// Reconstruct a faithful `MediaItem` for offline playback + retry. Only the
