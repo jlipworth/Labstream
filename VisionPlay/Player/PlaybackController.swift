@@ -2928,15 +2928,16 @@ final class PlaybackController {
     /// How long (seconds) a continuous stall may last before we treat it as a failure. Generous
     /// enough not to trip a slow-but-working initial prime, short enough to replace AVKit's dead
     /// placeholder glyph with a recoverable Retry promptly.
-    /// Slow server-side software transcodes (for example 4K HEVC Main10 + TrueHD/Atmos remuxes
-    /// capped down to 720p HLS) can legitimately show the first decoded frame and then spend
-    /// tens of seconds producing the next fMP4 segments. A 15s watchdog killed that still-working
-    /// Plex session, after which AVPlayer kept requesting the now-deleted segment URLs and surfaced
-    /// a false playback failure. Keep the watchdog finite, but give these initial primes enough
-    /// room to prove whether the server is still moving.
-    private let stallTimeoutSeconds: TimeInterval = 45
+    private let stallTimeoutSeconds: TimeInterval = 15
     private let directPlayMaximumStallTimeoutSeconds: TimeInterval = 90
     private let remoteTranscodeStallTimeoutSeconds: TimeInterval = 45
+
+    private struct StallProgressSignature: Equatable {
+        let transferredBytes: Int64
+        let loadedEndMs: Int
+    }
+
+    private var stallProgressBaseline: StallProgressSignature?
 
     private var isRemoteTranscode: Bool {
         remoteStreamURL != nil && remotePlayMethod == .transcode
@@ -2960,8 +2961,12 @@ final class PlaybackController {
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
         guard stallWatchdog == nil, !playbackError.isFailed else { return }
+        stallProgressBaseline = currentStallProgressSignature()
         recordPlaybackDiagnostic("playback.stall_watchdog_armed", fields: [
             "timeout_seconds": .int(Int(activeStallTimeoutSeconds)),
+            "baseline_bytes": .int(Int(min(stallProgressBaseline?.transferredBytes ?? 0,
+                                           Int64(Int.max)))),
+            "baseline_loaded_end_ms": .int(stallProgressBaseline?.loadedEndMs ?? 0),
         ])
         let timer = Timer(timeInterval: activeStallTimeoutSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -2979,6 +2984,7 @@ final class PlaybackController {
         }
         stallWatchdog?.invalidate()
         stallWatchdog = nil
+        stallProgressBaseline = nil
     }
 
     /// Fired when a stall outlasts `stallTimeoutSeconds`. Confirm the player is genuinely starved
@@ -2995,13 +3001,31 @@ final class PlaybackController {
     /// approximation of a bitrate downshift. Once the session reaches the lowest rung (or for
     /// non-reopenable/static streams), the same visible Retry failure path remains terminal.
     private func handleStallTimeout() {
-        cancelStallWatchdog()
+        let baseline = stallProgressBaseline
+        stallWatchdog?.invalidate()
+        stallWatchdog = nil
+        stallProgressBaseline = nil
         guard !playbackError.isFailed, let current = player.currentItem else { return }
         guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
               !current.isPlaybackLikelyToKeepUp else { return }
         var fields = runtimeSnapshotFields()
         fields["keep_up"] = .bool(current.isPlaybackLikelyToKeepUp)
         fields["adaptive_bitrate_enabled"] = .bool(adaptiveBitrateEnabled)
+
+        if stallMadeTransportProgress(since: baseline) {
+            fields["stall_progress_deferred"] = .bool(true)
+            if let baseline {
+                fields["baseline_bytes"] = .int(Int(min(baseline.transferredBytes, Int64(Int.max))))
+                fields["baseline_loaded_end_ms"] = .int(baseline.loadedEndMs)
+            }
+            let currentSignature = currentStallProgressSignature()
+            fields["current_bytes"] = .int(Int(min(currentSignature.transferredBytes,
+                                                   Int64(Int.max))))
+            fields["current_loaded_end_ms"] = .int(currentSignature.loadedEndMs)
+            recordPlaybackDiagnostic("playback.stall_watchdog_deferred", fields: fields)
+            armStallWatchdog()
+            return
+        }
 
         if attemptAdaptiveBitrateFallback(fields: fields) {
             return
@@ -3030,6 +3054,29 @@ final class PlaybackController {
                 domain: "VisionPlay.Playback", code: -1001,
                 userInfo: [NSLocalizedDescriptionKey: message]))
         }
+    }
+
+    private func currentStallProgressSignature() -> StallProgressSignature {
+        guard let item = player.currentItem else {
+            return StallProgressSignature(transferredBytes: 0, loadedEndMs: 0)
+        }
+        let transferredBytes = item.accessLog()?.events.reduce(Int64(0)) { total, event in
+            total + max(0, Int64(event.numberOfBytesTransferred))
+        } ?? 0
+        let loadedEnd = item.loadedTimeRanges
+            .map(\.timeRangeValue)
+            .map { ($0.start + $0.duration).seconds }
+            .filter(\.isFinite)
+            .max() ?? 0
+        return StallProgressSignature(transferredBytes: transferredBytes,
+                                      loadedEndMs: Int(max(0, loadedEnd * 1000)))
+    }
+
+    private func stallMadeTransportProgress(since baseline: StallProgressSignature?) -> Bool {
+        guard isStreaming, let baseline else { return false }
+        let current = currentStallProgressSignature()
+        return current.transferredBytes > baseline.transferredBytes
+            || current.loadedEndMs > baseline.loadedEndMs
     }
 
     private func attemptAdaptiveBitrateFallback(fields baseFields: [String: DiagnosticFieldValue]) -> Bool {
