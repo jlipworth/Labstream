@@ -76,37 +76,16 @@ metadata, and review-specific release automation can be handled in a later publi
   or two after it's added to `content`). Co-locating the video (`AVPlayerLayer` via `PlayerLayerView`)
   and the real `CustomPlayerChrome` in ONE attachment gives full windowed-player parity for free —
   same scrubber, trick-play, and Quality/Subtitles/Audio/Speed/Chapters/Stats menus.
-- **AVKit `contextualActions`** (`visionos(1.0)`) is the only affordance that renders over video in
-  **both** inline and expanded cinema states and stays tappable — a floated SwiftUI sibling vanishes
-  in the expanded experience, and the ⓘ panel is buried. (See the Close-button placement issue.)
-- **Close-button placement is settled — keep the `contextualActions` "✕ Close".** Three alternatives
-  were built as local branches (`close-A/B/C`, never pushed) and all lost to it: **A** (floated top-left ✕)
-  vanishes in expanded cinema; **B** (`showsPlaybackControls = false` + a hand-drawn transport) works
-  but *amputates the native info tabs* — Quality/Subtitles/Speed/Stats all disappear with native
-  chrome; **C** (window `.ornament` ✕) is worse — **a `.ornament` on the player suppresses AVKit's
-  own tap-to-reveal**, so the native transport + "…" menu never appear and you can't even reach
-  Expand. The ornament ✕ itself persists across expand (floats just outside the window), but at the
-  cost of all other controls. Net: `contextualActions` is the only option keeping both-state Close
-  *and* the full native feature set. Its always-on rendering (the system shows contextual actions
-  over the video until first interaction) is mitigated per experience — visionOS has no
-  transport-bar-visibility callback (`API_UNAVAILABLE(visionos)`):
-  - **Expanded:** taps NEVER enter the app process (verified with recognizers on every reachable
-    window, including the private `_MRUIPlatterOrnamentBackingWindow` the player view moves
-    into) — the system shell handles them. So Close joins the actions permanently ~0.5s after
-    the expand transition finishes (`AVExperienceController.Delegate`), and the **system** ties
-    the pill to its own chrome visibility. The 0.5s grace is empirical (3s made Close pop in
-    late after an early tap).
-  - **Windowed:** a non-consuming tap recognizer (the same tap that summons the chrome) shows
-    Close for the chrome's ~5s auto-hide window.
-  Paused/failed keep it up in both. A paused-only gate was tried first and rejected — forcing a
-  pause before Close is an extra step.
-- **Expanded cinema scene = system chrome only.** App-process pixels never composite there:
-  floated SwiftUI siblings don't render, `contentOverlayView` is never composited (verified), and
-  `customOverlayViewController` is tvOS-only. The surfaces that DO work in expanded are all
-  system chrome: `contextualActions` pills, the transport, and the ⓘ info panel —
-  `customInfoViewControllers` tabs render and are fully interactive there. Hence Stats for
-  Nerds (#6) lives as an inline info-panel tab (`StatsTabView`), the only stats surface visible
-  in expanded; a floating overlay remains possible in *windowed* mode only.
+- **Cinema is app-owned, not AVKit system expanded playback.** The shipping video path is the
+  custom `AVPlayerLayer` player. Its Cinema button opens `CustomCinemaMode.immersiveSpaceID`,
+  hosts the same `PlayerLayerView` + `CustomPlayerChrome` in one `RealityView` attachment, then
+  dismisses/reopens the main window around that immersive session. Do not reintroduce AVKit
+  `AVPlayerViewController` or system expanded-player assumptions when working on this path.
+- **Cinema exit is routed, not restored as a hidden player.** The immersive session owns playback.
+  On Exit/Crown/EOF/Up Next it stops the active controller, reopens the main browse window only
+  while the scene is active, and posts a `SystemEntryRouter` route back to the current or next item.
+  This avoids duplicate hidden audio and avoids re-running sign-in/server discovery because the
+  long-lived app objects are owned by `VisionPlay.App`, not by the main window view.
 - **ⓘ Info card year:** the card shows a year after the runtime, sourced from the stream's
   creation date — for a live transcode that's *today's* year (seen as "2026" on a 2013 film).
   Override: `externalMetadata` item `.commonIdentifierCreationDate` with an **NSDate-typed
@@ -115,24 +94,17 @@ metadata, and review-specific release automation can be handled in a later publi
   `id3MetadataRecordingTime`, `iTunesMetadataReleaseDate`) — all proven live. Title
   (`.commonIdentifierTitle`) and description (`.commonIdentifierDescription`) work as strings;
   cap the description ~150 chars or it pushes the title off the card.
-- **Closing the ⓘ info panel programmatically:** there is no public API, and in EXPANDED the
-  panel is an in-process platter ornament (`_MRUIPlatterOrnamentBackingWindow` →
-  `_MRUIPlatterOrnamentRootViewController`, verified via the dismiss instrumentation) with NO
-  `presentingViewController` anywhere in the tab's ancestor chain. Emptying
-  `customInfoViewControllers` closes it in WINDOWED but is ignored in EXPANDED. Working
-  recipe (verified): hide the tab's `view.window` + empty-then-restore the tab array; every
-  tab host (`InfoTabHostingController`) un-hides its window on `viewDidAppear` so a reopened
-  panel is never invisible. Re-assigning the SAME tabs array does nothing.
+- **Cinema menus are SwiftUI chrome.** Quality/Subtitles/Audio/Chapters/Speed/Stats live in
+  `CustomPlayerChrome` and render inside the same RealityView attachment as the video. Do not add
+  new playback controls through retired AVKit surfaces; those notes now belong only to archived
+  research.
 - **Play-vs-metadata race:** listing payloads omit chapters/markers; `DetailView` backfills
   them asynchronously and tapping Play can win that race (seen live as a missing Chapters
   tab). The player no longer depends on the caller's copy — `loadChaptersIfNeeded()` fetches
   full metadata and the control surface re-installs the tab strip when chapters arrive.
-- **The platter ✕ under the expanded screen cannot quit the app** — the cinema scene is
-  system-owned and its ✕ only collapses the player back into the host window (AVKit docks it).
-  `AVExperienceController.TransitionContext` carries no initiator (checked the XROS 26.5
-  swiftinterface: just `status`/`fromExperience`/`toExperience`), so a system collapse is
-  detected as "completed expanded→embedded we didn't flag" (`appInitiatedCollapse`) and treated
-  as Close. Trade-off (accepted): the chrome's shrink-to-window control also closes the player.
+- **Exit Cinema is explicit app chrome.** The visible Exit control lives in `CustomPlayerChrome`
+  inside the immersive attachment. It dismisses the immersive space; `CustomCinemaScaffoldView`
+  then stops the controller, reopens the main window when active, and routes back to content.
 - **Never put a CUSTOM `ButtonStyle` on a poster/card link — use `.cardLink()`
   (built-in `.plain`).** On visionOS, ANY custom `ButtonStyle` gets the link's
   gaze/hover hit region REGISTERED DISPLACED — measured ≈1.35× scaled about the
@@ -231,8 +203,9 @@ metadata, and review-specific release automation can be handled in a later publi
 - **Reinstall wipes the app container** (keychain + Application Support) → **re-login required after
   every reinstall.** The token persists across plain relaunches via a file fallback in
   `KeychainStore` (the unsigned-sim keychain fails with `errSecMissingEntitlement -34018`).
-- **Single-window constraint:** no `openWindow` / second `WindowGroup` — the player is a
-  `.fullScreenCover`, like other native players.
+- **Primary-window plus Cinema constraint:** normal browsing/playback uses one main `WindowGroup`
+  and the player presents as a `.fullScreenCover`. Cinema is the exception: it uses an
+  `ImmersiveSpace` and may reopen the main window on exit. Do not add unrelated secondary windows.
 - **Server:** configured per-user at sign-in (a Cloudflare-fronted PMS over `:443`). The real
   hostname/LAN IP are intentionally kept out of the repo.
 - **No volume control in the MiniPlayerBar (deliberate, MUSIC-DESIGN scope fence):** visionOS

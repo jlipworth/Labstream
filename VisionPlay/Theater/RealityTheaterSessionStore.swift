@@ -2,9 +2,9 @@ import AVFoundation
 
 /// Session boundary for the future RealityKit theater (#12).
 ///
-/// This intentionally does not replace `CustomCinemaSessionStore` yet. The old store powers the
-/// hidden Wave-2/Wave-3 scaffold; this store gives #12 a clean place to hang playback, screen, and
-/// seating state once a developer-only entry point is added for device iteration.
+/// This intentionally does not replace `CustomCinemaSessionStore`, which powers the shipping
+/// custom-player Cinema mode. This store gives #12 a clean place to hang playback, screen, and
+/// seating state for the separately gated RealityKit theater prototype.
 @Observable
 @MainActor
 final class RealityTheaterSessionStore {
@@ -80,8 +80,7 @@ final class RealityTheaterSessionStore {
     }
 
     func logCurrentConfiguration(reason: String) {
-        #if DEBUG
-        print("[Theater Lab] \(reason): \(configuration.debugSummary); title=\(title ?? "none"); hasPlayer=\(player != nil)")
-        #endif
+        // Intentionally quiet: theater/cinema diagnostics must not print media titles or other
+        // user-library details. Add privacy-reviewed structured diagnostics if this needs tracing.
     }
 }

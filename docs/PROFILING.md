@@ -22,10 +22,9 @@ after the scenario.
 - **Leaks**: confirmed leaks after Allocations shows growth that should have been released.
 - **Hangs**: user-visible stalls and blocked main-thread intervals.
 - **SwiftUI**: body recomputation and update/render hot spots in the Home/library/detail UI.
-- **RealityKit Trace**: visionOS compositor/frame-pacing template. It is mostly a future tool for a
-custom RealityKit theater (#12). The shipping video path is now the app-owned custom player; its
-placeholder custom Cinema ImmersiveSpace is hidden after device testing showed it is not equivalent
-to Apple's AVKit Cinema Environment. Use RealityKit Trace only when actively working on #12.
+- **RealityKit Trace**: visionOS compositor/frame-pacing template. Use it for the app-owned
+Cinema immersive surface and for future RealityKit theater work (#12), especially screen scale,
+attachment frame pacing, compositor load, and long-play comfort on physical Vision Pro hardware.
 
 ## Simulator vs physical Vision Pro
 

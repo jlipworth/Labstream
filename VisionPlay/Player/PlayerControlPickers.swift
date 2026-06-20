@@ -2,8 +2,8 @@ import AVFoundation
 import PMSKit
 import SwiftUI
 
-/// Shared, observable selection state for the player info tabs (e.g. the active bitrate
-/// cap so the Quality tab shows the right checkmark even after a programmatic reload).
+/// Shared, observable selection state for the player menus (e.g. the active bitrate
+/// cap so the Quality menu shows the right checkmark even after a programmatic reload).
 @Observable
 @MainActor
 final class PlayerMenuState {
@@ -13,7 +13,7 @@ final class PlayerMenuState {
     }
 }
 
-/// Quality info-panel tab: a granular ladder of bitrate caps with a checkmark on the active one.
+/// Quality menu: a granular ladder of bitrate caps with a checkmark on the active one.
 struct QualityTabView: View {
     @Bindable var state: PlayerMenuState
     var onPick: (Int) -> Void
@@ -23,10 +23,9 @@ struct QualityTabView: View {
     private let options = StreamingQuality.ladder
 
     var body: some View {
-        // ScrollView + VStack, NOT List: a `List` does not engage scroll inside the visionOS
-        // AVKit info-panel hosting controller, so the bottom options (notably "Maximum")
-        // were unreachable. A plain ScrollView is the lower-level scrollable primitive and
-        // scrolls reliably in this embedded context.
+        // ScrollView + VStack, NOT List: a plain ScrollView is predictable inside both the
+        // windowed chrome popover and the Cinema attachment, and keeps long option ladders
+        // reachable.
         ScrollView {
             // No in-view header: the info panel's chrome already titles the tab,
             // so one here read as a duplicate (same for every tab below).
@@ -60,7 +59,7 @@ struct QualityTabView: View {
     }
 }
 
-/// Speed info-panel tab (R5): a list of playback rates with a checkmark on the active one.
+/// Speed menu (R5): a list of playback rates with a checkmark on the active one.
 /// Mirrors `QualityTabView`. Selecting a rate sets the AVPlayer rate (and persists it); the
 /// checkmark binds to the controller's `PlaybackSpeedState` so it stays correct after a
 /// programmatic reapply (e.g. when a Quality reload re-pushes the saved speed).
@@ -71,8 +70,7 @@ struct SpeedTabView: View {
     private let options: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
-        // ScrollView + VStack, NOT List — see QualityTabView for why (List doesn't scroll in
-        // the visionOS AVKit info panel).
+        // ScrollView + VStack, NOT List — see QualityTabView for why.
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(options, id: \.self) { rate in
@@ -121,7 +119,7 @@ struct ChapterCard: View {
     var onTap: (Int) -> Void
 
     // Large enough for the custom-player Chapters popover to feel like the old AVP rail while
-    // still fitting the system info-panel path. The custom popover is intentionally wide so
+    // still fitting the custom chrome. The popover is intentionally wide so
     // several chapters remain visible during horizontal scrolling.
     private static let thumbWidth: CGFloat = 286
     private static let thumbHeight: CGFloat = 161  // 16:9-ish, rounded for whole pixels
@@ -205,7 +203,7 @@ struct ChapterCard: View {
     }
 }
 
-/// Chapters info-panel tab: a Plex-style horizontal thumbnail rail. Tapping a
+/// Chapters menu: a Plex-style horizontal thumbnail rail. Tapping a
 /// card seeks the playhead to that chapter's start. On appear we read the live
 /// playhead once (`currentMs`), highlight the chapter it sits in, and auto-scroll
 /// that card to center. The panel is transient, so a one-shot read is enough — we
@@ -273,7 +271,7 @@ struct ChaptersTabView: View {
     }
 }
 
-/// Subtitles info-panel tab: pick a soft subtitle rendition (or "Off") from the HLS
+/// Subtitles menu: pick a soft subtitle rendition (or "Off") from the HLS
 /// legible `AVMediaSelectionGroup`.
 ///
 /// WHY soft renditions (and not Plex metadata / burn-in): the transcode requests
@@ -304,10 +302,9 @@ struct SubtitlesTabView: View {
     @State private var didLoad = false
 
     var body: some View {
-        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
-        // scroll inside the visionOS AVKit info panel, so content with many subtitle languages
-        // would clip the bottom rows (and the "Off" row stays first). Matches the
-        // Quality/Speed/Audio tabs.
+        // ScrollView + VStack, NOT List — see QualityTabView for why: content with many
+        // subtitle languages must keep the bottom rows reachable (and the "Off" row stays first).
+        // Matches the Quality/Speed/Audio menus.
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if !didLoad {
@@ -372,7 +369,7 @@ struct SubtitlesTabView: View {
     }
 }
 
-/// Audio info-panel tab (#3): pick a soundtrack/language rendition from the HLS audible
+/// Audio menu (#3): pick a soundtrack/language rendition from the HLS audible
 /// `AVMediaSelectionGroup`. The audio mirror of `SubtitlesTabView` — same async-load-on-appear
 /// pattern (audible options only become known once AVFoundation parses the HLS, and the list can
 /// change after a Quality reload swaps the `AVPlayerItem`) — but with NO "Off" row (a video
@@ -393,10 +390,9 @@ struct AudioTabView: View {
     @State private var didLoad = false
 
     var body: some View {
-        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
-        // scroll inside the visionOS AVKit info panel, so a release with many dub languages
-        // (8+ audible renditions) would clip the bottom rows out of reach. Matches the
-        // Quality/Speed tabs.
+        // ScrollView + VStack, NOT List — see QualityTabView for why: a release with many dub
+        // languages (8+ audible renditions) must keep the bottom rows reachable. Matches the
+        // Quality/Speed menus.
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if !didLoad {
@@ -461,7 +457,7 @@ struct AudioTabView: View {
     }
 }
 
-/// Audio info-panel tab for STREAMING sessions (#3): pick a soundtrack from the item's Plex part
+/// Audio menu for STREAMING sessions (#3): pick a soundtrack from the item's Plex part
 /// metadata (`Stream`, streamType=2) rather than the HLS audible group — PMS muxes only the
 /// active audio track into the transcode, so AVMediaSelection never lists alternates there.
 /// Always lists at least the active track (checkmarked), so a single-track title shows "English ✓"
@@ -479,9 +475,8 @@ struct AudioStreamsTabView: View {
     @State private var pendingID: Int?
 
     var body: some View {
-        // ScrollView + VStack, NOT List — see QualityTabView for why: a `List` doesn't engage
-        // scroll inside the visionOS AVKit info panel, so a release with many dub languages
-        // would clip the bottom rows out of reach. Matches the Quality/Speed tabs.
+        // ScrollView + VStack, NOT List — see QualityTabView for why: a release with many dub
+        // languages must keep the bottom rows reachable. Matches the Quality/Speed menus.
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if didLoad && choices.isEmpty {
@@ -526,12 +521,8 @@ struct AudioStreamsTabView: View {
     private var activeID: Int? { choices.first { $0.isSelected }?.id }
 }
 
-/// Stats info-panel tab (#6): the live "Stats for Nerds" diagnostics grid, rendered inline.
-/// The ⓘ panel is system chrome, so this is the ONLY stats surface that displays in the
-/// EXPANDED cinema experience — every floated/overlay approach was tried and ruled out
-/// (floated SwiftUI sibling: windowed-only; `contentOverlayView`: never composited on
-/// visionOS, verified live; `customOverlayViewController`: tvOS-only). No header row —
-/// the system panel already titles the tab.
+/// Stats menu (#6): the live "Stats for Nerds" diagnostics grid, rendered inline.
+/// No header row — the surrounding menu chrome already titles the panel.
 struct StatsTabView: View {
     let diagnostics: PlaybackDiagnostics
 

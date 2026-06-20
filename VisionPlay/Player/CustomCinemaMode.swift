@@ -105,16 +105,32 @@ final class CustomCinemaSessionStore {
     var item: MediaItem?
     var controller: PlaybackController?
     var geometry: CustomCinemaGeometry = .default
+    var trickPlayProvider: (any TrickPlayThumbnailProviding)?
     var presentationState: PresentationState = .closed
+    var pendingReturnItem: MediaItem?
+    var pendingReturnAutoPlay = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
 
-    func activate(title: String, item: MediaItem, controller: PlaybackController, geometry: CustomCinemaGeometry = .default) {
+    func activate(title: String,
+                  item: MediaItem,
+                  controller: PlaybackController,
+                  geometry: CustomCinemaGeometry = .default,
+                  trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil) {
         self.title = title
         self.item = item
         self.controller = controller
         self.geometry = geometry
+        self.trickPlayProvider = trickPlayProvider
+        pendingReturnItem = nil
+        pendingReturnAutoPlay = false
+    }
+
+    func prepareExit(returningTo item: MediaItem?, autoPlay: Bool) {
+        pendingReturnItem = item
+        pendingReturnAutoPlay = autoPlay
+        presentationState = .inTransition
     }
 
     /// Tear down the active playback session before the immersive space is dismissed.
@@ -127,6 +143,7 @@ final class CustomCinemaSessionStore {
         let activeController = controller
         title = nil
         controller = nil
+        trickPlayProvider = nil
         presentationState = .inTransition
         activeController?.stop()
     }
@@ -136,6 +153,9 @@ final class CustomCinemaSessionStore {
         item = nil
         controller = nil
         geometry = .default
+        trickPlayProvider = nil
+        pendingReturnItem = nil
+        pendingReturnAutoPlay = false
         presentationState = .closed
     }
 }
@@ -153,9 +173,12 @@ final class CustomCinemaSessionStore {
 /// hand-drawn rail did, which is hostile to attachments).
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
+    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
+    @State private var isReconnecting = false
 
     /// Holds the live attachment entity so the scrubber clock can re-run placement until RealityKit
     /// has laid the attachment out (and thus reports a real intrinsic size to calibrate against).
@@ -185,39 +208,87 @@ struct CustomCinemaScaffoldView: View {
             Attachment(id: Self.screenAttachmentID) {
                 CustomCinemaScreen(session: session,
                                    scrubState: $scrubState,
+                                   isReconnecting: isReconnecting,
+                                   onRetry: { retryCinemaPlayback() },
                                    widthPoints: Self.attachmentWidthPoints)
             }
         }
         .preferredSurroundingsEffect(.ultraDark)
         .onAppear {
-            print("[Custom Cinema] immersive opened: \(session.geometry.debugSummary); title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
             session.presentationState = .open
+            bindCinemaCallbacks()
         }
         .onDisappear {
-            print("[Custom Cinema] immersive closed: title=\(session.title ?? "none"); hasPlayer=\(session.hasActivePlayer)")
-            // Cinema is always entered by detaching the main window, so any dismissal — the chrome's
-            // Exit Cinema button, a single Crown press, or a system collapse — funnels through here
-            // and must reopen the window. Capture the item before tearing the session down so we can
-            // land on its detail page.
-            let returnItem = session.item
-            // Stop the live session: Cinema carries the full transport, so exiting is only ever to
-            // pick something else — there is no windowed player to return to. Stop first so nothing
-            // keeps playing audio after we leave.
-            session.stopAndClearForImmersiveExit()
-            // Land on the item's content detail page (the "content submenu"), not the home screen.
-            if let returnItem {
-                SystemEntryRouter.shared.open(item: returnItem, autoPlay: false)
-            }
-            openWindow(id: CustomCinemaMode.mainWindowID)
-            session.clear()
+            finishCinemaDismissal()
         }
         .task { await runScrubberClock() }
+        .task(id: isReconnecting) { await reconnectWatchdog() }
     }
 
     private func runScrubberClock() async {
         while !Task.isCancelled {
             await MainActor.run { tick() }
             try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    @MainActor
+    private func bindCinemaCallbacks() {
+        guard let controller = session.controller else { return }
+        controller.onAdvanceToNext = { next in
+            Task { @MainActor in
+                await requestCinemaExit(returningTo: next, autoPlay: true)
+            }
+        }
+        controller.onPlaybackEnded = {
+            Task { @MainActor in
+                await requestCinemaExit(returningTo: session.item, autoPlay: false)
+            }
+        }
+        controller.onPlaybackActive = {
+            isReconnecting = false
+        }
+    }
+
+    @MainActor
+    private func requestCinemaExit(returningTo item: MediaItem?, autoPlay: Bool) async {
+        guard session.presentationState != .inTransition else { return }
+        session.prepareExit(returningTo: item ?? session.item, autoPlay: autoPlay)
+        await dismissImmersiveSpace()
+    }
+
+    @MainActor
+    private func finishCinemaDismissal() {
+        // If visionOS tears the immersive scene down while the app is no longer active, stop cleanly
+        // but do not force-open a foreground window. Foreground/Crown/Exit dismissals still reopen
+        // the app and route back to content.
+        let shouldReopen = scenePhase == .active
+        let returnItem = session.pendingReturnItem ?? session.item
+        let autoPlay = session.pendingReturnAutoPlay
+        session.stopAndClearForImmersiveExit()
+        if shouldReopen {
+            if let returnItem {
+                SystemEntryRouter.shared.open(item: returnItem, autoPlay: autoPlay)
+            }
+            openWindow(id: CustomCinemaMode.mainWindowID)
+        }
+        session.clear()
+    }
+
+    @MainActor
+    private func retryCinemaPlayback() {
+        guard let controller = session.controller else { return }
+        isReconnecting = true
+        controller.retry()
+    }
+
+    private func reconnectWatchdog() async {
+        guard isReconnecting else { return }
+        try? await Task.sleep(for: .seconds(20))
+        await MainActor.run {
+            guard isReconnecting, let controller = session.controller else { return }
+            isReconnecting = false
+            controller.surfaceReconnectTimeout()
         }
     }
 
@@ -229,8 +300,9 @@ struct CustomCinemaScaffoldView: View {
         if let screen = entityBox.entity {
             Self.place(screen, geometry: session.geometry)
         }
+        bindCinemaCallbacks()
         guard let controller = session.controller else { return }
-        tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: 0)
+        tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: session.item?.duration ?? 0)
     }
 
     @MainActor
@@ -266,6 +338,8 @@ private final class EntityBox {
 private struct CustomCinemaScreen: View {
     let session: CustomCinemaSessionStore
     @Binding var scrubState: PlaybackScrubState
+    let isReconnecting: Bool
+    let onRetry: () -> Void
     let widthPoints: CGFloat
 
     var body: some View {
@@ -282,8 +356,9 @@ private struct CustomCinemaScreen: View {
                 CustomPlayerChrome(controller: controller,
                                    title: session.title ?? "Cinema",
                                    scrubState: $scrubState,
-                                   isReconnecting: false,
-                                   onRetry: { controller.retry() },
+                                   trickPlayProvider: session.trickPlayProvider,
+                                   isReconnecting: isReconnecting,
+                                   onRetry: onRetry,
                                    onClose: nil,
                                    allowsRealityTheater: false)
             } else {

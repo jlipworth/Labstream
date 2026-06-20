@@ -24,10 +24,10 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
     }
 }
 
-/// App-owned fullscreen chrome for the experimental player.
+/// App-owned full-screen chrome for the custom player.
 ///
-/// This deliberately mirrors the AVKit info-panel feature set: the custom route must not be a
-/// feature regression just because it owns its transport. The chrome behaves like player chrome,
+/// This deliberately carries the playback feature set that used to live in system surfaces: the
+/// custom route must not regress just because it owns its transport. The chrome behaves like player chrome,
 /// not permanent app UI: taps reveal it, playback auto-hides it, and modal menu/error/reconnect
 /// states keep it visible while the viewer is acting on them.
 struct CustomPlayerChrome: View {
@@ -356,9 +356,8 @@ struct CustomPlayerChrome: View {
     }
 
     @ViewBuilder private var cinemaButton: some View {
-        // This is only the hidden Wave-2/Wave-3 AVPlayerLayer-in-ImmersiveSpace scaffold.
-        // Issue #12's RealityKit theater has a separate feature/session boundary and must not
-        // become visible here until device-ready behavior is proven.
+        // Shipping Cinema uses the custom-player ImmersiveSpace. The separate RealityKit theater
+        // prototype has its own feature/session boundary and remains gated until device-ready.
         if !CustomCinemaMode.isUserVisible {
             EmptyView()
         } else if cinemaSession.presentationState == .open {
