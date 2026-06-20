@@ -90,7 +90,7 @@ clone_golden() {
   local name="$1" golden gstate udid
   golden=$(golden_udid); gstate=$(sim_state_by_udid "$golden")
   if [ "$gstate" = "Booted" ]; then
-    echo "worktree-sim: golden sim is booted; bouncing it to clone (login is on disk)..." >&2
+    echo "worktree-sim: golden sim is booted — bouncing it (~10s) to clone; it will reboot, login survives." >&2
     xcrun simctl shutdown "$golden"
   fi
   if ! udid=$(xcrun simctl clone "$golden" "$name"); then
