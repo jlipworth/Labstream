@@ -814,7 +814,6 @@ struct CustomTransportStatusOverlay: View {
     private var title: String {
         switch status {
         case .none: ""
-        case .initialLoading: "Loading…"
         case .buffering: "Buffering…"
         case .pausedBuffering: "Paused — buffering…"
         case .reconnecting: "Reconnecting…"
@@ -826,8 +825,6 @@ struct CustomTransportStatusOverlay: View {
         switch status {
         case .none:
             nil
-        case .initialLoading:
-            "Opening the stream. You can pause now and let it build buffer before playing."
         case .buffering:
             "You can pause now and let the stream build buffer before playing."
         case .pausedBuffering:
@@ -856,7 +853,7 @@ struct CustomTransportStatusOverlay: View {
                     .multilineTextAlignment(.center)
             }
             switch status {
-            case .initialLoading, .buffering, .pausedBuffering:
+            case .buffering, .pausedBuffering:
                 Button {
                     onTogglePause()
                 } label: {
