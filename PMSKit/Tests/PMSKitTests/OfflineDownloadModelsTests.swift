@@ -54,6 +54,8 @@ struct OfflineDownloadModelsTests {
         #expect(meta.year == nil)
         #expect(meta.posterRelativePath == nil)
         #expect(meta.plexBIFRelativePath == nil)
+        #expect(meta.jellyfinTrickPlayPlaylistRelativePath == nil)
+        #expect(meta.jellyfinTrickPlayTileRelativePaths == nil)
         #expect(meta.resolutionLabel == nil)
     }
 
@@ -109,7 +111,9 @@ struct OfflineDownloadModelsTests {
             optimizeQueueTitle: "Round Trip [VisionPlay 12345678]",
             optimizeBaselinePartIDs: [42, 43, 44],
             posterRelativePath: "555.poster.jpg",
-            plexBIFRelativePath: "555.plex-sd.bif")
+            plexBIFRelativePath: "555.plex-sd.bif",
+            jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",
+            jellyfinTrickPlayTileRelativePaths: ["555.jf-trickplay-0.jpg"])
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)
@@ -186,7 +190,9 @@ struct OfflineDownloadModelsTests {
             metadata: OfflineMetadata(ratingKey: "1", title: "Title", type: "movie",
                                       plexBIFRelativePath: "1.plex-sd.bif"),
             posterURL: URL(fileURLWithPath: "/tmp/1.poster.jpg"),
-            plexBIFURL: URL(fileURLWithPath: "/tmp/1.plex-sd.bif"))
+            plexBIFURL: URL(fileURLWithPath: "/tmp/1.plex-sd.bif"),
+            jellyfinTrickPlayPlaylistURL: URL(fileURLWithPath: "/tmp/1.jf-trickplay.m3u8"),
+            sideAssetBytes: 42)
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(DownloadRecord.self, from: data)
         #expect(decoded == original)

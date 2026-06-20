@@ -127,6 +127,14 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).plex-sd.bif")
     }
 
+    func jellyfinTrickPlayPlaylistDestinationURL(ratingKey: String) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).jf-trickplay.m3u8")
+    }
+
+    func jellyfinTrickPlayTileDestinationURL(ratingKey: String, index: Int) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).jf-trickplay-\(index).jpg")
+    }
+
     /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
     private func resolvedDownloadAssetURL(_ relative: String?) -> URL? {
         guard let relative, !relative.isEmpty else { return nil }
@@ -153,7 +161,9 @@ final class DownloadStore: @unchecked Sendable {
                                status: row.status,
                                metadata: row.metadata,
                                posterURL: resolvedDownloadAssetURL(row.metadata?.posterRelativePath),
-                               plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath))
+                               plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
+                               jellyfinTrickPlayPlaylistURL: resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
+                               sideAssetBytes: sideAssetBytes(for: row.metadata))
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
@@ -189,6 +199,30 @@ final class DownloadStore: @unchecked Sendable {
         return resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath)
     }
 
+    /// Absolute local Jellyfin trickplay playlist URL for a completed download, if present on disk.
+    func jellyfinTrickPlayPlaylistURL(for ratingKey: String) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        return resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath)
+    }
+
+    private func sideAssetBytes(for metadata: OfflineMetadata?) -> Int {
+        guard let metadata else { return 0 }
+        var relatives: [String] = []
+        relatives.append(contentsOf: [
+            metadata.posterRelativePath,
+            metadata.plexBIFRelativePath,
+            metadata.jellyfinTrickPlayPlaylistRelativePath,
+        ].compactMap { $0 })
+        relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
+        return relatives.reduce(0) { total, relative in
+            guard !relative.isEmpty else { return total }
+            let url = baseDirectory.appendingPathComponent(relative)
+            let attrs = try? fileManager.attributesOfItem(atPath: url.path)
+            return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
+        }
+    }
+
     /// Insert/replace a record. `localURL` must live under `baseDirectory`.
     ///
     /// D5: preserves an already-stored `metadata` snapshot if the incoming record
@@ -221,6 +255,15 @@ final class DownloadStore: @unchecked Sendable {
     /// metadata snapshot (#78). No-op if the row or metadata is gone.
     func setPlexBIFRelativePath(ratingKey: String, _ relativePath: String) {
         updateMetadata(ratingKey: ratingKey) { $0.plexBIFRelativePath = relativePath }
+    }
+
+    /// Record locally-cached Jellyfin trickplay assets (#79). Relative paths only; the playlist
+    /// itself is sanitized before writing, so no token-bearing URLs are persisted.
+    func setJellyfinTrickPlayRelativePaths(ratingKey: String, playlist: String, tiles: [String]) {
+        updateMetadata(ratingKey: ratingKey) {
+            $0.jellyfinTrickPlayPlaylistRelativePath = playlist
+            $0.jellyfinTrickPlayTileRelativePaths = tiles
+        }
     }
 
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
@@ -345,10 +388,12 @@ final class DownloadStore: @unchecked Sendable {
                       ratingKey, String(describing: error), url.path)
             } catch {} // already absent — nothing to clean up
             // D5/#78: also delete cached side assets so a removed download leaves nothing behind.
-            for asset in [row.metadata?.posterRelativePath, row.metadata?.plexBIFRelativePath] {
-                if let asset, !asset.isEmpty {
-                    try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
-                }
+            var assets = [row.metadata?.posterRelativePath,
+                          row.metadata?.plexBIFRelativePath,
+                          row.metadata?.jellyfinTrickPlayPlaylistRelativePath].compactMap { $0 }
+            assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
+            for asset in assets where !asset.isEmpty {
+                try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
             }
         }
         persist()

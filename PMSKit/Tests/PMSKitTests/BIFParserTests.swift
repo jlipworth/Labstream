@@ -96,6 +96,36 @@ final class BIFParserTests: XCTestCase {
         let part = try JSONDecoder().decode(Part.self, from: json)
         XCTAssertTrue(part.hasStandardDefinitionBIFIndex)
     }
+    func testJellyfinOfflinePlannerSanitizesTokenBearingTileURLs() throws {
+        let playlist = """
+        #EXTM3U
+        #EXTINF:1000,
+        #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10
+        tile0.jpg?ApiKey=secret&MediaSourceId=abc
+        #EXTINF:1000,
+        #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10
+        https://server.test/Videos/i/Trickplay/320/tile1.jpg?ApiKey=secret
+        """
+        let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlist, tileFilenamesByURI: [
+            "tile0.jpg?ApiKey=secret&MediaSourceId=abc": "download.jf-trickplay-0.jpg",
+            "https://server.test/Videos/i/Trickplay/320/tile1.jpg?ApiKey=secret": "download.jf-trickplay-1.jpg",
+        ])
+
+        XCTAssertFalse(sanitized.localizedCaseInsensitiveContains("apikey"))
+        XCTAssertFalse(sanitized.contains("server.test"))
+        XCTAssertTrue(sanitized.contains("download.jf-trickplay-0.jpg"))
+        XCTAssertTrue(sanitized.contains("download.jf-trickplay-1.jpg"))
+        let parsed = try JellyfinTrickPlayPlaylistParser.parse(sanitized)
+        XCTAssertEqual(parsed.tiles.map(\.uri), ["download.jf-trickplay-0.jpg", "download.jf-trickplay-1.jpg"])
+        XCTAssertEqual(parsed.frame(nearMs: 1_500_000)?.tile.uri, "download.jf-trickplay-1.jpg")
+    }
+
+    func testJellyfinOfflinePlannerEstimatesTileStorageByDuration() {
+        XCTAssertEqual(JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: nil), 0)
+        XCTAssertEqual(JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: 500_000), 300_000)
+        XCTAssertEqual(JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: 1_500_000), 600_000)
+    }
+
 }
 
 private func makeBIF(intervalMs: UInt32,

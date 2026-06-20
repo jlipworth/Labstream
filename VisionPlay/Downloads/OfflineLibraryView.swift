@@ -49,9 +49,16 @@ public struct OfflineLibraryView: View {
         .fullScreenCover(item: $playing) { record in
             CustomPlayerView(localFile: record.localURL,
                              item: offlineItem(from: record),
-                             trickPlayProvider: LocalBIFTrickPlayThumbnailProvider(bifURL: record.plexBIFURL),
+                             trickPlayProvider: localTrickPlayProvider(for: record),
                              onClose: { playing = nil })
         }
+    }
+
+    private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
+        if let playlist = record.jellyfinTrickPlayPlaylistURL {
+            return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playlist)
+        }
+        return LocalBIFTrickPlayThumbnailProvider(bifURL: record.plexBIFURL)
     }
 
     @ViewBuilder
