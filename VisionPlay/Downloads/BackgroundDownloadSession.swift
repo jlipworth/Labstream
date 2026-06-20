@@ -356,13 +356,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         }
 
-        // 3. Minimum size — an error page or stub is far below any real video; a
-        // sub-1 MB "movie" is almost certainly a truncated/failed transcode.
+        // 3. Size observation — tiny bodies used to be rejected categorically here. That caught
+        // error pages, but it also made valid short clips/trailers impossible to download. HTTP
+        // status + MIME catches obvious server errors above; let the AVFoundation probe below be
+        // the source of truth for small-but-valid media.
         let bytes = (try? fileManager.attributesOfItem(atPath: entry.destination.path)[.size] as? Int)
             .flatMap { $0 } ?? 0
-        if bytes < 1_000_000 {       // < ~1 MB
-            fail("Downloaded file is too small to be a video (\(bytes) bytes).")
-            return
+        if bytes < 1_000_000 {
+            AppDiagnostics.record(.downloads, "downloads.small_file_validation", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "bytes": .bytes(bytes),
+            ])
         }
 
         // 4. Playability probe — confirm AVFoundation can actually open the file,

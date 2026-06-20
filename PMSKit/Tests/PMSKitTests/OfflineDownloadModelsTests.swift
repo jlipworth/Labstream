@@ -97,6 +97,7 @@ struct OfflineDownloadModelsTests {
             index: 5,
             thumb: "/thumb/1",
             art: "/art/1",
+            chapters: [OfflineChapter(chapterID: 7, tag: "Chapter 7", startTimeOffset: 7_000)],
             resolutionLabel: "1080p",
             librarySectionID: 3,
             librarySectionKey: "/library/sections/3",
@@ -135,7 +136,12 @@ struct OfflineDownloadModelsTests {
             parentIndex: 2,
             index: 5,
             thumb: "/t",
-            art: "/a")
+            art: "/a",
+            chapters: [OfflineChapter(chapterID: 1,
+                                      tag: "Opening",
+                                      startTimeOffset: 0,
+                                      endTimeOffset: 600_000,
+                                      thumb: "/chapter/1")])
         let item = meta.makeMediaItem()
         #expect(item.ratingKey == "777")
         #expect(item.key == "/library/metadata/777")
@@ -150,6 +156,10 @@ struct OfflineDownloadModelsTests {
         #expect(item.tagline == "T")
         #expect(item.thumb == "/t")
         #expect(item.art == "/a")
+        #expect(item.chapters?.count == 1)
+        #expect(item.chapters?.first?.tag == "Opening")
+        #expect(item.chapters?.first?.startTimeOffset == 0)
+        #expect(item.chapters?.first?.thumb == "/chapter/1")
         #expect(item.grandparentTitle == "The Show")
         #expect(item.grandparentRatingKey == "show-1")
         #expect(item.grandparentThumb == "/show/thumb")

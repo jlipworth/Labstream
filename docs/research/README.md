@@ -11,3 +11,7 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 - **Research docs:** cite source APIs, list uncertainties, and define validation tasks.
 - **Current docs:** describe only implemented or deliberately accepted project behavior.
 - **Archive docs:** retain historical context that should not be treated as current guidance.
+
+## Active notes
+
+- [18 — Offline chapters, trickplay, and subtitles](18-offline-chapters-trickplay-subtitles.md)

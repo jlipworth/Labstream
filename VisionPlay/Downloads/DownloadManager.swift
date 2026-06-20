@@ -118,23 +118,22 @@ public final class DownloadManager {
     /// test so a fast-rendering job isn't mislabelled.
     private var transcodeSourcedDownloads: Set<String> = []
 
-    /// ratingKey -> the Emby `PlaySessionId` minted by the download PlaybackInfo POST for a
-    /// TRANSCODED Emby download. Required for encoder teardown: Emby's
-    /// `POST /Sessions/Playing/Stopped` is state-only — the FFmpeg encoder must be killed with
-    /// `DELETE /Videos/ActiveEncodings?PlaySessionId=..` or the server pod OOMs (CLEANUP
-    /// INVARIANT). Fired terminally from `releaseInFlight` (complete/failed/cancel/delete).
-    /// Original (static) Emby downloads use no encoder, so they are never recorded here.
+    /// ratingKey -> the server `PlaySessionId` minted/assigned for a TRANSCODED download.
+    /// Required for encoder teardown: active server encoders must be killed with
+    /// `DELETE /Videos/ActiveEncodings?PlaySessionId=..` when the transfer reaches a terminal
+    /// state. Fired from `releaseInFlight` (complete/failed/cancel/delete). Original/static
+    /// downloads use no encoder, so they are never recorded here.
     ///
     /// TODO(orphan-on-kill): this map is in-memory, so a HARD app kill while a transcoded Emby
     /// download is in flight loses the PlaySessionId and the app cannot tear that encoder down on
-    /// next launch (the reconcile-to-`.failed` path has no PlaySessionId to delete). Not a clean
-    /// mirror of any existing lane (Jellyfin downloads tear down nothing; Plex uses a server-side
-    /// queue), and persisting it would require extending OfflineMetadata + a launch-time sweep, so
-    /// it is deferred. Mitigations already in place: Emby reaps idle FFmpeg encoders server-side
-    /// after its inactivity timeout, and every NORMAL terminal transition (complete/failed/cancel/
-    /// delete) within a session DOES tear down. Revisit if leaked encoders are observed in
-    /// practice — the fix is to persist the PlaySessionId and DELETE ActiveEncodings on reconcile.
+    /// next launch (the reconcile-to-`.failed` path has no PlaySessionId to delete). Persisting it
+    /// would require extending OfflineMetadata + a launch-time sweep, so it is deferred.
+    /// Mitigations already in place: servers reap idle encoders after inactivity, and every NORMAL
+    /// terminal transition (complete/failed/cancel/delete) within a session DOES tear down.
+    /// Revisit if leaked encoders are observed in practice — the fix is to persist the
+    /// PlaySessionId and DELETE ActiveEncodings on reconcile.
     private var embyPlaySessionByRatingKey: [String: String] = [:]
+    private var jellyfinPlaySessionByRatingKey: [String: String] = [:]
 
     /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
     private var optimizeProgressSamples: [String: (p: Double, time: Date)] = [:]
@@ -664,9 +663,11 @@ public final class DownloadManager {
                 expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
                 let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
+                let playSessionId = "visionplay-download-\(UUID().uuidString)"
                 let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
-                    server, token, identity, itemId, mediaSourceID, profile)
+                    server, token, identity, itemId, mediaSourceID, playSessionId, profile)
                 request = transcodedRequest
+                jellyfinPlaySessionByRatingKey[ratingKey] = playSessionId
             }
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -712,6 +713,7 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -721,6 +723,7 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(String(describing: error))
             store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         }
     }
@@ -1419,6 +1422,13 @@ public final class DownloadManager {
             let service = EmbyBrowseService(appModel: appModel)
             Task { await service.stopActiveEncoding(playSessionId: playSessionId) }
         }
+        if let playSessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey) {
+            recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
+                "download_id": .identifier(ratingKey),
+            ])
+            let service = JellyfinBrowseService(appModel: appModel)
+            Task { await service.stopActiveEncoding(playSessionId: playSessionId) }
+        }
     }
 
     // MARK: - D5: offline metadata + poster caching
@@ -1455,6 +1465,7 @@ public final class DownloadManager {
                                index: item.index,
                                thumb: item.thumb,
                                art: item.art,
+                               chapters: item.chapters?.map(OfflineChapter.init),
                                resolutionLabel: resolutionLabel,
                                librarySectionID: item.librarySectionID,
                                librarySectionKey: item.librarySectionKey,
@@ -2118,6 +2129,7 @@ public final class DownloadManager {
                                                           _ identity: JellyfinClientIdentity,
                                                           _ itemId: String,
                                                           _ mediaSourceId: String?,
+                                                          _ playSessionId: String,
                                                           _ profile: JellyfinTranscodeProfile) -> URLRequest {
         let base = server.appendingPathComponent("/Videos/\(itemId)/stream.mp4")
         var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
@@ -2134,6 +2146,7 @@ public final class DownloadManager {
             URLQueryItem(name: "enableAutoStreamCopy", value: "false"),
             URLQueryItem(name: "breakOnNonKeyFrames", value: "false"),
             URLQueryItem(name: "deviceId", value: identity.deviceId),
+            URLQueryItem(name: "playSessionId", value: playSessionId),
         ]
         if let mediaSourceId, !mediaSourceId.isEmpty {
             query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
@@ -2252,13 +2265,16 @@ public final class DownloadManager {
         throw CancellationError()
     }
 
-    /// Pick only a NEW optimized output that the local/offline player can open. Multi-version
-    /// libraries can have several pre-existing MKV source parts; excluding just the selected
-    /// source part is not enough and caused a relaunch resume to grab another raw MKV.
+    /// Pick only a NEW Plex server-optimized output that the local/offline player can open.
+    /// Multi-version libraries can have several pre-existing compatible source parts; excluding
+    /// just the selected source part is not enough, and any concurrent/manual version creation for
+    /// the same item should not win unless it has Plex's optimized-version path shape.
     private static func optimizedDownloadCandidate(from parts: [Part],
                                                    baselinePartIDs: Set<Int>) -> Part? {
         parts.first { part in
-            !baselinePartIDs.contains(part.id) && isLocallyPlayableOriginal(part: part)
+            !baselinePartIDs.contains(part.id)
+                && isServerOptimizedPart(part)
+                && isLocallyPlayableOriginal(part: part)
         }
     }
 

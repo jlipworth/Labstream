@@ -39,7 +39,7 @@ As of this docs pass, Jellyfin download behavior has unit/request-path coverage 
 
 - Device builds use background `URLSession` for durable transfers.
 - Simulator builds use a foreground session where background download behavior is not reliable.
-- Downloads reject truncated/error bodies and invalid final files.
+- Downloads reject HTTP error bodies and invalid final files. Very small files are not rejected by byte size alone; they still must pass local AVFoundation playback validation.
 
 ## Reconcile and resume
 
@@ -47,9 +47,10 @@ On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-fl
 
 - Static original transfers are network-bound and can reconnect/retry as file downloads.
 - Plex optimizer jobs have two phases: server preparation, then static rendered-part download. Server-prep state is represented separately so the UI can say “Preparing on server…” and poll progress where possible.
+- Jellyfin/Emby compatible downloads are live transcode streams, not durable server-prep jobs. When they are canceled, fail, or complete, VisionPlay sends active-encoding cleanup for the download play session where the backend exposes it.
 - Failed items keep metadata so retry can re-probe and choose the correct current route.
 - Canceled/deleted downloads should clean up local files and app-owned queue state; Plex optimizer cleanup must avoid deleting protected/current jobs.
 
 ## Offline playback metadata
 
-Offline playback uses the stored metadata snapshot for title, artwork, resume, duration, episode hierarchy, and selected source identifiers. Server metadata may be stale while offline; refresh on later online browse/download actions rather than blocking local playback.
+Offline playback uses the stored metadata snapshot for title, artwork, text chapters, resume, duration, episode hierarchy, and selected source identifiers. Server metadata may be stale while offline; refresh on later online browse/download actions rather than blocking local playback.

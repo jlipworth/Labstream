@@ -188,6 +188,7 @@ public enum JellyfinLibrary {
                                                  identity: JellyfinClientIdentity,
                                                  itemId: String,
                                                  mediaSourceId: String?,
+                                                 playSessionId: String? = nil,
                                                  maxVideoBitrate: Int,
                                                  maxWidth: Int?,
                                                  maxHeight: Int?) throws -> URLRequest {
@@ -209,6 +210,9 @@ public enum JellyfinLibrary {
             URLQueryItem(name: "breakOnNonKeyFrames", value: "false"),
             URLQueryItem(name: "deviceId", value: identity.deviceId),
         ]
+        if let playSessionId, !playSessionId.isEmpty {
+            query.append(URLQueryItem(name: "playSessionId", value: playSessionId))
+        }
         if let mediaSourceId, !mediaSourceId.isEmpty {
             query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
         }

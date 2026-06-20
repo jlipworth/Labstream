@@ -171,6 +171,33 @@ struct JellyfinPlaybackTests {
         #expect(result.sourceMetadata.audioCodec == "truehd")
     }
 
+    @Test func transcodingURLAlwaysReportsTranscodeEvenWhenDirectStreamSupported() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-1",
+          "MediaSources": [{
+            "Id": "source-1",
+            "Container": "mkv",
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": true,
+            "SupportsTranscoding": true,
+            "TranscodingUrl": "/Videos/movie-1/master.m3u8?MediaSourceId=source-1&PlaySessionId=play-1&api_key=server-token",
+            "TranscodingSubProtocol": "hls",
+            "TranscodingContainer": "ts"
+          }]
+        }
+        """#.utf8))
+
+        let result = try JellyfinPlayback.resolveStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: "token-abc",
+            itemId: "movie-1")
+
+        #expect(result.playMethod == .transcode)
+    }
+
     @Test func buildsStaticVideoStreamURLWhenNoTranscodingURLIsNeeded() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {
