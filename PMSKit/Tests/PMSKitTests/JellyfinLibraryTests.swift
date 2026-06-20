@@ -434,4 +434,18 @@ struct JellyfinLibraryTests {
         #expect(item.parentIndex == 1)
         #expect(item.index == 2)
     }
+
+    @Test func textSubtitleRequestUsesHeaderAuthAndPathStyle() throws {
+        let req = try JellyfinLibrary.textSubtitleRequest(server: URL(string: "https://jf.example/base")!,
+                                                          token: "secret",
+                                                          identity: identity,
+                                                          itemId: "item-1",
+                                                          mediaSourceId: "source-1",
+                                                          streamIndex: 3,
+                                                          format: "srt")
+        #expect(req.url?.path == "/base/Videos/item-1/source-1/Subtitles/3/Stream.srt")
+        #expect(req.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"secret\"") == true)
+        #expect(URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?.isEmpty ?? true)
+    }
+
 }

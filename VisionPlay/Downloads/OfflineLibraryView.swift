@@ -50,6 +50,7 @@ public struct OfflineLibraryView: View {
             CustomPlayerView(localFile: record.localURL,
                              item: offlineItem(from: record),
                              trickPlayProvider: localTrickPlayProvider(for: record),
+                             offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
                              onClose: { playing = nil })
         }
     }

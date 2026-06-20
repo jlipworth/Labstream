@@ -93,3 +93,40 @@ public enum OfflineTextSubtitleParser {
         text.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
     }
 }
+
+public enum OfflineTextSubtitleCachePlanner {
+    public static let compatibleTextCodecs: Set<String> = ["srt", "subrip", "webvtt", "vtt"]
+
+    public static func isCompatibleTextSubtitle(_ stream: Stream) -> Bool {
+        guard stream.kind == .subtitle else { return false }
+        guard let codec = stream.codec?.lowercased(), compatibleTextCodecs.contains(codec) else { return false }
+        return true
+    }
+
+    public static func fileExtension(for stream: Stream) -> String {
+        switch stream.codec?.lowercased() {
+        case "webvtt", "vtt": return "vtt"
+        case "srt", "subrip": return "srt"
+        default: return "vtt"
+        }
+    }
+
+    public static func displayName(for stream: Stream, fallbackIndex: Int) -> String {
+        let base = stream.displayTitle
+            ?? stream.extendedDisplayTitle
+            ?? stream.language
+            ?? stream.languageCode
+            ?? "Subtitle \(fallbackIndex + 1)"
+        let forced = stream.forced == true && !base.lowercased().contains("forced") ? " (Forced)" : ""
+        return base + forced
+    }
+
+    public static func track(for stream: Stream, relativePath: String, fallbackIndex: Int) -> OfflineTextSubtitleTrack? {
+        guard isCompatibleTextSubtitle(stream) else { return nil }
+        return OfflineTextSubtitleTrack(id: stream.id,
+                                        displayName: displayName(for: stream, fallbackIndex: fallbackIndex),
+                                        language: stream.languageCode ?? stream.languageTag ?? stream.language,
+                                        codec: stream.codec,
+                                        relativePath: relativePath)
+    }
+}

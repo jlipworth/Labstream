@@ -183,6 +183,25 @@ public enum JellyfinLibrary {
         return req
     }
 
+    public static func textSubtitleRequest(server: URL,
+                                           token: String,
+                                           identity: JellyfinClientIdentity,
+                                           itemId: String,
+                                           mediaSourceId: String,
+                                           streamIndex: Int,
+                                           format: String) throws -> URLRequest {
+        let cleanFormat = format.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let ext = ["srt", "vtt"].contains(cleanFormat) ? cleanFormat : "vtt"
+        let url = try JellyfinPlayback.jellyfinURL(
+            server: server,
+            path: "/Videos/\(itemId)/\(mediaSourceId)/Subtitles/\(streamIndex)/Stream.\(ext)"
+        )
+        var req = authenticatedRequest(url: url, token: token, identity: identity)
+        req.setValue(ext == "srt" ? "application/x-subrip,text/plain,*/*" : "text/vtt,text/plain,*/*",
+                     forHTTPHeaderField: "Accept")
+        return req
+    }
+
     public static func transcodedDownloadRequest(server: URL,
                                                  token: String,
                                                  identity: JellyfinClientIdentity,

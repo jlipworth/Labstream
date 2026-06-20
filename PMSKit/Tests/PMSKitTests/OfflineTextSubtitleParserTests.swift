@@ -28,4 +28,23 @@ final class OfflineTextSubtitleParserTests: XCTestCase {
         XCTAssertEqual(decoded, track)
         XCTAssertFalse(String(data: data, encoding: .utf8)!.contains("http"))
     }
+    func testPlannerAcceptsOnlyCompatibleTextSubtitleStreams() {
+        let text = Stream(id: 1, streamType: 3, index: 0, codec: "srt", language: "English", languageCode: "eng", key: "/library/streams/1", displayTitle: "English SRT")
+        let image = Stream(id: 2, streamType: 3, index: 1, codec: "pgs", language: "English", key: "/library/streams/2")
+        let audio = Stream(id: 3, streamType: 2, index: 2, codec: "aac")
+
+        XCTAssertTrue(OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle(text))
+        XCTAssertFalse(OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle(image))
+        XCTAssertFalse(OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle(audio))
+        XCTAssertEqual(OfflineTextSubtitleCachePlanner.fileExtension(for: text), "srt")
+        XCTAssertEqual(OfflineTextSubtitleCachePlanner.track(for: text, relativePath: "movie.sub-1.srt", fallbackIndex: 0)?.displayName, "English SRT")
+    }
+
+    func testStreamDecodesExternalSubtitleKey() throws {
+        let json = #"{"id":7,"streamType":3,"index":2,"codec":"srt","key":"/library/streams/7","displayTitle":"English"}"#.data(using: .utf8)!
+        let stream = try JSONDecoder().decode(Stream.self, from: json)
+        XCTAssertEqual(stream.key, "/library/streams/7")
+        XCTAssertTrue(OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle(stream))
+    }
+
 }
