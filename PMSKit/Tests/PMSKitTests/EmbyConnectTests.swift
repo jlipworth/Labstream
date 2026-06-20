@@ -134,7 +134,7 @@ struct EmbyConnectTests {
         // Field set confirmed live, including SupporterKey (absent from the client source).
         let data = #"""
         [{"Id":"93555d42","Url":"https://emby.example.org","Name":"emby-server",
-          "SystemId":"ec061cd8","AccessKey":"0ac5e2c3","LocalAddress":"http://10.0.0.2:8096",
+          "SystemId":"ec061cd8","AccessKey":"0ac5e2c3","LocalAddress":"http://192.0.2.10:8096",
           "UserType":"Linked","SupporterKey":""}]
         """#.data(using: .utf8)!
 
@@ -144,7 +144,7 @@ struct EmbyConnectTests {
         #expect(server.systemId == "ec061cd8")
         #expect(server.name == "emby-server")
         #expect(server.url == "https://emby.example.org")
-        #expect(server.localAddress == "http://10.0.0.2:8096")
+        #expect(server.localAddress == "http://192.0.2.10:8096")
         #expect(server.accessKey == "0ac5e2c3")
         #expect(server.userType == "Linked")
     }
@@ -165,8 +165,8 @@ struct EmbyConnectTests {
     }
 
     @Test func apiBaseAppendsEmbyToLanAddressWithPort() throws {
-        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "http://10.0.0.2:8096")
-        #expect(url == URL(string: "http://10.0.0.2:8096/emby"))
+        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "http://192.0.2.10:8096")
+        #expect(url == URL(string: "http://192.0.2.10:8096/emby"))
     }
 
     @Test func apiBaseDoesNotDoubleEmbyWhenAlreadyPresent() throws {

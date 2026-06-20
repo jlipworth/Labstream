@@ -43,6 +43,7 @@ struct LoginView: View {
     @State private var embyUsername = ""
     @State private var embyPassword = ""
     @State private var embySignInMethod: EmbySignInMethod?
+    @State private var selectingEmbyConnectServerID: String?
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
@@ -66,11 +67,13 @@ struct LoginView: View {
             case .failed(let message):
                 errorMessage = message
                 working = false
+                selectingEmbyConnectServerID = nil
                 webAuth.cancel()
             case .authenticated:
                 // Token arrived via polling — close the web sheet so it doesn't
                 // linger over the now-authenticated app.
                 working = false
+                selectingEmbyConnectServerID = nil
                 webAuth.cancel()
             case .awaitingJellyfinQuickConnect, .awaitingEmbyConnectPin, .awaitingEmbyServerSelection:
                 working = false
@@ -519,7 +522,17 @@ struct LoginView: View {
             VStack(spacing: DS.Space.sm) {
                 ForEach(servers) { server in
                     Button {
-                        Task { await authManager.selectEmbyConnectServer(id: server.id) }
+                        Task {
+                            guard selectingEmbyConnectServerID == nil else { return }
+                            selectingEmbyConnectServerID = server.id
+                            working = true
+                            await authManager.selectEmbyConnectServer(id: server.id)
+                            if case .authenticated = authManager.state {
+                                return
+                            }
+                            selectingEmbyConnectServerID = nil
+                            working = false
+                        }
                     } label: {
                         HStack(spacing: DS.Space.md) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -532,13 +545,18 @@ struct LoginView: View {
                                 }
                             }
                             Spacer(minLength: DS.Space.sm)
-                            Image(systemName: "chevron.right")
-                                .foregroundStyle(.secondary)
+                            if selectingEmbyConnectServerID == server.id {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, DS.Space.xs)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(working || selectingEmbyConnectServerID != nil)
                 }
             }
             .frame(maxWidth: 420)
@@ -547,8 +565,10 @@ struct LoginView: View {
                 authManager.cancelCurrentAuthorization()
                 embySignInMethod = nil
                 working = false
+                selectingEmbyConnectServerID = nil
             }
             .buttonStyle(.bordered)
+            .disabled(working || selectingEmbyConnectServerID != nil)
         }
     }
 

@@ -154,7 +154,7 @@ public enum EmbyConnect {
     }
 
     /// Turn a Connect server address (the bare `Url`/`LocalAddress` from `/service/servers`,
-    /// e.g. `https://host` or `http://10.0.0.2:8096`) into the Emby API base by appending the
+    /// e.g. `https://host` or `http://192.0.2.10:8096`) into the Emby API base by appending the
     /// `/emby` path segment Emby's clients always use — unless it is already present. The
     /// result is what the rest of the Emby lane treats as `server` (path-preserving joins
     /// then produce `…/emby/<handler>`).

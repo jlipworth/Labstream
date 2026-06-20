@@ -113,9 +113,9 @@ The docs conflict on whether this is truly unauthenticated. Verify live before r
 
 ## Emby Connect
 
-Emby Connect is optional and should come after manual server support. It is **not** Jellyfin
-Quick Connect parity — Jellyfin's server-local `/QuickConnect/*` endpoints do **not** exist on
-Emby (they 404). Quick Connect was added to Jellyfin *after* the fork.
+Emby Connect is an optional headset-friendly path layered on top of manual server support. It is
+**not** Jellyfin Quick Connect parity — Jellyfin's server-local `/QuickConnect/*` endpoints do
+**not** exist on Emby (they 404). Quick Connect was added to Jellyfin *after* the fork.
 
 **Emby's headset-friendly "short code" login IS Emby Connect PIN sign-in** (the flow Emby's
 own TV apps use), not Quick Connect. Tracked as GH #72. The username/password Connect path

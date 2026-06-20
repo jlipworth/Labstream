@@ -27,10 +27,11 @@ final class AuthManager {
     }
 
     /// One linked server shown to the user when an Emby Connect account has more than one.
-    /// Carries only display data + the stable `systemId` used to resume; the Connect token
-    /// and per-server access key stay in `AuthManager` and are never surfaced or logged.
+    /// Carries only display data + an opaque selection id (the stable `SystemId` when Emby
+    /// supplies one). The Connect token and per-server access key stay in `AuthManager`
+    /// and are never surfaced or logged.
     struct EmbyConnectServerChoice: Equatable, Identifiable, Sendable {
-        let id: String          // server SystemId
+        let id: String
         let name: String
         let addressLabel: String
     }
@@ -61,6 +62,7 @@ final class AuthManager {
     /// holds the Connect user id + linked-server list (incl. per-server access keys) while the
     /// user picks a server; it is in-memory only and cleared when the attempt ends.
     private var activeEmbyConnectAttemptID: UUID?
+    private var activeEmbyConnectServerSelectionID: String?
     private var pendingEmbyConnect: PendingEmbyConnect?
 
     init(appModel: AppModel, keychain: KeychainStore = KeychainStore()) {
@@ -544,6 +546,13 @@ final class AuthManager {
             if case .awaitingEmbyServerSelection = state { state = .idle }
             return
         }
+        guard activeEmbyConnectServerSelectionID == nil else { return }
+        activeEmbyConnectServerSelectionID = id
+        defer {
+            if activeEmbyConnectServerSelectionID == id {
+                activeEmbyConnectServerSelectionID = nil
+            }
+        }
         await exchangeAndPersistEmbyConnect(server: server,
                                             connectUserId: pending.connectUserId,
                                             attemptID: attemptID)
@@ -631,7 +640,11 @@ final class AuthManager {
             guard let accessKey = server.accessKey, !accessKey.isEmpty else {
                 throw EmbyAuthError.missingCredentials
             }
-            guard let base = await resolveEmbyServerBaseURL(server) else {
+            guard let expectedSystemID = server.systemId, !expectedSystemID.isEmpty else {
+                failEmbyConnect(attemptID, "Emby Connect did not identify the selected server. Use a server URL instead.")
+                return
+            }
+            guard let base = await resolveEmbyServerBaseURL(server, expectedSystemID: expectedSystemID) else {
                 failEmbyConnect(attemptID, "Couldn’t reach the selected Emby server.")
                 return
             }
@@ -646,7 +659,7 @@ final class AuthManager {
                 throw EmbyAuthError.missingCredentials
             }
             guard activeEmbyConnectAttemptID == attemptID else { return }
-            persistEmbySession(server: base, token: token, userID: userID, serverID: server.systemId)
+            persistEmbySession(server: base, token: token, userID: userID, serverID: expectedSystemID)
             activeEmbyConnectAttemptID = nil
             pendingEmbyConnect = nil
             pollTask = nil
@@ -665,19 +678,18 @@ final class AuthManager {
     /// server: its public `System/Info` `Id` must equal the Connect-supplied `SystemId`. This
     /// mirrors the Plex `firstReachable` identity binding and ensures the per-server access key
     /// is never sent to a wrong/spoofed host — the cloud-supplied `LocalAddress` is otherwise
-    /// trusted blindly. Falls back to the WAN URL, verified the same way. Returns nil (→ a
-    /// clear "couldn't reach" error) when neither address binds to the expected server, rather
-    /// than persisting an unreachable/unverified address.
-    private func resolveEmbyServerBaseURL(_ server: EmbyConnectServer) async -> URL? {
-        let expectedID = server.systemId
+    /// trusted blindly. Falls back to the WAN URL, verified the same way. Missing `SystemId`
+    /// fails closed before this function is called; missing/garbled probed identity also fails
+    /// closed here instead of persisting an unreachable/unverified address.
+    private func resolveEmbyServerBaseURL(_ server: EmbyConnectServer, expectedSystemID: String) async -> URL? {
         let localBase = embyConnectBase(server.localAddress)
         let wanBase = embyConnectBase(server.url)
         // Short timeout on the LAN probe so it fails over fast when away from home; the WAN
         // probe uses the normal session so a slow internet path isn't cut off prematurely.
-        if let localBase, await embyServerIdentityMatches(localBase, expectedID: expectedID, session: Self.probeSession) {
+        if let localBase, await embyServerIdentityMatches(localBase, expectedSystemID: expectedSystemID, session: Self.probeSession) {
             return localBase
         }
-        if let wanBase, await embyServerIdentityMatches(wanBase, expectedID: expectedID, session: Self.jellyfinSession) {
+        if let wanBase, await embyServerIdentityMatches(wanBase, expectedSystemID: expectedSystemID, session: Self.jellyfinSession) {
             return wanBase
         }
         return nil
@@ -688,22 +700,22 @@ final class AuthManager {
         return try? EmbyConnect.apiBaseURL(forConnectAddress: address)
     }
 
-    private func embyServerIdentityMatches(_ base: URL, expectedID: String?, session: URLSession) async -> Bool {
+    private func embyServerIdentityMatches(_ base: URL, expectedSystemID: String, session: URLSession) async -> Bool {
         guard let request = try? EmbyAuth.serverInfoRequest(server: base),
               let (data, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             return false
         }
-        // When Connect supplied a SystemId, require the probed server to match before we
-        // trust it with the per-server access key. Missing/garbled info → reject.
-        guard let expectedID, !expectedID.isEmpty else { return true }
+        // Require the probed server identity to match before we trust it with the
+        // per-server access key. Missing/garbled info → reject closed.
         guard let info = try? JSONDecoder().decode(EmbyServerInfo.self, from: data) else { return false }
-        return info.id == expectedID
+        return info.id == expectedSystemID
     }
 
     private func failEmbyConnect(_ attemptID: UUID, _ message: String) {
         guard activeEmbyConnectAttemptID == attemptID else { return }
         activeEmbyConnectAttemptID = nil
+        activeEmbyConnectServerSelectionID = nil
         pendingEmbyConnect = nil
         pollTask = nil
         state = .failed(message)
@@ -716,7 +728,7 @@ final class AuthManager {
     }
 
     private func serverChoiceID(_ server: EmbyConnectServer) -> String {
-        server.systemId ?? server.url ?? server.localAddress ?? ""
+        server.systemId ?? server.id ?? server.url ?? server.localAddress ?? ""
     }
 
     private func embyConnectData(for request: URLRequest) async throws -> Data {
@@ -1005,6 +1017,7 @@ final class AuthManager {
         activePinIDs = []
         activeJellyfinQuickConnectAttemptID = nil
         activeEmbyConnectAttemptID = nil
+        activeEmbyConnectServerSelectionID = nil
         pendingEmbyConnect = nil
     }
 
