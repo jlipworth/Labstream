@@ -160,6 +160,14 @@ final class DownloadStore: @unchecked Sendable {
         return Set(rows.keys)
     }
 
+    /// Absolute destinations for indexed rows, regardless of status. Used when rebinding
+    /// background URLSession tasks after relaunch: the persisted row knows the real extension
+    /// (`.mp4`, `.mkv`, etc.), while a resumed task URL may not carry enough information.
+    var destinationsByRatingKey: [String: URL] {
+        lock.lock(); defer { lock.unlock() }
+        return rows.mapValues { baseDirectory.appendingPathComponent($0.relativePath) }
+    }
+
     /// Absolute local URL for a completed download, if indexed AND present on disk.
     func localURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
@@ -266,7 +274,6 @@ final class DownloadStore: @unchecked Sendable {
             let isPlexServerPrepOptimizedJob = !hasLiveTask
                 && (row.status == .queued || row.status == .downloading)
                 && row.metadata?.optimizeTargetName?.isEmpty == false
-                && row.metadata?.optimizeQueueTitle?.isEmpty == false
                 && !row.ratingKey.hasPrefix("jellyfin:")
             let newStatus = isPlexServerPrepOptimizedJob
                 ? .queued
