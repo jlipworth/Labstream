@@ -918,14 +918,6 @@ struct CustomTransportStatusOverlay: View {
                     .controlSize(.regular)
                 }
             }
-            if status != .reconnecting, let onClose {
-                Button(role: .cancel, action: onClose) {
-                    Text("Close")
-                        .frame(width: 150)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 22)
