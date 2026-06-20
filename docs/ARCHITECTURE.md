@@ -4,12 +4,13 @@ VisionPlay is a native visionOS app with a deliberately small app shell, backend
 
 ## Ownership map
 
-- `ContentView` creates and wires the long-lived app objects: `AppModel`, `AuthManager`, `DownloadManager`, and `MusicPlayerController`.
+- `VisionPlay.App` creates and wires the app-lifetime objects: `AppModel`, `AuthManager`, `DownloadManager`, `MusicPlayerController`, launch bootstrap state, and the Cinema/theater session stores.
+- `ContentView` is the main-window root that switches between restore, login, and browse UI using those app-owned objects.
 - `AppModel` owns backend/session selection and browse-ready state. It does not own the player, downloads, or auth controller.
 - `AuthManager` owns sign-in, restore, sign-out, selected server credentials, and Keychain persistence.
 - `DownloadManager` owns offline queue state, background transfer coordination, optimizer polling, and `DownloadStore` persistence.
 - `PlaybackController` owns an active playback session: AVPlayer, restart/reopen behavior, player diagnostics, heartbeat/progress, and teardown.
-- `SystemEntryRouter` is registered at launch so App Intents, Spotlight, deep links, and user activities route into the existing single window.
+- `SystemEntryRouter` is registered at launch so App Intents, Spotlight, deep links, user activities, and Cinema exit routes land in the main browse window.
 
 ## PMSKit boundary
 

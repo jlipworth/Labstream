@@ -400,7 +400,7 @@ final class PlaybackController {
     private var supportsSeekReprime: Bool { isStreaming || remoteStreamReopener != nil }
 
     /// Chapter markers for the current item, if Plex provided any. Empty when none —
-    /// the player hides the Chapters info-panel tab in that case.
+    /// the player hides the Chapters menu in that case.
     ///
     /// Seeded from the launching item, but that copy often comes from a listing payload
     /// that omits chapters — `DetailView` backfills them with an async metadata refresh,
@@ -3425,7 +3425,7 @@ final class PlaybackError {
 }
 
 /// Observable state for the playback-speed selection (R5). Modeled as its own object
-/// (mirroring `PlaybackError`/`SkipMarkerState`) so the Speed info-panel tab renders the
+/// (mirroring `PlaybackError`/`SkipMarkerState`) so the Speed menu renders the
 /// active-rate checkmark and reacts to a programmatic reapply (e.g. after a Quality reload)
 /// without making the whole controller observable.
 @Observable

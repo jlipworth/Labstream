@@ -3,15 +3,15 @@ import simd
 
 /// Issue #12 RealityKit theater boundary.
 ///
-/// The existing `CustomCinemaMode` scene is the hidden Wave-2/Wave-3 scaffold that reuses
-/// `AVPlayerLayer` inside an `ImmersiveSpace`. It is intentionally not the future product path.
-/// This namespace owns the new RealityKit theater work and starts with no visible entry point.
+/// `CustomCinemaMode` is the shipping app-owned Cinema path that hosts the custom player in an
+/// `ImmersiveSpace`. This namespace owns the separate RealityKit theater prototype and starts with
+/// no visible entry point.
 enum RealityTheaterFeature {
     static let immersiveSpaceID = "realitykit-theater-prototype"
 
     /// Developer-only escape hatch for a future local test entry point. There is deliberately no
-    /// Settings toggle or player-chrome button in this slice; shipping UI must stay hidden until
-    /// real-device behavior is proven.
+    /// Settings toggle or player-chrome button in this slice; the prototype entry point stays gated
+    /// until real-device behavior is proven.
     static let developerDefaultsKey = "developerRealityKitTheaterEnabled"
 
     /// Hard shipping gate: #12 is not user-visible in release builds until screen placement/scale

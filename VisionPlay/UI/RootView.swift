@@ -4,8 +4,8 @@ import PMSKit
 /// Top-level authenticated UI: a tab strip of Home · Libraries · Search, plus an
 /// Offline entry and a Settings control. Created once the user is signed in.
 ///
-/// `RootView` owns the single `DownloadManager` for the app and passes it (and
-/// `AppModel`) down through the environment so Detail/Offline can reach them.
+/// `RootView` receives the app-owned managers and passes them through the environment so
+/// Detail/Offline can reach them.
 struct RootView: View {
     let appModel: AppModel
     let authManager: AuthManager
@@ -97,8 +97,6 @@ struct RootView: View {
         // Pop home to root first so repeated intents don't stack stale details.
         homePath = NavigationPath()
         Task { @MainActor in
-            guard let server = appModel.serverBaseURL,
-                  let token = appModel.serverToken else { return }
             let identity = appModel.identity
             let client = appModel.client
 
@@ -111,6 +109,8 @@ struct RootView: View {
             case .item(let given):
                 item = given
             case .ratingKey(let ratingKey):
+                guard let server = appModel.serverBaseURL,
+                      let token = appModel.serverToken else { return }
                 let req = BrowseAPI.metadata(server: server, token: token,
                                              identity: identity, ratingKey: ratingKey)
                 item = (try? await client.send(req, as: MetadataResponse.self))?
@@ -122,6 +122,12 @@ struct RootView: View {
 
             var autoPlay = route.autoPlay
             if autoPlay, item.isContainer {
+                guard let server = appModel.serverBaseURL,
+                      let token = appModel.serverToken else {
+                    autoPlay = false
+                    homePath.append(item)
+                    return
+                }
                 // "Play <show/season>": drill to the first episode leaf. Explicitly
                 // @Sendable (capturing only Sendable values) so the closure may
                 // cross from the main actor into the nonisolated resolver.

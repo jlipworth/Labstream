@@ -3,15 +3,13 @@ import Observation
 import PMSKit
 
 /// Bridges out-of-app entry points — App Intents (Siri/Shortcuts) and CoreSpotlight
-/// results — into the single-window UI (issue #24).
+/// results — plus Cinema exit routing — into the main browse UI (issue #24).
 ///
-/// The app has ONE WindowGroup (see docs/DEVELOPMENT.md: no `openWindow` / second
-/// scene), so "open item X" means: land on the Home tab and push X onto its
-/// NavigationStack. Intents run in-process but outside the SwiftUI environment, so
-/// they can't reach the `@State`-owned `AppModel`/`AuthManager` directly; instead
-/// `ContentView` registers the live instances here at launch and intents talk to
-/// this process-lifetime singleton. `RootView` observes `pending` and performs the
-/// actual navigation.
+/// "Open item X" means: land on the Home tab and push X onto its NavigationStack. Intents
+/// run in-process but outside the SwiftUI environment, and Cinema exit runs from an
+/// `ImmersiveSpace`, so callers use this process-lifetime singleton instead of reaching
+/// directly into view state. `ContentView` registers the app-owned `AppModel`/`AuthManager`
+/// instances; `RootView` observes `pending` and performs the actual navigation.
 @MainActor
 @Observable
 final class SystemEntryRouter {
@@ -42,9 +40,9 @@ final class SystemEntryRouter {
 
     // MARK: - Live app objects
 
-    /// Registered by ContentView once the real instances exist. Weak: the router is
+    /// Registered by ContentView with the app-owned instances. Weak: the router is
     /// a process-lifetime singleton and must never extend object lifetimes —
-    /// AppModel/AuthManager are owned by ContentView's `@State`.
+    /// AppModel/AuthManager are owned by `VisionPlay.App`.
     private(set) weak var appModel: AppModel?
     private(set) weak var authManager: AuthManager?
 

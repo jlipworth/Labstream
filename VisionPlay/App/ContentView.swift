@@ -2,13 +2,12 @@ import CoreSpotlight
 import SwiftUI
 import PMSKit
 
-/// App root. Owns the long-lived state objects and switches between the login
-/// flow and the browse UI based on `appModel.isBrowseReady`.
+/// Main-window root. The `App` owns the long-lived state objects; this view switches between
+/// restore, login, and browse UI based on `appModel.isBrowseReady` and passes the app-owned
+/// services down to `RootView`.
 ///
-/// Ownership (per the module contract): `AppModel` holds identity/token/server +
-/// the shared `PlexClient`; it deliberately does NOT hold the player or download
-/// controllers. This view creates the single `DownloadManager(appModel:)` for the
-/// whole app and passes it (with `AppModel`) down to `RootView`.
+/// Ownership (per the module contract): `AppModel` holds identity/token/server + the shared
+/// client; it deliberately does NOT own the player, downloads, or auth controller.
 struct ContentView: View {
     // Owned by the `App`, not this view, so they survive the main window being dismissed (entering
     // Cinema) and reopened (leaving Cinema). That is what makes leaving Cinema instant instead of
@@ -61,7 +60,7 @@ struct ContentView: View {
         }
         // A Spotlight result was tapped: stash the ratingKey with the router. If
         // we're still on the restore splash the route waits there until RootView
-        // mounts and consumes it (single-window: no second scene is ever opened).
+        // mounts and consumes it.
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
             guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                   !id.isEmpty else { return }

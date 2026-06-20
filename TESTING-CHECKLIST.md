@@ -22,25 +22,14 @@ required**.
       sign-in state shows a hint line about the code; after tapping Sign in, the 4-char code renders
       as four glass cells with "plex.tv/link" highlighted in amber; an auth failure shows the new
       glass error banner (red icon + hairline, readable text). Flow itself unchanged (#16 semantics).
-- [x] **Player opens straight into Expanded** ✅ verified — opening any title skips the
-      windowed/embedded player and lands in the fullscreen/cinema experience (where Quality/
-      Subtitles/Audio tabs live). User can still manually shrink to a window afterwards.
-      Known: the system's ~1s embedded→expanded transition animation is briefly visible on open —
-      AVKit has no "present directly into Expanded" API, so this is inherent.
-- [x] **Player close (GH #1 + #11, closed)** — the **contextualActions "✕ Close"** pill dismisses
-      cleanly back to detail in BOTH windowed and expanded states; no app exit, no stuck cover, no
-      audio bleed. The pill is hidden during hands-off playback; in the EXPANDED experience the
-      system shows/hides it together with its own chrome (Close joins the actions 0.5s after the
-      expand transition — taps there never reach the app process, so no app-side heuristic is
-      possible); in the WINDOWED state a single tap shows it for the chrome's ~5s auto-hide
-      window. Pause/failure keep it up in both. No extra pause step needed.
-      - [x] ✅ re-verified after the chrome-sync changes: no pill at first render, tap → chrome +
-            Close together in expanded and windowed, pause keeps it up, Close works.
-      **⚠️ KNOWN COSMETIC (deferred):** closing from fullscreen briefly shows a faded "ghost" frame
-      during the system's expanded→embedded collapse animation (collapse-first is required to dodge
-      the empty-window bug). Suppressing the cover fade was tried and reverted — the artifact is the
-      system's collapse animation itself. Next angle if it ever matters: blank the player view before
-      collapsing.
+- [x] **Player opens in the custom player** ✅ verified — opening any title presents the
+      app-owned custom player; Cinema is entered explicitly from the player chrome.
+- [x] **Player close (GH #1 + #11, closed)** — the custom player's Close control dismisses cleanly
+      back to detail with no app exit, stuck cover, or audio bleed. In Cinema, Exit Cinema dismisses
+      the immersive space, stops the controller, reopens the main window while active, and routes
+      back to the item's detail page.
+      **⚠️ WATCH:** keep an eye out for any Cinema dismissal flash or empty-window artifact during
+      future headset passes.
 - [x] **Quality-reload keeps playhead** ✅ verified in sim — switching the Mbps cap mid-playback
       rebuffers briefly then resumes at the same playhead; a normal Resume lands at the right offset
       with no double-seek.
@@ -48,8 +37,7 @@ required**.
       removal: a real network/PMS failure should surface the Retry pill/dialog after the stall
       watchdog, with **no silent auto-retry** and no repeated hidden `start.m3u8` requests. Tapping
       Retry is the only rebuild; if the server is still down, the overlay reappears rather than
-      entering retry/restart hell. The windowed dialog should still avoid flashing during the
-      expanded-state collapse.
+      entering retry/restart hell. The dialog should avoid flashing during dismissal/exit.
 - [~] **Progress scrobble / mark-watched** — watch past ~90% → marked watched and leaves/refreshes
       Continue Watching; stop mid-way → reopening offers Resume at that offset.
 - [~] **Download integrity + progress** — ⏸️ awaiting final human check. Fresh download progresses
@@ -111,26 +99,18 @@ required**.
       keep the old AVMediaSelection path.
 - [x] **Quality menu polish (GH #5)** ✅ verified — "quality seems to work as intended" (ladder,
       live switch + same-playhead resume).
-- [x] **Stats for Nerds (GH #6)** — ✅ final form: an inline **"Stats" info-panel tab** (live
-      diagnostics grid inside the system ⓘ panel). Third approach after two dead ends: a
-      floated SwiftUI overlay and `contentOverlayView` both never composite in the EXPANDED
-      cinema scene (system chrome is the only surface that renders there — see
-      docs/DEVELOPMENT.md). Verified visible by user. A floating overlay remains possible in
-      windowed mode only, if ever wanted as an addition.
+- [x] **Stats for Nerds (GH #6)** — ✅ final form: a Stats menu in the custom player chrome
+      with the live diagnostics grid. Because Cinema hosts the same chrome attachment, Stats is
+      available there too.
 - [x] **ⓘ Info card year (was "2026")** — ✅ VERIFIED: card now shows the release year. Fix:
       `externalMetadata` `.commonIdentifierCreationDate` with an **NSDate** value — string
       values are ignored under every date identifier (proven live, see docs/DEVELOPMENT.md).
-- [x] **Platter ✕ closes the player** — ✅ VERIFIED ("takes me back to the content menu").
-      The system ✕ under the expanded screen only collapses to embedded (system scene, can't
-      quit the app); an unflagged completed expanded→embedded transition is treated as Close
-      (`appInitiatedCollapse`). Known trade-off: the chrome's shrink-to-window control also
-      closes the player (TransitionContext has no initiator field).
+- [x] **Exit returns to the content menu** — ✅ VERIFIED for the custom player close path; Cinema
+      exit should route through `SystemEntryRouter` back to the item detail page.
 - [x] **Chapter thumbnail scroller (GH #10)** — ✅ VERIFIED end-to-end: real thumbnails +
       titles + timestamps, tap seeks, the orange ring + auto-scroll follow the tapped card,
-      and the panel auto-dismisses after a pick — in EXPANDED the panel is an in-process
-      platter ornament window with no presentation/close API, so dismissal hides the
-      backing window and the next tab appearance un-hides it (see docs/DEVELOPMENT.md).
-      Chapters tab also no longer vanishes on a fast Play: the player backfills
+      and the panel auto-dismisses after a pick. Chapters tab also no longer vanishes on a fast Play:
+      the player backfills
       chapters/markers itself (`loadChaptersIfNeeded`) instead of racing DetailView's
       metadata refresh.
 - [x] **Card clicks route to the right card (was: leftmost-poster misrouting)** — ✅ VERIFIED
@@ -411,7 +391,7 @@ required**.
       opens unscrolled again.
 - [ ] **Mini bar: progress hairline** — a thin sliver along the bar's bottom edge fills with
       elapsed time. It is PASSIVE: dragging it must not seek (scrubbing lives in the sheet).
-      Check it stays inside the glass platter's rounded corners at both ends.
+      Check it stays inside the glass container's rounded corners at both ends.
 - [ ] **Mini bar: width / hide-on-sheet regression** — the bar may grow to ~560 pt (longer
       titles fit); it still disappears while the Now Playing sheet is up and returns on
       dismissal (the ZStack sheet host — do not regress).
@@ -461,10 +441,9 @@ mini-bar with main's fitted-sheet chrome. None of it has rendered on a simulator
 
 ## Wave 1 — Custom player is the sole player
 
-_Build-verified on branch `wave1/custom-player-sole-player` (not yet merged to `main`).
-These are the in-headset checks gating that merge: the custom player is now the ONLY
-player (all AVKit code deleted). The custom Cinema ImmersiveSpace is hidden/deferred after
-device testing showed it is not equivalent to Apple's AVKit Cinema Environment._
+_Historical custom-player checklist, refreshed for the current Cinema branch. The custom player is
+the only video player (all AVKit player code deleted). Cinema is app-owned in an immersive space and
+must be validated on hardware; simulator-only proof is insufficient._
 
 ### Streaming (windowed)
 - [x] Play a movie from DetailView → custom player opens (no AVKit transport bar).
@@ -479,9 +458,13 @@ device testing showed it is not equivalent to Apple's AVKit Cinema Environment._
 - [x] Scrubber + skip work on a local file (no network).
 
 ### Cinema / theater
-- [x] Custom Cinema button is hidden (`CustomCinemaMode.isUserVisible = false`) because the
-      custom ImmersiveSpace is not equivalent to Apple's AVKit Cinema Environment on device.
-- [x] No visible Cinema affordance appears in the windowed player chrome.
+- [ ] Custom Cinema button is visible in the windowed player chrome and opens the app-owned
+      immersive Cinema surface.
+- [ ] Cinema renders the same custom player chrome as windowed playback: play/pause, skip, scrubber,
+      trick-play preview where available, Quality, Subtitles, Audio, Chapters, Speed, Stats, Retry,
+      Up Next, and Exit Cinema.
+- [ ] Exit Cinema returns to the item's detail page for Plex and Jellyfin instead of dumping Home;
+      Up Next from Cinema exits/reopens on the next item with autoplay armed.
 
 ### Settings
 - [x] Settings → Playback no longer shows the "Custom player fallback" toggle.
@@ -528,17 +511,15 @@ These reproduced on the headset but NOT in the simulator, so sim verification is
       just primed at a non-zero offset, `PlaybackController.handleSeekJump()` ignores transient
       near-zero jumps. Device retest: resume reached the primed offset; chapter/scrub no longer
       bounced to 0:00.
-- [x] **Cinema mode botched when already in a full Environment — HIDDEN / DEFERRED.** With a full
-      Environment at 100% immersion, entering the custom Cinema ImmersiveSpace takes the viewer OUT
-      of that environment and does NOT provide expected system screen placement/scale. Since the
-      custom player cannot reuse AVKit's system Cinema Environment, the player chrome now hides the
-      custom Cinema button (`CustomCinemaMode.isUserVisible = false`). Future theater work should be
-      scoped as a RealityKit/immersive-player feature, not a Wave 2 merge blocker.
+- [ ] **Cinema mode is app-owned, not AVKit system Cinema.** With a full Environment at 100%
+      immersion, verify entering the custom Cinema ImmersiveSpace does not strand playback, preserves
+      a comfortable screen scale/position, and returns to content cleanly on Exit/Crown. The custom
+      player cannot reuse AVKit's system Cinema Environment, so hardware validation remains the gate.
 
-### #12 — hidden RealityKit theater prototype
+### #12 — RealityKit theater prototype
 
-- [ ] No visible player-chrome theater affordance appears by default; `CustomCinemaMode.isUserVisible`
-      remains false and the new `RealityTheaterFeature.isShippingEntryPointVisible` gate is false.
+- [ ] The legacy `RealityTheaterFeature` prototype remains separately gated; the shipping Cinema
+      button uses `CustomCinemaMode`, while `RealityTheaterFeature.isShippingEntryPointVisible` stays false.
 - [ ] Device-only once a developer entry point exists: open the RealityKit theater prototype from
       Windowed, Mixed, and 100% full Environment states; verify it does not unexpectedly pull the
       viewer out of their chosen Environment or strand an immersive space on dismissal.

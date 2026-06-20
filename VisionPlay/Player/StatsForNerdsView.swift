@@ -6,10 +6,10 @@ import SwiftUI
 /// It observes a `PlaybackDiagnostics` and re-renders as the numbers tick (~1s).
 /// Deliberately compact and legible; it never displays any token or URL query material.
 ///
-/// `onClose` is optional: when the panel is presented as an info-panel tab the tab chrome
+/// `onClose` is optional: when the panel is presented inside player menu chrome, the menu
 /// provides dismissal, so the inline close button is omitted (pass `nil`). `showsHeader`
-/// false also drops the "Stats for Nerds" label and the glass-card chrome — the system
-/// info panel already titles the tab and provides the backdrop.
+/// false also drops the "Stats for Nerds" label and the glass-card chrome because the
+/// surrounding menu already titles the panel and provides the backdrop.
 @MainActor
 struct StatsForNerdsView: View {
     var diagnostics: PlaybackDiagnostics

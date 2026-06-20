@@ -20,8 +20,8 @@ that choose between raw originals and compatible server-rendered copies.
 - **Server-aware playback** — Direct Play / Maximum attempts copy/direct paths where viable; explicit
   quality rungs request capped server streams
 - **Scrubbing + resume** — seeks cleanly and resumes half-watched titles at the right offset
-- **Cinema docking** — the player expands into a system Cinema Environment with a controllable transport
-  that stays tappable in both inline and expanded states
+- **Cinema mode** — the custom player expands into an app-owned immersive Cinema surface with the
+  same transport, menus, retry, scrubber, and Up Next controls
 - **TV show hierarchy** — drill down Show → Seasons → Episodes
 - **Skip Intro / Skip Credits** during server-detected marker windows
 - **Up Next + autoplay** — advances to the next episode with a countdown, crossing season boundaries
@@ -36,7 +36,7 @@ that choose between raw originals and compatible server-rendered copies.
 ## Tech
 
 - **SwiftUI** app shell with a custom AVFoundation player surface for streaming, offline playback,
-  and Cinema Environment docking
+  and app-owned Cinema mode
 - **Swift 6** with strict concurrency
 - **`PMSKit`** — a local Swift package providing tested Plex/Jellyfin request builders, models,
   playback/download decision helpers, diagnostics primitives, and policy state machines
@@ -51,7 +51,7 @@ VisionPlay/
 │   ├── Auth/             # Plex/Jellyfin auth + Keychain
 │   ├── Backend/          # Jellyfin service lane
 │   ├── Networking/       # Plex client wiring
-│   ├── Player/           # custom AVPlayer surface + Cinema Environment + recovery
+│   ├── Player/           # custom AVPlayer surface + app-owned Cinema mode + recovery
 │   ├── Music/            # Plexamp-style music browse + audio player
 │   ├── Downloads/        # offline transfers + offline library
 │   └── UI/               # Home · Libraries · Search · Detail

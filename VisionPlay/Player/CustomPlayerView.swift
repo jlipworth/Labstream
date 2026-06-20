@@ -121,7 +121,8 @@ struct CustomPlayerView: View {
                                    item: item,
                                    controller: playback,
                                    geometry: CustomCinemaGeometry(item: item,
-                                                                  mediaIndex: playback.mediaIndex))
+                                                                  mediaIndex: playback.mediaIndex),
+                                   trickPlayProvider: trickPlayProvider)
             refreshScrubberClock(from: playback)
             playback.start()
             Task { @MainActor in
