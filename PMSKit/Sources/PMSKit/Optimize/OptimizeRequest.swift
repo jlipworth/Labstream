@@ -364,8 +364,9 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
         self.items = (try? container.decodeIfPresent([Item].self, forKey: .item)) ?? []
     }
 
-    /// PMS states that mean the job finished — its rendered file may still be downloading, so
-    /// we must NOT delete these even when abandoned.
+    /// PMS states that mean the job finished. Deleting a completed background-processing item
+    /// also deletes the rendered optimized version on the server, so the download pipeline must
+    /// preserve these until the client has positively downloaded or explicitly removed them.
     static let completedStates: Set<String> = ["complete", "completed", "successful", "success", "done"]
 
     /// IDs of items that are SAFE to delete: those whose title carries `marker` (i.e. this
@@ -377,8 +378,8 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
     /// NOTE: this *completed-skipping* variant is the conservative legacy behavior, kept for
     /// callers that cannot guarantee a completed item's rendered Part isn't being downloaded.
     /// The download pipeline now protects an in-flight job's title for its REAL download
-    /// lifetime (not just the optimize kickoff), so it uses `removableItemIDs` instead, which
-    /// also clears completed-but-unprotected leftovers for a true clean slate.
+    /// lifetime (not just the optimize kickoff). The download pipeline still uses this
+    /// conservative helper because a relaunched app may need to rediscover completed items.
     public func staleItemIDs(marker: String, protectedTitles: Set<String>) -> [String] {
         items.compactMap { item in
             guard let id = item.id, !id.isEmpty,
@@ -389,23 +390,12 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
         }
     }
 
-    /// IDs of items that are SAFE to delete under the *clean-slate* policy: those whose title
-    /// carries `marker` (this client created them) AND whose title is NOT in `protectedTitles`
-    /// (no currently-active download is pulling that item's rendered Part). Unlike
-    /// `staleItemIDs`, this DOES include items in a completed state — once a job's title is no
-    /// longer protected, its rendered conversion is an abandoned leftover that only clutters the
-    /// type-42 background-processing queue, so removing it (which also deletes its optimized
-    /// version on the server, mirroring python-plexapi `Optimized.remove`) restores a clean
-    /// queue. Hard safety scoping is unchanged: it NEVER touches a foreign client's items (no
-    /// marker) and NEVER touches a protected (in-flight) one — including a protected *completed*
-    /// one whose file is still being downloaded.
+    /// Back-compat alias for the conservative stale cleanup policy. This used to include
+    /// completed items, but live Plex evidence showed that deleting a completed type-42 item
+    /// removes the optimized version before a relaunched client can download it. Keep the symbol
+    /// but make it safe: only non-completed marked items are removable.
     public func removableItemIDs(marker: String, protectedTitles: Set<String>) -> [String] {
-        items.compactMap { item in
-            guard let id = item.id, !id.isEmpty,
-                  let title = item.title, title.contains(marker),
-                  !protectedTitles.contains(title) else { return nil }
-            return id
-        }
+        staleItemIDs(marker: marker, protectedTitles: protectedTitles)
     }
 
     /// Number of queue items whose title carries `marker` — privacy-safe COUNT only (never the

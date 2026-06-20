@@ -31,11 +31,13 @@ public final class DownloadManager {
     public enum DownloadError: Error, Sendable, Equatable {
         case notAuthenticated
         case optimizeFailed(String)
+        // Legacy UI mapping only. Plex optimize polling no longer fails by wall clock; long
+        // server renders remain queued/transcoding until Plex reports a real terminal failure.
         case optimizeTimedOut
-        // Deliberately never produced today: the optimize path surfaces its own
-        // `.optimizeFailed`/`.optimizeTimedOut` instead. Retained because
-        // `OfflineLibraryView` still maps it to a user-facing message, so a future
-        // "optimized version had no Part" diagnostic can be wired in without churn.
+        // Deliberately never produced today: the optimize path surfaces `.optimizeFailed`
+        // only when Plex reports a true terminal failure. Retained because `OfflineLibraryView`
+        // still maps it to a user-facing message, so a future "optimized version had no Part"
+        // diagnostic can be wired in without churn.
         case noOptimizedPart
         case storageFull
         case storageLimitExceeded(String)
@@ -125,8 +127,9 @@ public final class DownloadManager {
     private let store: DownloadStore
     private let session: BackgroundDownloadSession
 
-    /// How long to poll the optimize queue before giving up.
-    private let optimizePollTimeout: TimeInterval = 60 * 30   // 30 min
+    /// Poll cadence for Plex server-side optimize jobs. Deliberately no wall-clock timeout:
+    /// long 4K/HDR software transcodes can legitimately run for hours, and the app must base
+    /// failure only on server truth (metadata/background queue status), not elapsed time.
     private let optimizePollInterval: TimeInterval = 5
 
     init(appModel: AppModel) {
@@ -877,6 +880,10 @@ public final class DownloadManager {
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
+        } catch is CancellationError {
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
         } catch {
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1309,6 +1316,23 @@ public final class DownloadManager {
             guard !originalPartIDs.isEmpty else {
                 throw DownloadError.optimizeFailed("No source media parts found before optimize.")
             }
+            // Truth-first resume/retry: before creating another Plex conversion, reuse any
+            // already-rendered compatible optimized version that Plex exposes on metadata. This
+            // prevents a relaunch/retry from deleting a completed server render and starting a
+            // multi-hour transcode over from 0%.
+            let selectedSourcePartID = optimizeMetadata.sourcePartID
+            if let existingPart = Self.existingServerOptimizedDownloadCandidate(
+                from: (sourceItem.media ?? item.media ?? []).flatMap(\.part),
+                selectedSourcePartID: selectedSourcePartID) {
+                clearOptimizeProgress(ratingKey: ratingKey)
+                try startOptimizedPartDownload(ratingKey: ratingKey,
+                                               title: item.title,
+                                               part: existingPart,
+                                               metadata: optimizeMetadata,
+                                               server: server,
+                                               token: token)
+                return
+            }
             try await triggerOptimize(item: sourceItem, targetName: targetName,
                                       queueTitle: queueTitle,
                                       server: server, token: token, identity: identity)
@@ -1335,6 +1359,10 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: ratingKey)
+            refreshRecords()
+        } catch is CancellationError {
+            releaseInFlight(ratingKey: ratingKey)
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch {
@@ -1536,14 +1564,12 @@ public final class DownloadManager {
         ])
     }
 
-    /// Delete this client's own abandoned items from the server's type-42 background-processing
-    /// queue, giving each new optimize job a clean slate. Leftover optimize items (from
-    /// cancelled/abandoned downloads AND completed-but-no-longer-needed conversions) pile up
-    /// there; a backlog of them is the main cause of the long "Preparing on server…" delay.
-    /// Scoped hard: only items carrying our `[VisionPlay …]` title marker AND not currently
-    /// in-flight (`activeQueueTitles`) are removed — never another client's jobs, and never an
-    /// item whose rendered Part an active download is still pulling (its title stays protected
-    /// for the full download lifetime). Completed leftovers ARE removed (see `removableItemIDs`).
+    /// Delete this client's abandoned, non-completed items from the server's type-42
+    /// background-processing queue. Completed optimize items are server-side artifacts that may
+    /// contain the rendered file a relaunched app still needs to discover/download; deleting the
+    /// queue item deletes that optimized version in Plex. Scoped hard: only items carrying our
+    /// `[VisionPlay …]` title marker, not currently in-flight (`activeQueueTitles`), and not in a
+    /// completed state are removed — never another client's jobs or completed server renders.
     private func cleanStaleOptimizeJobs(backgroundProcessingKey: String, server: URL,
                                         token: String, identity: ClientIdentity) async {
         let trimmed = backgroundProcessingKey.hasPrefix("/")
@@ -1559,13 +1585,17 @@ public final class DownloadManager {
             return
         }
         let marker = "[VisionPlay "
-        // Clean-slate policy: remove every one of OUR marked items that is not currently
-        // protected by an in-flight download — including COMPLETED leftovers, which were
-        // previously skipped (their Part might be downloading) but are now safe to clear
-        // because an in-flight job's title stays protected for its full download lifetime.
-        // This drains the abandoned-conversion pileup that clutters the type-42 queue, while
-        // never touching a foreign client's job or one an active download is still pulling.
-        let stale = queue.removableItemIDs(marker: marker, protectedTitles: activeQueueTitles)
+        let persistedProtectedTitles = Set(records.compactMap { record -> String? in
+            guard record.status != .complete else { return nil }
+            return record.metadata?.optimizeQueueTitle
+        })
+        let protectedTitles = activeQueueTitles.union(persistedProtectedTitles)
+        // Server-truth policy: remove only our marked pending/failed clutter. NEVER delete a
+        // completed optimized item here — Plex removes the rendered server-side version when the
+        // type-42 item is deleted, and a completed item may be the exact Part a relaunched app
+        // still needs to discover and download. Also protect persisted queue titles so relaunches
+        // do not briefly expose still-valid server work before activeQueueTitles is rebuilt.
+        let stale = queue.staleItemIDs(marker: marker, protectedTitles: protectedTitles)
         var removed = 0
         for id in stale {
             let del = OptimizeRequest.removeBackgroundItem(server: server, token: token,
@@ -1580,7 +1610,7 @@ public final class DownloadManager {
             "queue_items": .int(queue.items.count),
             "marked_count": .int(queue.markedCount(marker: marker)),
             "pending_count": .int(queue.pendingCount),
-            "protected": .int(activeQueueTitles.count),
+            "protected": .int(protectedTitles.count),
             "stale_found": .int(stale.count),
             "removed": .int(removed),
         ])
@@ -1850,9 +1880,7 @@ public final class DownloadManager {
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
-        let deadline = Date().addingTimeInterval(optimizePollTimeout)
-
-        while Date() < deadline {
+        while !Task.isCancelled {
             if let metadata = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                           token: token, identity: identity) {
                 let allParts = (metadata.media ?? []).flatMap { $0.part }
@@ -1889,9 +1917,13 @@ public final class DownloadManager {
                 ])
                 throw DownloadError.optimizeFailed("Plex server could not create an optimized version; optimized-version storage may be read-only.")
             }
-            try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+            do {
+                try await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+            } catch {
+                throw error
+            }
         }
-        throw DownloadError.optimizeTimedOut
+        throw CancellationError()
     }
 
     /// Pick only a NEW optimized output that the local/offline player can open. Multi-version
@@ -1902,6 +1934,24 @@ public final class DownloadManager {
         parts.first { part in
             !baselinePartIDs.contains(part.id) && isLocallyPlayableOriginal(part: part)
         }
+    }
+
+    /// Reuse a compatible optimized Part that Plex already exposes on item metadata. Plex stores
+    /// server-rendered optimized versions under a `Plex Versions` path; deleting the matching
+    /// type-42 queue item deletes this Part, so retries/relaunches must look for it before
+    /// creating or cleaning conversions.
+    private static func existingServerOptimizedDownloadCandidate(from parts: [Part],
+                                                                 selectedSourcePartID: Int?) -> Part? {
+        parts.first { part in
+            part.id != selectedSourcePartID
+                && isServerOptimizedPart(part)
+                && isLocallyPlayableOriginal(part: part)
+        }
+    }
+
+    private static func isServerOptimizedPart(_ part: Part) -> Bool {
+        guard let file = part.file?.lowercased() else { return false }
+        return file.contains("/plex versions/")
     }
 
     private func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,

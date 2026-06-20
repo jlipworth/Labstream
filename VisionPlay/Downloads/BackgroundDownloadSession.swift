@@ -94,11 +94,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Build the indexed-key set ONCE (FS-free) before the task loop, instead of
             // stat'ing every store row per task under the held lock (was O(tasks×rows)).
             let knownKeys = self.store.allRatingKeys
+            let destinations = self.store.destinationsByRatingKey
             self.lock.lock()
             for task in tasks {
                 guard self.inflight[task.taskIdentifier] == nil,
                       let ratingKey = Self.ratingKey(for: task, knownKeys: knownKeys) else { continue }
-                let destination = self.store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+                let destination = destinations[ratingKey]
+                    ?? self.store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 self.inflight[task.taskIdentifier] = (ratingKey, destination)
                 liveKeys.insert(ratingKey)
             }
@@ -112,10 +114,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// Best-effort match of a resumed background task back to a known download record.
     ///
-    /// The task's original request URL carries the item's metadata key as the `path`
-    /// query param (`/library/metadata/<ratingKey>`). We extract the trailing id and
-    /// confirm a matching in-progress record exists in the store.
+    /// Prefer the task description we set at creation time. Fall back to URL-shape heuristics
+    /// for older tasks: the original request URL may carry the item's metadata key as the `path`
+    /// query param (`/library/metadata/<ratingKey>`) or a Jellyfin `/Items`/`/Videos` path. Plex
+    /// `/library/parts/...` downloads do not include the source ratingKey, which is why the
+    /// explicit task description is required for reliable force-quit/relaunch reattach.
     private static func ratingKey(for task: URLSessionTask, knownKeys: Set<String>) -> String? {
+        if let taskDescription = task.taskDescription, knownKeys.contains(taskDescription) {
+            return taskDescription
+        }
         guard let url = task.originalRequest?.url,
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         let candidates: [String]
@@ -178,6 +185,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             throw DownloadManager.DownloadError.storageFull
         }
         let task = urlSession.downloadTask(with: request)
+        task.taskDescription = ratingKey
         lock.lock()
         retryCounts[ratingKey] = 0
         lastProgressNotify[ratingKey] = nil
@@ -510,6 +518,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.unlock()
 
         let retryTask = urlSession.downloadTask(withResumeData: resumeData)
+        retryTask.taskDescription = entry.ratingKey
         lock.lock()
         inflight[retryTask.taskIdentifier] = entry
         loggedProgressMilestones[retryTask.taskIdentifier] = []

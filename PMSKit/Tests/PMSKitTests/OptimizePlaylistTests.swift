@@ -186,12 +186,12 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     #expect(Set(stale) == ["1", "3"])
 }
 
-// MARK: - Clean-slate cleanup (`removableItemIDs`): completed leftovers ARE removable
+// MARK: - Safe cleanup (`removableItemIDs`): completed server renders are preserved
 
-@Test func removableItemIDsClearsCompletedUnprotectedLeftovers() throws {
-    // The user's clogged-queue scenario: one pending (our new job) + a pile of completed
-    // VisionPlay leftovers from abandoned conversions. With in-flight protection now correct,
-    // ALL of our unprotected items — completed included — are abandoned clutter and removable.
+@Test func removableItemIDsPreservesCompletedServerRenders() throws {
+    // Completed Plex optimize items are not inert clutter: deleting the type-42 item also
+    // deletes the rendered server-side optimized version. Only non-completed marked clutter is
+    // removable; completed jobs must remain discoverable for app relaunch/retry.
     let json = """
     {"MediaContainer":{"Item":[
       {"id":"1","title":"Pending Junk [VisionPlay aaaa1111]","Status":{"state":"pending"}},
@@ -203,9 +203,9 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
     let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: [])
-    // Every marked, unprotected item — pending, failed, AND completed — is cleared for a true
-    // clean slate. (Contrast `staleItemIDs`, which would skip 2/3/5.)
-    #expect(Set(removable) == ["1", "2", "3", "4", "5"])
+    // Only pending/failed items are cleared. Completed server renders stay available to be
+    // discovered and downloaded after a long-running optimize or app relaunch.
+    #expect(Set(removable) == ["1", "4"])
 }
 
 @Test func removableItemIDsNeverTouchesProtectedActiveDownloadEvenWhenCompleted() throws {
@@ -221,8 +221,8 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
     let protected: Set<String> = ["Downloading Now [VisionPlay aaaa1111]"]
     let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: protected)
-    // Only the unprotected leftover is removed; the in-flight (completed, protected) one stays.
-    #expect(Set(removable) == ["2"])
+    // Completed items are preserved whether or not they are currently protected.
+    #expect(removable.isEmpty)
 }
 
 @Test func removableItemIDsNeverTouchesForeignClientItems() throws {
@@ -237,7 +237,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
     let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: [])
-    // Only items carrying OUR marker are ever candidates — foreign jobs (no marker) are never
-    // touched, regardless of their state.
-    #expect(Set(removable) == ["1", "2"])
+    // Only non-completed items carrying OUR marker are candidates — foreign jobs and completed
+    // server renders are never touched.
+    #expect(Set(removable) == ["1"])
 }
