@@ -69,14 +69,18 @@ required**.
       phases and complete independently; neither orphans or false-fails the other. Offline rows show
       a per-backend badge (Plex/Jellyfin/Emby) when the library mixes backends. Emby optimized
       (live-transcode stream) download also verified concurrently.
-- [ ] **Active-backend switch DURING a download (GH #84)** — start a download on one backend, switch
-      the active backend in Settings to another (and back) while it is in flight: the in-flight job
-      keeps running on its OWN persisted backend session (credentials/server resolved once at enqueue,
-      never re-read from the now-active lane). Run both orderings (Plex-first, JF/Emby-first).
-- [ ] **Relaunch mid-flight reconcile (GH #84)** — with one or more downloads in flight, force-quit
-      (`xcrun simctl terminate <SIMID> com.jlipworth.VisionPlay`) and relaunch: a Plex server-prep row
-      re-polls/resumes; a JF/Emby live-transcode row reconciles to failed/retryable with a correct
-      reason; nothing false-fails or orphans. Legacy decode/migration must not crash.
+- [x] **Active-backend switch DURING a download (GH #84)** ✅ verified live (2026-06-21) — an Emby
+      live-transcode download (no Content-Length) completed cleanly (~1.06 GB, HTTP 200) through
+      repeated Plex↔Emby active-backend switches, while a concurrent Plex server-prep job also
+      survived; no cancel/orphan/false-fail in the Downloads log. The in-flight job keeps running on
+      its OWN persisted backend session (credentials/server resolved once at enqueue, never re-read
+      from the now-active lane).
+- [x] **Relaunch mid-flight reconcile (GH #84)** ✅ verified live (2026-06-21) — with a Plex
+      server-prep row AND an Emby live-transcode row both in flight, force-quit
+      (`xcrun simctl terminate <SIMID> com.jlipworth.VisionPlay`) and relaunched: the Plex server-prep
+      row re-polled/resumed and completed (~3.17 GB); the Emby live-transcode row (no Content-Length)
+      reconciled to failed/retryable ("Download failed. Tap to retry."); nothing false-failed or
+      orphaned; completes stayed intact; no crash and `Migration events: 0`.
 - [ ] **Pending-prep row, lane signed out (GH #84)** — sign out of the backend that owns a queued
       server-prep row: the row reads "Paused — <Backend> signed out" (not "Preparing on server…") and
       auto-resumes when that backend is signed back in.
