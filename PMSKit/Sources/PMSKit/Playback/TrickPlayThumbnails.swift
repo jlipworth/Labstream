@@ -166,8 +166,20 @@ public enum JellyfinTrickPlayOfflineCachePlanner {
         text.split(separator: "\n", omittingEmptySubsequences: false).map { rawLine -> String in
             let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#") else { return String(rawLine) }
-            return tileFilenamesByURI[line] ?? URL(fileURLWithPath: line).lastPathComponent
+            // A cached tile maps to its local filename. A tile that failed to download is absent from
+            // the map; fall back to a query-STRIPPED basename so a token-bearing server URI
+            // (`tile.jpg?ApiKey=…`) can never survive into the persisted playlist — otherwise a single
+            // failed tile would either leak a token or trip the caller's `apikey=` guard and void the
+            // whole playlist. The dropped tile simply has no offline thumbnail.
+            return tileFilenamesByURI[line] ?? tokenFreeBasename(line)
         }.joined(separator: "\n")
+    }
+
+    /// Last path component of a tile URI with any query string removed. `URL(fileURLWithPath:)`
+    /// treats `?` as a literal path character, so the query must be stripped explicitly.
+    private static func tokenFreeBasename(_ line: String) -> String {
+        let withoutQuery = line.split(separator: "?", maxSplits: 1).first.map(String.init) ?? line
+        return URL(fileURLWithPath: withoutQuery).lastPathComponent
     }
 
     public static func estimatedTileBytes(durationMs: Int?) -> Int {

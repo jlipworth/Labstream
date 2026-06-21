@@ -108,18 +108,16 @@ final class DownloadStore: @unchecked Sendable {
         return result.isEmpty ? UUID().uuidString : result
     }
 
-    private static func safeExtension(_ value: String) -> String {
+    private static func safeExtension(_ value: String,
+                                      allowed: Set<String> = ["mp4", "m4v", "mov", "mkv", "avi", "ts", "webm"],
+                                      fallback: String = "mp4") -> String {
         let lowered = value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let allowed: Set<String> = ["mp4", "m4v", "mov", "mkv", "avi", "ts", "webm"]
         let alnum = lowered.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) }
-        return alnum && allowed.contains(lowered) ? lowered : "mp4"
+        return alnum && allowed.contains(lowered) ? lowered : fallback
     }
 
     private static func safeSubtitleExtension(_ value: String) -> String {
-        let lowered = value.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let allowed: Set<String> = ["srt", "vtt"]
-        let alnum = lowered.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) }
-        return alnum && allowed.contains(lowered) ? lowered : "vtt"
+        safeExtension(value, allowed: ["srt", "vtt"], fallback: "vtt")
     }
 
     /// Build the on-disk destination for a ratingKey's cached poster (D5). Kept as a

@@ -383,6 +383,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         Task { [weak self] in
             let validation = await Self.validateLocalPlayback(destination)
             guard let self else { return }
+            // Truncation guard: a transcode that aborts early (or a static download cut short by the
+            // server while still returning HTTP 200) can open and play its first fraction of a second
+            // and otherwise pass the probe. Compare the decoded duration to the EXPECTED media
+            // duration — a file far shorter than the source is truncated, not complete. Only applied
+            // when both durations are known; legitimate short clips compare against their own short
+            // expected duration and pass. (Step 3 above no longer rejects on raw byte size.)
+            let expectedDurationMs = self.store.records.first { $0.ratingKey == ratingKey }?.metadata?.duration
+            if validation.played, let expectedDurationMs, expectedDurationMs > 0,
+               let actualDurationMs = validation.durationMs,
+               Double(actualDurationMs) < Double(expectedDurationMs) * 0.80 {
+                downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedDurationMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
+                AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("truncated_duration"),
+                    "expected_duration_ms": .int(expectedDurationMs),
+                    "actual_duration_ms": .int(actualDurationMs),
+                ])
+                try? self.fileManager.removeItem(at: destination)
+                self.clearRetryCount(ratingKey: ratingKey)
+                self.store.setStatus(ratingKey: ratingKey, .failed)
+                self.onError?(ratingKey, .invalidDownload("Downloaded file is truncated (\(actualDurationMs / 1000)s of \(expectedDurationMs / 1000)s)."))
+                self.onChange?()
+                return
+            }
             if validation.played {
                 // Validated: mark explicitly complete (D2) so a relaunch trusts it.
                 downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
@@ -410,10 +434,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
 
-    private static func validateLocalPlayback(_ url: URL) async -> (played: Bool, reason: String) {
+    private static func validateLocalPlayback(_ url: URL) async -> (played: Bool, reason: String, durationMs: Int?) {
         let asset = AVURLAsset(url: url)
         let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
-        guard assetPlayable else { return (false, "asset_not_playable") }
+        guard assetPlayable else { return (false, "asset_not_playable", nil) }
         let durationMs: Int?
         if let duration = try? await asset.load(.duration),
            duration.seconds.isFinite, duration.seconds > 0 {
@@ -439,7 +463,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         while ContinuousClock.now < deadline {
             switch item.status {
             case .failed:
-                return (false, "item_failed")
+                return (false, "item_failed", durationMs)
             case .readyToPlay:
                 sawReady = true
             case .unknown:
@@ -449,11 +473,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let seconds = player.currentTime().seconds
             if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
-                return (true, "played")
+                return (true, "played", durationMs)
             }
             try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
-        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready")
+        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs)
     }
 
     func urlSession(_ session: URLSession,

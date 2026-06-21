@@ -27,10 +27,6 @@ struct DetailView: View {
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
     @State private var localPlaybackRequest: LocalPlaybackRequest?
-    @State private var playLocalURL: URL?
-    @State private var playLocalTrickPlayURL: URL?
-    @State private var playLocalTrickPlayKind: LocalTrickPlayKind?
-    @State private var playLocalTextSubtitles: [OfflineTextSubtitleTrack] = []
     @State private var remotePlayback: JellyfinRemotePlayback?
     @State private var embyRemotePlayback: EmbyRemotePlayback?
     @State private var showDownloadOptions = false
@@ -213,8 +209,6 @@ struct DetailView: View {
             if SystemEntryRouter.shared.consumeAutoPlay(for: detailed.ratingKey),
                !detailed.isMusic {
                 musicPlayer.pauseForVideo()
-                playLocalURL = nil
-                playLocalTrickPlayURL = nil
                 playingItem = itemWithResumeRewind(detailed)
                 presentingPlayer = true
             }
@@ -361,6 +355,10 @@ struct DetailView: View {
                 musicPlayer.pauseForVideo()
                 let key = downloadManager.recordKey(for: detailed)
                 let record = downloadManager.records.first { $0.ratingKey == key && $0.status == .complete }
+                // Prefer the persisted download snapshot as the authoritative source: it describes the
+                // exact downloaded variant (part, chapters, cached subtitles), whereas the live
+                // `detailed` can reflect a different server stream/part than the file on disk. Fall back
+                // to `detailed` only when no snapshot was captured.
                 let offlineItem = record?.metadata?.makeMediaItem() ?? detailed
                 AppDiagnostics.record(.playback, "playback.offline_launch", fields: [
                     "download_id": .identifier(key),
@@ -378,10 +376,6 @@ struct DetailView: View {
                     trickPlayURL = downloadManager.plexBIFURL(for: key)
                     trickPlayKind = .plexBIF
                 }
-                playLocalURL = nil
-                playLocalTrickPlayURL = nil
-                playLocalTrickPlayKind = nil
-                playLocalTextSubtitles = []
                 remotePlayback = nil
                 embyRemotePlayback = nil
                 playingItem = nil
@@ -455,14 +449,7 @@ struct DetailView: View {
         // The item currently in the cover: starts as `detailed`, then swaps to the next
         // episode on Up Next autoplay (#15). Fall back to `detailed` defensively.
         let playing = playingItem ?? detailed
-        if let local = playLocalURL {
-            CustomPlayerView(localFile: local,
-                             item: playing,
-                             trickPlayProvider: localTrickPlayProvider(),
-                             offlineTextSubtitles: playLocalTextSubtitles,
-                             onClose: { presentingPlayer = false })
-                .ignoresSafeArea()
-        } else if let remote = remotePlayback {
+        if let remote = remotePlayback {
             CustomPlayerView(item: playing,
                              controllerFactory: {
                                  PlaybackController(remoteStreamURL: remote.url,
@@ -579,10 +566,6 @@ struct DetailView: View {
                     // Up Next advance: swap the presented item to the next episode. The `.id`
                     // keyed on ratingKey tears down the old controller and rebuilds the player
                     // for the new episode, keeping the cover up for a continuous experience.
-                    playLocalURL = nil
-                    playLocalTrickPlayURL = nil
-                    playLocalTrickPlayKind = nil
-                    playLocalTextSubtitles = []
                     playingItem = next
                 }
 
@@ -676,10 +659,6 @@ struct DetailView: View {
                                                      ])
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
-        playLocalURL = nil
-        playLocalTrickPlayURL = nil
-        playLocalTrickPlayKind = nil
-        playLocalTextSubtitles = []
         playingItem = itemWithResumeRewind(detailed)
         switch appModel.activeBackend {
         case .plex:
@@ -772,10 +751,6 @@ struct DetailView: View {
         let trickPlayURL: URL?
         let trickPlayKind: LocalTrickPlayKind?
         let offlineTextSubtitles: [OfflineTextSubtitleTrack]
-    }
-
-    private func localTrickPlayProvider() -> (any TrickPlayThumbnailProviding)? {
-        localTrickPlayProvider(kind: playLocalTrickPlayKind, url: playLocalTrickPlayURL)
     }
 
     private func localTrickPlayProvider(kind: LocalTrickPlayKind?,

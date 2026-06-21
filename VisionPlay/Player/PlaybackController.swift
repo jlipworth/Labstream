@@ -770,7 +770,7 @@ final class PlaybackController {
     func loadSubtitleTracks() async -> (tracks: [SubtitleTrack], selectedID: Int)? {
         guard let playerItem = player.currentItem else { return nil }
         if localFile != nil, !offlineTextSubtitles.isEmpty {
-            return loadOfflineSubtitleTracks()
+            return await loadOfflineSubtitleTracks()
         }
         let asset = playerItem.asset
         guard let group = try? await asset.loadMediaSelectionGroup(for: .legible),
@@ -804,10 +804,10 @@ final class PlaybackController {
         return (tracks, selectedID)
     }
 
-    private func loadOfflineSubtitleTracks() -> (tracks: [SubtitleTrack], selectedID: Int)? {
+    private func loadOfflineSubtitleTracks() async -> (tracks: [SubtitleTrack], selectedID: Int)? {
+        await ensureOfflineSubtitleCuesLoaded()
         var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1, displayName: "Off", option: nil)]
         for track in offlineTextSubtitles {
-            ensureOfflineSubtitleCuesLoaded(for: track)
             guard offlineSubtitleCuesByTrackID[track.id]?.isEmpty == false else { continue }
             tracks.append(SubtitleTrack(id: track.id,
                                         displayName: track.displayName,
@@ -819,14 +819,27 @@ final class PlaybackController {
         return (tracks, selectedOfflineSubtitleTrackID ?? -1)
     }
 
-    private func ensureOfflineSubtitleCuesLoaded(for track: OfflineTextSubtitleTrack) {
-        guard offlineSubtitleCuesByTrackID[track.id] == nil, let offlineSubtitleBaseURL else { return }
-        let url = offlineSubtitleBaseURL.appendingPathComponent(track.relativePath)
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-            offlineSubtitleCuesByTrackID[track.id] = []
-            return
-        }
-        offlineSubtitleCuesByTrackID[track.id] = OfflineTextSubtitleParser.parse(text)
+    /// Read + parse every not-yet-loaded sidecar OFF the main actor, then publish the cues back.
+    /// Parsing a feature-length .srt/.vtt (regex markup strip per cue) is heavy enough to hitch the
+    /// UI if done synchronously on this @MainActor controller when the Subtitles tab opens.
+    private func ensureOfflineSubtitleCuesLoaded() async {
+        guard let base = offlineSubtitleBaseURL else { return }
+        let pending = offlineTextSubtitles
+            .filter { offlineSubtitleCuesByTrackID[$0.id] == nil }
+            .map { (id: $0.id, url: base.appendingPathComponent($0.relativePath)) }
+        guard !pending.isEmpty else { return }
+        let parsed = await Task.detached(priority: .userInitiated) { () -> [Int: [OfflineTextSubtitleCue]] in
+            var out: [Int: [OfflineTextSubtitleCue]] = [:]
+            for entry in pending {
+                if let text = try? String(contentsOf: entry.url, encoding: .utf8) {
+                    out[entry.id] = OfflineTextSubtitleParser.parse(text)
+                } else {
+                    out[entry.id] = []
+                }
+            }
+            return out
+        }.value
+        for (id, cues) in parsed { offlineSubtitleCuesByTrackID[id] = cues }
     }
 
     private func updateOfflineSubtitleOverlay(at seconds: Double) {
@@ -834,10 +847,29 @@ final class PlaybackController {
             offlineSubtitleOverlay.set(nil)
             return
         }
-        guard seconds.isFinite else { offlineSubtitleOverlay.set(nil); return }
+        guard seconds.isFinite, let cues = offlineSubtitleCuesByTrackID[selectedOfflineSubtitleTrackID] else {
+            offlineSubtitleOverlay.set(nil); return
+        }
         let timeMs = Int(seconds * 1000)
-        let cue = offlineSubtitleCuesByTrackID[selectedOfflineSubtitleTrackID]?.first { $0.contains(timeMs) }
-        offlineSubtitleOverlay.set(cue?.text)
+        offlineSubtitleOverlay.set(Self.cueText(in: cues, at: timeMs))
+    }
+
+    /// Binary-search the sorted-by-startMs cue list for the one covering `timeMs`, instead of an
+    /// O(n) scan on every periodic time-observer tick. Cues are non-overlapping in practice, so the
+    /// rightmost cue whose `startMs <= timeMs` is the only candidate.
+    private static func cueText(in cues: [OfflineTextSubtitleCue], at timeMs: Int) -> String? {
+        var lo = 0, hi = cues.count - 1, candidate = -1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if cues[mid].startMs <= timeMs {
+                candidate = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        guard candidate >= 0, cues[candidate].contains(timeMs) else { return nil }
+        return cues[candidate].text
     }
 
     private func persistOfflineSubtitlePreference(for track: OfflineTextSubtitleTrack?) {
