@@ -186,21 +186,12 @@ final class AuthManager {
               let token = appModel.jellyfinAccessToken,
               let userID = appModel.jellyfinUserID else { return false }
         do {
-            let req = try JellyfinLibrary.userViewsRequest(server: server,
-                                                           token: token,
-                                                           identity: jellyfinIdentity,
-                                                           userId: userID)
-            let (_, response) = try await Self.jellyfinSession.data(for: req)
-            if let http = response as? HTTPURLResponse {
-                switch http.statusCode {
-                case 200..<300: break
-                case 401, 403: throw JellyfinAuthError.unauthorized
-                default: throw JellyfinAuthError.http(http.statusCode)
-                }
-            }
+            try await probeJellyfinReachability(server: server, token: token, userID: userID)
             if updateState { state = .authenticated }
             return true
         } catch JellyfinAuthError.unauthorized {
+            NSLog("[#93] restoreJellyfinSession wiping creds: probe returned unauthorized (updateState=%@)",
+                  updateState ? "true" : "false")
             signOutJellyfin()
             if updateState { state = .idle }
             return false
@@ -208,6 +199,46 @@ final class AuthManager {
             if updateState { state = .failed("Signed in, but the Jellyfin server could not be reached.") }
             return true
         }
+    }
+
+    /// Validate the saved Jellyfin session with a live `userViews` probe.
+    ///
+    /// A 401 is treated as an invalid token immediately. A 403, however, is NOT proof of an
+    /// expired token during a network reconnect (#93): some setups answer 403 transiently
+    /// for a still-valid token while a Wi-Fi transition settles. So a 403 gets ONE bounded
+    /// retry; only if the retry also returns 401/403 do we treat the session as unauthorized
+    /// and let the caller wipe creds. Any other error (timeout/unreachable) propagates and is
+    /// preserved as `.failed` without wiping, matching `restorePlexSession`.
+    private func probeJellyfinReachability(server: URL, token: String, userID: String) async throws {
+        let status = try await jellyfinUserViewsStatus(server: server, token: token, userID: userID)
+        switch status {
+        case 200..<300:
+            return
+        case 401:
+            throw JellyfinAuthError.unauthorized
+        case 403:
+            // Bounded single retry before trusting a 403 enough to sign the user out.
+            NSLog("[#93] restoreJellyfinSession: probe returned 403; retrying once before wiping creds")
+            let retry = try await jellyfinUserViewsStatus(server: server, token: token, userID: userID)
+            switch retry {
+            case 200..<300: return
+            case 401, 403: throw JellyfinAuthError.unauthorized
+            default: throw JellyfinAuthError.http(retry)
+            }
+        default:
+            throw JellyfinAuthError.http(status)
+        }
+    }
+
+    /// One `userViews` probe; returns the HTTP status code (or rethrows a transport error).
+    private func jellyfinUserViewsStatus(server: URL, token: String, userID: String) async throws -> Int {
+        let req = try JellyfinLibrary.userViewsRequest(server: server,
+                                                       token: token,
+                                                       identity: jellyfinIdentity,
+                                                       userId: userID)
+        let (_, response) = try await Self.jellyfinSession.data(for: req)
+        guard let http = response as? HTTPURLResponse else { return 200 }
+        return http.statusCode
     }
 
     private func loadJellyfinSessionSnapshot() -> Bool {
@@ -1045,6 +1076,9 @@ final class AuthManager {
     }
 
     private func signOutJellyfin() {
+        // #93: log every Jellyfin credential wipe so a future live repro of the unexpected
+        // sign-out shows which path fired (manual Settings sign-out vs restore probe).
+        NSLog("[#93] signOutJellyfin: clearing saved Jellyfin session")
         keychain.jellyfinServerURLString = nil
         keychain.jellyfinAccessToken = nil
         keychain.jellyfinUserID = nil

@@ -83,9 +83,12 @@ struct HomeView: View {
         case .plex:
             return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
         case .jellyfin:
-            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+            // Include the access token so a re-login to the SAME server (URL unchanged)
+            // still busts the cache and forces a full Home refresh (#93). Without this,
+            // signing in again after a sign-out reused the stale `.loaded` state.
+            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil"):\(appModel.jellyfinAccessToken ?? "nil")"
         case .emby:
-            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil")"
+            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil"):\(appModel.embyAccessToken ?? "nil")"
         }
     }
 
@@ -157,13 +160,18 @@ struct HomeView: View {
                 let service = JellyfinBrowseService(appModel: appModel)
                 let views = try await service.userViewLinks()
                 jellyfinViews = views
-                jellyfinRails = try await service.homeRails(for: views)
-                loadedIdentity = activeIdentity
+                let load = try await service.homeRails(for: views)
+                jellyfinRails = load.rails
+                // Only pin the loaded identity for a clean load. A degraded load (some rails
+                // errored) is shown but left unpinned so pop-back / the next `.task` re-fetches
+                // and can recover the missing rails without a manual pull-to-refresh (#93).
+                loadedIdentity = load.isDegraded ? nil : activeIdentity
                 loadState = .loaded
                 span.end(fields: [
                     "view_count": views.count,
                     "rail_count": jellyfinRails.count,
                     "item_count": jellyfinRails.reduce(0) { $0 + $1.items.count },
+                    "degraded": load.isDegraded ? 1 : 0,
                 ])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
@@ -178,13 +186,16 @@ struct HomeView: View {
                 let service = EmbyBrowseService(appModel: appModel)
                 let views = try await service.userViewLinks()
                 embyViews = views
-                embyRails = try await service.homeRails(for: views)
-                loadedIdentity = activeIdentity
+                let load = try await service.homeRails(for: views)
+                embyRails = load.rails
+                // See the Jellyfin branch: a degraded load is shown but not pinned (#93).
+                loadedIdentity = load.isDegraded ? nil : activeIdentity
                 loadState = .loaded
                 span.end(fields: [
                     "view_count": views.count,
                     "rail_count": embyRails.count,
                     "item_count": embyRails.reduce(0) { $0 + $1.items.count },
+                    "degraded": load.isDegraded ? 1 : 0,
                 ])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
