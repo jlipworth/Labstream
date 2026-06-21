@@ -79,7 +79,15 @@ public struct OfflineLibraryView: View {
             offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(displayTitle(for: record)).font(.headline)
+                HStack(spacing: 8) {
+                    Text(displayTitle(for: record)).font(.headline)
+                    // Only label the backend when the library mixes them, so a
+                    // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
+                    // and single-backend libraries carry no visual noise.
+                    if hasMixedBackends {
+                        backendBadge(for: record)
+                    }
+                }
                 if let subtitle = subtitle(for: record) {
                     Text(subtitle)
                         .font(.caption)
@@ -173,10 +181,38 @@ public struct OfflineLibraryView: View {
         }
     }
 
+    /// Backend that owns this row, via the single migration fallback on the
+    /// persisted snapshot (#84): a stored `backendKind` wins; pre-#84 rows fall
+    /// back to the ratingKey prefix. Drives the mixed-backend badge below.
+    private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
+        record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? (record.ratingKey.hasPrefix("jellyfin:") ? .jellyfin
+                : record.ratingKey.hasPrefix("emby:") ? .emby : .plex)
+    }
+
+    /// Only worth labelling rows by backend when the library actually mixes them —
+    /// a single-backend library needs no badge (keeps the list visually quiet).
+    private var hasMixedBackends: Bool {
+        Set(manager.records.map { backendKind(for: $0) }).count > 1
+    }
+
     private func tileGlyph(isComplete: Bool, isFailed: Bool) -> String {
         if isComplete { return "arrow.down.circle.fill" }
         if isFailed { return "exclamationmark.circle" }
         return "arrow.down.circle"
+    }
+
+    /// A subtle source chip ("Plex" / "Jellyfin" / "Emby") shown beside the title
+    /// when the library mixes backends (#84). Matches the caption typography so it
+    /// reads as part of the row rather than a bolted-on control.
+    private func backendBadge(for record: DownloadRecord) -> some View {
+        Text(backendKind(for: record).displayName)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(.thinMaterial, in: Capsule())
+            .accessibilityLabel("Source: \(backendKind(for: record).displayName)")
     }
 
     /// The locally-cached poster (D5) when present, else the neutral glyph tile.

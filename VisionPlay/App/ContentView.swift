@@ -82,6 +82,20 @@ struct ContentView: View {
                 downloadManager.resumePendingServerPrepDownloads()
             }
         }
+        // #84: a backend switch just re-restored another lane's saved session, so a job
+        // that couldn't resume earlier (its lane was inactive) can now run. `switchBackend`'s
+        // restore path raises `isSwitchingBackend` while it re-resolves the target lane and
+        // lowers it when done; on that true→false edge (and only once the lane is actually
+        // live) re-run the per-backend resume + encoder sweep so the newly-restored backend
+        // picks up its own pending server-prep rows and clears any encoder it leaked earlier.
+        // Both helpers resolve each row against its OWN backend lane, so this never disturbs a
+        // foreign-backend job that is mid-flight. (A brand-new sign-in is already covered by
+        // the launch `.task` / reattach resume path above.)
+        .onChange(of: appModel.isSwitchingBackend) { wasSwitching, isSwitching in
+            guard wasSwitching, !isSwitching, appModel.isBrowseReady else { return }
+            downloadManager.resumePendingServerPrepDownloads()
+            downloadManager.teardownOrphanedEncodersOnLaunch()
+        }
     }
 }
 

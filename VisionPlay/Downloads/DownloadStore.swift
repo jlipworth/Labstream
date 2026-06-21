@@ -281,6 +281,39 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.offlineTextSubtitles = tracks }
     }
 
+    /// #84: persist the server-minted `PlaySessionId` for a transcoded JF/Emby (or Plex optimize)
+    /// job so a hard app kill can still tear the encoder down on next launch. Status-change-grade:
+    /// persists immediately (not throttled). No-op if the row/metadata is gone.
+    func setPlaySessionID(ratingKey: String, _ playSessionID: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.playSessionID = playSessionID }
+    }
+
+    /// #84: clear the persisted `PlaySessionId` after the encoder has been torn down (the launch
+    /// sweep is idempotent — clearing prevents it from firing twice). No-op if the row is gone.
+    func clearPlaySessionID(ratingKey: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.playSessionID = nil }
+    }
+
+    /// #84: persist the authoritative media-source id chosen for this download so a retry can
+    /// re-issue the request without re-deriving it. No-op if the row/metadata is gone.
+    func setMediaSourceID(ratingKey: String, _ mediaSourceID: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.mediaSourceID = mediaSourceID }
+    }
+
+    /// #84: read the persisted `PlaySessionId` for a row, if any.
+    func playSessionID(ratingKey: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.metadata?.playSessionID
+    }
+
+    /// #84: read the backend that owns a row, using the migration fallback (stored `backendKind`
+    /// wins; legacy rows fall back to the ratingKey prefix). Returns nil only when the row is gone.
+    func backendKind(ratingKey: String) -> DownloadBackendKind? {
+        lock.lock(); defer { lock.unlock() }
+        guard let meta = rows[ratingKey]?.metadata else { return nil }
+        return meta.resolvedBackendKind(ratingKey: ratingKey)
+    }
+
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
         guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }
