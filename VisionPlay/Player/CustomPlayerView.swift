@@ -20,6 +20,9 @@ struct CustomPlayerView: View {
     private let onClose: (() -> Void)?
     private let onRequestPlay: ((MediaItem) -> Void)?
     private let allowsRealityTheater: Bool
+    /// Where this playback was launched from, recorded on the Cinema session so exit returns to the
+    /// origin instead of always Home detail (#87).
+    private let cinemaOrigin: CinemaOrigin
 
     @State private var controller: PlaybackController?
     @State private var scrubState: PlaybackScrubState
@@ -28,12 +31,14 @@ struct CustomPlayerView: View {
     init(item: MediaItem,
          controllerFactory: @escaping @MainActor () -> PlaybackController,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         cinemaOrigin: CinemaOrigin = .systemEntry,
          onClose: (() -> Void)? = nil,
          onRequestPlay: ((MediaItem) -> Void)? = nil,
          allowsRealityTheater: Bool = false) {
         self.item = item
         self.controllerFactory = controllerFactory
         self.trickPlayProvider = trickPlayProvider
+        self.cinemaOrigin = cinemaOrigin
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
         self.allowsRealityTheater = allowsRealityTheater
@@ -52,6 +57,7 @@ struct CustomPlayerView: View {
          item: MediaItem,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
+         cinemaOrigin: CinemaOrigin? = nil,
          onClose: (() -> Void)? = nil) {
         // Version comes from the bundle (#26) so the offline X-Plex-Version can't drift
         // from the marketing version — same source of truth as the main identity.
@@ -69,6 +75,9 @@ struct CustomPlayerView: View {
                                          offlineTextSubtitles: offlineTextSubtitles)
                   },
                   trickPlayProvider: trickPlayProvider,
+                  // A local file is always an offline origin; default to the item's own ratingKey
+                  // when the caller doesn't pass an explicit one (#87).
+                  cinemaOrigin: cinemaOrigin ?? .offline(ratingKey: item.ratingKey),
                   onClose: onClose,
                   onRequestPlay: nil,
                   allowsRealityTheater: true)
@@ -122,6 +131,7 @@ struct CustomPlayerView: View {
             controller = playback
             cinemaSession.activate(title: item.title,
                                    item: item,
+                                   origin: cinemaOrigin,
                                    controller: playback,
                                    geometry: CustomCinemaGeometry(item: item,
                                                                   mediaIndex: playback.mediaIndex),

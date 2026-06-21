@@ -19,27 +19,60 @@ struct RootView: View {
     /// Home tab's navigation path, lifted here so system entries (App Intents,
     /// Spotlight results — #24) can push a DetailView from outside the stack.
     @State private var homePath = NavigationPath()
+    /// Libraries / Search paths, lifted so Cinema exit can return to the ORIGINATING
+    /// browse tab's detail instead of always Home (#87) — same pattern as `homePath`.
+    @State private var librariesPath = NavigationPath()
+    @State private var searchPath = NavigationPath()
+    /// One-shot focus request for Cinema exits that came from an offline download. The Offline
+    /// tab owns the list/row UI; RootView only foregrounds the tab and hands it the ratingKey to
+    /// scroll/highlight after the window is recreated.
+    @State private var offlineReturnRatingKey: String?
 
     enum AppTab: Hashable {
         case home, libraries, search, music, offline, settings
+
+        /// Map to/from the backend-agnostic `CinemaTab` PMSKit uses for exit routing (#87).
+        /// Only the three online browse tabs participate; other tabs have no Cinema origin.
+        init?(_ cinemaTab: CinemaTab) {
+            switch cinemaTab {
+            case .home: self = .home
+            case .libraries: self = .libraries
+            case .search: self = .search
+            }
+        }
+
+        var cinemaTab: CinemaTab? {
+            switch self {
+            case .home: return .home
+            case .libraries: return .libraries
+            case .search: return .search
+            default: return nil
+            }
+        }
     }
 
     var body: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack(path: $homePath) { HomeView() }
+                    .environment(\.cinemaOriginTab, .home)
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
-                NavigationStack { LibrariesView() }
+                NavigationStack(path: $librariesPath) { LibrariesView() }
+                    .environment(\.cinemaOriginTab, .libraries)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack { SearchView() }
+                NavigationStack(path: $searchPath) { SearchView() }
+                    .environment(\.cinemaOriginTab, .search)
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
                 NavigationStack(path: $musicPath) { MusicLibraryView() }
             }
             Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
-                NavigationStack { OfflineLibraryView(manager: downloadManager) }
+                NavigationStack {
+                    OfflineLibraryView(manager: downloadManager,
+                                       focusedRatingKey: $offlineReturnRatingKey)
+                }
             }
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                 NavigationStack { SettingsView(authManager: authManager) }
@@ -71,11 +104,23 @@ struct RootView: View {
             guard let route else { return }
             handleSystemEntry(route)
         }
+        // Cinema exit from an offline download (#87): land on the Offline tab and focus the
+        // download with no server fetch. Separate channel from `pending` (which is online-only).
+        .onChange(of: SystemEntryRouter.shared.offlinePending) { _, route in
+            guard let route else { return }
+            handleOfflineReturn(route)
+        }
         .task {
             // Consume a route that arrived BEFORE RootView mounted (cold launch
             // from an intent/Spotlight: it was set while the restore splash was up).
             if let route = SystemEntryRouter.shared.pending {
                 handleSystemEntry(route)
+            }
+            // `offlinePending` can also be set while the main window is absent during Cinema
+            // teardown. `.onChange` only observes future mutations, so consume a pre-existing
+            // offline return here just like the online/system-entry route.
+            if let route = SystemEntryRouter.shared.offlinePending {
+                handleOfflineReturn(route)
             }
         }
         .environment(appModel)
@@ -85,7 +130,8 @@ struct RootView: View {
 
     // MARK: - System entries (App Intents / Spotlight, #24)
 
-    /// Perform one system-entry route: land on Home, resolve the target to a full
+    /// Perform one system-entry route: land on the origin tab (Home for intents/Spotlight,
+    /// the originating browse tab for a Cinema exit — #87), resolve the target to a full
     /// `MediaItem`, and push its DetailView. For "play" requests on a container
     /// (show/season) the tested `EpisodeResolver` walks down to the first episode
     /// so "Play <show>" actually plays something. Single-window by design: the
@@ -93,9 +139,12 @@ struct RootView: View {
     private func handleSystemEntry(_ route: SystemEntryRouter.Route) {
         let router = SystemEntryRouter.shared
         router.pending = nil
-        selection = .home
-        // Pop home to root first so repeated intents don't stack stale details.
-        homePath = NavigationPath()
+        // Land on the originating browse tab when Cinema exit recorded one (#87); intents/Spotlight
+        // and the legacy fallback carry no origin tab and keep landing on Home.
+        let targetTab = route.originTab.flatMap(AppTab.init) ?? .home
+        selection = targetTab
+        // Pop the target tab to root first so repeated entries don't stack stale details.
+        resetPath(for: targetTab)
         Task { @MainActor in
             let identity = appModel.identity
             let client = appModel.client
@@ -126,7 +175,7 @@ struct RootView: View {
                       let token = appModel.serverToken else {
                     autoPlay = false
                     await Task.yield()
-                    homePath.append(item)
+                    appendPath(for: targetTab, item)
                     return
                 }
                 // "Play <show/season>": drill to the first episode leaf. Explicitly
@@ -154,13 +203,46 @@ struct RootView: View {
             }
             // Cinema exit calls `SystemEntryRouter.open(item:)` while the main window is being
             // recreated. Unlike Spotlight/intent rating-key routes, the `.item` case has no
-            // network fetch delay, so appending in the same transaction as `selection = .home`
-            // and `homePath = NavigationPath()` can land before the Home NavigationStack is
-            // mounted on device. Yield one turn, matching the proven Music-tab navigation
-            // pattern above, so Exit Cinema reliably lands on the item's detail page.
+            // network fetch delay, so appending in the same transaction as the `selection` /
+            // path-reset above can land before the target NavigationStack is mounted on device.
+            // Yield one turn, matching the proven Music-tab navigation pattern above, so Exit
+            // Cinema reliably lands on the item's detail page (preserved per #87).
             await Task.yield()
-            homePath.append(item)
+            appendPath(for: targetTab, item)
         }
+    }
+
+    /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have
+    /// no lifted path and need no reset.
+    private func resetPath(for tab: AppTab) {
+        switch tab {
+        case .home: homePath = NavigationPath()
+        case .libraries: librariesPath = NavigationPath()
+        case .search: searchPath = NavigationPath()
+        default: break
+        }
+    }
+
+    /// Push an item's detail onto the lifted path for a browse tab (#87).
+    private func appendPath(for tab: AppTab, _ item: MediaItem) {
+        switch tab {
+        case .home: homePath.append(item)
+        case .libraries: librariesPath.append(item)
+        case .search: searchPath.append(item)
+        default: homePath.append(item)
+        }
+    }
+
+    // MARK: - Offline return (Cinema exit from a download, #87)
+
+    /// Land on the Offline tab after a Cinema exit that started from an offline download. The
+    /// Offline tab row IS the offline item screen and plays straight from the row, so there is no
+    /// detail to push and — critically — no server fetch. We foreground the Offline tab and hand
+    /// the ratingKey to the list so the matching row is visible after window recreation.
+    private func handleOfflineReturn(_ route: SystemEntryRouter.OfflineReturn) {
+        SystemEntryRouter.shared.offlinePending = nil
+        offlineReturnRatingKey = route.ratingKey
+        selection = .offline
     }
 }
 

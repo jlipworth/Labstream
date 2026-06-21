@@ -11,49 +11,64 @@ public struct OfflineLibraryView: View {
     @Environment(MusicPlayerController.self) private var musicPlayer
     @State private var manager: DownloadManager
     @State private var playing: DownloadRecord?
+    @Binding private var focusedRatingKey: String?
+    @State private var highlightedRatingKey: String?
 
-    public init(manager: DownloadManager) {
+    public init(manager: DownloadManager, focusedRatingKey: Binding<String?> = .constant(nil)) {
         _manager = State(initialValue: manager)
+        _focusedRatingKey = focusedRatingKey
     }
 
     public var body: some View {
         NavigationStack {
-            Group {
-                if manager.records.isEmpty {
-                    ContentUnavailableView(
-                        "No Offline Downloads",
-                        systemImage: "arrow.down.circle",
-                        description: Text("Download a movie or episode to watch it offline. "
-                                          + "Transfers pause while the headset is off and resume when it's worn again.")
-                    )
-                } else {
-                    List {
-                        // Resolve the mixed-backend test ONCE per render (it scans every record);
-                        // passing it into each row avoids re-scanning the whole list per row (#84).
-                        let mixedBackends = hasMixedBackends
-                        SwiftUI.Section {
-                            ForEach(manager.records) { record in
-                                row(for: record, showBackendBadge: mixedBackends)
-                            }
-                            .onDelete { offsets in
-                                for index in offsets {
-                                    manager.delete(ratingKey: manager.records[index].ratingKey)
+            ScrollViewReader { scrollProxy in
+                Group {
+                    if manager.records.isEmpty {
+                        ContentUnavailableView(
+                            "No Offline Downloads",
+                            systemImage: "arrow.down.circle",
+                            description: Text("Download a movie or episode to watch it offline. "
+                                              + "Transfers pause while the headset is off and resume when it's worn again.")
+                        )
+                    } else {
+                        List {
+                            // Resolve the mixed-backend test ONCE per render (it scans every record);
+                            // passing it into each row avoids re-scanning the whole list per row (#84).
+                            let mixedBackends = hasMixedBackends
+                            SwiftUI.Section {
+                                ForEach(manager.records) { record in
+                                    row(for: record, showBackendBadge: mixedBackends)
+                                        .id(record.ratingKey)
                                 }
+                                .onDelete { offsets in
+                                    for index in offsets {
+                                        manager.delete(ratingKey: manager.records[index].ratingKey)
+                                    }
+                                }
+                            } footer: {
+                                Text("Background transfers pause while the headset is off "
+                                     + "and resume when it's worn again.")
                             }
-                        } footer: {
-                            Text("Background transfers pause while the headset is off "
-                                 + "and resume when it's worn again.")
                         }
                     }
                 }
+                .navigationTitle("Offline")
+                .task(id: focusedRatingKey) {
+                    await focusRequestedDownload(using: scrollProxy)
+                }
+                .onChange(of: manager.records.map(\.ratingKey)) { _, _ in
+                    Task { @MainActor in
+                        await focusRequestedDownload(using: scrollProxy)
+                    }
+                }
             }
-            .navigationTitle("Offline")
         }
         .fullScreenCover(item: $playing) { record in
             CustomPlayerView(localFile: record.localURL,
                              item: offlineItem(from: record),
                              trickPlayProvider: localTrickPlayProvider(for: record),
                              offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
+                             cinemaOrigin: .offline(ratingKey: record.ratingKey),
                              onClose: { playing = nil })
         }
     }
@@ -173,6 +188,13 @@ public struct OfflineLibraryView: View {
             }
         }
         .padding(.vertical, 4)
+        .background {
+            if highlightedRatingKey == record.ratingKey {
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .fill(.tint.opacity(0.16))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: highlightedRatingKey)
         .contentShape(Rectangle())
         .onTapGesture {
             if isComplete {
@@ -180,6 +202,29 @@ public struct OfflineLibraryView: View {
                 playing = record
             } else if isFailed {
                 manager.retry(ratingKey: record.ratingKey)
+            }
+        }
+    }
+
+    @MainActor
+    private func focusRequestedDownload(using scrollProxy: ScrollViewProxy) async {
+        guard let ratingKey = focusedRatingKey else { return }
+        guard manager.records.contains(where: { $0.ratingKey == ratingKey }) else { return }
+
+        // RootView may set the focus request in the same transaction as switching to the Offline
+        // tab after the Cinema window is recreated. Yield once so the list row exists before the
+        // scroll, mirroring the proven tab-switch/navigation timing used by RootView.
+        await Task.yield()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            scrollProxy.scrollTo(ratingKey, anchor: .center)
+        }
+        highlightedRatingKey = ratingKey
+        focusedRatingKey = nil
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            if highlightedRatingKey == ratingKey {
+                highlightedRatingKey = nil
             }
         }
     }

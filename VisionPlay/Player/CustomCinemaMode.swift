@@ -89,6 +89,20 @@ enum CustomCinemaMode {
     static let isUserVisible = true
 }
 
+/// The browse tab the current view tree lives under, injected by `RootView` into each browse-tab
+/// `NavigationStack` so a shared `DetailView` can record the right Cinema origin on exit (#87).
+/// `nil` outside the browse tabs (no online-tab origin to capture).
+private struct CinemaOriginTabKey: EnvironmentKey {
+    static let defaultValue: CinemaTab? = nil
+}
+
+extension EnvironmentValues {
+    var cinemaOriginTab: CinemaTab? {
+        get { self[CinemaOriginTabKey.self] }
+        set { self[CinemaOriginTabKey.self] = newValue }
+    }
+}
+
 @Observable
 @MainActor
 final class CustomCinemaSessionStore {
@@ -103,33 +117,44 @@ final class CustomCinemaSessionStore {
     /// submenu") instead of the app home screen. Preserved across `stopAndClearForImmersiveExit`
     /// (which only tears down the live controller) and only dropped in `clear()`.
     var item: MediaItem?
+    /// Where playback was launched from, so Cinema exit returns to the ORIGIN (offline Downloads,
+    /// the originating browse tab) instead of always Home detail (#87). Preserved exactly like
+    /// `item` — survives `stopAndClearForImmersiveExit`, dropped only in `clear()`.
+    var origin: CinemaOrigin = .systemEntry
     var controller: PlaybackController?
     var geometry: CustomCinemaGeometry = .default
     var trickPlayProvider: (any TrickPlayThumbnailProviding)?
     var presentationState: PresentationState = .closed
     var pendingReturnItem: MediaItem?
     var pendingReturnAutoPlay = false
+    /// True when the pending exit is an Up Next advance to a DIFFERENT online item (not a plain
+    /// close/playback-ended), so the exit router can special-case autoplay vs. the offline fallback.
+    var pendingAdvancingToNext = false
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
 
     func activate(title: String,
                   item: MediaItem,
+                  origin: CinemaOrigin = .systemEntry,
                   controller: PlaybackController,
                   geometry: CustomCinemaGeometry = .default,
                   trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil) {
         self.title = title
         self.item = item
+        self.origin = origin
         self.controller = controller
         self.geometry = geometry
         self.trickPlayProvider = trickPlayProvider
         pendingReturnItem = nil
         pendingReturnAutoPlay = false
+        pendingAdvancingToNext = false
     }
 
-    func prepareExit(returningTo item: MediaItem?, autoPlay: Bool) {
+    func prepareExit(returningTo item: MediaItem?, autoPlay: Bool, advancingToNext: Bool) {
         pendingReturnItem = item
         pendingReturnAutoPlay = autoPlay
+        pendingAdvancingToNext = advancingToNext
         presentationState = .inTransition
     }
 
@@ -151,11 +176,13 @@ final class CustomCinemaSessionStore {
     func clear() {
         title = nil
         item = nil
+        origin = .systemEntry
         controller = nil
         geometry = .default
         trickPlayProvider = nil
         pendingReturnItem = nil
         pendingReturnAutoPlay = false
+        pendingAdvancingToNext = false
         presentationState = .closed
     }
 }
@@ -234,30 +261,49 @@ struct CustomCinemaScaffoldView: View {
         guard let controller = session.controller else { return }
         controller.onAdvanceToNext = { next in
             Task { @MainActor in
-                await requestCinemaExit(returningTo: next, autoPlay: true)
+                await requestCinemaExit(returningTo: next, autoPlay: true, advancingToNext: true)
             }
         }
         controller.onPlaybackEnded = {
             Task { @MainActor in
-                await requestCinemaExit(returningTo: session.item, autoPlay: false)
+                await requestCinemaExit(returningTo: session.item, autoPlay: false, advancingToNext: false)
             }
         }
     }
 
     @MainActor
-    private func requestCinemaExit(returningTo item: MediaItem?, autoPlay: Bool) async {
+    private func requestCinemaExit(returningTo item: MediaItem?, autoPlay: Bool, advancingToNext: Bool) async {
         guard session.presentationState != .inTransition else { return }
-        session.prepareExit(returningTo: item ?? session.item, autoPlay: autoPlay)
+        session.prepareExit(returningTo: item ?? session.item, autoPlay: autoPlay,
+                            advancingToNext: advancingToNext)
         await dismissImmersiveSpace()
     }
 
     @MainActor
     private func finishCinemaDismissal() {
         let returnItem = session.pendingReturnItem ?? session.item
-        let autoPlay = session.pendingReturnAutoPlay
+        let destination = CinemaExitRouting.resolve(origin: session.origin,
+                                                    hasReturnItem: returnItem != nil,
+                                                    autoPlay: session.pendingReturnAutoPlay,
+                                                    advancingToNext: session.pendingAdvancingToNext)
         session.stopAndClearForImmersiveExit()
-        if let returnItem {
-            SystemEntryRouter.shared.open(item: returnItem, autoPlay: autoPlay)
+        // Branch on the resolved origin (#87). Offline never touches the online router (that path is
+        // Home + server-fetch only); online origins return to their own tab; system entries keep the
+        // legacy Home-detail behavior. RootView honors each via SystemEntryRouter, preserving the
+        // one-runloop-tick yield that makes the destination land reliably after the window recreates.
+        switch destination {
+        case .offlineDownload(let ratingKey):
+            SystemEntryRouter.shared.openOffline(ratingKey: ratingKey)
+        case .onlineTabItem(let tab, let autoPlay):
+            if let returnItem {
+                SystemEntryRouter.shared.open(item: returnItem, autoPlay: autoPlay, onTab: tab)
+            }
+        case .systemEntryItem(let autoPlay):
+            if let returnItem {
+                SystemEntryRouter.shared.open(item: returnItem, autoPlay: autoPlay)
+            }
+        case .none:
+            break
         }
         openWindow(id: CustomCinemaMode.mainWindowID)
         session.clear()
