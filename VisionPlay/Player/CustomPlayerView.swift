@@ -53,9 +53,11 @@ struct CustomPlayerView: View {
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          onClose: (() -> Void)? = nil) {
+        // Version comes from the bundle (#26) so the offline X-Plex-Version can't drift
+        // from the marketing version — same source of truth as the main identity.
         let identity = ClientIdentity(clientIdentifier: "offline",
                                       product: "VisionPlay",
-                                      version: "0.1.0",
+                                      version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
                                       deviceName: "Apple Vision Pro")
         let client = PlexClient(identity: identity)
         self.init(item: item,

@@ -1,3 +1,6 @@
 public enum PMSKit {
-    public static let version = "0.1.0"
+    /// Library fallback only — the app overrides this by passing the bundle
+    /// `CFBundleShortVersionString` (= `MARKETING_VERSION`) into `ClientIdentity`.
+    /// Keep in sync with `MARKETING_VERSION` in VisionPlay.xcodeproj when bumping the app version.
+    public static let version = "1.1.0"
 }
