@@ -27,18 +27,33 @@ struct ContentView: View {
     let bootstrap: SessionBootstrap
 
     var body: some View {
+        // #90: the gate is centralized in `BrowseUIGate` so the "switch must not bounce the
+        // browse UI" invariant holds for ANY backend (not just Plex via the refreshServers
+        // field-preservation carve-out). An already-ready browse UI stays mounted through a
+        // switch; a genuinely signed-out user still gets the splash/login.
         Group {
-            if appModel.isBrowseReady {
+            switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
+                                      isRestoring: bootstrap.isRestoring,
+                                      isSwitchingBackend: appModel.isSwitchingBackend,
+                                      hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady) {
+            case .browse:
                 RootView(appModel: appModel,
                          authManager: authManager,
                          downloadManager: downloadManager,
                          musicPlayer: musicPlayer)
-            } else if bootstrap.isRestoring || appModel.isSwitchingBackend {
+            case .restoringSplash:
                 RestoringSessionView()
-            } else {
+            case .login:
                 LoginView(authManager: authManager)
                     .environment(appModel)
             }
+        }
+        .onAppear {
+            // #90: seed the "has shown browse UI" flag for the case where we're ALREADY
+            // browse-ready at first render (a window reopened after Cinema, or an instant
+            // restore) — `.onChange(of:isBrowseReady)` only fires on a transition, so it
+            // wouldn't otherwise catch a UI that was ready from the start.
+            if appModel.isBrowseReady { bootstrap.hasEverBeenBrowseReady = true }
         }
         .task {
             // Register the live state objects for out-of-app entry points (App
@@ -75,6 +90,9 @@ struct ContentView: View {
             if !ready {
                 musicPlayer.stop()
             } else {
+                // #90: remember we've shown the browse UI so a later backend switch keeps it
+                // mounted (BrowseUIGate) instead of bouncing through the restore splash.
+                bootstrap.hasEverBeenBrowseReady = true
                 downloadManager.resumePendingServerPrepDownloads()
             }
         }
@@ -110,6 +128,11 @@ final class SessionBootstrap {
     var isRestoring = true
     /// Set once the restore has been kicked off, so a reopened window skips it.
     var didStartRestore = false
+    /// #90: true once the browse UI has been mounted at least once this app run. Lets
+    /// `BrowseUIGate` keep an already-ready UI mounted through a backend switch instead of
+    /// bouncing to the restore splash. App-lifetime (on `SessionBootstrap`) so it survives the
+    /// main window being dismissed/reopened by entering/leaving Cinema.
+    var hasEverBeenBrowseReady = false
 }
 
 /// Neutral launch splash shown while a saved session is being restored (token read +
