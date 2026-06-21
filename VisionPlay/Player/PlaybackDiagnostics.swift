@@ -73,6 +73,11 @@ final class PlaybackDiagnostics {
     /// Seconds of media buffered ahead of the playhead (loaded time range).
     var bufferedAheadSeconds: Double = 0
 
+    /// Keep Observed active briefly between bursty HLS segment downloads. Without this, a player
+    /// that fetches one segment every other sampling tick flips between a real bitrate and `idle`,
+    /// even though the current access-log event is healthy and actively loading.
+    private static let observedIdleGraceSeconds: TimeInterval = 3.0
+
     /// A friendly label for the active bitrate cap. The two ladder maxima get named
     /// choices; numeric caps render as "<N> Mbps".
     var targetBitrateLabel: String {
@@ -245,6 +250,7 @@ final class PlaybackDiagnostics {
     }
 
     private var lastAccessLogProgress: AccessLogProgressSignature?
+    private var lastObservedProgressUptime: TimeInterval?
 
     private func resetDynamicAccessLogFacts() {
         observedBitrateKbps = 0
@@ -259,11 +265,13 @@ final class PlaybackDiagnostics {
         likelyToKeepUp = false
         bufferedAheadSeconds = 0
         lastAccessLogProgress = nil
+        lastObservedProgressUptime = nil
     }
 
     /// Scrape the dynamic numbers from the current player item (call ~1s).
     func sample(player: AVPlayer) {
         guard let item = player.currentItem else { return }
+        let sampleUptime = ProcessInfo.processInfo.systemUptime
         likelyToKeepUp = item.isPlaybackLikelyToKeepUp
 
         if let range = item.loadedTimeRanges.first?.timeRangeValue {
@@ -292,15 +300,25 @@ final class PlaybackDiagnostics {
         if usesLocalMediaProxy {
             observedBitrateState = .localProxy
             observedBitrateKbps = 0
+            lastObservedProgressUptime = nil
         } else if event.observedBitrate > 0 {
             if progressAdvanced || firstProgressSample {
                 observedBitrateKbps = event.observedBitrate / 1000
+                observedBitrateState = .active
+                lastObservedProgressUptime = sampleUptime
+            } else if let lastObservedProgressUptime,
+                      sampleUptime - lastObservedProgressUptime < Self.observedIdleGraceSeconds {
+                // HLS segment loading is bursty: during startup/loading AVFoundation can report the
+                // same positive observedBitrate across a quiet 1s tick while the next segment has
+                // not advanced the access-log counters yet. Keep the last active value briefly so
+                // Stats does not alternate between `idle` and a real bitrate every sample.
                 observedBitrateState = .active
             } else {
                 observedBitrateState = .idle
             }
         } else {
             observedBitrateState = .unavailable
+            lastObservedProgressUptime = nil
         }
         if event.numberOfDroppedVideoFrames >= 0 { droppedFrames = event.numberOfDroppedVideoFrames }
         if event.numberOfStalls >= 0 { stalls = event.numberOfStalls }
