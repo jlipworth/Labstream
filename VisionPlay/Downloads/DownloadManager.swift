@@ -46,6 +46,10 @@ public final class DownloadManager {
         /// container (HTML/JSON error page, truncated transcode, unplayable). D1:
         /// previously such bodies were saved as "complete" and failed at playback.
         case invalidDownload(String)
+        /// #95: a recoverable interruption (e.g. headset-off killed the transfer) that handed
+        /// back URLSession resume data. NOT a hard failure — the partial + resume blob are kept
+        /// and the row is `.paused`; the UI shows a "will resume" affordance rather than a red error.
+        case interruptedResumable
     }
 
     /// What the user chose in the download sheet, resolved from the direct-play probe.
@@ -1377,6 +1381,23 @@ public final class DownloadManager {
             "download_id": .identifier(ratingKey),
         ])
         lastError[ratingKey] = nil
+        // #95: a recoverably-interrupted (`.paused`) row with persisted resume data should
+        // CONTINUE from its byte offset rather than discarding the partial and restarting. This
+        // path is backend-agnostic — only range-resumable sources (static originals) ever have
+        // resume data, so transcoded JF/Emby rows naturally fall through to the clean restart
+        // below. If the resume task is later rejected by the server (200 full-restart / 416), the
+        // normal failure path makes the row retryable again from scratch.
+        if record.status == .paused, let resumeData = store.resumeData(ratingKey: ratingKey) {
+            store.clearResumeData(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .downloading)
+            if session.resume(ratingKey: ratingKey, resumeData: resumeData, to: record.localURL) {
+                activeJobs.insert(ratingKey)
+                refreshRecords()
+                return
+            }
+            // resume() refused the blob — fall through to a clean restart below.
+            store.setStatus(ratingKey: ratingKey, .failed)
+        }
         if Self.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record)
             return
@@ -1447,6 +1468,13 @@ public final class DownloadManager {
             // #84: stored rows know the original user intent. `makeMediaItem()` intentionally does
             // not rehydrate full MediaSource/Part arrays, so deriving this from `part` after a
             // relaunch would incorrectly turn original retries into optimized transcodes.
+            // #90 (won't-fix): deliberately NO Emby-style PlaybackInfo re-probe here — Jellyfin's
+            // normal `.original` path doesn't probe either, and re-probing only on retry would make
+            // retry behave differently from the first attempt. The theoretical
+            // `.original`→fail→`.original` loop needs a non-transient route-specific failure and is
+            // self-limiting (manual retry only). If a real stuck loop is ever reported, the minimal
+            // fix is an attempt-count escalation to the default download preset after N consecutive
+            // `.original` failures — cheaper than a speculative re-probe (mediaSourceID IS persisted).
             choice = .original
         } else if Self.isLocallyPlayableOriginal(part: part) {
             choice = .original
@@ -1940,8 +1968,12 @@ public final class DownloadManager {
         // at the end of `triggerOptimizeAndDownload`/`download` (which fires while the file is
         // still transferring). Once released, `cleanStaleOptimizeJobs` is free to remove the
         // now-abandoned (completed-but-unprotected) marked queue item on the next optimize run.
-        let terminalKeys = Set(fresh.filter { $0.status == .complete || $0.status == .failed }
-                                    .map(\.ratingKey))
+        // #95: a `.paused` (recoverably-interrupted) row has genuinely stopped transferring, so it
+        // releases too — its slot is re-acquired by `retry()` on resume, and releasing also fires
+        // any encoder teardown should a transcoded row ever land here.
+        let terminalKeys = Set(fresh.filter {
+            $0.status == .complete || $0.status == .failed || $0.status == .paused
+        }.map(\.ratingKey))
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
     }
 
@@ -3091,6 +3123,21 @@ public final class DownloadManager {
         let profile = jellyfinTranscodeProfile(named: targetName)
         return estimatedTranscodeBytes(durationMs: record.metadata?.duration,
                                        videoBitrateBps: profile.videoBitrateBps)
+    }
+
+    /// Unified download fraction for a row's bar + caption (#97), so Plex/Jellyfin/Emby
+    /// all present progress the same way. Returns the EXACT `Content-Length` fraction when
+    /// the server reported a size (`record.progress`), otherwise an ESTIMATED fraction
+    /// (`bytes` / duration×bitrate estimate) for transcoder-streamed JF/Emby rows that ship
+    /// no `Content-Length`. `nil` when neither is available (no bytes yet, or no estimate) →
+    /// the caller keeps today's spinner. The estimated fraction is clamped strictly below
+    /// 1.0 so the bar never reads 100% before the real `.complete` status flips the row.
+    /// The selection is keyed on `record.progress`, not the backend kind, so it survives a
+    /// relaunch (the in-memory `transcodeSourcedDownloads` set does not).
+    public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
+        DownloadProgressDisplay.fraction(progress: record.progress,
+                                         bytes: record.bytes,
+                                         estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
     }
 
     private static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
