@@ -131,6 +131,43 @@ public struct OfflineChapter: Codable, Sendable, Equatable {
     }
 }
 
+
+/// Codable intro/credits/commercial marker snapshot for offline playback. `Marker` itself
+/// is intentionally only Decodable for server DTOs, so the download index stores this
+/// stable app-owned shape alongside chapters.
+public struct OfflineMarker: Codable, Sendable, Equatable {
+    public var markerID: Int?
+    public var type: String
+    public var startTimeOffset: Int?
+    public var endTimeOffset: Int?
+    public var isFinal: Bool?
+
+    public init(markerID: Int? = nil, type: String, startTimeOffset: Int? = nil,
+                endTimeOffset: Int? = nil, isFinal: Bool? = nil) {
+        self.markerID = markerID
+        self.type = type
+        self.startTimeOffset = startTimeOffset
+        self.endTimeOffset = endTimeOffset
+        self.isFinal = isFinal
+    }
+
+    public init(_ marker: Marker) {
+        self.init(markerID: marker.markerID,
+                  type: marker.type,
+                  startTimeOffset: marker.startTimeOffset,
+                  endTimeOffset: marker.endTimeOffset,
+                  isFinal: marker.isFinal)
+    }
+
+    public func makeMarker() -> Marker {
+        Marker(id: markerID,
+               type: type,
+               startTimeOffset: startTimeOffset,
+               endTimeOffset: endTimeOffset,
+               isFinal: isFinal)
+    }
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -161,6 +198,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Text chapter markers captured at download time so local playback can populate the
     /// existing Chapters tab without requiring network access. Chapter images are not cached yet.
     public var chapters: [OfflineChapter]?
+    /// Intro/credits/commercial ranges captured at download time so offline playback can power
+    /// the existing Skip Intro / Skip Credits affordances without requiring network access.
+    public var markers: [OfflineMarker]?
     /// Human resolution label of the downloaded file (e.g. "1080p", "4K", "1920×1080"),
     /// captured from the chosen `Media` at download time. Drives the offline caption.
     /// Replaces the retired bitrate-cap `quality` marker (offline-download redesign).
@@ -192,7 +232,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var jellyfinTrickPlayPlaylistRelativePath: String?
     /// Locally-cached Jellyfin trickplay tile sheet paths, relative to the Downloads base directory.
     public var jellyfinTrickPlayTileRelativePaths: [String]?
-    /// Locally-cached external text subtitles for original downloads. Embedded subtitles remain
+    /// Locally-cached external text subtitles for offline downloads. Embedded subtitles remain
     /// discoverable through AVFoundation; image/burned-in/unavailable tracks are intentionally
     /// not represented here.
     public var offlineTextSubtitles: [OfflineTextSubtitleTrack]?
@@ -219,6 +259,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 thumb: String? = nil,
                 art: String? = nil,
                 chapters: [OfflineChapter]? = nil,
+                markers: [OfflineMarker]? = nil,
                 resolutionLabel: String? = nil,
                 librarySectionID: Int? = nil,
                 librarySectionKey: String? = nil,
@@ -255,6 +296,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.thumb = thumb
         self.art = art
         self.chapters = chapters
+        self.markers = markers
         self.resolutionLabel = resolutionLabel
         self.librarySectionID = librarySectionID
         self.librarySectionKey = librarySectionKey
@@ -295,6 +337,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
         art = try c.decodeIfPresent(String.self, forKey: .art)
         chapters = try c.decodeIfPresent([OfflineChapter].self, forKey: .chapters)
+        markers = try c.decodeIfPresent([OfflineMarker].self, forKey: .markers)
         resolutionLabel = try c.decodeIfPresent(String.self, forKey: .resolutionLabel)
         librarySectionID = try c.decodeIfPresent(Int.self, forKey: .librarySectionID)
         librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
@@ -326,6 +369,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                   thumb: thumb,
                   art: art,
                   chapters: chapters?.map { $0.makeChapter() },
+                  markers: markers?.map { $0.makeMarker() },
                   contentRating: contentRating,
                   tagline: tagline,
                   grandparentTitle: grandparentTitle,

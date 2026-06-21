@@ -57,6 +57,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.jellyfinTrickPlayPlaylistRelativePath == nil)
         #expect(meta.jellyfinTrickPlayTileRelativePaths == nil)
         #expect(meta.offlineTextSubtitles == nil)
+        #expect(meta.markers == nil)
         #expect(meta.resolutionLabel == nil)
     }
 
@@ -102,6 +103,8 @@ struct OfflineDownloadModelsTests {
             thumb: "/thumb/1",
             art: "/art/1",
             chapters: [OfflineChapter(chapterID: 7, tag: "Chapter 7", startTimeOffset: 7_000)],
+            markers: [OfflineMarker(markerID: 8, type: "intro", startTimeOffset: 15_000, endTimeOffset: 75_000, isFinal: false),
+                      OfflineMarker(markerID: 9, type: "credits", startTimeOffset: 3_500_000, endTimeOffset: 3_600_000, isFinal: true)],
             resolutionLabel: "1080p",
             librarySectionID: 3,
             librarySectionKey: "/library/sections/3",
@@ -149,7 +152,17 @@ struct OfflineDownloadModelsTests {
                                       tag: "Opening",
                                       startTimeOffset: 0,
                                       endTimeOffset: 600_000,
-                                      thumb: "/chapter/1")])
+                                      thumb: "/chapter/1")],
+            markers: [OfflineMarker(markerID: 2,
+                                    type: "intro",
+                                    startTimeOffset: 10_000,
+                                    endTimeOffset: 70_000,
+                                    isFinal: false),
+                      OfflineMarker(markerID: 3,
+                                    type: "credits",
+                                    startTimeOffset: 7_000_000,
+                                    endTimeOffset: nil,
+                                    isFinal: true)])
         let item = meta.makeMediaItem()
         #expect(item.ratingKey == "777")
         #expect(item.key == "/library/metadata/777")
@@ -168,6 +181,14 @@ struct OfflineDownloadModelsTests {
         #expect(item.chapters?.first?.tag == "Opening")
         #expect(item.chapters?.first?.startTimeOffset == 0)
         #expect(item.chapters?.first?.thumb == "/chapter/1")
+        #expect(item.markers?.count == 2)
+        #expect(item.markers?.first?.markerID == 2)
+        #expect(item.markers?.first?.type == "intro")
+        #expect(item.markers?.first?.startTimeOffset == 10_000)
+        #expect(item.markers?.first?.endTimeOffset == 70_000)
+        #expect(item.markers?.first?.isFinal == false)
+        #expect(item.markers?.last?.type == "credits")
+        #expect(item.markers?.last?.isFinal == true)
         #expect(item.grandparentTitle == "The Show")
         #expect(item.grandparentRatingKey == "show-1")
         #expect(item.grandparentThumb == "/show/thumb")
