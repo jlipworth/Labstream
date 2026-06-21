@@ -61,6 +61,25 @@ struct OfflineDownloadModelsTests {
         #expect(meta.resolutionLabel == nil)
     }
 
+    @Test("resolvedBackendKind falls back to the ratingKey prefix for legacy rows")
+    func resolvedBackendKindLegacyPrefixFallback() throws {
+        // Pre-#84 metadata has no `backendKind`; the row's backend is recovered from the key prefix.
+        let legacy = try decode(OfflineMetadata.self, from: #"{"ratingKey":"123","title":"t"}"#)
+        #expect(legacy.backendKind == nil)
+        #expect(legacy.resolvedBackendKind(ratingKey: "123") == .plex)
+        #expect(legacy.resolvedBackendKind(ratingKey: "jellyfin:99") == .jellyfin)
+        #expect(legacy.resolvedBackendKind(ratingKey: "emby:99") == .emby)
+    }
+
+    @Test("a persisted backendKind wins over the ratingKey prefix")
+    func resolvedBackendKindStoredFieldWins() throws {
+        // A stored backendKind is authoritative even if the key prefix would say otherwise.
+        let stored = try decode(OfflineMetadata.self,
+                                from: #"{"ratingKey":"emby:99","title":"t","backendKind":"plex"}"#)
+        #expect(stored.backendKind == .plex)
+        #expect(stored.resolvedBackendKind(ratingKey: "emby:99") == .plex)
+    }
+
     @Test("a record persisted before D5 (no metadata) decodes with nil metadata")
     func recordWithoutMetadataDecodes() throws {
         // DownloadRecord persists `localURL` as a URL; metadata + poster are optional.

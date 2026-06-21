@@ -207,35 +207,43 @@ public final class DownloadManager {
     /// state but whose `releaseInFlight` teardown never fired (e.g. a hard app kill mid-transfer,
     /// so the in-memory PlaySession maps were lost). Resolves each row's backend via the migration
     /// fallback and only fires when that backend lane is still configured (a DELETE needs creds).
-    /// Idempotent: the persisted `playSessionID` is cleared after firing so it never runs twice.
+    /// The persisted `playSessionID` is cleared ONLY once the encoder is confirmed gone, so a
+    /// teardown that fails (server unreachable / wrong server) retries on a later launch instead
+    /// of leaking the encoder forever.
     func teardownOrphanedEncodersOnLaunch() {
         for record in records {
             guard let md = record.metadata, let psid = md.playSessionID, !psid.isEmpty,
                   record.status == .failed || record.status == .complete else { continue }
             let kind = md.resolvedBackendKind(ratingKey: record.ratingKey)
             // Need a live session for that backend to issue the DELETE.
-            guard appModel.backendSession(for: kind) != nil else { continue }
+            guard let live = appModel.backendSession(for: kind) else { continue }
+            // Only tear down on the SAME server the encoder lives on. If the lane was re-pointed
+            // at a different server (re-login elsewhere), firing the DELETE there would hit the
+            // wrong server and leak the original encoder — skip and keep the psid so a later
+            // launch on the matching server retries.
+            if let persistedServer = md.backendServerID, let liveServer = live.serverID,
+               persistedServer != liveServer { continue }
+            let key = record.ratingKey
             switch kind {
             case .jellyfin:
                 recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
-                    "download_id": .identifier(record.ratingKey),
+                    "download_id": .identifier(key),
                     "phase": .label("launch_sweep"),
                 ])
                 let service = JellyfinBrowseService(appModel: appModel)
-                Task { await service.stopActiveEncoding(playSessionId: psid) }
+                Task { if await service.stopActiveEncoding(playSessionId: psid) { store.clearPlaySessionID(ratingKey: key) } }
             case .emby:
                 recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
-                    "download_id": .identifier(record.ratingKey),
+                    "download_id": .identifier(key),
                     "phase": .label("launch_sweep"),
                 ])
                 let service = EmbyBrowseService(appModel: appModel)
-                Task { await service.stopActiveEncoding(playSessionId: psid) }
+                Task { if await service.stopActiveEncoding(playSessionId: psid) { store.clearPlaySessionID(ratingKey: key) } }
             case .plex:
                 // Plex optimize renders server-side then serves a static file — no live encoder to
-                // tear down (the queue item is reaped separately). Nothing to do.
-                break
+                // tear down (the queue item is reaped separately). Clear the unused psid.
+                store.clearPlaySessionID(ratingKey: key)
             }
-            store.clearPlaySessionID(ratingKey: record.ratingKey)
         }
     }
 
@@ -271,6 +279,15 @@ public final class DownloadManager {
         // KB/s. Below ~500 KB/s on a transcode-sourced download is overwhelmingly transcode-gated.
         guard let rate = downloadSpeed[ratingKey] else { return true }   // no rate yet → assume gated
         return rate < 500_000
+    }
+
+    /// #84: whether the backend lane a row needs is currently configured/authenticated. The
+    /// offline UI uses this to caption a server-prep row whose lane is signed out honestly
+    /// ("…signed out") instead of implying the server is still preparing. The row stays `.queued`
+    /// and auto-resumes once the lane returns (see `resumePendingServerPrepDownloads`).
+    public func isBackendConfigured(for record: DownloadRecord) -> Bool {
+        let kind = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey) ?? .plex
+        return appModel.backendSession(for: kind) != nil
     }
 
     /// Store identity for a SPECIFIC backend. Filenames/rows are keyed by IDs, not titles, so
