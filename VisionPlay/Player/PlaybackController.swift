@@ -127,6 +127,9 @@ final class PlaybackController {
 
     /// The local file URL, when playing offline content.
     private let localFile: URL?
+    /// Cached per-chapter image file URLs (chapter index → file), for offline playback only (#88).
+    /// Empty for online playback, where `chapterThumbnailURL` derives a live server URL instead.
+    private let offlineChapterImageURLs: [Int: URL]
     private let offlineTextSubtitles: [OfflineTextSubtitleTrack]
     private let offlineSubtitleBaseURL: URL?
     private var offlineSubtitleCuesByTrackID: [Int: [OfflineTextSubtitleCue]] = [:]
@@ -528,6 +531,7 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
+        self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
         self.offlineSubtitleBaseURL = nil
         self.remoteStreamURL = nil
@@ -553,10 +557,12 @@ final class PlaybackController {
          identity: ClientIdentity,
          client: PlexClient,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
+         offlineChapterImageURLs: [Int: URL] = [:],
          maxVideoBitrateKbps: Int = 8000,
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = localFile
+        self.offlineChapterImageURLs = offlineChapterImageURLs
         self.offlineTextSubtitles = offlineTextSubtitles
         self.offlineSubtitleBaseURL = localFile.deletingLastPathComponent()
         self.identity = identity
@@ -600,6 +606,7 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = nil
+        self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
         self.offlineSubtitleBaseURL = nil
         self.remoteStreamURL = remoteStreamURL
@@ -2213,7 +2220,15 @@ final class PlaybackController {
     /// from the SwiftUI environment): AVKit hosts each info tab in its own
     /// `UIHostingController`, outside that environment. The controller already
     /// holds the server + token, so it vends the URL directly instead.
-    func chapterThumbnailURL(for imagePath: String?) -> URL? {
+    func chapterThumbnailURL(for imagePath: String?, chapterIndex: Int) -> URL? {
+        // Offline playback (#88): there is no server to transcode against, so resolve the chapter's
+        // cached local image keyed by its index (the position in `chapters`, the same enumeration
+        // the download-time cache used). A `file://` URL loads in `AsyncImage` exactly like a remote
+        // one. Index-keying covers Plex too, whose chapter `thumb` key carries no index.
+        if localFile != nil {
+            return offlineChapterImageURLs[chapterIndex]
+        }
+
         guard let imagePath, !imagePath.isEmpty else { return nil }
 
         // Jellyfin chapters are carried through PMSKit's shared `Chapter.thumb` as a synthetic

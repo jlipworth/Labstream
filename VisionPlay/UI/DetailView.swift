@@ -223,8 +223,11 @@ struct DetailView: View {
             CustomPlayerView(localFile: request.url,
                              item: request.item,
                              trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
-                                                                       url: request.trickPlayURL),
+                                                                       url: request.trickPlayURL,
+                                                                       chapterImageURLs: request.chapterImageURLs,
+                                                                       offlineChapters: request.offlineChapters),
                              offlineTextSubtitles: request.offlineTextSubtitles,
+                             offlineChapterImageURLs: request.chapterImageURLs,
                              cinemaOrigin: .offline(ratingKey: request.downloadRatingKey),
                              onClose: { localPlaybackRequest = nil })
                 .ignoresSafeArea()
@@ -405,9 +408,15 @@ struct DetailView: View {
                 ])
                 let trickPlayURL: URL?
                 let trickPlayKind: LocalTrickPlayKind?
+                let chapterImageURLs = downloadManager.chapterImageURLs(for: key)
                 if key.hasPrefix("jellyfin:") {
                     trickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
                     trickPlayKind = .jellyfinTiles
+                } else if key.hasPrefix("emby:") {
+                    // Emby has no scrub-preview tiles; its offline scrubber is fed by the cached
+                    // per-chapter images (#89).
+                    trickPlayURL = nil
+                    trickPlayKind = .embyChapterImages
                 } else {
                     trickPlayURL = downloadManager.plexBIFURL(for: key)
                     trickPlayKind = .plexBIF
@@ -420,6 +429,8 @@ struct DetailView: View {
                                                             item: itemWithResumeRewind(offlineItem),
                                                             trickPlayURL: trickPlayURL,
                                                             trickPlayKind: trickPlayKind,
+                                                            chapterImageURLs: chapterImageURLs,
+                                                            offlineChapters: record?.metadata?.chapters ?? [],
                                                             offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
                                                             downloadRatingKey: key)
             } label: {
@@ -788,6 +799,7 @@ struct DetailView: View {
     private enum LocalTrickPlayKind {
         case plexBIF
         case jellyfinTiles
+        case embyChapterImages
     }
 
     private struct LocalPlaybackRequest: Identifiable {
@@ -796,6 +808,8 @@ struct DetailView: View {
         let item: MediaItem
         let trickPlayURL: URL?
         let trickPlayKind: LocalTrickPlayKind?
+        let chapterImageURLs: [Int: URL]
+        let offlineChapters: [OfflineChapter]
         let offlineTextSubtitles: [OfflineTextSubtitleTrack]
         /// The persisted offline row id (namespaced for Jellyfin/Emby). This can differ from the
         /// reconstructed `item.ratingKey`, so Cinema exit must preserve this value to focus the
@@ -804,12 +818,17 @@ struct DetailView: View {
     }
 
     private func localTrickPlayProvider(kind: LocalTrickPlayKind?,
-                                        url: URL?) -> (any TrickPlayThumbnailProviding)? {
+                                        url: URL?,
+                                        chapterImageURLs: [Int: URL],
+                                        offlineChapters: [OfflineChapter]) -> (any TrickPlayThumbnailProviding)? {
         switch kind {
         case .plexBIF:
             return LocalBIFTrickPlayThumbnailProvider(bifURL: url)
         case .jellyfinTiles:
             return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: url)
+        case .embyChapterImages:
+            return LocalEmbyChapterTrickPlayThumbnailProvider(chapters: offlineChapters,
+                                                              imageURLsByChapterIndex: chapterImageURLs)
         case nil:
             return nil
         }

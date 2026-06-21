@@ -140,6 +140,13 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).jf-trickplay-\(index).jpg")
     }
 
+    /// On-disk destination for a ratingKey's cached per-chapter image (#88/#89). Keyed by the
+    /// chapter index so the offline Chapters rail and the Emby offline scrubber can both resolve a
+    /// chapter back to its cached JPEG. Filename carries no token (the auth lives in the request).
+    func chapterImageDestinationURL(ratingKey: String, index: Int) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).chapter-\(index).jpg")
+    }
+
     func textSubtitleDestinationURL(ratingKey: String, streamID: Int, ext: String) -> URL {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).sub-\(streamID).\(Self.safeSubtitleExtension(ext))")
     }
@@ -172,6 +179,9 @@ final class DownloadStore: @unchecked Sendable {
                                posterURL: resolvedDownloadAssetURL(row.metadata?.posterRelativePath),
                                plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
                                jellyfinTrickPlayPlaylistURL: resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
+                               chapterImageURLs: Self.resolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
+                                                                              baseDirectory: baseDirectory,
+                                                                              fileManager: fileManager),
                                sideAssetBytes: sideAssetBytes(for: row.metadata))
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
@@ -215,6 +225,28 @@ final class DownloadStore: @unchecked Sendable {
         return resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath)
     }
 
+    /// Absolute cached per-chapter image URLs (chapter index → file) for a completed download,
+    /// limited to files that still exist on disk (#88/#89).
+    func chapterImageURLs(for ratingKey: String) -> [Int: URL] {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[ratingKey], row.status == .complete else { return [:] }
+        return Self.resolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
+                                             baseDirectory: baseDirectory,
+                                             fileManager: fileManager)
+    }
+
+    private static func resolvedChapterImageURLs(_ relatives: [Int: String]?,
+                                                 baseDirectory: URL,
+                                                 fileManager: FileManager) -> [Int: URL] {
+        guard let relatives else { return [:] }
+        var out: [Int: URL] = [:]
+        for (index, relative) in relatives where !relative.isEmpty {
+            let url = baseDirectory.appendingPathComponent(relative)
+            if fileManager.fileExists(atPath: url.path) { out[index] = url }
+        }
+        return out
+    }
+
     private func sideAssetBytes(for metadata: OfflineMetadata?) -> Int {
         guard let metadata else { return 0 }
         var relatives: [String] = []
@@ -224,6 +256,7 @@ final class DownloadStore: @unchecked Sendable {
             metadata.jellyfinTrickPlayPlaylistRelativePath,
         ].compactMap { $0 })
         relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
+        relatives.append(contentsOf: Array(metadata.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
         relatives.append(contentsOf: metadata.offlineTextSubtitles?.map(\.relativePath) ?? [])
         return relatives.reduce(0) { total, relative in
             guard !relative.isEmpty else { return total }
@@ -274,6 +307,13 @@ final class DownloadStore: @unchecked Sendable {
             $0.jellyfinTrickPlayPlaylistRelativePath = playlist
             $0.jellyfinTrickPlayTileRelativePaths = tiles
         }
+    }
+
+    /// Record locally-cached per-chapter image paths (#88/#89), keyed by chapter index. Relative
+    /// paths only. No-op for an empty map or a missing row/metadata.
+    func setChapterImageRelativePaths(ratingKey: String, _ relativePathsByIndex: [Int: String]) {
+        guard !relativePathsByIndex.isEmpty else { return }
+        updateMetadata(ratingKey: ratingKey) { $0.chapterImageRelativePaths = relativePathsByIndex }
     }
 
     func setOfflineTextSubtitles(ratingKey: String, _ tracks: [OfflineTextSubtitleTrack]) {
@@ -426,6 +466,7 @@ final class DownloadStore: @unchecked Sendable {
                           row.metadata?.plexBIFRelativePath,
                           row.metadata?.jellyfinTrickPlayPlaylistRelativePath].compactMap { $0 }
             assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
+            assets.append(contentsOf: Array(row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
             assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
             for asset in assets where !asset.isEmpty {
                 try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))

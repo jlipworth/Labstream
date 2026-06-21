@@ -484,6 +484,13 @@ must be validated on hardware; simulator-only proof is insufficient._
 - [x] Play a completed download from the Offline tab → custom player opens and plays the local file.
 - [x] Play a downloaded copy from DetailView (offline) → custom player opens and plays.
 - [x] Scrubber + skip work on a local file (no network).
+- [ ] **#88 offline chapter thumbnails** — Download an item with chapter images (Plex, Jellyfin, Emby),
+      go offline (kill network/server), open the Chapters menu → real per-chapter thumbnails show
+      (not the neutral film placeholder). Delete the download → the cached chapter images are removed
+      with the row (verify the Downloads base dir has no leftover `*.chapter-*.jpg`).
+- [ ] **#89 Emby offline scrub preview** — Download an Emby item with chapter images, go offline,
+      scrub in the custom player → coarse chapter-granularity preview frames appear with no Emby
+      network request. Items with no chapter images fall back to the timecode-only scrubber.
 
 ### Cinema / theater
 - [ ] Custom Cinema button is visible in the windowed player chrome and opens the app-owned

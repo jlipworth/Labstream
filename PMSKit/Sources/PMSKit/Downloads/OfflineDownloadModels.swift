@@ -232,6 +232,13 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var jellyfinTrickPlayPlaylistRelativePath: String?
     /// Locally-cached Jellyfin trickplay tile sheet paths, relative to the Downloads base directory.
     public var jellyfinTrickPlayTileRelativePaths: [String]?
+    /// Locally-cached per-chapter image paths, keyed by the chapter's index (its position in
+    /// `chapters`), relative to the Downloads base directory (#88/#89). Fetched at download time
+    /// from each backend's chapter-image endpoint so the offline Chapters menu rail shows real
+    /// thumbnails and the Emby offline scrubber has a coarse chapter-granularity preview source.
+    /// Index-keyed (not array) because chapter indices aren't always contiguous and the Emby scrub
+    /// provider maps a scrub target to a chapter index. nil/empty when no chapter carried an image.
+    public var chapterImageRelativePaths: [Int: String]?
     /// Locally-cached external text subtitles for offline downloads. Embedded subtitles remain
     /// discoverable through AVFoundation; image/burned-in/unavailable tracks are intentionally
     /// not represented here.
@@ -290,6 +297,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 plexBIFRelativePath: String? = nil,
                 jellyfinTrickPlayPlaylistRelativePath: String? = nil,
                 jellyfinTrickPlayTileRelativePaths: [String]? = nil,
+                chapterImageRelativePaths: [Int: String]? = nil,
                 offlineTextSubtitles: [OfflineTextSubtitleTrack]? = nil,
                 backendKind: DownloadBackendKind? = nil,
                 backendBaseURLString: String? = nil,
@@ -333,6 +341,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.plexBIFRelativePath = plexBIFRelativePath
         self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
         self.jellyfinTrickPlayTileRelativePaths = jellyfinTrickPlayTileRelativePaths
+        self.chapterImageRelativePaths = chapterImageRelativePaths
         self.offlineTextSubtitles = offlineTextSubtitles
         self.backendKind = backendKind
         self.backendBaseURLString = backendBaseURLString
@@ -380,6 +389,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
         jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
         jellyfinTrickPlayTileRelativePaths = try c.decodeIfPresent([String].self, forKey: .jellyfinTrickPlayTileRelativePaths)
+        chapterImageRelativePaths = try c.decodeIfPresent([Int: String].self, forKey: .chapterImageRelativePaths)
         offlineTextSubtitles = try c.decodeIfPresent([OfflineTextSubtitleTrack].self, forKey: .offlineTextSubtitles)
         backendKind = try c.decodeIfPresent(DownloadBackendKind.self, forKey: .backendKind)
         backendBaseURLString = try c.decodeIfPresent(String.self, forKey: .backendBaseURLString)
@@ -447,6 +457,10 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var posterURL: URL?
     public var plexBIFURL: URL?
     public var jellyfinTrickPlayPlaylistURL: URL?
+    /// Re-resolved absolute cached per-chapter image URLs (chapter index → file), filled by the app
+    /// store when records are hydrated (#88/#89). Feeds the offline Chapters rail and the Emby
+    /// offline scrubber. Empty when no chapter images were cached.
+    public var chapterImageURLs: [Int: URL]
     /// Bytes occupied by sidecar/offline assets (poster, trickplay, subtitles). Filled by the app
     /// store when records are hydrated; not persisted in the media row itself.
     public var sideAssetBytes: Int
@@ -467,6 +481,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 posterURL: URL? = nil,
                 plexBIFURL: URL? = nil,
                 jellyfinTrickPlayPlaylistURL: URL? = nil,
+                chapterImageURLs: [Int: URL] = [:],
                 sideAssetBytes: Int = 0) {
         self.ratingKey = ratingKey
         self.title = title
@@ -478,12 +493,13 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         self.posterURL = posterURL
         self.plexBIFURL = plexBIFURL
         self.jellyfinTrickPlayPlaylistURL = jellyfinTrickPlayPlaylistURL
+        self.chapterImageURLs = chapterImageURLs
         self.sideAssetBytes = sideAssetBytes
     }
 
     enum CodingKeys: String, CodingKey {
         case ratingKey, title, localURL, bytes, progress, status, metadata, posterURL, plexBIFURL
-        case jellyfinTrickPlayPlaylistURL, sideAssetBytes
+        case jellyfinTrickPlayPlaylistURL, chapterImageURLs, sideAssetBytes
     }
 
     public init(from decoder: Decoder) throws {
@@ -499,6 +515,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         posterURL = try c.decodeIfPresent(URL.self, forKey: .posterURL)
         plexBIFURL = try c.decodeIfPresent(URL.self, forKey: .plexBIFURL)
         jellyfinTrickPlayPlaylistURL = try c.decodeIfPresent(URL.self, forKey: .jellyfinTrickPlayPlaylistURL)
+        chapterImageURLs = try c.decodeIfPresent([Int: URL].self, forKey: .chapterImageURLs) ?? [:]
         sideAssetBytes = try c.decodeIfPresent(Int.self, forKey: .sideAssetBytes) ?? 0
     }
 
@@ -514,6 +531,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(posterURL, forKey: .posterURL)
         try c.encodeIfPresent(plexBIFURL, forKey: .plexBIFURL)
         try c.encodeIfPresent(jellyfinTrickPlayPlaylistURL, forKey: .jellyfinTrickPlayPlaylistURL)
+        if !chapterImageURLs.isEmpty { try c.encode(chapterImageURLs, forKey: .chapterImageURLs) }
         try c.encode(sideAssetBytes, forKey: .sideAssetBytes)
     }
 }

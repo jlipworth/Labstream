@@ -56,6 +56,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.plexBIFRelativePath == nil)
         #expect(meta.jellyfinTrickPlayPlaylistRelativePath == nil)
         #expect(meta.jellyfinTrickPlayTileRelativePaths == nil)
+        #expect(meta.chapterImageRelativePaths == nil)
         #expect(meta.offlineTextSubtitles == nil)
         #expect(meta.markers == nil)
         #expect(meta.resolutionLabel == nil)
@@ -137,6 +138,7 @@ struct OfflineDownloadModelsTests {
             plexBIFRelativePath: "555.plex-sd.bif",
             jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",
             jellyfinTrickPlayTileRelativePaths: ["555.jf-trickplay-0.jpg"],
+            chapterImageRelativePaths: [0: "555.chapter-0.jpg", 3: "555.chapter-3.jpg"],
             offlineTextSubtitles: [OfflineTextSubtitleTrack(id: 1, displayName: "English", language: "eng", codec: "srt", relativePath: "555.sub.1.srt")],
             backendKind: .jellyfin,
             backendBaseURLString: "https://media.example.test/jellyfin",
@@ -147,6 +149,26 @@ struct OfflineDownloadModelsTests {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)
+    }
+
+    @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")
+    func chapterImagePathsRoundTrip() throws {
+        // [Int: String] is the only non-String-keyed field on the model; pin its JSON round-trip
+        // explicitly so a future encoder change can't silently drop the offline chapter-image map.
+        let meta = OfflineMetadata(ratingKey: "9", title: "t", type: "movie",
+                                   chapterImageRelativePaths: [0: "9.chapter-0.jpg",
+                                                               2: "9.chapter-2.jpg",
+                                                               5: "9.chapter-5.jpg"])
+        let decoded = try JSONDecoder().decode(OfflineMetadata.self,
+                                               from: JSONEncoder().encode(meta))
+        #expect(decoded.chapterImageRelativePaths == meta.chapterImageRelativePaths)
+        #expect(decoded.chapterImageRelativePaths?[2] == "9.chapter-2.jpg")
+    }
+
+    @Test("pre-#88 metadata without chapterImageRelativePaths decodes to nil")
+    func preChapterImageMetadataDecodesNil() throws {
+        let meta = try decode(OfflineMetadata.self, from: #"{"ratingKey":"1","title":"t"}"#)
+        #expect(meta.chapterImageRelativePaths == nil)
     }
 
     @Test("makeMediaItem carries the captured fields onto a faithful MediaItem")
@@ -240,6 +262,7 @@ struct OfflineDownloadModelsTests {
             posterURL: URL(fileURLWithPath: "/tmp/1.poster.jpg"),
             plexBIFURL: URL(fileURLWithPath: "/tmp/1.plex-sd.bif"),
             jellyfinTrickPlayPlaylistURL: URL(fileURLWithPath: "/tmp/1.jf-trickplay.m3u8"),
+            chapterImageURLs: [0: URL(fileURLWithPath: "/tmp/1.chapter-0.jpg")],
             sideAssetBytes: 42)
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(DownloadRecord.self, from: data)
