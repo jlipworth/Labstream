@@ -38,6 +38,40 @@ cd PMSKit && swift test
 New Swift files are picked up automatically (file-system-synchronized groups) — never
 edit the pbxproj to add one.
 
+### Verification expectation — a green build is NOT "done"
+
+Compiling is necessary but not sufficient. Any time you change app code — yourself OR via
+a workflow / subagent — you MUST headlessly verify it actually *runs* on **this worktree's
+own `$SIMID`** (`scripts/worktree-sim.sh id`; boot it first — clones are created Shutdown;
+never target `booted`). The minimum smoke test, which Claude self-serves (it is the passive
+half of the live-testing workflow — do NOT ask the user to do it):
+
+```sh
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+xcrun simctl install "$SIMID" "$APP"
+# stale-binary guard (see LINK-SKIP / STALE-PROCESS traps): installed UUID must match the build
+diff <(xcrun dwarfdump --uuid "$APP/VisionPlay") \
+     <(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app)/VisionPlay") \
+  && echo UUID_MATCH || echo UUID_MISMATCH
+xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null || true
+xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
+xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "VisionPlay"' | tail -120
+xcrun simctl io "$SIMID" screenshot /tmp/visionplay-smoke.png   # then Read it
+```
+
+Confirm: the process stays alive (no crash/`.ips`, no `fatalError`/assertion), the log is
+clean for the area you touched, and the screenshot shows the expected UI (the golden-clone
+sim is signed in to **Plex** — you should reach the browse UI, not login; it is **not**
+configured for Jellyfin/Emby). This is the default close-out for every code change.
+
+**Automated runs must self-test, not be told to.** Any workflow/subagent that builds app code
+is expected to include this install→launch→log→screenshot smoke step on the worktree `$SIMID`
+as its own final gate — it should not need to be spelled out in each workflow prompt. Full
+*interactive* functional testing (synthetic taps, multi-backend flows) remains the USER's half
+(see the `sim-driving` skill status note); the smoke test is what Claude owns automatically.
+
 ## Worktree simulators
 
 Each worktree gets its own visionOS simulator so parallel worktrees don't clobber each
