@@ -29,6 +29,9 @@ public enum JellyfinFlavor: MediaBrowserFlavor {
 public enum MediaBrowserImageType: String, Sendable, Equatable {
     case primary = "Primary"
     case backdrop = "Backdrop"
+    case logo = "Logo"
+    /// Episode-still / thumbnail image (distinct from `primary`, which is the poster).
+    case thumb = "Thumb"
 }
 
 public struct MediaBrowserUserViewsResponse<Flavor: MediaBrowserFlavor>: Decodable, Sendable, Equatable {
@@ -77,8 +80,15 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     public let runTimeTicks: Int?
     public let officialRating: String?
     public let communityRating: Double?
+    /// Separate critic rating (`CriticRating`, e.g. Rotten-Tomatoes critic %), distinct
+    /// from the audience `communityRating`. See #76.
+    public let criticRating: Double?
     public let taglines: [String]
     public let genres: [String]
+    /// Cast/crew (`People`) — each carries a `Name` and a `Type` (Actor/Director/…). See #76.
+    public let people: [MediaBrowserPersonDto]
+    /// Production studios (`Studios`) — each carries a `Name`. See #76.
+    public let studios: [MediaBrowserNamedDto]
     public let chapters: [MediaBrowserChapterDto<Flavor>]
     public let mediaSources: [MediaBrowserItemMediaSourceDto<Flavor>]
     public let userData: MediaBrowserUserDataDto?
@@ -92,6 +102,26 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     public let parentIndexNumber: Int?
     public let indexNumber: Int?
 
+    // MARK: - Parent/series image tags (artwork fallback — see #86)
+    //
+    // Jellyfin/Emby episodes frequently carry no own `Primary` image (and seasons often
+    // no own `Backdrop`). The server then exposes the right image on the parent/series
+    // item via these companion tag + owning-item-id fields, which the web clients use to
+    // fall back. We decode them so `toMediaItem()` can mint a synthetic ref against the
+    // *owning* item id (season/series), not the episode id.
+
+    /// Series poster tag (`SeriesPrimaryImageTag`), paired with `seriesId`.
+    public let seriesPrimaryImageTag: String?
+    /// Season-thumb owning item id + tag (`ParentThumbItemId`/`ParentThumbImageTag`).
+    public let parentThumbItemId: String?
+    public let parentThumbImageTag: String?
+    /// Parent backdrop owning item id + tags (`ParentBackdropItemId`/`ParentBackdropImageTags`).
+    public let parentBackdropItemId: String?
+    public let parentBackdropImageTags: [String]
+    /// Parent primary owning item id + tag (`ParentPrimaryImageItemId`/`ParentPrimaryImageTag`).
+    public let parentPrimaryImageItemId: String?
+    public let parentPrimaryImageTag: String?
+
     enum CodingKeys: String, CodingKey {
         case id = "Id"
         case name = "Name"
@@ -102,8 +132,11 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case runTimeTicks = "RunTimeTicks"
         case officialRating = "OfficialRating"
         case communityRating = "CommunityRating"
+        case criticRating = "CriticRating"
         case taglines = "Taglines"
         case genres = "Genres"
+        case people = "People"
+        case studios = "Studios"
         case chapters = "Chapters"
         case mediaSources = "MediaSources"
         case userData = "UserData"
@@ -116,6 +149,13 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case seasonName = "SeasonName"
         case parentIndexNumber = "ParentIndexNumber"
         case indexNumber = "IndexNumber"
+        case seriesPrimaryImageTag = "SeriesPrimaryImageTag"
+        case parentThumbItemId = "ParentThumbItemId"
+        case parentThumbImageTag = "ParentThumbImageTag"
+        case parentBackdropItemId = "ParentBackdropItemId"
+        case parentBackdropImageTags = "ParentBackdropImageTags"
+        case parentPrimaryImageItemId = "ParentPrimaryImageItemId"
+        case parentPrimaryImageTag = "ParentPrimaryImageTag"
     }
 
     public init(from decoder: Decoder) throws {
@@ -129,8 +169,11 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         runTimeTicks = try c.decodeIfPresent(Int.self, forKey: .runTimeTicks)
         officialRating = try c.decodeIfPresent(String.self, forKey: .officialRating)
         communityRating = try c.decodeIfPresent(Double.self, forKey: .communityRating)
+        criticRating = try c.decodeIfPresent(Double.self, forKey: .criticRating)
         taglines = try c.decodeIfPresent([String].self, forKey: .taglines) ?? []
         genres = try c.decodeIfPresent([String].self, forKey: .genres) ?? []
+        people = try c.decodeIfPresent([MediaBrowserPersonDto].self, forKey: .people) ?? []
+        studios = try c.decodeIfPresent([MediaBrowserNamedDto].self, forKey: .studios) ?? []
         chapters = try c.decodeIfPresent([MediaBrowserChapterDto<Flavor>].self, forKey: .chapters) ?? []
         mediaSources = try c.decodeIfPresent([MediaBrowserItemMediaSourceDto<Flavor>].self, forKey: .mediaSources) ?? []
         userData = try c.decodeIfPresent(MediaBrowserUserDataDto.self, forKey: .userData)
@@ -143,10 +186,50 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         seasonName = try c.decodeIfPresent(String.self, forKey: .seasonName)
         parentIndexNumber = try c.decodeIfPresent(Int.self, forKey: .parentIndexNumber)
         indexNumber = try c.decodeIfPresent(Int.self, forKey: .indexNumber)
+        seriesPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .seriesPrimaryImageTag)
+        parentThumbItemId = try c.decodeIfPresent(String.self, forKey: .parentThumbItemId)
+        parentThumbImageTag = try c.decodeIfPresent(String.self, forKey: .parentThumbImageTag)
+        parentBackdropItemId = try c.decodeIfPresent(String.self, forKey: .parentBackdropItemId)
+        parentBackdropImageTags = try c.decodeIfPresent([String].self, forKey: .parentBackdropImageTags) ?? []
+        parentPrimaryImageItemId = try c.decodeIfPresent(String.self, forKey: .parentPrimaryImageItemId)
+        parentPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .parentPrimaryImageTag)
     }
 
     public func toMediaItem() -> MediaItem? {
         guard let mappedType = mediaItemType else { return nil }
+
+        // Own-item artwork tags first.
+        let ownPrimary = imageTags[MediaBrowserImageType.primary.rawValue]
+        let ownThumb = imageTags[MediaBrowserImageType.thumb.rawValue]
+        let ownLogo = imageTags[MediaBrowserImageType.logo.rawValue]
+
+        // Parent/series fallback for the poster: an episode with no own Primary should
+        // resolve to its season thumb, then the series poster; a season with no own
+        // Primary to the series poster (#86). Each fallback is minted against the OWNING
+        // item id (season/series), not this item's id — the image lives on that item.
+        let primaryThumb: String? =
+            syntheticImagePath(type: .primary, tag: ownPrimary)
+            ?? parentThumbPath
+            ?? seriesPrimaryPath
+
+        // Backdrop: own → parent backdrop. (Series backdrop has no companion tag field on
+        // the wire, and the resolver needs a tag, so the chain ends at parent.)
+        let backdrop: String? =
+            syntheticImagePath(type: .backdrop, tag: backdropImageTags.first)
+            ?? parentBackdropPath
+
+        // Episode-still Thumb (distinct from the poster): own Thumb, else parent thumb. Used
+        // by the episode row, which reads `thumb ?? parentThumb`.
+        let stillThumb: String? =
+            syntheticImagePath(type: .thumb, tag: ownThumb)
+            ?? primaryThumb
+
+        let cast = people.filter { ($0.type ?? "") == "Actor" }
+            .compactMap { $0.name }.filter { !$0.isEmpty }
+        let crewDirectors = people.filter { ($0.type ?? "") == "Director" }
+            .compactMap { $0.name }.filter { !$0.isEmpty }
+        let studioNames = studios.compactMap { $0.name }.filter { !$0.isEmpty }
+
         return MediaItem(
             ratingKey: id,
             title: name,
@@ -156,20 +239,52 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             viewCount: userData?.played == true ? 1 : 0,
             year: productionYear,
             summary: overview,
-            thumb: syntheticImagePath(type: .primary, tag: imageTags[MediaBrowserImageType.primary.rawValue]),
-            art: syntheticImagePath(type: .backdrop, tag: backdropImageTags.first),
+            thumb: stillThumb,
+            art: backdrop,
             media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
             chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset, itemId: id) },
             rating: shouldExposeCommunityRating ? communityRating : nil,
             contentRating: officialRating,
             tagline: taglines.first,
             genres: genres.isEmpty ? nil : genres.map(Tag.init(tag:)),
+            criticRating: criticRating,
+            roles: cast.isEmpty ? nil : cast.map(Tag.init(tag:)),
+            directors: crewDirectors.isEmpty ? nil : crewDirectors.map(Tag.init(tag:)),
+            studios: studioNames.isEmpty ? nil : studioNames.map(Tag.init(tag:)),
+            logo: syntheticImagePath(type: .logo, tag: ownLogo),
             grandparentTitle: mappedType == "episode" ? seriesName : nil,
             grandparentRatingKey: mappedType == "episode" ? seriesId : nil,
+            grandparentThumb: mappedType == "episode" ? seriesPrimaryPath : nil,
             parentTitle: mappedType == "season" ? seriesName : nil,
             parentRatingKey: parentId,
+            parentThumb: parentThumbPath ?? seriesPrimaryPath,
             parentIndex: parentIndexNumber,
             index: indexNumber)
+    }
+
+    /// Season-thumb fallback: prefer the `ParentThumb*` companion (owning id + tag), else
+    /// the season's own primary via `seasonId`/`ParentPrimaryImage*`.
+    private var parentThumbPath: String? {
+        if let tag = parentThumbImageTag, let owner = parentThumbItemId ?? seasonId ?? parentId {
+            return syntheticImagePath(type: .thumb, tag: tag, ownerId: owner)
+        }
+        if let tag = parentPrimaryImageTag, let owner = parentPrimaryImageItemId ?? parentId {
+            return syntheticImagePath(type: .primary, tag: tag, ownerId: owner)
+        }
+        return nil
+    }
+
+    /// Series-poster fallback via `SeriesPrimaryImageTag` + `seriesId`.
+    private var seriesPrimaryPath: String? {
+        guard let tag = seriesPrimaryImageTag, let owner = seriesId else { return nil }
+        return syntheticImagePath(type: .primary, tag: tag, ownerId: owner)
+    }
+
+    /// Parent-backdrop fallback via `ParentBackdropImageTags` + owning id.
+    private var parentBackdropPath: String? {
+        guard let tag = parentBackdropImageTags.first,
+              let owner = parentBackdropItemId ?? seasonId ?? parentId else { return nil }
+        return syntheticImagePath(type: .backdrop, tag: tag, ownerId: owner)
     }
 
     private var mediaItemType: String? {
@@ -192,9 +307,12 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         }
     }
 
-    private func syntheticImagePath(type: MediaBrowserImageType, tag: String?) -> String? {
+    /// Mint a synthetic image ref. `ownerId` defaults to this item's id, but a parent/series
+    /// fallback passes the OWNING item id so the resolver targets the item the image lives
+    /// on (e.g. a season/series), not the episode (#86).
+    private func syntheticImagePath(type: MediaBrowserImageType, tag: String?, ownerId: String? = nil) -> String? {
         guard let tag, !tag.isEmpty else { return nil }
-        return "\(Flavor.syntheticScheme)://item/\(id)/\(type.rawValue)?tag=\(tag)"
+        return "\(Flavor.syntheticScheme)://item/\(ownerId ?? id)/\(type.rawValue)?tag=\(tag)"
     }
 }
 
@@ -374,6 +492,29 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         return text.contains("commentary") ||
             text.contains("description") ||
             text.contains("descriptive")
+    }
+}
+
+/// One `People` entry (cast/crew) on a Jellyfin/Emby item: `{ Name, Type, Role }`.
+/// `Type` is "Actor"/"Director"/"Writer"/…; we split actors vs directors downstream. (#76)
+public struct MediaBrowserPersonDto: Decodable, Sendable, Equatable {
+    public let name: String?
+    public let type: String?
+    public let role: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case type = "Type"
+        case role = "Role"
+    }
+}
+
+/// A `{ Name }` entry — used for `Studios`. (#76)
+public struct MediaBrowserNamedDto: Decodable, Sendable, Equatable {
+    public let name: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
     }
 }
 

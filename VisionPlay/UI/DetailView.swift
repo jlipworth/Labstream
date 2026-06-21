@@ -187,6 +187,8 @@ struct DetailView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    creditsSection
+
                     actionButtons
 
                     mediaInfoSummary
@@ -283,12 +285,41 @@ struct DetailView: View {
                 Label(String(format: "%.1f", rating), systemImage: "star.fill")
                     .foregroundStyle(.yellow)
             }
+            // Critic rating sits next to the audience star — a separate value (Plex
+            // `audienceRating`, JF/Emby `CriticRating`) the previous UI dropped (#76).
+            if let critic = detailed.criticRating, critic > 0 {
+                Label(String(format: "%.1f", critic), systemImage: "rosette")
+                    .foregroundStyle(.orange)
+            }
             if isWatched {
                 Label("Watched", systemImage: "checkmark.circle.fill")
             }
         }
         .font(.title3)
         .foregroundStyle(.secondary)
+    }
+
+    /// Cast / director / studio credits (#76). Each line renders only when its tag list is
+    /// non-empty, so movies-without-cast or backends-without-people degrade to nothing.
+    @ViewBuilder
+    private var creditsSection: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            creditLine(label: "Cast", tags: detailed.roles, limit: 6)
+            creditLine(label: "Director", tags: detailed.directors, limit: 3)
+            creditLine(label: "Studio", tags: detailed.studios, limit: 3)
+        }
+    }
+
+    @ViewBuilder
+    private func creditLine(label: String, tags: [Tag]?, limit: Int) -> some View {
+        if let tags, !tags.isEmpty {
+            let names = tags.prefix(limit).map(\.tag).joined(separator: ", ")
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("\(label):").foregroundStyle(.secondary)
+                Text(names).foregroundStyle(.primary.opacity(0.85))
+            }
+            .font(.callout)
+        }
     }
 
     /// A tasteful, INFORMATIONAL summary of the selected version's tech specs plus a
@@ -1147,6 +1178,8 @@ private extension MediaItem {
                   librarySectionID: librarySectionID, librarySectionKey: librarySectionKey,
                   chapters: chapters, markers: markers, rating: rating,
                   contentRating: contentRating, tagline: tagline, genres: genres,
+                  criticRating: criticRating, roles: roles, directors: directors,
+                  studios: studios, logo: logo,
                   grandparentTitle: grandparentTitle, grandparentRatingKey: grandparentRatingKey,
                   grandparentThumb: grandparentThumb, parentTitle: parentTitle,
                   parentRatingKey: parentRatingKey, parentThumb: parentThumb,

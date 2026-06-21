@@ -297,8 +297,11 @@ public enum EmbyLibrary {
         ]
     }
 
-    public static let gridItemFields = "PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating"
-    public static let fullItemFields = "MediaSources,Overview,Chapters,Genres,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,Taglines"
+    // Kept in sync with JellyfinLibrary's field strings — parent/series image tags drive
+    // the episode/season artwork fallback (#86); People,Studios,CriticRating drive the
+    // cast/critic metadata (#76) (Emby previously requested neither People nor Studios).
+    public static let gridItemFields = "PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ParentThumbImageTag,ParentBackdropImageTags,ParentPrimaryImageItemId,SeriesPrimaryImageTag"
+    public static let fullItemFields = "MediaSources,Overview,Chapters,Genres,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,ParentThumbImageTag,ParentBackdropImageTags,ParentPrimaryImageItemId,SeriesPrimaryImageTag"
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
         query.removeAll { $0.name == name }
