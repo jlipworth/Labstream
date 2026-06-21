@@ -219,6 +219,52 @@ public enum EmbyLibrary {
         return req
     }
 
+    /// #83 "Original quality (compatible)" remux download request (Emby).
+    ///
+    /// Like `transcodedDownloadRequest` it is an EXPLICIT `stream.mp4` with the PlaybackInfo-minted
+    /// `PlaySessionId` (required — Emby returns HTTP 400 without it), but it ALLOWS video stream-copy
+    /// by listing the source's real `VideoCodec` alongside `AllowVideoStreamCopy=true` +
+    /// `EnableAutoStreamCopy=true`, so the original video bytes are preserved. Audio is copied when
+    /// `copyAudio` (aac/ac3/eac3), otherwise transcoded to AAC.
+    ///
+    /// CAVEAT (research B): for HEVC/DTS, copying into mp4 can fail server-side on some Emby
+    /// versions; the download is still gated by the client AVPlayer probe + (for HEVC) the
+    /// `hev1`→`hvc1` tag fixup, and the app falls back to a forced transcode if it fails.
+    /// NOT range-resumable; restart on failure; ALWAYS tear the encoder down with
+    /// `activeEncodingStopRequest`. `api_key` rides in the query; REDACT it in logs.
+    public static func compatibleRemuxDownloadRequest(server: URL,
+                                                      token: String,
+                                                      identity: EmbyClientIdentity,
+                                                      userId: String,
+                                                      itemId: String,
+                                                      mediaSourceId: String,
+                                                      playSessionId: String,
+                                                      videoCodec: String,
+                                                      copyAudio: Bool,
+                                                      audioBitrate: Int) throws -> URLRequest {
+        let videoCodecList = videoCodec == "h264" ? "h264" : "\(videoCodec),h264"
+        let query: [URLQueryItem] = [
+            URLQueryItem(name: "Static", value: "false"),
+            URLQueryItem(name: "Container", value: "mp4"),
+            URLQueryItem(name: "VideoCodec", value: videoCodecList),
+            URLQueryItem(name: "AudioCodec", value: "aac"),
+            URLQueryItem(name: "AudioBitrate", value: String(audioBitrate)),
+            URLQueryItem(name: "AllowVideoStreamCopy", value: "true"),
+            URLQueryItem(name: "AllowAudioStreamCopy", value: copyAudio ? "true" : "false"),
+            URLQueryItem(name: "EnableAutoStreamCopy", value: "true"),
+            URLQueryItem(name: "MediaSourceId", value: mediaSourceId),
+            URLQueryItem(name: "PlaySessionId", value: playSessionId),
+            URLQueryItem(name: "DeviceId", value: identity.deviceId),
+            URLQueryItem(name: "api_key", value: token),
+        ]
+        let url = try EmbyPlayback.embyURL(server: server, path: "/videos/\(itemId)/stream.mp4", queryItems: query)
+        var req = URLRequest(url: url)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        req.setValue(EmbyAuth.authorizationHeader(identity: identity, userId: userId, token: token),
+                     forHTTPHeaderField: "Authorization")
+        return req
+    }
+
     /// Bare image URL — token is NOT baked in (mirror Jellyfin's no-token-in-stored-URL
     /// rule). The caller attaches the Emby auth header (or `api_key` query) on the live
     /// request.

@@ -380,6 +380,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         onChange?()
         let destination = entry.destination
         let ratingKey = entry.ratingKey
+
+        // #83: HEVC tag fixup for the compatible-remux lane. A stream-copied HEVC MP4 from
+        // Jellyfin/Emby's progressive path can be `hev1`-tagged, which AVFoundation black-screens.
+        // Rewrite it losslessly to `hvc1` on the moved file BEFORE the playability probe (which is
+        // exactly what would otherwise fail on an `hev1` file and reject a perfectly good download).
+        // Only runs for the compatible-remux lane; other lanes are untouched.
+        if store.records.first(where: { $0.ratingKey == ratingKey })?
+            .metadata?.resolvedDownloadLane() == .compatibleRemux {
+            do {
+                let count = try HEVCTagFixup.rewriteFile(at: destination)
+                if count > 0 {
+                    AppDiagnostics.record(.downloads, "downloads.hevc_tag_fixup", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "entries": .int(count),
+                    ])
+                }
+            } catch {
+                // A fixup failure is not fatal — let the probe decide. Never log the file path.
+                AppDiagnostics.record(.downloads, "downloads.hevc_tag_fixup_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "error": .error(error),
+                ])
+            }
+        }
+
         Task { [weak self] in
             let validation = await Self.validateLocalPlayback(destination)
             guard let self else { return }

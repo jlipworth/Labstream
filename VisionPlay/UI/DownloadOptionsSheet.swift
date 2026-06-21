@@ -22,14 +22,23 @@ struct DownloadOptionsSheet: View {
         let resolution: String?
     }
 
+    /// #83: the "Original quality (compatible)" remux option — offered when the raw container is not
+    /// locally playable but the server can copy the video into an MP4. Carries the codec summary
+    /// for the row caption.
+    private struct CompatibleRemuxOption: Equatable {
+        let codecSummary: String?
+    }
+
     private enum ProbeState: Equatable {
         case checking
-        case ready(original: OriginalOption?, presets: [String], probeFailed: Bool,
+        case ready(original: OriginalOption?, compatibleRemux: CompatibleRemuxOption?,
+                   presets: [String], probeFailed: Bool,
                    originalStreamableButOfflineUnsupported: Bool)
     }
 
     private enum DownloadSelection: Equatable {
         case original
+        case optimizeCompatible
         case optimize(String)
     }
 
@@ -50,11 +59,14 @@ struct DownloadOptionsSheet: View {
                     switch probeState {
                     case .checking:
                         SwiftUI.Section { Label("Checking compatibility…", systemImage: "wifi") }
-                    case let .ready(original, presets, probeFailed, unsupportedOriginal):
+                    case let .ready(original, compatibleRemux, presets, probeFailed, unsupportedOriginal):
                         if let original {
                             directSection(option: original)
                         }
-                        if unsupportedOriginal {
+                        if let compatibleRemux {
+                            compatibleRemuxSection(option: compatibleRemux)
+                        }
+                        if unsupportedOriginal, compatibleRemux == nil {
                             originalUnsupportedSection
                         }
                         optimizeSection(presets: presets, probeFailed: probeFailed,
@@ -95,7 +107,7 @@ struct DownloadOptionsSheet: View {
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             let presets = defaultPresets
             selectedChoice = .optimize(presets[0])
-            probeState = .ready(original: nil, presets: presets, probeFailed: true,
+            probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
                                 originalStreamableButOfflineUnsupported: false)
             return
         }
@@ -116,24 +128,36 @@ struct DownloadOptionsSheet: View {
             : nil
         let unsupportedOriginal = probe.direct && original == nil
 
-        selectedChoice = preferredSelection(originalAvailable: original != nil, presets: presets)
-        probeState = .ready(original: original, presets: presets, probeFailed: false,
+        // Plex uses its optimized-version model (no client-side remux lane); never offer it here.
+        selectedChoice = preferredSelection(originalAvailable: original != nil,
+                                            compatibleRemuxAvailable: false, presets: presets)
+        probeState = .ready(original: original, compatibleRemux: nil, presets: presets, probeFailed: false,
                             originalStreamableButOfflineUnsupported: unsupportedOriginal)
     }
 
     private func runJellyfinProbe() {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
-        let original = DownloadManager.isLocallyPlayableOriginal(part: part)
+        let originalLocallyPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
+        let original = originalLocallyPlayable
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
+        // #83: offer the compatible-remux lane when the raw container isn't locally playable but the
+        // source video can be stream-copied into MP4 (derived from the part's stream codecs).
+        let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(part: part)
+        let compatibleRemux = remuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable)
+            ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
+            : nil
         let presets = jellyfinPresets
-        selectedChoice = preferredSelection(originalAvailable: original != nil, presets: presets)
+        selectedChoice = preferredSelection(originalAvailable: original != nil,
+                                            compatibleRemuxAvailable: compatibleRemux != nil,
+                                            presets: presets)
         probeState = .ready(original: original,
+                            compatibleRemux: compatibleRemux,
                             presets: presets,
                             probeFailed: false,
-                            originalStreamableButOfflineUnsupported: original == nil)
+                            originalStreamableButOfflineUnsupported: original == nil && compatibleRemux == nil)
     }
 
     /// Emby probe: POST the DOWNLOAD PlaybackInfo (Static-mp4 device profile) and read the
@@ -150,14 +174,17 @@ struct DownloadOptionsSheet: View {
               let token = appModel.embyAccessToken,
               let userId = appModel.embyUserID else {
             selectedChoice = .optimize(presets[0])
-            probeState = .ready(original: nil, presets: presets, probeFailed: true,
+            probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
                                 originalStreamableButOfflineUnsupported: false)
             return
         }
 
         let identity = appModel.identity.emby
         var negotiatedDirectPlay = false
+        var negotiatedDirectStream = false
         var negotiatedContainer: String?
+        var negotiatedVideoCodec: String?
+        var negotiatedAudioCodec: String?
         var probeFailed = false
         do {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
@@ -171,7 +198,10 @@ struct DownloadOptionsSheet: View {
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
             let decision = try EmbyPlayback.downloadDecision(response: info)
             negotiatedDirectPlay = decision.supportsDirectPlay
+            negotiatedDirectStream = decision.supportsDirectStream
             negotiatedContainer = decision.container
+            negotiatedVideoCodec = decision.videoCodec
+            negotiatedAudioCodec = decision.audioCodec
         } catch {
             probeFailed = true
         }
@@ -182,12 +212,24 @@ struct DownloadOptionsSheet: View {
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
+        // #83: offer the compatible-remux lane when the server can DirectStream AND the source video
+        // is stream-copy eligible AND it isn't already a locally-playable raw original.
+        let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+            videoCodec: negotiatedVideoCodec, audioCodec: negotiatedAudioCodec,
+            sourceContainer: negotiatedContainer)
+        let compatibleRemux = (!probeFailed && negotiatedDirectStream
+                               && remuxEligibility.shouldOffer(originalLocallyPlayable: original != nil))
+            ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
+            : nil
         // "Streamable but offline-unsupported" = the server would direct-play it but the container
-        // can't be a raw offline local file (e.g. mkv) → steer the user to a preset.
-        let unsupportedOriginal = !probeFailed && negotiatedDirectPlay && original == nil
+        // can't be a raw offline local file (e.g. mkv) and no compatible remux is offered.
+        let unsupportedOriginal = !probeFailed && negotiatedDirectPlay && original == nil && compatibleRemux == nil
 
-        selectedChoice = preferredSelection(originalAvailable: original != nil, presets: presets)
+        selectedChoice = preferredSelection(originalAvailable: original != nil,
+                                            compatibleRemuxAvailable: compatibleRemux != nil,
+                                            presets: presets)
         probeState = .ready(original: original,
+                            compatibleRemux: compatibleRemux,
                             presets: presets,
                             probeFailed: probeFailed,
                             originalStreamableButOfflineUnsupported: unsupportedOriginal)
@@ -264,6 +306,36 @@ struct DownloadOptionsSheet: View {
         }
     }
 
+    @ViewBuilder
+    private func compatibleRemuxSection(option: CompatibleRemuxOption) -> some View {
+        SwiftUI.Section {
+            Button {
+                selectedChoice = .optimizeCompatible
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "wand.and.stars")
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Original quality (compatible)").foregroundStyle(.primary)
+                        Text(option.codecSummary ?? "Keeps original video, converts to a compatible MP4")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if selectedChoice == .optimizeCompatible {
+                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Original quality")
+        } footer: {
+            Text("Keeps the original video quality by copying the video stream into a compatible MP4 (audio is converted only if needed). Can't pause and resume like the original-file download, so it restarts if interrupted.")
+        }
+    }
+
     private var originalUnsupportedSection: some View {
         SwiftUI.Section {
             Label {
@@ -317,10 +389,15 @@ struct DownloadOptionsSheet: View {
             if selectedChoice == .original, originalAvailable {
                 return
             }
+            // A compatible-remux selection is self-contained (not in `presets`); leave it intact.
+            if selectedChoice == .optimizeCompatible {
+                return
+            }
             if case .optimize(let selected)? = selectedChoice, presets.contains(selected) {
                 return
             }
-            selectedChoice = preferredSelection(originalAvailable: originalAvailable, presets: presets)
+            selectedChoice = preferredSelection(originalAvailable: originalAvailable,
+                                                compatibleRemuxAvailable: false, presets: presets)
         }
     }
 
@@ -357,18 +434,27 @@ struct DownloadOptionsSheet: View {
             mediaIndex: mediaIndex, partIndex: partIndex))
     }
 
-    private func preferredSelection(originalAvailable: Bool, presets: [String]) -> DownloadSelection? {
-        if defaultDownloadQuality == "Original", originalAvailable { return .original }
+    private func preferredSelection(originalAvailable: Bool,
+                                    compatibleRemuxAvailable: Bool,
+                                    presets: [String]) -> DownloadSelection? {
+        if defaultDownloadQuality == "Original" {
+            if originalAvailable { return .original }
+            // No raw original, but the compatible remux preserves original quality → prefer it.
+            if compatibleRemuxAvailable { return .optimizeCompatible }
+        }
         if presets.contains(defaultDownloadQuality) { return .optimize(defaultDownloadQuality) }
         if let match = presets.first(where: { $0.localizedCaseInsensitiveContains(defaultDownloadQuality) }) {
             return .optimize(match)
         }
+        // When nothing else matched, prefer the quality-preserving remux over a downscale preset.
+        if compatibleRemuxAvailable, !originalAvailable { return .optimizeCompatible }
         return presets.first.map { .optimize($0) }
     }
 
     private func managerChoice(for selection: DownloadSelection) -> DownloadManager.DownloadChoice {
         switch selection {
         case .original: return .original
+        case .optimizeCompatible: return .optimizeCompatible
         case .optimize(let preset): return .optimize(targetName: preset)
         }
     }

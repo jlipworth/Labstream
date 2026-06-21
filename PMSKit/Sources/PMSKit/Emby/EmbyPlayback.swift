@@ -314,10 +314,17 @@ public enum EmbyPlayback {
         public let playSessionId: String
         public let mediaSourceId: String
         public let supportsDirectPlay: Bool
+        /// #83: negotiated remux signal — true ⇔ the server can DirectStream (container remux,
+        /// codecs copied). Used to gate the "Original quality (compatible)" lane.
+        public let supportsDirectStream: Bool
         public let transcodingURL: String?
         public let size: Int?
         public let container: String?
         public let bitrate: Int?
+        /// #83: source video/audio codec tokens (first video/audio stream), for the compatible-remux
+        /// eligibility decision (`OfflineDownloadDecision.compatibleRemuxEligibility`).
+        public let videoCodec: String?
+        public let audioCodec: String?
         public let transcodeReasons: [String]
     }
 
@@ -335,14 +342,19 @@ public enum EmbyPlayback {
         guard let mediaSourceId = source.id, !mediaSourceId.isEmpty else {
             throw EmbyPlaybackError.missingMediaSourceId
         }
+        let videoStream = source.mediaStreams.first { $0.type == "Video" }
+        let audioStream = source.mediaStreams.first { $0.type == "Audio" }
         return EmbyDownloadPlaybackDecision(
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
             supportsDirectPlay: source.supportsDirectPlay,
+            supportsDirectStream: source.supportsDirectStream,
             transcodingURL: source.transcodingURL.flatMap { $0.isEmpty ? nil : $0 },
             size: source.size,
             container: source.container?.split(separator: ",").first.map(String.init),
             bitrate: source.bitrate,
+            videoCodec: source.videoCodec ?? videoStream?.codec,
+            audioCodec: source.audioCodec ?? audioStream?.codec,
             transcodeReasons: source.transcodeReasons)
     }
 
