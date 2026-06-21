@@ -60,6 +60,18 @@ metadata, and review-specific release automation can be handled in a later publi
   Direct Play / Maximum — so `Generic` is the proven-correct value. An unknown or missing profile
   name (e.g. "visionOS") makes PMS return a bare **HTTP 400** and playback breaks, so the name must
   always resolve to a real built-in profile. The bitrate cap is enforced by `maxVideoBitrate`.
+- **To test AVFoundation playback behavior on the simulator, run it INSIDE the app process — a
+  bare `simctl spawn` binary cannot host `AVPlayer`.** A standalone Swift binary compiled for
+  `xrsimulator` and run via `xcrun simctl spawn <sim> ./probe file.mp4` will load the asset
+  (`AVURLAsset.load(.isPlayable)`/`.duration` succeed) but the `AVPlayerItem` never reaches
+  `.readyToPlay` — it lacks the render/playback environment — so *every* file falsely reports
+  `timeout_not_ready`, making good and bad files indistinguishable. Instead add a `#if DEBUG`,
+  launch-argument-gated probe (mirror `DebugPlexDownloadProbe`/`DebugJellyfinPlaybackProbe`), drop
+  the test files into the app's Documents container
+  (`xcrun simctl get_app_container <sim> com.jlipworth.VisionPlay data`), launch with the arg, and
+  read results from the log. This was how GH #98's post-download playability probe was reproduced:
+  a fragmented MP4 (`empty_moov+delay_moov+mfra`, up to 1.9 GB / 120 fragments) plays fine in-app,
+  confirming the probe failure is an intermittent timing false-negative, not an fMP4/container issue.
 - **RealityView attachments DO render in the full `.ultraDark` Cinema immersive space — the
   "attachments don't appear reliably" belief was a scale bug, not a platform limitation.** An
   attachment is NOT authored at 1 pt = 1 m: RealityKit renders the SwiftUI view into a mesh at a
