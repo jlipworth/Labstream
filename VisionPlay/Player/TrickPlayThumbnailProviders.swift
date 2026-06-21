@@ -425,6 +425,71 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
+/// Local Emby chapter-image trick-play provider for offline downloads (#89).
+///
+/// Emby exposes no Jellyfin-style trickplay tiles, so offline scrub previews are served from the
+/// per-chapter images cached at download time (#88/#89 share that cache). This mirrors the online
+/// `EmbyChapterTrickPlayThumbnailProvider`'s coarse, chapter-granularity behaviour — map the scrub
+/// target to the chapter it falls within — but loads each chapter's cached JPEG from disk instead
+/// of issuing a request, so it has no server/network dependency.
+actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private struct Frame: Sendable {
+        let timeMs: Int
+        let chapterIndex: Int
+    }
+
+    private let frames: [Frame]
+    private let imageURLsByChapterIndex: [Int: URL]
+    private var imageCache: [Int: Data] = [:]
+    private var cacheOrder: [Int] = []
+    private let cacheLimit = 12
+
+    /// - Parameters:
+    ///   - chapters: the offline chapter markers (each carries a `startTimeOffset`), in the same
+    ///     order the download-time cache enumerated them.
+    ///   - imageURLsByChapterIndex: cached chapter image files keyed by chapter index.
+    /// Returns nil when no chapter has both a start time and a cached image — there is nothing to
+    /// preview, so the player falls back to the timecode-only scrubber.
+    init?(chapters: [OfflineChapter], imageURLsByChapterIndex: [Int: URL]) {
+        guard !imageURLsByChapterIndex.isEmpty else { return nil }
+        let frames = chapters.enumerated().compactMap { index, chapter -> Frame? in
+            guard imageURLsByChapterIndex[index] != nil else { return nil }
+            return Frame(timeMs: max(0, chapter.startTimeOffset ?? 0), chapterIndex: index)
+        }.sorted { $0.timeMs < $1.timeMs }
+        guard !frames.isEmpty else { return nil }
+        self.frames = frames
+        self.imageURLsByChapterIndex = imageURLsByChapterIndex
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard let frame = nearestFrame(to: targetMs) else { return nil }
+        if let data = imageCache[frame.chapterIndex] {
+            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
+        }
+        guard let url = imageURLsByChapterIndex[frame.chapterIndex],
+              let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        insert(data, for: frame.chapterIndex)
+        return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
+    }
+
+    /// The chapter the scrub target falls within: the last chapter whose start is at or before the
+    /// target, falling back to the first for targets before the first marker. Matches the online provider.
+    private func nearestFrame(to targetMs: Int) -> Frame? {
+        guard !frames.isEmpty else { return nil }
+        let clamped = max(0, targetMs)
+        return frames.last { $0.timeMs <= clamped } ?? frames.first
+    }
+
+    private func insert(_ data: Data, for index: Int) {
+        if imageCache[index] == nil { cacheOrder.append(index) }
+        imageCache[index] = data
+        while cacheOrder.count > cacheLimit, let oldest = cacheOrder.first {
+            cacheOrder.removeFirst()
+            imageCache[oldest] = nil
+        }
+    }
+}
+
 @MainActor
 final class TrickPlayPreviewImageCache {
     private let limit: Int

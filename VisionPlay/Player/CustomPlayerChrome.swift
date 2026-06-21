@@ -807,7 +807,7 @@ private struct CustomPlayerMenuPopover: View {
             ChaptersTabView(
                 chapters: controller.chapters,
                 currentMs: { controller.currentResumeMs },
-                thumbnailURL: { controller.chapterThumbnailURL(for: $0) },
+                thumbnailURL: { index, thumb in controller.chapterThumbnailURL(for: thumb, chapterIndex: index) },
                 onJump: { startMs in
                     controller.performUserSeek(toMs: startMs)
                     onClose()

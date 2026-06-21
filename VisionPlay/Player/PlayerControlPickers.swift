@@ -212,10 +212,11 @@ struct ChaptersTabView: View {
     let chapters: [Chapter]
     /// Reads the live playhead in milliseconds at appear time.
     var currentMs: () -> Int
-    /// Builds a transcoded thumbnail URL for a chapter's `thumb` key. Threaded in
+    /// Builds a thumbnail URL for a chapter, given its index + `thumb` key. Threaded in
     /// from the controller because these info tabs are hosted outside the SwiftUI
-    /// environment that would otherwise vend the server URL + token.
-    var thumbnailURL: (String?) -> URL?
+    /// environment that would otherwise vend the server URL + token. Online this is a
+    /// transcoded server URL; offline it resolves to the cached local image by index (#88).
+    var thumbnailURL: (_ index: Int, _ thumb: String?) -> URL?
     var onJump: (Int) -> Void
 
     @State private var currentIndex: Int?
@@ -238,7 +239,7 @@ struct ChaptersTabView: View {
                             ChapterCard(chapter: chapter,
                                         index: index,
                                         isCurrent: index == currentIndex,
-                                        thumbnailURL: thumbnailURL(chapter.thumb),
+                                        thumbnailURL: thumbnailURL(index, chapter.thumb),
                                         onTap: { startMs in
                                             // Immediate in-panel feedback: ring + center the
                                             // picked card (the panel may stay up — programmatic

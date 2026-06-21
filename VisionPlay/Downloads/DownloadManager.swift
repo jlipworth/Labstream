@@ -297,6 +297,11 @@ public final class DownloadManager {
         store.jellyfinTrickPlayPlaylistURL(for: ratingKey)
     }
 
+    /// Absolute cached per-chapter image URLs (chapter index → file) for a completed download (#88/#89).
+    public func chapterImageURLs(for ratingKey: String) -> [Int: URL] {
+        store.chapterImageURLs(for: ratingKey)
+    }
+
     /// Whether an active download's byte stream is gated by the server's transcoder (the file
     /// is served as it renders) rather than by the network — so a slow rate means "server still
     /// transcoding", not "slow connection". True only for a transcode-SOURCED download (marked
@@ -505,6 +510,8 @@ public final class DownloadManager {
                     server: server, token: token)
         cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
                      server: server, token: token)
+        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
+                           server: server, token: token)
 
         switch choice {
         case .original:
@@ -837,6 +844,8 @@ public final class DownloadManager {
         refreshRecords()
         cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
+        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
+                           server: server, token: token)
         if case .original = choice {
             cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
                                        part: part, server: server, token: token, identity: identity)
@@ -1155,6 +1164,11 @@ public final class DownloadManager {
             store.setMediaSourceID(ratingKey: ratingKey, decision.mediaSourceId)
         }
         refreshRecords()
+        // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
+        // scrubber. This is a static `/Items/{id}/Images/Chapter/{index}` GET — no PlaySessionId /
+        // encoder negotiation — so it is safe to fire here independent of the media transfer.
+        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .emby,
+                           server: server, token: token)
 
         do {
             recordDownloadDiagnostic("downloads.start", fields: [
@@ -1593,16 +1607,27 @@ public final class DownloadManager {
         return (mediaBytes ?? 0) + sideAssetBytes
     }
 
-    /// Rough pre-download estimate of a backend's thumbnail-cache side asset (Jellyfin tile sheets /
-    /// Plex BIF). Both are duration-proportional thumbnail data of comparable magnitude, so they
-    /// share one model. Emby caches no trickplay yet → 0.
+    /// Rough pre-download estimate of a backend's thumbnail-cache side assets. Plex BIF + Jellyfin
+    /// tile sheets are duration-proportional scrub-preview data of comparable magnitude and share
+    /// one model. EVERY backend now also caches per-chapter images (#88/#89), bounded by chapter
+    /// count (not duration); we approximate that with a small duration-proportional allowance so the
+    /// preflight (and Emby, which has no scrub-preview cache) doesn't under-count.
     private static func estimatedSideAssetBytes(durationMs: Int?, backend: DownloadBackendKind) -> Int {
+        let chapterImages = estimatedChapterImageBytes(durationMs: durationMs)
         switch backend {
         case .jellyfin, .plex:
-            return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs)
+            return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs) + chapterImages
         case .emby:
-            return 0
+            return chapterImages
         }
+    }
+
+    /// Coarse per-chapter-image cache estimate (#88/#89). Chapters are typically a few dozen ~30 KB
+    /// 480×270 JPEGs; chapter count isn't known at preflight, so approximate ~1 chapter per 5 min.
+    private static func estimatedChapterImageBytes(durationMs: Int?) -> Int {
+        guard let durationMs, durationMs > 0 else { return 0 }
+        let chapterCount = max(1, Int(ceil(Double(durationMs) / 300_000.0)))
+        return chapterCount * 30_000
     }
 
     private func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
@@ -2101,6 +2126,109 @@ public final class DownloadManager {
         return part
     }
 
+    /// Download + cache each chapter's image at download time so the offline Chapters menu rail
+    /// shows real per-chapter thumbnails (#88) and the Emby offline scrubber has a coarse preview
+    /// source (#89). One shared index-keyed cache feeds both consumers.
+    ///
+    /// Best-effort, exactly like `cachePlexBIF`/`cacheJellyfinTrickPlay`: a failed image is simply
+    /// dropped (that chapter shows the online-equivalent placeholder offline), and the whole cache
+    /// failing never fails the media download. Each backend builds the same image URL its online
+    /// chapter resolver uses (Plex `/photo/:/transcode`; Jellyfin/Emby chapter-image endpoint). The
+    /// requests carry tokens (Plex in query, JF/Emby in headers) so URLs are never logged.
+    private func cacheChapterImages(ratingKey: String, item: MediaItem, backend: DownloadBackendKind,
+                                    server: URL, token: String) {
+        let chapters = item.chapters ?? []
+        guard !chapters.isEmpty else { return }
+        // Build (chapter index, request) for every chapter that carries an image key. The index is
+        // the chapter's position in `chapters` — the same enumeration the Chapters rail and the
+        // offline scrub provider use, so it is the stable join key offline.
+        let identity = appModel.identity
+        var requests: [(index: Int, request: URLRequest)] = []
+        for (index, chapter) in chapters.enumerated() {
+            guard let thumb = chapter.thumb, !thumb.isEmpty else { continue }
+            switch backend {
+            case .plex:
+                guard let url = Self.chapterImageTranscodeURL(thumb: thumb, server: server, token: token) else { continue }
+                requests.append((index, URLRequest(url: url)))
+            case .jellyfin:
+                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "jellyfin"),
+                      let url = try? JellyfinLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
+                                                                    chapterIndex: parsed.index, tag: parsed.tag,
+                                                                    width: 480, height: 270) else { continue }
+                var req = JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity.jellyfin)
+                req.setValue("*/*", forHTTPHeaderField: "Accept")
+                requests.append((index, req))
+            case .emby:
+                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "emby"),
+                      let url = try? EmbyLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
+                                                               chapterIndex: parsed.index, tag: parsed.tag,
+                                                               width: 480, height: 270) else { continue }
+                let userId = appModel.backendSession(for: .emby)?.userID
+                var req = EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity.emby, userId: userId)
+                req.setValue("*/*", forHTTPHeaderField: "Accept")
+                requests.append((index, req))
+            }
+        }
+        guard !requests.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            // Fetch concurrently — chapters are independent and a long film has many. A failed/empty
+            // image is dropped; only chapters that landed on disk go into the map.
+            let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
+                for entry in requests {
+                    group.addTask {
+                        guard let (data, response) = try? await URLSession.shared.data(for: entry.request),
+                              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                              !data.isEmpty else { return nil }
+                        return (entry.index, data)
+                    }
+                }
+                var out: [(index: Int, data: Data)] = []
+                for await result in group { if let result { out.append(result) } }
+                return out
+            }
+            guard !fetched.isEmpty else { return }
+            var relativesByIndex: [Int: String] = [:]
+            for entry in fetched {
+                let destination = store.chapterImageDestinationURL(ratingKey: ratingKey, index: entry.index)
+                guard (try? entry.data.write(to: destination, options: .atomic)) != nil else { continue }
+                relativesByIndex[entry.index] = destination.lastPathComponent
+            }
+            guard !relativesByIndex.isEmpty else { return }
+            await MainActor.run {
+                store.setChapterImageRelativePaths(ratingKey: ratingKey, relativesByIndex)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    /// `/photo/:/transcode` URL for a Plex chapter `thumb` key, 16:9 landscape — the same shape the
+    /// online `PlaybackController.chapterThumbnailURL` builds for the Chapters rail.
+    private static func chapterImageTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
+        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
+                                        resolvingAgainstBaseURL: false) else { return nil }
+        PlexURLQueryEncoder.replaceQueryItems([
+            .init(name: "url", value: thumb),
+            .init(name: "width", value: "480"),
+            .init(name: "height", value: "270"),
+            .init(name: "minSize", value: "1"),
+            .init(name: "upscale", value: "1"),
+            .init(name: "X-Plex-Token", value: token),
+        ], in: &comps)
+        return comps.url
+    }
+
+    /// Parse a synthetic `<scheme>://item/{itemId}/Chapter/{index}?tag=` chapter-image key (Jellyfin
+    /// or Emby). Mirrors the private parsers in `PlaybackController` / `EmbyChapterTrickPlayThumbnailProvider`.
+    static func parsedSyntheticChapterImageKey(_ imagePath: String, scheme: String) -> (itemId: String, index: Int, tag: String?)? {
+        guard let url = URL(string: imagePath), url.scheme == scheme, url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "tag" }?.value
+        return (parts[0], index, tag)
+    }
+
     // MARK: - Optimize path (HIGH UNCERTAINTY — isolated; Phase 0 confirms the contract)
 
     /// Render a compatible MP4 server-side, poll for the rendered Part, then download it.
@@ -2172,6 +2300,9 @@ public final class DownloadManager {
                                                     session: session)
             optimizeMetadata.posterRelativePath = existingMetadata?.posterRelativePath
             optimizeMetadata.plexBIFRelativePath = existingMetadata?.plexBIFRelativePath
+            // #88: carry forward already-cached chapter images so an optimize re-fetch doesn't drop
+            // the offline Chapters rail thumbnails.
+            optimizeMetadata.chapterImageRelativePaths = existingMetadata?.chapterImageRelativePaths
             optimizeMetadata.optimizeBaselinePartIDs = (sourceItem.media ?? item.media ?? [])
                 .flatMap { $0.part.map(\.id) }
             store.upsert(DownloadRecord(ratingKey: ratingKey, title: sourceItem.title,
