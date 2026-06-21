@@ -96,39 +96,50 @@ struct JellyfinBrowseService {
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
-    func homeRails(for views: [JellyfinLibraryLink]) async throws -> [JellyfinHomeRail] {
+    func homeRails(for views: [JellyfinLibraryLink]) async throws -> HomeRailsLoad<JellyfinHomeRail> {
         _ = try context()
         var rails: [JellyfinHomeRail] = []
+        // Track whether any rail request *errored* (vs returned empty). A degraded load
+        // (e.g. rails 401ing during a re-auth window) must not be cached as authoritative,
+        // or the partial Home sticks until a manual pull-to-refresh (#93).
+        var tracker = HomeRailsLoadTracker()
 
         // These two home rails are independent server requests. Start them together so
         // Jellyfin's homepage does not pay their network latency serially; append in the
-        // existing UI order once both are available.
-        async let continueWatchingResult = try? resumeItems(limit: 20)
-        async let nextUpResult = try? nextUp(limit: 20)
+        // existing UI order once both are available. Capture each as a Result so a thrown
+        // error is recorded as degraded rather than silently swallowed by `try?`.
+        async let continueWatchingResult = HomeRailsLoadTracker.resultOf { try await resumeItems(limit: 20) }
+        async let nextUpResult = HomeRailsLoadTracker.resultOf { try await nextUp(limit: 20) }
 
-        if let continueWatching = await continueWatchingResult, !continueWatching.isEmpty {
+        if let continueWatching = tracker.record(await continueWatchingResult), !continueWatching.isEmpty {
             rails.append(JellyfinHomeRail(id: "continue-watching",
                                           title: "Continue Watching",
                                           items: continueWatching))
         }
 
-        if let nextUpItems = await nextUpResult, !nextUpItems.isEmpty {
+        if let nextUpItems = tracker.record(await nextUpResult), !nextUpItems.isEmpty {
             rails.append(JellyfinHomeRail(id: "next-up",
                                           title: "Next Up",
                                           items: nextUpItems))
         }
 
         for view in views.prefix(8) {
-            let items = (try? await latestItems(parentId: view.id,
-                                                includeItemTypes: latestItemTypes(for: view),
-                                                limit: 20)) ?? []
+            let items = await tracker.attempt {
+                try await latestItems(parentId: view.id,
+                                      includeItemTypes: latestItemTypes(for: view),
+                                      limit: 20)
+            } ?? []
             if !items.isEmpty {
                 rails.append(JellyfinHomeRail(id: "latest-\(view.id)",
                                               title: "Recently Added \(view.title)",
                                               items: items))
             }
         }
-        return rails
+        if tracker.isDegraded {
+            NSLog("[#93] Jellyfin homeRails degraded: %d of up to %d rails returned; will not pin loaded identity",
+                  rails.count, views.prefix(8).count + 2)
+        }
+        return HomeRailsLoad(rails: rails, isDegraded: tracker.isDegraded)
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {

@@ -99,36 +99,45 @@ struct EmbyBrowseService {
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
-    func homeRails(for views: [EmbyLibraryLink]) async throws -> [EmbyHomeRail] {
+    func homeRails(for views: [EmbyLibraryLink]) async throws -> HomeRailsLoad<EmbyHomeRail> {
         _ = try context()
         var rails: [EmbyHomeRail] = []
+        // Mirrors Jellyfin (#93): record per-rail errors so a degraded load is not cached
+        // as authoritative by the Home view.
+        var tracker = HomeRailsLoadTracker()
 
-        async let continueWatchingResult = try? resumeItems(limit: 20)
-        async let nextUpResult = try? nextUp(limit: 20)
+        async let continueWatchingResult = HomeRailsLoadTracker.resultOf { try await resumeItems(limit: 20) }
+        async let nextUpResult = HomeRailsLoadTracker.resultOf { try await nextUp(limit: 20) }
 
-        if let continueWatching = await continueWatchingResult, !continueWatching.isEmpty {
+        if let continueWatching = tracker.record(await continueWatchingResult), !continueWatching.isEmpty {
             rails.append(EmbyHomeRail(id: "continue-watching",
                                       title: "Continue Watching",
                                       items: continueWatching))
         }
 
-        if let nextUpItems = await nextUpResult, !nextUpItems.isEmpty {
+        if let nextUpItems = tracker.record(await nextUpResult), !nextUpItems.isEmpty {
             rails.append(EmbyHomeRail(id: "next-up",
                                       title: "Next Up",
                                       items: nextUpItems))
         }
 
         for view in views.prefix(8) {
-            let items = (try? await latestItems(parentId: view.id,
-                                                includeItemTypes: latestItemTypes(for: view),
-                                                limit: 20)) ?? []
+            let items = await tracker.attempt {
+                try await latestItems(parentId: view.id,
+                                      includeItemTypes: latestItemTypes(for: view),
+                                      limit: 20)
+            } ?? []
             if !items.isEmpty {
                 rails.append(EmbyHomeRail(id: "latest-\(view.id)",
                                           title: "Recently Added \(view.title)",
                                           items: items))
             }
         }
-        return rails
+        if tracker.isDegraded {
+            NSLog("[#93] Emby homeRails degraded: %d of up to %d rails returned; will not pin loaded identity",
+                  rails.count, views.prefix(8).count + 2)
+        }
+        return HomeRailsLoad(rails: rails, isDegraded: tracker.isDegraded)
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
