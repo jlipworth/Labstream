@@ -104,47 +104,77 @@ final class AuthManager {
         }
     }
 
-    /// Restore a previously-saved token (call on launch). Returns true if a token
-    /// was found; the caller may then refresh discovery.
+    /// Restore saved sessions at launch/switch time.
+    ///
+    /// The selected backend is still restored as the user-facing lane (and drives `state`), but
+    /// download orchestration can now need credentials for OTHER saved lanes at the same time
+    /// (#84: e.g. a Plex optimize row plus a Jellyfin transcode row after relaunch). Hydrate those
+    /// inactive lanes too so `AppModel.backendSession(for:)` is not limited to the currently
+    /// selected backend.
     @discardableResult
     func restoreSession() async -> Bool {
-        appModel.activeBackend = keychain.selectedBackend
-        switch appModel.activeBackend {
+        let selected = keychain.selectedBackend
+        appModel.activeBackend = selected
+
+        let selectedRestored: Bool
+        switch selected {
         case .plex:
-            return await restorePlexSession()
+            selectedRestored = await restorePlexSession(updateState: true)
         case .jellyfin:
-            return await restoreJellyfinSession()
+            selectedRestored = await restoreJellyfinSession(validateReachability: true, updateState: true)
         case .emby:
-            return await restoreEmbySession()
+            selectedRestored = await restoreEmbySession(validateReachability: true, updateState: true)
+        }
+
+        await restoreInactiveBackendSessions(excluding: selected)
+        return selectedRestored
+    }
+
+    /// Hydrate non-selected backend lanes for downloads without taking over the UI state. Jellyfin
+    /// and Emby can restore directly from their saved base URL + token + user id; Plex still needs
+    /// discovery to recover the current PMS connection and server-scoped token.
+    private func restoreInactiveBackendSessions(excluding selected: MediaBackendKind) async {
+        for backend in MediaBackendKind.allCases where backend != selected {
+            switch backend {
+            case .plex:
+                _ = await restorePlexSession(updateState: false)
+            case .jellyfin:
+                _ = await restoreJellyfinSession(validateReachability: false, updateState: false)
+            case .emby:
+                _ = await restoreEmbySession(validateReachability: false, updateState: false)
+            }
         }
     }
 
-    private func restorePlexSession() async -> Bool {
+    private func restorePlexSession(updateState: Bool = true) async -> Bool {
         guard let saved = keychain.token else { return false }
         appModel.token = saved
         do {
             await refreshPlexAccountProfile()
             try await refreshServers()
-            state = .authenticated
+            if updateState { state = .authenticated }
             return true
         } catch PlexError.unauthorized {
-            signOut()
+            if updateState {
+                SpotlightIndexer.deleteAll()
+                appModel.isSwitchingBackend = false
+            }
+            signOutPlex()
+            if updateState { state = .idle }
             return false
         } catch {
-            state = .failed("Signed in, but server discovery failed.")
+            if updateState { state = .failed("Signed in, but server discovery failed.") }
             return true
         }
     }
 
-    private func restoreJellyfinSession() async -> Bool {
-        guard let urlString = keychain.jellyfinServerURLString,
-              let server = URL(string: urlString),
-              let token = keychain.jellyfinAccessToken,
-              let userID = keychain.jellyfinUserID else { return false }
-        appModel.jellyfinServerBaseURL = server
-        appModel.jellyfinAccessToken = token
-        appModel.jellyfinUserID = userID
-        appModel.jellyfinServerID = keychain.jellyfinServerID
+    private func restoreJellyfinSession(validateReachability: Bool = true,
+                                        updateState: Bool = true) async -> Bool {
+        guard loadJellyfinSessionSnapshot() else { return false }
+        guard validateReachability else { return true }
+        guard let server = appModel.jellyfinServerBaseURL,
+              let token = appModel.jellyfinAccessToken,
+              let userID = appModel.jellyfinUserID else { return false }
         do {
             let req = try JellyfinLibrary.userViewsRequest(server: server,
                                                            token: token,
@@ -158,26 +188,37 @@ final class AuthManager {
                 default: throw JellyfinAuthError.http(http.statusCode)
                 }
             }
-            state = .authenticated
+            if updateState { state = .authenticated }
             return true
         } catch JellyfinAuthError.unauthorized {
             signOutJellyfin()
+            if updateState { state = .idle }
             return false
         } catch {
-            state = .failed("Signed in, but the Jellyfin server could not be reached.")
+            if updateState { state = .failed("Signed in, but the Jellyfin server could not be reached.") }
             return true
         }
     }
 
-    private func restoreEmbySession() async -> Bool {
-        guard let urlString = keychain.embyServerURLString,
+    private func loadJellyfinSessionSnapshot() -> Bool {
+        guard let urlString = keychain.jellyfinServerURLString,
               let server = URL(string: urlString),
-              let token = keychain.embyAccessToken,
-              let userID = keychain.embyUserID else { return false }
-        appModel.embyServerBaseURL = server
-        appModel.embyAccessToken = token
-        appModel.embyUserID = userID
-        appModel.embyServerID = keychain.embyServerID
+              let token = keychain.jellyfinAccessToken,
+              let userID = keychain.jellyfinUserID else { return false }
+        appModel.jellyfinServerBaseURL = server
+        appModel.jellyfinAccessToken = token
+        appModel.jellyfinUserID = userID
+        appModel.jellyfinServerID = keychain.jellyfinServerID
+        return true
+    }
+
+    private func restoreEmbySession(validateReachability: Bool = true,
+                                    updateState: Bool = true) async -> Bool {
+        guard loadEmbySessionSnapshot() else { return false }
+        guard validateReachability else { return true }
+        guard let server = appModel.embyServerBaseURL,
+              let token = appModel.embyAccessToken,
+              let userID = appModel.embyUserID else { return false }
         do {
             let req = try EmbyLibrary.userViewsRequest(server: server,
                                                        token: token,
@@ -191,18 +232,31 @@ final class AuthManager {
                 default: throw EmbyAuthError.http(http.statusCode)
                 }
             }
-            state = .authenticated
+            if updateState { state = .authenticated }
             return true
         } catch EmbyAuthError.unauthorized {
             // Invalid/expired creds — drop the saved session and require re-login.
             signOutEmby()
+            if updateState { state = .idle }
             return false
         } catch {
             // Unreachable host (or other transient error) — keep the saved session so a
             // later launch with connectivity restores cleanly.
-            state = .failed("Signed in, but the Emby server could not be reached.")
+            if updateState { state = .failed("Signed in, but the Emby server could not be reached.") }
             return true
         }
+    }
+
+    private func loadEmbySessionSnapshot() -> Bool {
+        guard let urlString = keychain.embyServerURLString,
+              let server = URL(string: urlString),
+              let token = keychain.embyAccessToken,
+              let userID = keychain.embyUserID else { return false }
+        appModel.embyServerBaseURL = server
+        appModel.embyAccessToken = token
+        appModel.embyUserID = userID
+        appModel.embyServerID = keychain.embyServerID
+        return true
     }
 
     /// Start a fresh login. Creates TWO PINs (#16): a non-strong one whose

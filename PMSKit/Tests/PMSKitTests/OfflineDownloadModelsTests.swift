@@ -137,7 +137,13 @@ struct OfflineDownloadModelsTests {
             plexBIFRelativePath: "555.plex-sd.bif",
             jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",
             jellyfinTrickPlayTileRelativePaths: ["555.jf-trickplay-0.jpg"],
-            offlineTextSubtitles: [OfflineTextSubtitleTrack(id: 1, displayName: "English", language: "eng", codec: "srt", relativePath: "555.sub.1.srt")])
+            offlineTextSubtitles: [OfflineTextSubtitleTrack(id: 1, displayName: "English", language: "eng", codec: "srt", relativePath: "555.sub.1.srt")],
+            backendKind: .jellyfin,
+            backendBaseURLString: "https://media.example.test/jellyfin",
+            backendServerID: "server-123",
+            backendUserID: "user-456",
+            mediaSourceID: "media-source-789",
+            playSessionID: "visionplay-download-abc")
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)

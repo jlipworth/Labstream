@@ -416,10 +416,7 @@ struct DownloadOptionsSheet: View {
         case .plex:
             downloadManager.retry(ratingKey: item.ratingKey)
         case .jellyfin:
-            Task { await downloadManager.downloadJellyfin(item,
-                                                          choice: .optimize(targetName: "1080p 8 Mbps"),
-                                                          mediaIndex: mediaIndex,
-                                                          partIndex: partIndex) }
+            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
         case .emby:
             // Re-run the full Emby lane, which re-probes PlaybackInfo and re-decides original vs
             // transcode (a now-compatible file goes original). `.original` is intent-only here.
