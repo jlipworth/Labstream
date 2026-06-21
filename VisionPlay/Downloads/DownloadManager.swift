@@ -226,14 +226,14 @@ public final class DownloadManager {
                     "phase": .label("launch_sweep"),
                 ])
                 let service = JellyfinBrowseService(appModel: appModel)
-                Task { if await service.stopActiveEncoding(playSessionId: psid) { store.clearPlaySessionID(ratingKey: key) } }
+                Task { if await service.stopActiveEncoding(playSessionId: psid, session: live) { store.clearPlaySessionID(ratingKey: key) } }
             case .emby:
                 recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
                     "download_id": .identifier(key),
                     "phase": .label("launch_sweep"),
                 ])
                 let service = EmbyBrowseService(appModel: appModel)
-                Task { if await service.stopActiveEncoding(playSessionId: psid) { store.clearPlaySessionID(ratingKey: key) } }
+                Task { if await service.stopActiveEncoding(playSessionId: psid, session: live) { store.clearPlaySessionID(ratingKey: key) } }
             case .plex:
                 // Plex optimize renders server-side then serves a static file — no live encoder to
                 // tear down (the queue item is reaped separately). Clear the unused psid.
@@ -321,7 +321,8 @@ public final class DownloadManager {
     /// ("…signed out") instead of implying the server is still preparing. The row stays `.queued`
     /// and auto-resumes once the lane returns (see `resumePendingServerPrepDownloads`).
     public func isBackendConfigured(for record: DownloadRecord) -> Bool {
-        let kind = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey) ?? .plex
+        let kind = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
         return appModel.backendSession(for: kind) != nil
     }
 
@@ -1768,26 +1769,33 @@ public final class DownloadManager {
         // the server until ActiveEncodings is deleted. Fire teardown for the minted PlaySessionId
         // on EVERY terminal transition (complete / failed / cancelled / deleted). Best-effort and
         // idempotent — the session map entry is removed so it never fires twice.
-        if let playSessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey) {
+        // Resolve the job's OWN backend lane (never `appModel.activeBackend`): a Jellyfin/Emby
+        // download can reach a terminal state while the user has switched to another backend, and
+        // the DELETE must hit the server the encoder actually runs on. If that lane is no longer
+        // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
+        // sweep retries once the lane returns.
+        if let playSessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey),
+           let session = appModel.backendSession(for: .emby) {
             recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
             let service = EmbyBrowseService(appModel: appModel)
             let store = self.store
             Task {
-                if await service.stopActiveEncoding(playSessionId: playSessionId) {
+                if await service.stopActiveEncoding(playSessionId: playSessionId, session: session) {
                     store.clearPlaySessionID(ratingKey: ratingKey)
                 }
             }
         }
-        if let playSessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey) {
+        if let playSessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey),
+           let session = appModel.backendSession(for: .jellyfin) {
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
             let service = JellyfinBrowseService(appModel: appModel)
             let store = self.store
             Task {
-                if await service.stopActiveEncoding(playSessionId: playSessionId) {
+                if await service.stopActiveEncoding(playSessionId: playSessionId, session: session) {
                     store.clearPlaySessionID(ratingKey: ratingKey)
                 }
             }

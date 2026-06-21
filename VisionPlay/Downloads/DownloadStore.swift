@@ -300,20 +300,6 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.mediaSourceID = mediaSourceID }
     }
 
-    /// #84: read the persisted `PlaySessionId` for a row, if any.
-    func playSessionID(ratingKey: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return rows[ratingKey]?.metadata?.playSessionID
-    }
-
-    /// #84: read the backend that owns a row, using the migration fallback (stored `backendKind`
-    /// wins; legacy rows fall back to the ratingKey prefix). Returns nil only when the row is gone.
-    func backendKind(ratingKey: String) -> DownloadBackendKind? {
-        lock.lock(); defer { lock.unlock() }
-        guard let meta = rows[ratingKey]?.metadata else { return nil }
-        return meta.resolvedBackendKind(ratingKey: ratingKey)
-    }
-
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
         guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }

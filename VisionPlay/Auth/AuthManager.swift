@@ -137,7 +137,13 @@ final class AuthManager {
         for backend in MediaBackendKind.allCases where backend != selected {
             switch backend {
             case .plex:
-                _ = await restorePlexSession(updateState: false)
+                // Plex hydration is expensive (resource enumeration + per-connection probing).
+                // `restoreSession()` runs on every backend switch, so re-discovering PMS each time
+                // the user toggles Jellyfin↔Emby is wasted work. The Plex lane stays live for the
+                // app's lifetime once hydrated, so only discover when it isn't already connected.
+                if appModel.selectedServer == nil || appModel.serverBaseURL == nil {
+                    _ = await restorePlexSession(updateState: false)
+                }
             case .jellyfin:
                 _ = await restoreJellyfinSession(validateReachability: false, updateState: false)
             case .emby:
@@ -155,12 +161,16 @@ final class AuthManager {
             if updateState { state = .authenticated }
             return true
         } catch PlexError.unauthorized {
-            if updateState {
-                SpotlightIndexer.deleteAll()
-                appModel.isSwitchingBackend = false
-            }
+            // Only wipe the Plex lane when it is the ACTIVE, user-facing backend. On the inactive
+            // hydration path (a JF/Emby session warming Plex for cross-backend downloads), a transient
+            // discovery 401 must NOT silently sign the user out of Plex — leave the saved token in
+            // place and let the lane stay unhydrated until they switch back, where `updateState: true`
+            // handles a genuine sign-out with the proper UI teardown.
+            guard updateState else { return false }
+            SpotlightIndexer.deleteAll()
+            appModel.isSwitchingBackend = false
             signOutPlex()
-            if updateState { state = .idle }
+            state = .idle
             return false
         } catch {
             if updateState { state = .failed("Signed in, but server discovery failed.") }
