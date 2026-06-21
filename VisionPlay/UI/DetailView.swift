@@ -26,6 +26,7 @@ struct DetailView: View {
 
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
+    @State private var localPlaybackRequest: LocalPlaybackRequest?
     @State private var playLocalURL: URL?
     @State private var playLocalTrickPlayURL: URL?
     @State private var playLocalTrickPlayKind: LocalTrickPlayKind?
@@ -218,6 +219,15 @@ struct DetailView: View {
                 presentingPlayer = true
             }
         }
+        .fullScreenCover(item: $localPlaybackRequest) { request in
+            CustomPlayerView(localFile: request.url,
+                             item: request.item,
+                             trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
+                                                                       url: request.trickPlayURL),
+                             offlineTextSubtitles: request.offlineTextSubtitles,
+                             onClose: { localPlaybackRequest = nil })
+                .ignoresSafeArea()
+        }
         .fullScreenCover(isPresented: $presentingPlayer) {
             playerCover
         }
@@ -350,19 +360,37 @@ struct DetailView: View {
             Button {
                 musicPlayer.pauseForVideo()
                 let key = downloadManager.recordKey(for: detailed)
-                playLocalURL = local
-                playLocalTextSubtitles = downloadManager.records.first { $0.ratingKey == key }?.metadata?.offlineTextSubtitles ?? []
+                let record = downloadManager.records.first { $0.ratingKey == key && $0.status == .complete }
+                let offlineItem = record?.metadata?.makeMediaItem() ?? detailed
+                AppDiagnostics.record(.playback, "playback.offline_launch", fields: [
+                    "download_id": .identifier(key),
+                    "has_file": .bool(FileManager.default.fileExists(atPath: local.path)),
+                    "has_metadata": .bool(record?.metadata != nil),
+                    "chapter_count": .int(record?.metadata?.chapters?.count ?? 0),
+                    "subtitle_count": .int(record?.metadata?.offlineTextSubtitles?.count ?? 0),
+                ])
+                let trickPlayURL: URL?
+                let trickPlayKind: LocalTrickPlayKind?
                 if key.hasPrefix("jellyfin:") {
-                    playLocalTrickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
-                    playLocalTrickPlayKind = .jellyfinTiles
+                    trickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
+                    trickPlayKind = .jellyfinTiles
                 } else {
-                    playLocalTrickPlayURL = downloadManager.plexBIFURL(for: key)
-                    playLocalTrickPlayKind = .plexBIF
+                    trickPlayURL = downloadManager.plexBIFURL(for: key)
+                    trickPlayKind = .plexBIF
                 }
+                playLocalURL = nil
+                playLocalTrickPlayURL = nil
+                playLocalTrickPlayKind = nil
+                playLocalTextSubtitles = []
                 remotePlayback = nil
                 embyRemotePlayback = nil
-                playingItem = itemWithResumeRewind(detailed)
-                presentingPlayer = true
+                playingItem = nil
+                presentingPlayer = false
+                localPlaybackRequest = LocalPlaybackRequest(url: local,
+                                                            item: itemWithResumeRewind(offlineItem),
+                                                            trickPlayURL: trickPlayURL,
+                                                            trickPlayKind: trickPlayKind,
+                                                            offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [])
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
@@ -737,12 +765,26 @@ struct DetailView: View {
         case jellyfinTiles
     }
 
+    private struct LocalPlaybackRequest: Identifiable {
+        let id = UUID()
+        let url: URL
+        let item: MediaItem
+        let trickPlayURL: URL?
+        let trickPlayKind: LocalTrickPlayKind?
+        let offlineTextSubtitles: [OfflineTextSubtitleTrack]
+    }
+
     private func localTrickPlayProvider() -> (any TrickPlayThumbnailProviding)? {
-        switch playLocalTrickPlayKind {
+        localTrickPlayProvider(kind: playLocalTrickPlayKind, url: playLocalTrickPlayURL)
+    }
+
+    private func localTrickPlayProvider(kind: LocalTrickPlayKind?,
+                                        url: URL?) -> (any TrickPlayThumbnailProviding)? {
+        switch kind {
         case .plexBIF:
-            return LocalBIFTrickPlayThumbnailProvider(bifURL: playLocalTrickPlayURL)
+            return LocalBIFTrickPlayThumbnailProvider(bifURL: url)
         case .jellyfinTiles:
-            return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playLocalTrickPlayURL)
+            return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: url)
         case nil:
             return nil
         }

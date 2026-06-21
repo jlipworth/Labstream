@@ -71,7 +71,16 @@ struct ContentView: View {
         // Sign-out: the music player outlives RootView, so without this music would
         // keep playing over the login screen with stale credentials (#17).
         .onChange(of: appModel.isBrowseReady) { _, ready in
-            if !ready { musicPlayer.stop() }
+            if !ready {
+                musicPlayer.stop()
+            } else {
+                downloadManager.resumePendingServerPrepDownloads()
+            }
+        }
+        .onChange(of: appModel.activeBackend) { _, backend in
+            if backend == .plex, appModel.isBrowseReady {
+                downloadManager.resumePendingServerPrepDownloads()
+            }
         }
     }
 }

@@ -55,6 +55,8 @@ public struct OfflineLibraryView: View {
         }
     }
 
+    fileprivate static let rowActionControlSize: CGFloat = 56
+
     private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
         if let playlist = record.jellyfinTrickPlayPlaylistURL {
             return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playlist)
@@ -117,7 +119,7 @@ public struct OfflineLibraryView: View {
                 }
             }
             Spacer()
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 if isComplete {
                     Button {
                         // Music and video share one audio session — yield music
@@ -125,18 +127,22 @@ public struct OfflineLibraryView: View {
                         musicPlayer.pauseForVideo()
                         playing = record
                     } label: {
-                        Image(systemName: "play.circle.fill").font(.title2)
+                        Image(systemName: "play.circle.fill")
                     }
                     .buttonStyle(.plain)
+                    .offlineRowActionControl()
+                    .accessibilityLabel("Play offline download")
                 } else if isFailed {
                     Button {
                         manager.retry(ratingKey: record.ratingKey)
                     } label: {
-                        Image(systemName: "arrow.clockwise.circle.fill").font(.title2)
+                        Image(systemName: "arrow.clockwise.circle.fill")
                     }
                     .buttonStyle(.plain)
+                    .offlineRowActionControl()
                 } else {
                     ProgressView()
+                        .frame(width: Self.rowActionControlSize, height: Self.rowActionControlSize)
                 }
 
                 // Explicit delete on every row (complete / failed / in-progress). The List's
@@ -147,9 +153,10 @@ public struct OfflineLibraryView: View {
                 Button {
                     manager.delete(ratingKey: record.ratingKey)
                 } label: {
-                    Image(systemName: "trash.circle.fill").font(.title2)
+                    Image(systemName: "trash.circle.fill")
                 }
                 .buttonStyle(.plain)
+                .offlineRowActionControl()
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Delete download")
             }
@@ -248,10 +255,10 @@ public struct OfflineLibraryView: View {
         record.metadata?.resolutionLabel
     }
 
-    /// Progress fraction for the bar. Both download paths now serve a STATIC file with a real
-    /// Content-Length, so the server-reported `record.progress` is authoritative — no estimate
-    /// needed (the bitrate-cap estimation was retired with the progressive path). nil → the
-    /// server hasn't reported yet (show an indeterminate bar).
+    /// Progress fraction for the bar. Static/original downloads use the server-reported
+    /// Content-Length progress. Jellyfin/Emby optimized downloads can stream directly from the
+    /// transcoder with no Content-Length, so progress remains indeterminate there until the
+    /// transfer completes; the row caption still shows bytes and an estimated ETA when possible.
     private func displayProgress(for record: DownloadRecord) -> Double? {
         record.progress > 0 ? record.progress : nil
     }
@@ -279,7 +286,11 @@ public struct OfflineLibraryView: View {
             if manager.optimizeState[record.ratingKey] == "queued" {
                 return "Queued on server"
             }
-            return isActive ? "Preparing on server…" : "Queued…"
+            if isActive { return "Preparing on server…" }
+            if record.metadata?.optimizeQueueTitle?.isEmpty == false {
+                return "Queued on server"
+            }
+            return "Queued…"
         }
 
         // Phase 2 — file download of the rendered/original Part. When the byte stream is gated
@@ -331,5 +342,21 @@ public struct OfflineLibraryView: View {
         var parts = [byteString(record.bytes)]
         if let r = resolutionLabel(for: record) { parts.append(r) }
         return parts.joined(separator: " • ")
+    }
+}
+
+private struct OfflineRowActionControlModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .font(.system(size: 34, weight: .semibold))
+            .frame(width: OfflineLibraryView.rowActionControlSize,
+                   height: OfflineLibraryView.rowActionControlSize)
+            .contentShape(Circle())
+    }
+}
+
+private extension View {
+    func offlineRowActionControl() -> some View {
+        modifier(OfflineRowActionControlModifier())
     }
 }
