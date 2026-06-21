@@ -195,7 +195,47 @@ public final class DownloadManager {
             Task { @MainActor in
                 self?.refreshRecords()
                 self?.resumePendingServerPrepDownloads()
+                // #84: reclaim any server encoder leaked by a HARD app kill (the in-memory
+                // PlaySessionId maps are empty on a fresh launch; the persisted `playSessionID`
+                // on each row is the only handle left to DELETE the encoder).
+                self?.teardownOrphanedEncodersOnLaunch()
             }
+        }
+    }
+
+    /// #84: launch-time sweep that tears down server encoders whose download reached a terminal
+    /// state but whose `releaseInFlight` teardown never fired (e.g. a hard app kill mid-transfer,
+    /// so the in-memory PlaySession maps were lost). Resolves each row's backend via the migration
+    /// fallback and only fires when that backend lane is still configured (a DELETE needs creds).
+    /// Idempotent: the persisted `playSessionID` is cleared after firing so it never runs twice.
+    func teardownOrphanedEncodersOnLaunch() {
+        for record in records {
+            guard let md = record.metadata, let psid = md.playSessionID, !psid.isEmpty,
+                  record.status == .failed || record.status == .complete else { continue }
+            let kind = md.resolvedBackendKind(ratingKey: record.ratingKey)
+            // Need a live session for that backend to issue the DELETE.
+            guard appModel.backendSession(for: kind) != nil else { continue }
+            switch kind {
+            case .jellyfin:
+                recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "phase": .label("launch_sweep"),
+                ])
+                let service = JellyfinBrowseService(appModel: appModel)
+                Task { await service.stopActiveEncoding(playSessionId: psid) }
+            case .emby:
+                recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "phase": .label("launch_sweep"),
+                ])
+                let service = EmbyBrowseService(appModel: appModel)
+                Task { await service.stopActiveEncoding(playSessionId: psid) }
+            case .plex:
+                // Plex optimize renders server-side then serves a static file — no live encoder to
+                // tear down (the queue item is reaped separately). Nothing to do.
+                break
+            }
+            store.clearPlaySessionID(ratingKey: record.ratingKey)
         }
     }
 
@@ -233,11 +273,14 @@ public final class DownloadManager {
         return rate < 500_000
     }
 
-    /// Store identity for the active backend. Filenames/rows are keyed by IDs, not titles, so
-    /// duplicate episode/movie names are safe. Jellyfin IDs are namespaced so they cannot collide
-    /// with a Plex ratingKey in the shared offline index.
-    public func recordKey(for item: MediaItem) -> String {
-        switch appModel.activeBackend {
+    /// Store identity for a SPECIFIC backend. Filenames/rows are keyed by IDs, not titles, so
+    /// duplicate episode/movie names are safe. Jellyfin/Emby IDs are namespaced so they cannot
+    /// collide with a Plex ratingKey in the shared offline index. The `backend` is passed
+    /// explicitly (rather than read from `appModel.activeBackend`) so keying never depends on the
+    /// globally-active lane — at the UI call site the active backend IS the correct backend (the
+    /// user downloads what they're browsing), but the key is then stable regardless of switches.
+    public func recordKey(for item: MediaItem, backend: DownloadBackendKind) -> String {
+        switch backend {
         case .plex:
             return item.ratingKey
         case .jellyfin:
@@ -345,7 +388,10 @@ public final class DownloadManager {
     public func download(_ item: MediaItem, choice: DownloadChoice,
                          mediaIndex: Int = 0, partIndex: Int = 0) async {
         let ratingKey = item.ratingKey
-        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
+        // #84: resolve the Plex session ONCE from its own lane (never `appModel.activeBackend`),
+        // then never re-read a per-lane credential field for the rest of this job.
+        // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
+        guard let backendSession = appModel.backendSession(for: .plex) else {
             recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
                 "backend": .label("Plex"),
                 "reason": .label("not_authenticated"),
@@ -353,6 +399,8 @@ public final class DownloadManager {
             lastError[ratingKey] = .notAuthenticated
             return
         }
+        let token = backendSession.token
+        let server = backendSession.baseURL
         guard !activeJobs.contains(ratingKey) else {
             recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
                 "download_id": .identifier(ratingKey),
@@ -372,7 +420,8 @@ public final class DownloadManager {
            rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex",
                                     expectedBytes: estimatedBytes(for: item, choice: choice,
                                                                   mediaIndex: mediaIndex,
-                                                                  partIndex: partIndex)) {
+                                                                  partIndex: partIndex,
+                                                                  backend: .plex)) {
             releaseInFlight(ratingKey: ratingKey)
             return
         }
@@ -387,11 +436,13 @@ public final class DownloadManager {
         }
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
-                                            optimizeTargetName: optimizeTargetName)
+                                            optimizeTargetName: optimizeTargetName,
+                                            session: backendSession)
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
             backend: "Plex",
+            backendKind: .plex,
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
@@ -426,7 +477,7 @@ public final class DownloadManager {
                     "target": .label(fallback),
                 ])
                 await triggerOptimizeAndDownload(item: item, targetName: fallback,
-                                                 metadata: metadata, server: server, token: token)
+                                                 metadata: metadata, session: backendSession)
                 return
             }
 
@@ -476,7 +527,7 @@ public final class DownloadManager {
 
         case .optimize(let targetName):
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
-                                             metadata: metadata, server: server, token: token)
+                                             metadata: metadata, session: backendSession)
         }
     }
 
@@ -484,15 +535,18 @@ public final class DownloadManager {
         // If this was already an optimizer/transcode-sourced file, do not loop. The fallback is
         // only for a true-original transfer that downloaded successfully but failed the final
         // local AVPlayer startup validation.
-        guard appModel.activeBackend == .plex,
-              !Self.isJellyfinRecordKey(ratingKey),
+        //
+        // #84: gate on the ROW's own backend (via the migration fallback), not `activeBackend`,
+        // and resolve the Plex session from its lane — so the original→optimize fallback fires
+        // even if the user has since switched to Jellyfin/Emby, as long as the Plex lane is still
+        // configured (lanes persist independently).
+        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }),
+              let metadata = record.metadata,
+              metadata.resolvedBackendKind(ratingKey: ratingKey) == .plex,
               !transcodeSourcedDownloads.contains(ratingKey),
               queueTitleByRatingKey[ratingKey] == nil,
-              let server = appModel.serverBaseURL,
-              let token = appModel.serverToken,
-              let record = store.records.first(where: { $0.ratingKey == ratingKey }),
-              let metadata = record.metadata,
-              metadata.optimizeTargetName?.isEmpty != false else { return }
+              metadata.optimizeTargetName?.isEmpty != false,
+              let backendSession = appModel.backendSession(for: .plex) else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
@@ -502,7 +556,7 @@ public final class DownloadManager {
         activeJobs.insert(ratingKey)
         lastError[ratingKey] = nil
         await triggerOptimizeAndDownload(item: item, targetName: target,
-                                         metadata: metadata, server: server, token: token)
+                                         metadata: metadata, session: backendSession)
     }
 
     private static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {
@@ -616,9 +670,10 @@ public final class DownloadManager {
                                  partIndex: Int = 0) async {
         let itemId = item.ratingKey
         let ratingKey = Self.jellyfinRecordKey(itemId)
-        guard let server = appModel.jellyfinServerBaseURL,
-              let token = appModel.jellyfinAccessToken,
-              appModel.jellyfinUserID != nil else {
+        // #84: capture the Jellyfin session from its own lane; never re-read `appModel.jellyfin*`
+        // or `activeBackend` for the rest of this job.
+        // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
+        guard let backendSession = appModel.backendSession(for: .jellyfin) else {
             recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
                 "backend": .label("Jellyfin"),
                 "reason": .label("not_authenticated"),
@@ -626,6 +681,8 @@ public final class DownloadManager {
             lastError[ratingKey] = .notAuthenticated
             return
         }
+        let server = backendSession.baseURL
+        let token = backendSession.token
         guard !activeJobs.contains(ratingKey) else {
             recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
                 "download_id": .identifier(ratingKey),
@@ -643,7 +700,8 @@ public final class DownloadManager {
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Jellyfin",
                                     expectedBytes: estimatedBytes(for: item, choice: choice,
                                                                   mediaIndex: mediaIndex,
-                                                                  partIndex: partIndex)) {
+                                                                  partIndex: partIndex,
+                                                                  backend: .jellyfin)) {
             releaseInFlight(ratingKey: ratingKey)
             return
         }
@@ -651,16 +709,20 @@ public final class DownloadManager {
         let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
+        let jellyfinMediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }
                                                 return nil
-                                            }())
+                                            }(),
+                                            session: backendSession,
+                                            mediaSourceID: jellyfinMediaSourceID)
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
             backend: "Jellyfin",
+            backendKind: .jellyfin,
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
@@ -668,18 +730,20 @@ public final class DownloadManager {
         var request: URLRequest
         var destination: URL
         var expectedBytes: Int?
+        // #84: captured here so the minted PlaySessionId can be PERSISTED after the row is seeded
+        // (below), enabling encoder teardown after a hard app kill — not just in-memory teardown.
+        var mintedPlaySessionId: String?
         do {
             switch choice {
             case .original:
                 let ext = part?.container ?? media?.container ?? "mp4"
                 destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
-                let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
                 request = try JellyfinLibrary.downloadRequest(server: server,
                                                               token: token,
                                                               identity: identity,
                                                               itemId: itemId,
-                                                              mediaSourceId: mediaSourceID,
+                                                              mediaSourceId: jellyfinMediaSourceID,
                                                               container: ext)
                 expectedBytes = part?.size
 
@@ -688,12 +752,12 @@ public final class DownloadManager {
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
-                let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
                 let playSessionId = "visionplay-download-\(UUID().uuidString)"
                 let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
-                    server, token, identity, itemId, mediaSourceID, playSessionId, profile)
+                    server, token, identity, itemId, jellyfinMediaSourceID, playSessionId, profile)
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = playSessionId
+                mintedPlaySessionId = playSessionId
             }
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -711,12 +775,16 @@ public final class DownloadManager {
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
+        // #84: persist the minted PlaySessionId onto the now-seeded row so a hard app kill can
+        // still tear the encoder down on next launch (was in-memory only).
+        if let mintedPlaySessionId {
+            store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
+        }
         refreshRecords()
-        let mediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: mediaSourceID,
+        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
         if case .original = choice {
-            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: mediaSourceID,
+            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
                                        part: part, server: server, token: token, identity: identity)
         }
 
@@ -864,9 +932,11 @@ public final class DownloadManager {
                              partIndex: Int = 0) async {
         let itemId = item.ratingKey
         let ratingKey = Self.embyRecordKey(itemId)
-        guard let server = appModel.embyServerBaseURL,
-              let token = appModel.embyAccessToken,
-              let userId = appModel.embyUserID else {
+        // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
+        // `activeBackend` for the rest of this job.
+        // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
+        guard let backendSession = appModel.backendSession(for: .emby),
+              let userId = backendSession.userID else {
             recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
                 "backend": .label("Emby"),
                 "reason": .label("not_authenticated"),
@@ -874,6 +944,8 @@ public final class DownloadManager {
             lastError[ratingKey] = .notAuthenticated
             return
         }
+        let server = backendSession.baseURL
+        let token = backendSession.token
         guard !activeJobs.contains(ratingKey) else {
             recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
                 "download_id": .identifier(ratingKey),
@@ -891,7 +963,8 @@ public final class DownloadManager {
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Emby",
                                     expectedBytes: estimatedBytes(for: item, choice: choice,
                                                                   mediaIndex: mediaIndex,
-                                                                  partIndex: partIndex)) {
+                                                                  partIndex: partIndex,
+                                                                  backend: .emby)) {
             releaseInFlight(ratingKey: ratingKey)
             return
         }
@@ -899,16 +972,22 @@ public final class DownloadManager {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
+        // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
+        // onto the row after the decision is known (see below).
+        let embyMediaSourceHint = Self.embyMediaSourceID(media: media, part: part)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }
                                                 return nil
-                                            }())
+                                            }(),
+                                            session: backendSession,
+                                            mediaSourceID: embyMediaSourceHint)
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
             backend: "Emby",
+            backendKind: .emby,
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
@@ -924,7 +1003,7 @@ public final class DownloadManager {
             let infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity,
                 userId: userId, itemId: itemId,
-                mediaSourceId: Self.embyMediaSourceID(media: media, part: part),
+                mediaSourceId: embyMediaSourceHint,
                 maxStaticBitrate: 200_000_000)
             let (data, response) = try await URLSession.shared.data(for: infoReq)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -1015,6 +1094,11 @@ public final class DownloadManager {
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
+        // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it
+        // (replacing the pre-decision hint) so a retry can re-issue without re-deriving.
+        if !decision.mediaSourceId.isEmpty, decision.mediaSourceId != embyMediaSourceHint {
+            store.setMediaSourceID(ratingKey: ratingKey, decision.mediaSourceId)
+        }
         refreshRecords()
 
         do {
@@ -1027,9 +1111,11 @@ public final class DownloadManager {
             ])
             if !useOriginal {
                 // Transcode download: rate is encoder-gated (served as it renders), and the
-                // minted PlaySessionId MUST be torn down on terminal transition.
+                // minted PlaySessionId MUST be torn down on terminal transition. #84: persist it
+                // onto the row so a hard app kill can still tear the encoder down on next launch.
                 transcodeSourcedDownloads.insert(ratingKey)
                 embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                store.setPlaySessionID(ratingKey: ratingKey, decision.playSessionId)
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
@@ -1107,13 +1193,16 @@ public final class DownloadManager {
         // while disconnected/not-ready removes the only visible retry affordance.
         Task { [weak self] in
             guard let self else { return }
-            guard let token = self.appModel.serverToken,
-                  let server = self.appModel.serverBaseURL else {
+            // #84: resolve the Plex session from its own lane (not `activeBackend`); a row whose
+            // lane is unconfigured stays `.failed`/retryable with the accurate not-signed-in reason.
+            guard let backendSession = self.appModel.backendSession(for: .plex) else {
                 self.lastError[ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.refreshRecords()
                 return
             }
+            let server = backendSession.baseURL
+            let token = backendSession.token
             guard !self.activeJobs.contains(ratingKey) else { return }
             let currentItem = await self.fetchCurrentMediaItem(ratingKey: ratingKey,
                                                                server: server,
@@ -1155,9 +1244,10 @@ public final class DownloadManager {
 
         Task { [weak self] in
             guard let self else { return }
-            guard self.appModel.jellyfinServerBaseURL != nil,
-                  self.appModel.jellyfinAccessToken != nil,
-                  self.appModel.jellyfinUserID != nil else {
+            // #84: gate on the Jellyfin lane being configured (resolved from its own session),
+            // independent of `activeBackend`; an unconfigured lane stays retryable with the
+            // accurate not-signed-in reason.
+            guard self.appModel.backendSession(for: .jellyfin) != nil else {
                 self.lastError[record.ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
@@ -1193,9 +1283,10 @@ public final class DownloadManager {
 
         Task { [weak self] in
             guard let self else { return }
-            guard self.appModel.embyServerBaseURL != nil,
-                  self.appModel.embyAccessToken != nil,
-                  self.appModel.embyUserID != nil else {
+            // #84: gate on the Emby lane being configured (resolved from its own session),
+            // independent of `activeBackend`; an unconfigured lane stays retryable with the
+            // accurate not-signed-in reason.
+            guard self.appModel.backendSession(for: .emby) != nil else {
                 self.lastError[record.ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
@@ -1216,11 +1307,9 @@ public final class DownloadManager {
     /// must not reconcile the row as a dead transfer. Once auth is restored, this method resumes
     /// polling Plex for the optimized Part and starts the static file download when it appears.
     public func resumePendingServerPrepDownloads() {
-        guard appModel.activeBackend == .plex,
-              appModel.isBrowseReady,
-              let token = appModel.serverToken,
-              let server = appModel.serverBaseURL else { return }
-
+        // #84: no longer gated on `activeBackend == .plex`. Each candidate is resolved against its
+        // OWN backend lane, so a Plex optimize-prep row resumes on relaunch even when the app
+        // launched into Jellyfin/Emby — as long as the Plex lane is still configured.
         let candidates = records.filter { record in
             record.status == .queued
                 && record.bytes == 0
@@ -1233,6 +1322,13 @@ public final class DownloadManager {
         for record in candidates {
             guard let metadata = record.metadata,
                   let targetName = metadata.optimizeTargetName else { continue }
+            // Only Plex has a server-side render/poll PREP phase. Jellyfin/Emby optimize is a live
+            // transcode stream with no separate queued-prep row, so a JF/Emby row in this state was
+            // interrupted mid-transfer and is handled by reconcile (-> .failed -> retryable).
+            let kind = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
+            guard kind == .plex, let backendSession = appModel.backendSession(for: .plex) else { continue }
+            let server = backendSession.baseURL
+            let token = backendSession.token
             let ratingKey = record.ratingKey
             activeJobs.insert(ratingKey)
             if let queueTitle = metadata.optimizeQueueTitle {
@@ -1398,7 +1494,12 @@ public final class DownloadManager {
     }
 
     public func estimatedBytes(for item: MediaItem, choice: DownloadChoice,
-                               mediaIndex: Int = 0, partIndex: Int = 0) -> Int? {
+                               mediaIndex: Int = 0, partIndex: Int = 0,
+                               backend: DownloadBackendKind? = nil) -> Int? {
+        // #84: the trickplay surcharge is a Jellyfin-only sidecar. Resolve the backend explicitly
+        // when the caller is on a specific lane (the download pipeline always passes it); the
+        // default falls back to `activeBackend` for the UI sheet, which is on the active backend.
+        let resolvedBackend = backend ?? appModel.activeBackend.downloadBackendKind
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
         let mediaBytes: Int?
@@ -1423,9 +1524,9 @@ public final class DownloadManager {
         // Add the duration-proportional thumbnail-cache estimate for every backend that caches one
         // (not just Jellyfin) so the preflight doesn't under-count for Plex. Text-subtitle sidecars
         // are small and variable, so they're accounted post-hoc from disk via
-        // `DownloadRecord.sideAssetBytes` rather than pre-estimated here.
-        let sideAssetBytes = Self.estimatedSideAssetBytes(durationMs: item.duration,
-                                                          backend: appModel.activeBackend)
+        // `DownloadRecord.sideAssetBytes` rather than pre-estimated here. Resolve against the job's
+        // OWN backend (#84), never the active lane.
+        let sideAssetBytes = Self.estimatedSideAssetBytes(durationMs: item.duration, backend: resolvedBackend)
         guard sideAssetBytes > 0 else { return mediaBytes }
         return (mediaBytes ?? 0) + sideAssetBytes
     }
@@ -1433,7 +1534,7 @@ public final class DownloadManager {
     /// Rough pre-download estimate of a backend's thumbnail-cache side asset (Jellyfin tile sheets /
     /// Plex BIF). Both are duration-proportional thumbnail data of comparable magnitude, so they
     /// share one model. Emby caches no trickplay yet → 0.
-    private static func estimatedSideAssetBytes(durationMs: Int?, backend: MediaBackendKind) -> Int {
+    private static func estimatedSideAssetBytes(durationMs: Int?, backend: DownloadBackendKind) -> Int {
         switch backend {
         case .jellyfin, .plex:
             return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs)
@@ -1487,6 +1588,7 @@ public final class DownloadManager {
     private func downloadDiagnosticFields(item: MediaItem,
                                           choice: DownloadChoice,
                                           backend: String,
+                                          backendKind: DownloadBackendKind,
                                           mediaIndex: Int,
                                           partIndex: Int) -> [String: DiagnosticFieldValue] {
         let media = item.media.flatMap { mediaItems -> Media? in
@@ -1495,7 +1597,7 @@ public final class DownloadManager {
         }
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first
         var fields: [String: DiagnosticFieldValue] = [
-            "download_id": .identifier(recordKey(for: item)),
+            "download_id": .identifier(recordKey(for: item, backend: backendKind)),
             "backend": .label(backend),
             "choice": .label(Self.diagnosticChoiceLabel(choice)),
             "item_type": .label(item.type),
@@ -1632,7 +1734,9 @@ public final class DownloadManager {
                                         mediaIndex: Int,
                                         partIndex: Int,
                                         optimizeTargetName: String? = nil,
-                                        optimizeQueueTitle: String? = nil) -> OfflineMetadata {
+                                        optimizeQueueTitle: String? = nil,
+                                        session: BackendSession,
+                                        mediaSourceID: String? = nil) -> OfflineMetadata {
         let sourcePartID = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id
         return OfflineMetadata(ratingKey: item.ratingKey,
                                key: item.key,
@@ -1665,7 +1769,15 @@ public final class DownloadManager {
                                sourcePartID: sourcePartID,
                                optimizeTargetName: optimizeTargetName,
                                optimizeQueueTitle: optimizeQueueTitle,
-                               posterRelativePath: nil)
+                               posterRelativePath: nil,
+                               // #84: per-job backend context captured at ENQUEUE from the job's own
+                               // `BackendSession`, so resume/retry/cleanup never read `appModel.active*`.
+                               backendKind: session.kind,
+                               backendBaseURLString: session.baseURL.absoluteString,
+                               backendServerID: session.serverID,
+                               backendUserID: session.userID,
+                               mediaSourceID: mediaSourceID,
+                               playSessionID: nil)
     }
 
     /// Human-readable resolution label for the chosen media version, for the offline-library
@@ -1927,8 +2039,12 @@ public final class DownloadManager {
     /// `.optimizeFailed`; we still poll metadata so an out-of-band optimized part is picked up.
     private func triggerOptimizeAndDownload(item: MediaItem, targetName: String,
                                             metadata: OfflineMetadata,
-                                            server: URL, token: String) async {
+                                            session: BackendSession) async {
         let ratingKey = item.ratingKey
+        // #84: the whole optimize/poll/download chain runs off the captured Plex session — the
+        // server/token come from it, not from any `appModel.active*` re-read.
+        let server = session.baseURL
+        let token = session.token
         let identity = appModel.identity
         let queueTitle = metadata.optimizeQueueTitle
             ?? "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
@@ -1973,7 +2089,8 @@ public final class DownloadManager {
                                                     mediaIndex: sourceMediaIndex,
                                                     partIndex: sourcePartIndex,
                                                     optimizeTargetName: targetName,
-                                                    optimizeQueueTitle: queueTitle)
+                                                    optimizeQueueTitle: queueTitle,
+                                                    session: session)
             optimizeMetadata.posterRelativePath = existingMetadata?.posterRelativePath
             optimizeMetadata.plexBIFRelativePath = existingMetadata?.plexBIFRelativePath
             optimizeMetadata.optimizeBaselinePartIDs = (sourceItem.media ?? item.media ?? [])

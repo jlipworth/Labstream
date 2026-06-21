@@ -353,7 +353,7 @@ struct DetailView: View {
         if let local = localURL {
             Button {
                 musicPlayer.pauseForVideo()
-                let key = downloadManager.recordKey(for: detailed)
+                let key = downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind)
                 let record = downloadManager.records.first { $0.ratingKey == key && $0.status == .complete }
                 // Prefer the persisted download snapshot as the authoritative source: it describes the
                 // exact downloaded variant (part, chapters, cached subtitles), whereas the live
@@ -766,18 +766,18 @@ struct DetailView: View {
     }
 
     private var localURL: URL? {
-        return downloadManager.localURL(for: downloadManager.recordKey(for: detailed))
+        return downloadManager.localURL(for: downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind))
     }
 
     private var isDownloading: Bool {
-        let key = downloadManager.recordKey(for: detailed)
+        let key = downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind)
         return downloadManager.records.contains {
             $0.ratingKey == key && ($0.status == .queued || $0.status == .downloading)
         }
     }
 
     private var downloadLabel: String {
-        let key = downloadManager.recordKey(for: detailed)
+        let key = downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind)
         if let rec = downloadManager.records.first(where: { $0.ratingKey == key }) {
             if rec.status == .failed { return "Download Failed" }
             if rec.status == .complete { return "Downloaded" }

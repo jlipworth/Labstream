@@ -37,7 +37,7 @@ struct DownloadOptionsSheet: View {
     @State private var selectedChoice: DownloadSelection?
 
     private var existingRecord: DownloadRecord? {
-        let key = downloadManager.recordKey(for: item)
+        let key = downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind)
         return downloadManager.records.first { $0.ratingKey == key }
     }
 
@@ -399,7 +399,7 @@ struct DownloadOptionsSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Button(role: .destructive) {
-                downloadManager.delete(ratingKey: downloadManager.recordKey(for: item))
+                downloadManager.delete(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
                 dismiss()
             } label: {
                 Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
@@ -423,7 +423,7 @@ struct DownloadOptionsSheet: View {
         case .emby:
             // Re-run the full Emby lane, which re-probes PlaybackInfo and re-decides original vs
             // transcode (a now-compatible file goes original). `.original` is intent-only here.
-            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item))
+            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
         }
     }
 

@@ -136,6 +136,36 @@ final class AppModel {
         }
     }
 
+    /// Vend the live session for a SPECIFIC backend, regardless of `activeBackend`.
+    /// Returns nil when that backend lane is not configured (no creds yet). This is
+    /// the single entry point the download pipeline uses instead of reading
+    /// `serverToken` / `jellyfinAccessToken` / `embyAccessToken` directly, so a job
+    /// always authenticates against its own backend even after the user switches.
+    func backendSession(for kind: DownloadBackendKind) -> BackendSession? {
+        switch kind {
+        case .plex:
+            guard let server = serverBaseURL, let srvToken = serverToken else { return nil }
+            return BackendSession(kind: .plex,
+                                  baseURL: server,
+                                  token: srvToken,
+                                  accountToken: (token != srvToken) ? token : nil,
+                                  userID: nil,
+                                  serverID: selectedServer?.clientIdentifier)
+        case .jellyfin:
+            guard let server = jellyfinServerBaseURL,
+                  let token = jellyfinAccessToken,
+                  let userID = jellyfinUserID else { return nil }
+            return BackendSession(kind: .jellyfin, baseURL: server, token: token,
+                                  accountToken: nil, userID: userID, serverID: jellyfinServerID)
+        case .emby:
+            guard let server = embyServerBaseURL,
+                  let token = embyAccessToken,
+                  let userID = embyUserID else { return nil }
+            return BackendSession(kind: .emby, baseURL: server, token: token,
+                                  accountToken: nil, userID: userID, serverID: embyServerID)
+        }
+    }
+
     init(identity: ClientIdentity,
          activeBackend: MediaBackendKind = .plex,
          token: String? = nil,
@@ -144,5 +174,25 @@ final class AppModel {
         self.identity = identity
         self.token = token
         self.client = client ?? PlexClient(identity: identity)
+    }
+}
+
+extension MediaBackendKind {
+    var downloadBackendKind: DownloadBackendKind {
+        switch self {
+        case .plex:     return .plex
+        case .jellyfin: return .jellyfin
+        case .emby:     return .emby
+        }
+    }
+}
+
+extension DownloadBackendKind {
+    var mediaBackendKind: MediaBackendKind {
+        switch self {
+        case .plex:     return .plex
+        case .jellyfin: return .jellyfin
+        case .emby:     return .emby
+        }
     }
 }

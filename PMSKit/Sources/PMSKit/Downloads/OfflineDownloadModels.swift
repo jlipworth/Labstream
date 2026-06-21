@@ -236,6 +236,23 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// discoverable through AVFoundation; image/burned-in/unavailable tracks are intentionally
     /// not represented here.
     public var offlineTextSubtitles: [OfflineTextSubtitleTrack]?
+    /// Backend that created this download. nil for rows persisted before #84 — see
+    /// `resolvedBackendKind(ratingKey:)` for the migration fallback (ratingKey-prefix
+    /// inference) that keeps already-downloaded libraries fully usable.
+    public var backendKind: DownloadBackendKind?
+    /// Resolved server base URL string for the owning backend at enqueue time. Used to
+    /// match a persisted job to a live `BackendSession` and to validate resume.
+    public var backendBaseURLString: String?
+    /// Stable server identity (Plex machineIdentifier / JF-Emby serverId) when known.
+    public var backendServerID: String?
+    /// Jellyfin/Emby authenticated user id at enqueue time (server context for retry).
+    public var backendUserID: String?
+    /// Jellyfin/Emby media source id chosen for this download (needed to re-issue the
+    /// transcode/original request on retry without re-deriving from a re-fetched item).
+    public var mediaSourceID: String?
+    /// Server play-session id for a transcoded JF/Emby (or Plex optimize) job, persisted
+    /// so the encoder can be torn down after a hard app kill (was in-memory only).
+    public var playSessionID: String?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -273,7 +290,13 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 plexBIFRelativePath: String? = nil,
                 jellyfinTrickPlayPlaylistRelativePath: String? = nil,
                 jellyfinTrickPlayTileRelativePaths: [String]? = nil,
-                offlineTextSubtitles: [OfflineTextSubtitleTrack]? = nil) {
+                offlineTextSubtitles: [OfflineTextSubtitleTrack]? = nil,
+                backendKind: DownloadBackendKind? = nil,
+                backendBaseURLString: String? = nil,
+                backendServerID: String? = nil,
+                backendUserID: String? = nil,
+                mediaSourceID: String? = nil,
+                playSessionID: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -311,6 +334,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
         self.jellyfinTrickPlayTileRelativePaths = jellyfinTrickPlayTileRelativePaths
         self.offlineTextSubtitles = offlineTextSubtitles
+        self.backendKind = backendKind
+        self.backendBaseURLString = backendBaseURLString
+        self.backendServerID = backendServerID
+        self.backendUserID = backendUserID
+        self.mediaSourceID = mediaSourceID
+        self.playSessionID = playSessionID
     }
 
     public init(from decoder: Decoder) throws {
@@ -352,6 +381,22 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
         jellyfinTrickPlayTileRelativePaths = try c.decodeIfPresent([String].self, forKey: .jellyfinTrickPlayTileRelativePaths)
         offlineTextSubtitles = try c.decodeIfPresent([OfflineTextSubtitleTrack].self, forKey: .offlineTextSubtitles)
+        backendKind = try c.decodeIfPresent(DownloadBackendKind.self, forKey: .backendKind)
+        backendBaseURLString = try c.decodeIfPresent(String.self, forKey: .backendBaseURLString)
+        backendServerID = try c.decodeIfPresent(String.self, forKey: .backendServerID)
+        backendUserID = try c.decodeIfPresent(String.self, forKey: .backendUserID)
+        mediaSourceID = try c.decodeIfPresent(String.self, forKey: .mediaSourceID)
+        playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
+    }
+
+    /// Backend for this row. New rows store `backendKind`; pre-#84 rows fall back to
+    /// the ratingKey prefix (`jellyfin:` / `emby:` / bare = Plex). This keeps already-
+    /// downloaded libraries fully usable after the schema change.
+    public func resolvedBackendKind(ratingKey: String) -> DownloadBackendKind {
+        if let backendKind { return backendKind }
+        if ratingKey.hasPrefix("jellyfin:") { return .jellyfin }
+        if ratingKey.hasPrefix("emby:") { return .emby }
+        return .plex
     }
 
     /// Reconstruct a faithful `MediaItem` for offline playback + retry. Only the
