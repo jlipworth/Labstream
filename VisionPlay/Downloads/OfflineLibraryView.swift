@@ -322,6 +322,11 @@ public struct OfflineLibraryView: View {
             if manager.optimizeState[record.ratingKey] == "queued" {
                 return "Queued on server"
             }
+            // #84: a server-prep row whose backend lane is signed out isn't really "preparing" —
+            // say so honestly. It stays queued and resumes automatically once the lane returns.
+            if !isActive, !manager.isBackendConfigured(for: record) {
+                return "Paused — \(backendKind(for: record).displayName) signed out"
+            }
             if isActive { return "Preparing on server…" }
             if record.metadata?.optimizeQueueTitle?.isEmpty == false {
                 return "Queued on server"

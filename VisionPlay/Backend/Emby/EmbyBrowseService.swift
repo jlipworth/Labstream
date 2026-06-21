@@ -255,15 +255,28 @@ struct EmbyBrowseService {
 
     /// Active-encoding cleanup invariant: `/Sessions/Playing/Stopped` does NOT stop the
     /// transcoder. For server-encoded sources, the stop path calls this on teardown.
-    func stopActiveEncoding(playSessionId: String) async {
-        guard let context = try? context(), !playSessionId.isEmpty else { return }
+    /// Returns whether the encoder is confirmed gone. `true` on a 2xx, and also when the
+    /// server answers that there is nothing to stop (404/400) — either way the FFmpeg job is
+    /// no longer live. `false` only when we could not reach/authenticate the server, so the
+    /// caller (#84 launch sweep) keeps the persisted PlaySessionId for a later retry.
+    @discardableResult
+    func stopActiveEncoding(playSessionId: String) async -> Bool {
+        guard let context = try? context(), !playSessionId.isEmpty else { return false }
         guard let req = try? EmbyLibrary.activeEncodingStopRequest(server: context.server,
                                                                    token: context.token,
                                                                    identity: embyIdentity,
                                                                    userId: context.userID,
                                                                    deviceId: appModel.identity.clientIdentifier,
-                                                                   playSessionId: playSessionId) else { return }
-        _ = try? await send(req)
+                                                                   playSessionId: playSessionId) else { return false }
+        do {
+            _ = try await send(req)
+            return true
+        } catch ServiceError.http(let status) {
+            // Server answered. Only an auth rejection means "wrong/expired creds, retry later".
+            return status != 401 && status != 403
+        } catch {
+            return false   // transport failure — keep the psid for a later launch
+        }
     }
 
     private func context() throws -> (server: URL, token: String, userID: String) {
