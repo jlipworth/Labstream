@@ -31,12 +31,32 @@ final class SystemEntryRouter {
         let target: Target
         /// When true the destination should start playback, not just show detail.
         let autoPlay: Bool
+        /// Which browse tab to land on. `nil` keeps the legacy behavior (Home), used by
+        /// intents/Spotlight and the system-entry Cinema-exit fallback; Cinema exit from an
+        /// online browse tab sets this so it returns to the originating tab (#87).
+        let originTab: CinemaTab?
+
+        init(target: Target, autoPlay: Bool, originTab: CinemaTab? = nil) {
+            self.target = target
+            self.autoPlay = autoPlay
+            self.originTab = originTab
+        }
     }
 
     /// The route waiting to be performed. RootView consumes it (resets to `nil`)
     /// once handled; it survives here untouched if set before RootView mounts
     /// (cold launch from an intent while the restore splash is still up).
     var pending: Route?
+
+    /// One offline-return request from Cinema exit (#87): land on the Offline tab and focus
+    /// the identified download with NO server fetch. Kept separate from `pending` because the
+    /// online route's consumer is hard-wired to Home + online metadata, which is exactly what an
+    /// offline origin must avoid. RootView consumes it (resets to `nil`) once handled.
+    struct OfflineReturn: Equatable, Identifiable {
+        let id = UUID()
+        let ratingKey: String
+    }
+    var offlinePending: OfflineReturn?
 
     // MARK: - Live app objects
 
@@ -77,6 +97,18 @@ final class SystemEntryRouter {
 
     func open(item: MediaItem, autoPlay: Bool) {
         pending = Route(target: .item(item), autoPlay: autoPlay)
+    }
+
+    /// Cinema exit from an online browse tab (#87): return to `tab`'s detail for `item` instead of
+    /// always landing on Home.
+    func open(item: MediaItem, autoPlay: Bool, onTab tab: CinemaTab) {
+        pending = Route(target: .item(item), autoPlay: autoPlay, originTab: tab)
+    }
+
+    /// Cinema exit from an offline download (#87): return to the Offline tab and focus the
+    /// download. No server fetch, no Home tab.
+    func openOffline(ratingKey: String) {
+        offlinePending = OfflineReturn(ratingKey: ratingKey)
     }
 
     // MARK: - AutoPlay handshake

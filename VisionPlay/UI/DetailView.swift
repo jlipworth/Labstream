@@ -23,6 +23,10 @@ struct DetailView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(MusicPlayerController.self) private var musicPlayer
+    /// The browse tab this detail lives under, injected by RootView, so Cinema exit returns to the
+    /// originating tab's detail instead of always Home (#87). `nil` → fall back to the system-entry
+    /// (Home) path, preserving prior behavior.
+    @Environment(\.cinemaOriginTab) private var cinemaOriginTab
 
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
@@ -219,6 +223,7 @@ struct DetailView: View {
                              trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
                                                                        url: request.trickPlayURL),
                              offlineTextSubtitles: request.offlineTextSubtitles,
+                             cinemaOrigin: .offline(ratingKey: request.downloadRatingKey),
                              onClose: { localPlaybackRequest = nil })
                 .ignoresSafeArea()
         }
@@ -384,7 +389,8 @@ struct DetailView: View {
                                                             item: itemWithResumeRewind(offlineItem),
                                                             trickPlayURL: trickPlayURL,
                                                             trickPlayKind: trickPlayKind,
-                                                            offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [])
+                                                            offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
+                                                            downloadRatingKey: key)
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
@@ -444,6 +450,12 @@ struct DetailView: View {
         }
     }
 
+    /// Origin for an ONLINE (streamed) playback launched from this detail: the originating browse
+    /// tab when known, else the system-entry (Home) fallback (#87).
+    private var onlineCinemaOrigin: CinemaOrigin {
+        cinemaOriginTab.map(CinemaOrigin.onlineTab) ?? .systemEntry
+    }
+
     @ViewBuilder
     private var playerCover: some View {
         // The item currently in the cover: starts as `detailed`, then swaps to the next
@@ -494,6 +506,7 @@ struct DetailView: View {
                                 server: appModel.jellyfinServerBaseURL,
                                 token: appModel.jellyfinAccessToken,
                                 identity: appModel.identity.jellyfin),
+                             cinemaOrigin: onlineCinemaOrigin,
                              onClose: { presentingPlayer = false },
                              allowsRealityTheater: false)
                 .id(remote.id)
@@ -551,6 +564,7 @@ struct DetailView: View {
                                 token: appModel.embyAccessToken,
                                 identity: appModel.identity.emby,
                                 userId: appModel.embyUserID),
+                             cinemaOrigin: onlineCinemaOrigin,
                              onClose: { presentingPlayer = false },
                              allowsRealityTheater: false)
                 .id(remote.id)
@@ -589,6 +603,7 @@ struct DetailView: View {
                                                                                       token: token,
                                                                                       identity: appModel.identity,
                                                                                       client: appModel.client),
+                                 cinemaOrigin: onlineCinemaOrigin,
                                  onClose: { presentingPlayer = false },
                                  onRequestPlay: playNext,
                                  allowsRealityTheater: true)
@@ -751,6 +766,10 @@ struct DetailView: View {
         let trickPlayURL: URL?
         let trickPlayKind: LocalTrickPlayKind?
         let offlineTextSubtitles: [OfflineTextSubtitleTrack]
+        /// The persisted offline row id (namespaced for Jellyfin/Emby). This can differ from the
+        /// reconstructed `item.ratingKey`, so Cinema exit must preserve this value to focus the
+        /// correct Offline row across all backends (#87).
+        let downloadRatingKey: String
     }
 
     private func localTrickPlayProvider(kind: LocalTrickPlayKind?,
