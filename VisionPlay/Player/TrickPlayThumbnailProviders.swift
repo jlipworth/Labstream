@@ -107,6 +107,53 @@ actor LocalBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
+/// Crop one frame's tile out of its sheet. Pure; shared by the online and offline Jellyfin
+/// trickplay providers (which otherwise duplicated this byte-for-byte) so the timing/crop math lives
+/// in one place.
+enum JellyfinTrickPlayTileRenderer {
+    static func crop(sheet: UIImage, frame: JellyfinTrickPlayFrame) -> UIImage? {
+        guard let cgImage = sheet.cgImage else { return nil }
+        let scaleX = CGFloat(cgImage.width) / CGFloat(frame.tile.columns * frame.tile.tileWidth)
+        let scaleY = CGFloat(cgImage.height) / CGFloat(frame.tile.rows * frame.tile.tileHeight)
+        let rect = CGRect(x: CGFloat(frame.column * frame.tile.tileWidth) * scaleX,
+                          y: CGFloat(frame.row * frame.tile.tileHeight) * scaleY,
+                          width: CGFloat(frame.tile.tileWidth) * scaleX,
+                          height: CGFloat(frame.tile.tileHeight) * scaleY).integral
+        guard let cropped = cgImage.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.imageOrientation)
+    }
+}
+
+/// Small LRU of decoded tile sheets keyed by URI, owned by each Jellyfin trickplay provider so the
+/// eviction logic is defined once rather than copied per provider.
+struct JellyfinTrickPlayTileCache {
+    private var images: [String: UIImage] = [:]
+    private var order: [String] = []
+    private let limit: Int
+
+    init(limit: Int = 4) { self.limit = limit }
+
+    /// Promotes the accessed sheet to most-recently-used so an actively-revisited sheet (a scrub that
+    /// lingers on one range) isn't the next thing evicted and re-decoded from disk/network.
+    mutating func image(for uri: String) -> UIImage? {
+        guard let image = images[uri] else { return nil }
+        if let idx = order.firstIndex(of: uri) {
+            order.remove(at: idx)
+            order.append(uri)
+        }
+        return image
+    }
+
+    mutating func insert(_ image: UIImage, for uri: String) {
+        if images[uri] == nil { order.append(uri) }
+        images[uri] = image
+        while order.count > limit, let oldest = order.first {
+            order.removeFirst()
+            images[oldest] = nil
+        }
+    }
+}
+
 /// Jellyfin image-tile trick-play provider.
 ///
 /// Jellyfin exposes generated trickplay as an image-only HLS playlist plus 10x10 JPEG tile sheets.
@@ -123,9 +170,7 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     private var loadedPlaylist: JellyfinTrickPlayPlaylist?
     private var playlistTask: Task<JellyfinTrickPlayPlaylist?, Never>?
-    private var tileImages: [String: UIImage] = [:]
-    private var tileOrder: [String] = []
-    private let tileCacheLimit = 4
+    private var tileCache = JellyfinTrickPlayTileCache()
 
     init?(item: MediaItem,
           server: URL?,
@@ -146,7 +191,7 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
         guard let playlist = await playlist(), let frame = playlist.frame(nearMs: targetMs) else { return nil }
         guard let sheet = await tileImage(for: frame.tile) else { return nil }
-        guard let cropped = crop(sheet: sheet, frame: frame),
+        guard let cropped = JellyfinTrickPlayTileRenderer.crop(sheet: sheet, frame: frame),
               let data = cropped.jpegData(compressionQuality: 0.82) else { return nil }
         return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
     }
@@ -178,7 +223,7 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 
     private func tileImage(for tile: JellyfinTrickPlayTile) async -> UIImage? {
-        if let cached = tileImages[tile.uri] { return cached }
+        if let cached = tileCache.image(for: tile.uri) { return cached }
         do {
             let req = try JellyfinLibrary.trickPlayTileRequest(server: server,
                                                                token: token,
@@ -190,32 +235,11 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let image = UIImage(data: data) else { return nil }
-            insertTile(image, for: tile.uri)
+            tileCache.insert(image, for: tile.uri)
             return image
         } catch {
             return nil
         }
-    }
-
-    private func insertTile(_ image: UIImage, for uri: String) {
-        if tileImages[uri] == nil { tileOrder.append(uri) }
-        tileImages[uri] = image
-        while tileOrder.count > tileCacheLimit, let oldest = tileOrder.first {
-            tileOrder.removeFirst()
-            tileImages[oldest] = nil
-        }
-    }
-
-    private nonisolated func crop(sheet: UIImage, frame: JellyfinTrickPlayFrame) -> UIImage? {
-        guard let cgImage = sheet.cgImage else { return nil }
-        let scaleX = CGFloat(cgImage.width) / CGFloat(frame.tile.columns * frame.tile.tileWidth)
-        let scaleY = CGFloat(cgImage.height) / CGFloat(frame.tile.rows * frame.tile.tileHeight)
-        let rect = CGRect(x: CGFloat(frame.column * frame.tile.tileWidth) * scaleX,
-                          y: CGFloat(frame.row * frame.tile.tileHeight) * scaleY,
-                          width: CGFloat(frame.tile.tileWidth) * scaleX,
-                          height: CGFloat(frame.tile.tileHeight) * scaleY).integral
-        guard let cropped = cgImage.cropping(to: rect) else { return nil }
-        return UIImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.imageOrientation)
     }
 
     private static func mediaSourceId(from item: MediaItem) -> String? {
@@ -240,9 +264,7 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private let playlistURL: URL
     private var loadedPlaylist: JellyfinTrickPlayPlaylist?
     private var playlistTask: Task<JellyfinTrickPlayPlaylist?, Never>?
-    private var tileImages: [String: UIImage] = [:]
-    private var tileOrder: [String] = []
-    private let tileCacheLimit = 4
+    private var tileCache = JellyfinTrickPlayTileCache()
 
     init?(playlistURL: URL?) {
         guard let playlistURL else { return nil }
@@ -252,7 +274,7 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
         guard let playlist = await playlist(), let frame = playlist.frame(nearMs: targetMs) else { return nil }
         guard let sheet = await tileImage(for: frame.tile) else { return nil }
-        guard let cropped = crop(sheet: sheet, frame: frame),
+        guard let cropped = JellyfinTrickPlayTileRenderer.crop(sheet: sheet, frame: frame),
               let data = cropped.jpegData(compressionQuality: 0.82) else { return nil }
         return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
     }
@@ -276,32 +298,11 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 
     private func tileImage(for tile: JellyfinTrickPlayTile) async -> UIImage? {
-        if let cached = tileImages[tile.uri] { return cached }
+        if let cached = tileCache.image(for: tile.uri) { return cached }
         let url = playlistURL.deletingLastPathComponent().appendingPathComponent(tile.uri)
         guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { return nil }
-        insertTile(image, for: tile.uri)
+        tileCache.insert(image, for: tile.uri)
         return image
-    }
-
-    private func insertTile(_ image: UIImage, for uri: String) {
-        if tileImages[uri] == nil { tileOrder.append(uri) }
-        tileImages[uri] = image
-        while tileOrder.count > tileCacheLimit, let oldest = tileOrder.first {
-            tileOrder.removeFirst()
-            tileImages[oldest] = nil
-        }
-    }
-
-    private nonisolated func crop(sheet: UIImage, frame: JellyfinTrickPlayFrame) -> UIImage? {
-        guard let cgImage = sheet.cgImage else { return nil }
-        let scaleX = CGFloat(cgImage.width) / CGFloat(frame.tile.columns * frame.tile.tileWidth)
-        let scaleY = CGFloat(cgImage.height) / CGFloat(frame.tile.rows * frame.tile.tileHeight)
-        let rect = CGRect(x: CGFloat(frame.column * frame.tile.tileWidth) * scaleX,
-                          y: CGFloat(frame.row * frame.tile.tileHeight) * scaleY,
-                          width: CGFloat(frame.tile.tileWidth) * scaleX,
-                          height: CGFloat(frame.tile.tileHeight) * scaleY).integral
-        guard let cropped = cgImage.cropping(to: rect) else { return nil }
-        return UIImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.imageOrientation)
     }
 }
 
