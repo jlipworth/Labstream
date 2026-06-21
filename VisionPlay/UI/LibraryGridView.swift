@@ -28,22 +28,8 @@ struct LibrariesView: View {
                     jellyfinLibrariesList
                 } else if appModel.activeBackend == .emby {
                     embyLibrariesList
-                } else if sections.isEmpty {
-                    ContentUnavailableView("No libraries",
-                                           systemImage: "rectangle.stack",
-                                           description: Text("This server has no libraries."))
                 } else {
-                    List(sections) { section in
-                        NavigationLink(value: section) {
-                            Label {
-                                Text(section.title).font(.title3)
-                            } icon: {
-                                Image(systemName: icon(for: section.type))
-                                    .foregroundStyle(.tint)
-                            }
-                            .padding(.vertical, DS.Space.xs)
-                        }
-                    }
+                    plexLibrariesList
                 }
             }
         }
@@ -75,30 +61,42 @@ struct LibrariesView: View {
         }
     }
 
-    private func icon(for type: String) -> String {
-        switch type {
-        case "movie": return "film"
-        case "show": return "tv"
-        case "artist": return "music.note"
-        case "photo": return "photo"
-        default: return "rectangle.stack"
+    // The Libraries menu is one shared card grid across all three backends (GH #94).
+    // Each backend feeds the same `LibrarySectionCard` via a `LibrarySectionKind`;
+    // layout (`librarySectionColumns`) and empty-state copy are identical, so the menu
+    // reads as the same app regardless of which server is signed in.
+
+    @ViewBuilder
+    private var plexLibrariesList: some View {
+        if sections.isEmpty {
+            librariesEmptyState
+        } else {
+            ScrollView {
+                LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
+                    ForEach(sections) { section in
+                        NavigationLink(value: section) {
+                            LibrarySectionCard(title: section.title,
+                                               kind: LibrarySectionKind(plexType: section.type))
+                        }
+                        .cardLink(cornerRadius: DS.Radius.card)
+                    }
+                }
+                .padding(DS.Space.xl)
+            }
         }
     }
 
     @ViewBuilder
     private var jellyfinLibrariesList: some View {
         if jellyfinViews.isEmpty {
-            ContentUnavailableView("No Jellyfin libraries",
-                                   systemImage: "rectangle.stack",
-                                   description: Text("This Jellyfin user has no visible libraries."))
+            librariesEmptyState
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260, maximum: 340),
-                                    spacing: DS.Space.xl)],
-                          spacing: DS.Space.xl) {
+                LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
                     ForEach(jellyfinViews) { view in
                         NavigationLink(value: view) {
-                            JellyfinLibraryCard(view: view)
+                            LibrarySectionCard(title: view.title,
+                                               kind: LibrarySectionKind(collectionType: view.collectionType))
                         }
                         .cardLink(cornerRadius: DS.Radius.card)
                     }
@@ -111,17 +109,14 @@ struct LibrariesView: View {
     @ViewBuilder
     private var embyLibrariesList: some View {
         if embyViews.isEmpty {
-            ContentUnavailableView("No Emby libraries",
-                                   systemImage: "rectangle.stack",
-                                   description: Text("This Emby user has no visible libraries."))
+            librariesEmptyState
         } else {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 260, maximum: 340),
-                                    spacing: DS.Space.xl)],
-                          spacing: DS.Space.xl) {
+                LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
                     ForEach(embyViews) { view in
                         NavigationLink(value: view) {
-                            EmbyLibraryCard(view: view)
+                            LibrarySectionCard(title: view.title,
+                                               kind: LibrarySectionKind(collectionType: view.collectionType))
                         }
                         .cardLink(cornerRadius: DS.Radius.card)
                     }
@@ -129,6 +124,16 @@ struct LibrariesView: View {
                 .padding(DS.Space.xl)
             }
         }
+    }
+
+    private var librarySectionColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 260, maximum: 340), spacing: DS.Space.xl)]
+    }
+
+    private var librariesEmptyState: some View {
+        ContentUnavailableView("No libraries",
+                               systemImage: "rectangle.stack",
+                               description: Text("This server has no libraries."))
     }
 
     private func load(force: Bool = false) async {
@@ -215,7 +220,7 @@ struct LibraryGridView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var slots: [MediaItem?] = []
-    @State private var firstCharacters: [LibraryFirstCharacter] = []
+    @State private var firstCharacters: [AlphabetBucket] = []
     @State private var loadState: HomeView.LoadState = .idle
     @State private var loadingPages: Set<Int> = []
 
@@ -359,8 +364,15 @@ struct LibraryGridView: View {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: "Jellyfin",
                                                      fields: ["page_size": pageSize])
+        // Run the first page and the alphabet-rail probe CONCURRENTLY (GH #96), mirroring
+        // the Plex `async let` path. Previously the rail was kicked off in a deferred
+        // `Task` AFTER the page loaded and ran 26 SEQUENTIAL letter probes, so the rail
+        // took ~10s to appear. The probe is parallelized internally (see
+        // `jellyfinAlphabetCounts`) and starts here, off the first page's critical path.
+        let service = JellyfinBrowseService(appModel: appModel)
+        async let rawCounts = jellyfinAlphabetCounts(service: service, view: view)
         do {
-            let page = try await JellyfinBrowseService(appModel: appModel)
+            let page = try await service
                 .itemsPage(parentId: view.id,
                            recursive: false,
                            startIndex: 0,
@@ -379,8 +391,11 @@ struct LibraryGridView: View {
                 "item_count": page.items.count,
                 "total_count": total,
             ])
-            Task { await loadJellyfinFirstCharacters(view: view, total: total) }
+            // The page is already shown; await the (concurrently-running) probe and apply
+            // the rail when it resolves. Uses the SAME offset math as Plex.
+            firstCharacters = AlphabetBucket.buckets(from: await rawCounts, total: total)
         } catch {
+            _ = await rawCounts
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
@@ -390,8 +405,11 @@ struct LibraryGridView: View {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: "Emby",
                                                      fields: ["page_size": pageSize])
+        // Concurrent first-page + parallelized alphabet probe — see `loadJellyfin` (GH #96).
+        let service = EmbyBrowseService(appModel: appModel)
+        async let rawCounts = embyAlphabetCounts(service: service, view: view)
         do {
-            let page = try await EmbyBrowseService(appModel: appModel)
+            let page = try await service
                 .itemsPage(parentId: view.id,
                            recursive: false,
                            startIndex: 0,
@@ -410,8 +428,9 @@ struct LibraryGridView: View {
                 "item_count": page.items.count,
                 "total_count": total,
             ])
-            Task { await loadEmbyFirstCharacters(view: view, total: total) }
+            firstCharacters = AlphabetBucket.buckets(from: await rawCounts, total: total)
         } catch {
+            _ = await rawCounts
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
@@ -505,52 +524,62 @@ struct LibraryGridView: View {
         }
         loadingPages.remove(page)
     }
-    private func loadJellyfinFirstCharacters(view: JellyfinLibraryLink, total: Int) async {
+    /// Probe each A–Z letter's item count for the Jellyfin alphabet rail, IN PARALLEL
+    /// (GH #96). Returns letters with at least one item, in alphabetical order, as raw
+    /// `(display, count)` pairs — the caller turns them into `AlphabetBucket`s with the
+    /// shared offset math once `total` is known. Previously these 26 `limit: 1` probes
+    /// ran sequentially (~10s); a task group overlaps them so the rail appears in roughly
+    /// one round-trip.
+    private func jellyfinAlphabetCounts(service: JellyfinBrowseService,
+                                        view: JellyfinLibraryLink) async -> [(display: String, count: Int)] {
         let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
-        let service = JellyfinBrowseService(appModel: appModel)
-        var counts: [(display: String, count: Int)] = []
-        for letter in letters {
-            let page = try? await service.itemsPage(parentId: view.id,
-                                                    recursive: false,
-                                                    limit: 1,
-                                                    nameStartsWith: letter,
-                                                    includeItemTypes: jellyfinLibraryItemTypes(for: view),
-                                                    fields: JellyfinLibrary.gridItemFields)
-            let count = page?.total ?? 0
-            if count > 0 { counts.append((letter, count)) }
+        let itemTypes = jellyfinLibraryItemTypes(for: view)
+        let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
+            for (index, letter) in letters.enumerated() {
+                group.addTask {
+                    let page = try? await service.itemsPage(parentId: view.id,
+                                                            recursive: false,
+                                                            limit: 1,
+                                                            nameStartsWith: letter,
+                                                            includeItemTypes: itemTypes,
+                                                            fields: JellyfinLibrary.gridItemFields)
+                    return (index, letter, page?.total ?? 0)
+                }
+            }
+            var byIndex: [Int: (String, Int)] = [:]
+            for await (index, letter, count) in group where count > 0 {
+                byIndex[index] = (letter, count)
+            }
+            return byIndex
         }
-        var offset = 0
-        let entries = counts.map { entry -> LibraryFirstCharacter in
-            defer { offset += entry.count }
-            return LibraryFirstCharacter(display: entry.display,
-                                         count: entry.count,
-                                         offset: min(offset, max(total - 1, 0)))
-        }
-        firstCharacters = entries
+        // Re-impose alphabetical order — task-group results arrive out of order.
+        return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
     }
 
-    private func loadEmbyFirstCharacters(view: EmbyLibraryLink, total: Int) async {
+    /// Emby twin of `jellyfinAlphabetCounts` (GH #96) — identical parallelized probe.
+    private func embyAlphabetCounts(service: EmbyBrowseService,
+                                    view: EmbyLibraryLink) async -> [(display: String, count: Int)] {
         let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
-        let service = EmbyBrowseService(appModel: appModel)
-        var counts: [(display: String, count: Int)] = []
-        for letter in letters {
-            let page = try? await service.itemsPage(parentId: view.id,
-                                                    recursive: false,
-                                                    limit: 1,
-                                                    nameStartsWith: letter,
-                                                    includeItemTypes: embyLibraryItemTypes(for: view),
-                                                    fields: EmbyLibrary.gridItemFields)
-            let count = page?.total ?? 0
-            if count > 0 { counts.append((letter, count)) }
+        let itemTypes = embyLibraryItemTypes(for: view)
+        let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
+            for (index, letter) in letters.enumerated() {
+                group.addTask {
+                    let page = try? await service.itemsPage(parentId: view.id,
+                                                            recursive: false,
+                                                            limit: 1,
+                                                            nameStartsWith: letter,
+                                                            includeItemTypes: itemTypes,
+                                                            fields: EmbyLibrary.gridItemFields)
+                    return (index, letter, page?.total ?? 0)
+                }
+            }
+            var byIndex: [Int: (String, Int)] = [:]
+            for await (index, letter, count) in group where count > 0 {
+                byIndex[index] = (letter, count)
+            }
+            return byIndex
         }
-        var offset = 0
-        let entries = counts.map { entry -> LibraryFirstCharacter in
-            defer { offset += entry.count }
-            return LibraryFirstCharacter(display: entry.display,
-                                         count: entry.count,
-                                         offset: min(offset, max(total - 1, 0)))
-        }
-        firstCharacters = entries
+        return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
     }
 
 }
@@ -588,12 +617,12 @@ private struct LibraryPlaceholderPoster: View {
 }
 
 private struct LibraryAlphabetRail: View {
-    let entries: [LibraryFirstCharacter]
-    let onPick: (LibraryFirstCharacter) -> Void
+    let entries: [AlphabetBucket]
+    let onPick: (AlphabetBucket) -> Void
 
     var body: some View {
         VStack(spacing: 2) {
-            ForEach(entries) { entry in
+            ForEach(entries, id: \.display) { entry in
                 Button {
                     onPick(entry)
                 } label: {
@@ -612,14 +641,6 @@ private struct LibraryAlphabetRail: View {
         .padding(.horizontal, 4)
         .background(.ultraThinMaterial, in: Capsule())
     }
-}
-
-private struct LibraryFirstCharacter: Identifiable, Equatable {
-    let display: String
-    let count: Int
-    let offset: Int
-
-    var id: String { display }
 }
 
 private struct FirstCharacterResponse: Decodable {
@@ -660,17 +681,13 @@ private struct FirstCharacterResponse: Decodable {
         }
     }
 
-    func libraryEntries(totalSize: Int) -> [LibraryFirstCharacter] {
-        var runningOffset = 0
-        var result: [LibraryFirstCharacter] = []
-        for entry in mediaContainer.directory {
-            let display = (entry.title ?? entry.key ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !display.isEmpty, entry.count > 0 else { continue }
-            result.append(.init(display: display, count: entry.count,
-                                offset: min(runningOffset, max(totalSize - 1, 0))))
-            runningOffset += entry.count
+    /// Maps the Plex first-character response onto the shared `AlphabetBucket` math so
+    /// the rail offsets match the Jellyfin/Emby probe path exactly (GH #96).
+    func libraryEntries(totalSize: Int) -> [AlphabetBucket] {
+        let counts: [(display: String, count: Int)] = mediaContainer.directory.map {
+            (display: ($0.title ?? $0.key ?? ""), count: $0.count)
         }
-        return result
+        return AlphabetBucket.buckets(from: counts, total: totalSize)
     }
 }
 
@@ -679,107 +696,6 @@ private extension KeyedDecodingContainer {
         if let int = try decodeIfPresent(Int.self, forKey: key) { return int }
         if let string = try decodeIfPresent(String.self, forKey: key) { return Int(string) }
         return nil
-    }
-}
-
-struct JellyfinLibraryCard: View {
-    let view: JellyfinLibraryLink
-
-    var body: some View {
-        HStack(spacing: DS.Space.lg) {
-            ZStack {
-                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                    .fill(.tint.opacity(0.18))
-                Image(systemName: jellyfinLibraryIcon(collectionType: view.collectionType))
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.tint)
-            }
-            .frame(width: 76, height: 76)
-
-            VStack(alignment: .leading, spacing: DS.Space.xs) {
-                Text(view.title)
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                Text(jellyfinLibrarySubtitle(collectionType: view.collectionType))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(DS.Space.lg)
-        .frame(width: 300, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
-        )
-        .posterHover()
-    }
-}
-
-struct EmbyLibraryCard: View {
-    let view: EmbyLibraryLink
-
-    var body: some View {
-        HStack(spacing: DS.Space.lg) {
-            ZStack {
-                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                    .fill(.tint.opacity(0.18))
-                Image(systemName: jellyfinLibraryIcon(collectionType: view.collectionType))
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(.tint)
-            }
-            .frame(width: 76, height: 76)
-
-            VStack(alignment: .leading, spacing: DS.Space.xs) {
-                Text(view.title)
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                Text(jellyfinLibrarySubtitle(collectionType: view.collectionType))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(DS.Space.lg)
-        .frame(width: 300, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
-        )
-        .posterHover()
-    }
-}
-
-func jellyfinLibraryIcon(collectionType: String?) -> String {
-    switch collectionType?.lowercased() {
-    case "movies": return "film"
-    case "tvshows": return "tv"
-    case "music": return "music.note"
-    case "boxsets": return "square.stack.3d.up"
-    case "homevideos", "livetv": return "play.rectangle"
-    case "photos": return "photo"
-    case "folders": return "folder"
-    default: return "rectangle.stack"
-    }
-}
-
-func jellyfinLibrarySubtitle(collectionType: String?) -> String {
-    switch collectionType?.lowercased() {
-    case "movies": return "Movies"
-    case "tvshows": return "TV shows"
-    case "music": return "Music"
-    case "boxsets": return "Collections"
-    case "homevideos": return "Home videos"
-    case "livetv": return "Live TV"
-    case "photos": return "Photos"
-    case "folders": return "Folder"
-    default: return "Library"
     }
 }
 
