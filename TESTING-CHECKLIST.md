@@ -64,6 +64,25 @@ required**.
       `log show --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Downloads"'`
 - [ ] **Download sheet probe-failure fallback** — with the server briefly unreachable when the sheet
       opens, it still offers the optimize presets (it must never dead-end on a probe failure).
+- [x] **Simultaneous cross-backend downloads (GH #84)** ✅ verified live — a Plex optimized download
+      and a Jellyfin optimized download running at the same time each progress through their own
+      phases and complete independently; neither orphans or false-fails the other. Offline rows show
+      a per-backend badge (Plex/Jellyfin/Emby) when the library mixes backends. Emby optimized
+      (live-transcode stream) download also verified concurrently.
+- [ ] **Active-backend switch DURING a download (GH #84)** — start a download on one backend, switch
+      the active backend in Settings to another (and back) while it is in flight: the in-flight job
+      keeps running on its OWN persisted backend session (credentials/server resolved once at enqueue,
+      never re-read from the now-active lane). Run both orderings (Plex-first, JF/Emby-first).
+- [ ] **Relaunch mid-flight reconcile (GH #84)** — with one or more downloads in flight, force-quit
+      (`xcrun simctl terminate <SIMID> com.jlipworth.VisionPlay`) and relaunch: a Plex server-prep row
+      re-polls/resumes; a JF/Emby live-transcode row reconciles to failed/retryable with a correct
+      reason; nothing false-fails or orphans. Legacy decode/migration must not crash.
+- [ ] **Pending-prep row, lane signed out (GH #84)** — sign out of the backend that owns a queued
+      server-prep row: the row reads "Paused — <Backend> signed out" (not "Preparing on server…") and
+      auto-resumes when that backend is signed back in.
+- [x] **Backend switch does not bounce to Home (GH #84)** ✅ verified live — switching the active
+      backend to Plex stays on the current screen (e.g. Settings) just like a Jellyfin↔Emby switch,
+      instead of tearing down to the Home screen during Plex server re-discovery.
 
 ## B. Player features
 
