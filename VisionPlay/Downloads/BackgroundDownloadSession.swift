@@ -435,8 +435,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
 
         Task { [weak self] in
-            let validation = await Self.validateLocalPlayback(destination)
             guard let self else { return }
+            // GH #98: the post-download playability probe is an INTERMITTENT false-negative — on a
+            // device busy right after a heavy transcode+download, AVFoundation can transiently fail
+            // to open/advance a COMPLETE file that a later attempt on the same bytes plays fine
+            // (confirmed: a download that "did not start local playback" succeeded on a plain
+            // re-download with no other change). Retry with progressively longer timeouts before
+            // condemning the download.
+            var validation = await Self.validateLocalPlayback(destination)
+            if !validation.played {
+                for extraTimeout in [15.0, 25.0] {
+                    downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
+                    try? await Task.sleep(for: .seconds(2))
+                    validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)
+                    if validation.played { break }
+                }
+            }
             // Truncation guard: a transcode that aborts early (or a static download cut short by the
             // server while still returning HTTP 200) can open and play its first fraction of a second
             // and otherwise pass the probe. Compare the decoded duration to the EXPECTED media
@@ -472,13 +486,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
-                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) bytes=\(bytes, privacy: .public)")
+                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) detail=\(validation.detail ?? "nil", privacy: .public) bytes=\(bytes, privacy: .public) preserved=true")
                 AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label(validation.reason),
+                    "detail": .label(validation.detail ?? "none"),
                     "bytes": .bytes(bytes),
+                    "preserved": .bool(true),
                 ])
-                try? self.fileManager.removeItem(at: destination)
+                // GH #98: do NOT delete the file on a probe failure. The probe is an intermittent
+                // false-negative on COMPLETE downloads; deleting forces a wasteful 0% re-download and
+                // discards good bytes. A `.failed` row never reconciles back to `.complete`
+                // (see DownloadStatus.reconciledStatus), so keeping the bytes is safe, lets a retry
+                // reuse/inspect them, and preserves the file for on-device diagnosis.
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.onError?(ratingKey, .invalidDownload("Downloaded file did not start local playback (\(validation.reason))."))
@@ -488,10 +508,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
 
-    private static func validateLocalPlayback(_ url: URL) async -> (played: Bool, reason: String, durationMs: Int?) {
+    /// - Parameter timeoutSecondsOverride: when set, overrides the policy's ready/play deadline.
+    ///   Used by the GH #98 retry to give a busy device more time before condemning a complete file.
+    /// - Returns: `detail` carries `AVPlayerItem.error` on an `item_failed` result, for diagnosis.
+    private static func validateLocalPlayback(_ url: URL, timeoutSecondsOverride: Double? = nil)
+        async -> (played: Bool, reason: String, durationMs: Int?, detail: String?) {
         let asset = AVURLAsset(url: url)
         let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
-        guard assetPlayable else { return (false, "asset_not_playable", nil) }
+        guard assetPlayable else { return (false, "asset_not_playable", nil, nil) }
         let durationMs: Int?
         if let duration = try? await asset.load(.duration),
            duration.seconds.isFinite, duration.seconds > 0 {
@@ -500,6 +524,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             durationMs = nil
         }
         let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs)
+        let timeoutSeconds = timeoutSecondsOverride ?? policy.timeoutSeconds
 
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
@@ -512,12 +537,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             player.replaceCurrentItem(with: nil)
         }
 
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(policy.timeoutSeconds * 1000)))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(timeoutSeconds * 1000)))
         var sawReady = false
         while ContinuousClock.now < deadline {
             switch item.status {
             case .failed:
-                return (false, "item_failed", durationMs)
+                return (false, "item_failed", durationMs, item.error.map { String(describing: $0) })
             case .readyToPlay:
                 sawReady = true
             case .unknown:
@@ -527,11 +552,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let seconds = player.currentTime().seconds
             if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
-                return (true, "played", durationMs)
+                return (true, "played", durationMs, nil)
             }
             try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
-        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs)
+        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs, nil)
     }
 
     func urlSession(_ session: URLSession,
