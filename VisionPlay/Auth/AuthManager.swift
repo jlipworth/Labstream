@@ -828,10 +828,12 @@ final class AuthManager {
         let preferredID = keychain.selectedPlexServerID
             ?? appModel.selectedServer?.clientIdentifier
         appModel.plexServers = servers
-        appModel.selectedServer = nil
-        appModel.serverToken = nil
-        appModel.serverBaseURL = nil
-        appModel.selectedServerConnectionIsLocal = false
+        // Do NOT clear selectedServer/serverToken/serverBaseURL up front. Nulling them here
+        // dropped `isBrowseReady` to false for the entire discovery window, so switching TO Plex
+        // made ContentView swap RootView for the "Connecting…" splash and rebuild at Home —
+        // unlike a Jellyfin↔Emby switch, whose already-hydrated lane keeps `isBrowseReady` true.
+        // Keep the existing connection live until a new one is resolved (applyPlexServerSelection
+        // overwrites on success); only clear below if discovery finds nothing reachable.
 
         let candidates: [PlexDevice]
         if let preferredID, let preferred = servers.first(where: { $0.clientIdentifier == preferredID }) {
@@ -848,6 +850,12 @@ final class AuthManager {
                 continue
             }
         }
+        // No reachable server — now clear the stale selection so `isBrowseReady` honestly reports
+        // not-ready (the caller surfaces a discovery-failed/sign-out state).
+        appModel.selectedServer = nil
+        appModel.serverToken = nil
+        appModel.serverBaseURL = nil
+        appModel.selectedServerConnectionIsLocal = false
         throw PlexError.serverUnreachable
     }
 
