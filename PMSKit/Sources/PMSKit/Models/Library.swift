@@ -125,6 +125,24 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// Empty/nil when the item carries no genres.
     public let genres: [Tag]?
 
+    // MARK: - Extended metadata (#76 — cast/studios/critic rating, title logo)
+
+    /// Separate critic/aggregate rating distinct from the audience `rating`. Plex
+    /// `audienceRating`; Jellyfin/Emby `CriticRating`. The detail header shows it as a
+    /// second badge next to the audience star. `nil` when the backend doesn't rate it.
+    public let criticRating: Double?
+    /// Cast (`Role` on Plex, `People` of type Actor on Jellyfin/Emby). Surfaced as a
+    /// "Cast" line on the detail header. Empty/nil when absent.
+    public let roles: [Tag]?
+    /// Directors (`Director` on Plex, `People` of type Director on Jellyfin/Emby).
+    public let directors: [Tag]?
+    /// Production studios (`Country`/`Studio` on Plex, `Studios` on Jellyfin/Emby).
+    public let studios: [Tag]?
+    /// Title/clear-logo artwork key, when the backend exposes one (Plex `Image` of type
+    /// `clearLogo`; Jellyfin/Emby `Logo`). Drives an optional title-art overlay. `nil` for
+    /// items with no logo.
+    public let logo: String?
+
     // MARK: - TV hierarchy (show → season → episode)
     //
     // PMS decorates an *episode* with its season (`parent…`) and show (`grandparent…`)
@@ -197,6 +215,12 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case contentRating
         case tagline
         case genres = "Genre"
+        case criticRating = "audienceRating"
+        case roles = "Role"
+        case directors = "Director"
+        case studios = "Country"
+        case logo
+        case images = "Image"
         case grandparentTitle
         case grandparentRatingKey
         case grandparentThumb
@@ -212,6 +236,58 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case composite
         case leafCount
         case playlistType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ratingKey = try c.decode(String.self, forKey: .ratingKey)
+        key = try c.decodeIfPresent(String.self, forKey: .key)
+        title = try c.decode(String.self, forKey: .title)
+        type = try c.decode(String.self, forKey: .type)
+        duration = try c.decodeIfPresent(Int.self, forKey: .duration)
+        viewOffset = try c.decodeIfPresent(Int.self, forKey: .viewOffset)
+        viewCount = try c.decodeIfPresent(Int.self, forKey: .viewCount)
+        year = try c.decodeIfPresent(Int.self, forKey: .year)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
+        thumb = try c.decodeIfPresent(String.self, forKey: .thumb)
+        art = try c.decodeIfPresent(String.self, forKey: .art)
+        media = try c.decodeIfPresent([Media].self, forKey: .media)
+        librarySectionID = try c.decodeIfPresent(Int.self, forKey: .librarySectionID)
+        librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
+        chapters = try c.decodeIfPresent([Chapter].self, forKey: .chapters)
+        markers = try c.decodeIfPresent([Marker].self, forKey: .markers)
+        rating = try c.decodeIfPresent(Double.self, forKey: .rating)
+        contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
+        tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
+        genres = try c.decodeIfPresent([Tag].self, forKey: .genres)
+        criticRating = try c.decodeIfPresent(Double.self, forKey: .criticRating)
+        roles = try c.decodeIfPresent([Tag].self, forKey: .roles)
+        directors = try c.decodeIfPresent([Tag].self, forKey: .directors)
+        studios = try c.decodeIfPresent([Tag].self, forKey: .studios)
+        // Plex exposes a clear/title logo only as one entry in the `Image` array
+        // (`{ alt, type: "clearLogo", url }`); there is no top-level `logo` key. Prefer a
+        // literal `logo` if a backend ever sends one, else lift the clearLogo URL.
+        if let direct = try c.decodeIfPresent(String.self, forKey: .logo) {
+            logo = direct
+        } else {
+            let images = try c.decodeIfPresent([PlexImage].self, forKey: .images) ?? []
+            logo = images.first { $0.type == "clearLogo" }?.url
+        }
+        grandparentTitle = try c.decodeIfPresent(String.self, forKey: .grandparentTitle)
+        grandparentRatingKey = try c.decodeIfPresent(String.self, forKey: .grandparentRatingKey)
+        grandparentThumb = try c.decodeIfPresent(String.self, forKey: .grandparentThumb)
+        parentTitle = try c.decodeIfPresent(String.self, forKey: .parentTitle)
+        parentRatingKey = try c.decodeIfPresent(String.self, forKey: .parentRatingKey)
+        parentThumb = try c.decodeIfPresent(String.self, forKey: .parentThumb)
+        parentIndex = try c.decodeIfPresent(Int.self, forKey: .parentIndex)
+        index = try c.decodeIfPresent(Int.self, forKey: .index)
+        originalTitle = try c.decodeIfPresent(String.self, forKey: .originalTitle)
+        lastViewedAt = try c.decodeIfPresent(Int.self, forKey: .lastViewedAt)
+        parentYear = try c.decodeIfPresent(Int.self, forKey: .parentYear)
+        ratingCount = try c.decodeIfPresent(Int.self, forKey: .ratingCount)
+        composite = try c.decodeIfPresent(String.self, forKey: .composite)
+        leafCount = try c.decodeIfPresent(Int.self, forKey: .leafCount)
+        playlistType = try c.decodeIfPresent(String.self, forKey: .playlistType)
     }
 
     public init(ratingKey: String,
@@ -234,6 +310,11 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 contentRating: String? = nil,
                 tagline: String? = nil,
                 genres: [Tag]? = nil,
+                criticRating: Double? = nil,
+                roles: [Tag]? = nil,
+                directors: [Tag]? = nil,
+                studios: [Tag]? = nil,
+                logo: String? = nil,
                 grandparentTitle: String? = nil,
                 grandparentRatingKey: String? = nil,
                 grandparentThumb: String? = nil,
@@ -269,6 +350,11 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.contentRating = contentRating
         self.tagline = tagline
         self.genres = genres
+        self.criticRating = criticRating
+        self.roles = roles
+        self.directors = directors
+        self.studios = studios
+        self.logo = logo
         self.grandparentTitle = grandparentTitle
         self.grandparentRatingKey = grandparentRatingKey
         self.grandparentThumb = grandparentThumb
@@ -285,6 +371,14 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.leafCount = leafCount
         self.playlistType = playlistType
     }
+}
+
+/// A Plex `Image` child element (`{ alt, type, url }`). Plex carries clear/title logos
+/// only here (type `clearLogo`); we lift the matching `url` into `MediaItem.logo`. (#76)
+struct PlexImage: Decodable, Sendable {
+    let alt: String?
+    let type: String?
+    let url: String?
 }
 
 /// A simple Plex tag element (`Genre`, `Director`, `Role`, …). PMS represents each as a
