@@ -99,6 +99,19 @@ afterward. `setup` clones from the golden sim, which `simctl` can only do while 
 golden is **shut down**, so it briefly bounces your booted main sim — expect a ~10s
 blip in the main worktree's simulator when a new worktree is provisioned.
 
+**Booted sims are NOT free — shut them down.** When parallelizing work across several
+worktrees (fanning out agents, many at a time), each linked worktree boots its own
+visionOS simulator and several booted `vpwt-*` clones at once bog down the MacBook. So:
+cap how many run concurrently, and **shut each worktree's sim down the moment its work is
+done** — `xcrun simctl shutdown $(scripts/worktree-sim.sh id)` from inside the worktree
+(or `xcrun simctl shutdown <UDID>`). Every fan-out coding agent should shut down its own
+sim as its final step (after build/smoke-test + commit); the lead should also proactively
+shut down the sims of already-finished batches. Shutting down ≠ teardown — it just frees
+RAM/CPU and the clone (and its login) survive for later. The **golden** sim only needs to
+be booted while the *main* worktree is actively building/testing — when it isn't (e.g. the
+lead is just orchestrating fan-out agents on their own clones), shut golden down too; it's
+re-booted on demand and `setup` needs it shut down to clone anyway.
+
 ### Worktree closeout checklist
 
 Never call worktree cleanup done until the linked simulator is gone. Preferred flow:
