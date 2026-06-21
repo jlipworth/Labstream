@@ -134,14 +134,10 @@ public final class DownloadManager {
     /// state. Fired from `releaseInFlight` (complete/failed/cancel/delete). Original/static
     /// downloads use no encoder, so they are never recorded here.
     ///
-    /// TODO(orphan-on-kill): this map is in-memory, so a HARD app kill while a transcoded Emby
-    /// download is in flight loses the PlaySessionId and the app cannot tear that encoder down on
-    /// next launch (the reconcile-to-`.failed` path has no PlaySessionId to delete). Persisting it
-    /// would require extending OfflineMetadata + a launch-time sweep, so it is deferred.
-    /// Mitigations already in place: servers reap idle encoders after inactivity, and every NORMAL
-    /// terminal transition (complete/failed/cancel/delete) within a session DOES tear down.
-    /// Revisit if leaked encoders are observed in practice — the fix is to persist the
-    /// PlaySessionId and DELETE ActiveEncodings on reconcile.
+    /// #84: the same PlaySessionId is also mirrored into `OfflineMetadata.playSessionID` after the
+    /// row is seeded. Normal terminal transitions tear down from this in-memory map and clear the
+    /// persisted copy on success; hard-kill/relaunch cleanup uses the persisted copy in
+    /// `teardownOrphanedEncodersOnLaunch()`.
     private var embyPlaySessionByRatingKey: [String: String] = [:]
     private var jellyfinPlaySessionByRatingKey: [String: String] = [:]
 
@@ -221,8 +217,7 @@ public final class DownloadManager {
             // at a different server (re-login elsewhere), firing the DELETE there would hit the
             // wrong server and leak the original encoder — skip and keep the psid so a later
             // launch on the matching server retries.
-            if let persistedServer = md.backendServerID, let liveServer = live.serverID,
-               persistedServer != liveServer { continue }
+            guard Self.backendSessionMatchesPersistedServer(metadata: md, live: live) else { continue }
             let key = record.ratingKey
             switch kind {
             case .jellyfin:
@@ -245,6 +240,46 @@ public final class DownloadManager {
                 store.clearPlaySessionID(ratingKey: key)
             }
         }
+    }
+
+    /// Confirm a persisted encoder handle belongs to the currently-restored backend lane before
+    /// sending `DELETE /Videos/ActiveEncodings`. Prefer stable server ids; fall back to the saved
+    /// base URL for servers that did not provide one.
+    private static func backendSessionMatchesPersistedServer(metadata: OfflineMetadata,
+                                                             live: BackendSession) -> Bool {
+        if let persistedID = metadata.backendServerID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !persistedID.isEmpty {
+            return live.serverID == persistedID
+        }
+        guard let persistedURLString = metadata.backendBaseURLString,
+              let persistedURL = URL(string: persistedURLString) else {
+            // Legacy/partial metadata has no server identity to compare. Allow the best-effort
+            // cleanup rather than permanently leaking a known PlaySessionId.
+            return true
+        }
+        return sameBackendBaseURL(persistedURL, live.baseURL)
+    }
+
+    private static func sameBackendBaseURL(_ lhs: URL, _ rhs: URL) -> Bool {
+        let lhsScheme = lhs.scheme?.lowercased()
+        let rhsScheme = rhs.scheme?.lowercased()
+        guard lhsScheme == rhsScheme,
+              lhs.host?.lowercased() == rhs.host?.lowercased(),
+              effectivePort(lhs) == effectivePort(rhs) else { return false }
+        return normalizedBasePath(lhs.path) == normalizedBasePath(rhs.path)
+    }
+
+    private static func effectivePort(_ url: URL) -> Int? {
+        if let port = url.port { return port }
+        switch url.scheme?.lowercased() {
+        case "http": return 80
+        case "https": return 443
+        default: return nil
+        }
+    }
+
+    private static func normalizedBasePath(_ path: String) -> String {
+        path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     /// Absolute local URL for a completed download, if present on disk.
@@ -684,7 +719,8 @@ public final class DownloadManager {
     /// validation pipeline as Plex downloads.
     public func downloadJellyfin(_ item: MediaItem, choice: DownloadChoice,
                                  mediaIndex: Int = 0,
-                                 partIndex: Int = 0) async {
+                                 partIndex: Int = 0,
+                                 mediaSourceIDOverride: String? = nil) async {
         let itemId = item.ratingKey
         let ratingKey = Self.jellyfinRecordKey(itemId)
         // #84: capture the Jellyfin session from its own lane; never re-read `appModel.jellyfin*`
@@ -726,7 +762,7 @@ public final class DownloadManager {
         let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
-        let jellyfinMediaSourceID = Self.jellyfinMediaSourceID(media: media, part: part)
+        let jellyfinMediaSourceID = mediaSourceIDOverride ?? Self.jellyfinMediaSourceID(media: media, part: part)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
@@ -946,7 +982,8 @@ public final class DownloadManager {
     ///   encoder is torn down on every terminal transition (`releaseInFlight`).
     public func downloadEmby(_ item: MediaItem, choice: DownloadChoice,
                              mediaIndex: Int = 0,
-                             partIndex: Int = 0) async {
+                             partIndex: Int = 0,
+                             mediaSourceIDOverride: String? = nil) async {
         let itemId = item.ratingKey
         let ratingKey = Self.embyRecordKey(itemId)
         // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
@@ -991,7 +1028,7 @@ public final class DownloadManager {
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
         // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
         // onto the row after the decision is known (see below).
-        let embyMediaSourceHint = Self.embyMediaSourceID(media: media, part: part)
+        let embyMediaSourceHint = mediaSourceIDOverride ?? Self.embyMediaSourceID(media: media, part: part)
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
@@ -1253,6 +1290,11 @@ public final class DownloadManager {
         let choice: DownloadChoice
         if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
             choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
+        } else if metadata != nil {
+            // #84: stored rows know the original user intent. `makeMediaItem()` intentionally does
+            // not rehydrate full MediaSource/Part arrays, so deriving this from `part` after a
+            // relaunch would incorrectly turn original retries into optimized transcodes.
+            choice = .original
         } else if Self.isLocallyPlayableOriginal(part: part) {
             choice = .original
         } else {
@@ -1274,7 +1316,8 @@ public final class DownloadManager {
             self.store.remove(ratingKey: record.ratingKey)
             await self.downloadJellyfin(item, choice: choice,
                                         mediaIndex: mediaIndex,
-                                        partIndex: partIndex)
+                                        partIndex: partIndex,
+                                        mediaSourceIDOverride: metadata?.mediaSourceID)
             self.refreshRecords()
         }
     }
@@ -1313,7 +1356,8 @@ public final class DownloadManager {
             self.store.remove(ratingKey: record.ratingKey)
             await self.downloadEmby(item, choice: choice,
                                     mediaIndex: mediaIndex,
-                                    partIndex: partIndex)
+                                    partIndex: partIndex,
+                                    mediaSourceIDOverride: metadata?.mediaSourceID)
             self.refreshRecords()
         }
     }
@@ -1729,14 +1773,24 @@ public final class DownloadManager {
                 "download_id": .identifier(ratingKey),
             ])
             let service = EmbyBrowseService(appModel: appModel)
-            Task { await service.stopActiveEncoding(playSessionId: playSessionId) }
+            let store = self.store
+            Task {
+                if await service.stopActiveEncoding(playSessionId: playSessionId) {
+                    store.clearPlaySessionID(ratingKey: ratingKey)
+                }
+            }
         }
         if let playSessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey) {
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
             let service = JellyfinBrowseService(appModel: appModel)
-            Task { await service.stopActiveEncoding(playSessionId: playSessionId) }
+            let store = self.store
+            Task {
+                if await service.stopActiveEncoding(playSessionId: playSessionId) {
+                    store.clearPlaySessionID(ratingKey: ratingKey)
+                }
+            }
         }
     }
 

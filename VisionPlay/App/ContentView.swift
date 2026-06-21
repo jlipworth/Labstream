@@ -53,6 +53,7 @@ struct ContentView: View {
             await authManager.restoreSession()
             bootstrap.isRestoring = false
             downloadManager.resumePendingServerPrepDownloads()
+            downloadManager.teardownOrphanedEncodersOnLaunch()
 #if DEBUG
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
