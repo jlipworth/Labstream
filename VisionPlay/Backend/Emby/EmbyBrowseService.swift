@@ -259,21 +259,38 @@ struct EmbyBrowseService {
     /// server answers that there is nothing to stop (404/400) — either way the FFmpeg job is
     /// no longer live. `false` only when we could not reach/authenticate the server, so the
     /// caller (#84 launch sweep) keeps the persisted PlaySessionId for a later retry.
+    /// Convenience for playback teardown, which always runs on the live (active) lane.
+    /// Download teardown uses the explicit-`session` overload so it targets the job's OWN
+    /// backend even after a switch.
     @discardableResult
     func stopActiveEncoding(playSessionId: String) async -> Bool {
-        guard let context = try? context(), !playSessionId.isEmpty else { return false }
-        guard let req = try? EmbyLibrary.activeEncodingStopRequest(server: context.server,
-                                                                   token: context.token,
+        guard let ctx = try? context() else { return false }
+        let session = BackendSession(kind: .emby, baseURL: ctx.server, token: ctx.token, userID: ctx.userID)
+        return await stopActiveEncoding(playSessionId: playSessionId, session: session)
+    }
+
+    @discardableResult
+    func stopActiveEncoding(playSessionId: String, session: BackendSession) async -> Bool {
+        guard !playSessionId.isEmpty, let userID = session.userID else { return false }
+        // Authenticate against the EXPLICIT session the caller resolved/validated for this job's
+        // backend — never re-read the live `context()` lane, which may have been re-pointed at a
+        // different server since (the #84 launch sweep validates the server match before calling;
+        // `releaseInFlight` passes the job's own lane, which may not be the active one).
+        guard let req = try? EmbyLibrary.activeEncodingStopRequest(server: session.baseURL,
+                                                                   token: session.token,
                                                                    identity: embyIdentity,
-                                                                   userId: context.userID,
+                                                                   userId: userID,
                                                                    deviceId: appModel.identity.clientIdentifier,
                                                                    playSessionId: playSessionId) else { return false }
         do {
             _ = try await send(req)
             return true
         } catch ServiceError.http(let status) {
-            // Server answered. Only an auth rejection means "wrong/expired creds, retry later".
-            return status != 401 && status != 403
+            // Only treat the session-is-unknown answers as "gone": 400/404/410. An auth
+            // rejection (401/403) or a server error (5xx) means the DELETE did NOT confirm
+            // the job is dead — the encoder may still be live, so keep the psid and retry on
+            // a later launch rather than orphaning it (#84).
+            return status == 400 || status == 404 || status == 410
         } catch {
             return false   // transport failure — keep the psid for a later launch
         }

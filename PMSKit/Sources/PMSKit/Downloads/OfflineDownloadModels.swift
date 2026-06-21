@@ -393,10 +393,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// the ratingKey prefix (`jellyfin:` / `emby:` / bare = Plex). This keeps already-
     /// downloaded libraries fully usable after the schema change.
     public func resolvedBackendKind(ratingKey: String) -> DownloadBackendKind {
-        if let backendKind { return backendKind }
-        if ratingKey.hasPrefix("jellyfin:") { return .jellyfin }
-        if ratingKey.hasPrefix("emby:") { return .emby }
-        return .plex
+        backendKind ?? DownloadBackendKind(ratingKeyPrefix: ratingKey)
     }
 
     /// Reconstruct a faithful `MediaItem` for offline playback + retry. Only the

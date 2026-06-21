@@ -28,9 +28,12 @@ public struct OfflineLibraryView: View {
                     )
                 } else {
                     List {
+                        // Resolve the mixed-backend test ONCE per render (it scans every record);
+                        // passing it into each row avoids re-scanning the whole list per row (#84).
+                        let mixedBackends = hasMixedBackends
                         SwiftUI.Section {
                             ForEach(manager.records) { record in
-                                row(for: record)
+                                row(for: record, showBackendBadge: mixedBackends)
                             }
                             .onDelete { offsets in
                                 for index in offsets {
@@ -65,7 +68,7 @@ public struct OfflineLibraryView: View {
     }
 
     @ViewBuilder
-    private func row(for record: DownloadRecord) -> some View {
+    private func row(for record: DownloadRecord, showBackendBadge: Bool) -> some View {
         // Drive the row off the explicit, persisted status (D2) instead of inferring
         // completion from `progress >= 1.0` — a stalled job that froze at <100% and a
         // failed-but-100% body are now distinct, observable states.
@@ -84,7 +87,7 @@ public struct OfflineLibraryView: View {
                     // Only label the backend when the library mixes them, so a
                     // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
                     // and single-backend libraries carry no visual noise.
-                    if hasMixedBackends {
+                    if showBackendBadge {
                         backendBadge(for: record)
                     }
                 }
@@ -186,8 +189,7 @@ public struct OfflineLibraryView: View {
     /// back to the ratingKey prefix. Drives the mixed-backend badge below.
     private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
         record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? (record.ratingKey.hasPrefix("jellyfin:") ? .jellyfin
-                : record.ratingKey.hasPrefix("emby:") ? .emby : .plex)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
     }
 
     /// Only worth labelling rows by backend when the library actually mixes them —
@@ -206,13 +208,14 @@ public struct OfflineLibraryView: View {
     /// when the library mixes backends (#84). Matches the caption typography so it
     /// reads as part of the row rather than a bolted-on control.
     private func backendBadge(for record: DownloadRecord) -> some View {
-        Text(backendKind(for: record).displayName)
+        let name = backendKind(for: record).displayName
+        return Text(name)
             .font(.caption2)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 2)
             .background(.thinMaterial, in: Capsule())
-            .accessibilityLabel("Source: \(backendKind(for: record).displayName)")
+            .accessibilityLabel("Source: \(name)")
     }
 
     /// The locally-cached poster (D5) when present, else the neutral glyph tile.

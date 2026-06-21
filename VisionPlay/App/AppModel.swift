@@ -148,7 +148,6 @@ final class AppModel {
             return BackendSession(kind: .plex,
                                   baseURL: server,
                                   token: srvToken,
-                                  accountToken: (token != srvToken) ? token : nil,
                                   userID: nil,
                                   serverID: selectedServer?.clientIdentifier)
         case .jellyfin:
@@ -156,13 +155,13 @@ final class AppModel {
                   let token = jellyfinAccessToken,
                   let userID = jellyfinUserID else { return nil }
             return BackendSession(kind: .jellyfin, baseURL: server, token: token,
-                                  accountToken: nil, userID: userID, serverID: jellyfinServerID)
+                                  userID: userID, serverID: jellyfinServerID)
         case .emby:
             guard let server = embyServerBaseURL,
                   let token = embyAccessToken,
                   let userID = embyUserID else { return nil }
             return BackendSession(kind: .emby, baseURL: server, token: token,
-                                  accountToken: nil, userID: userID, serverID: embyServerID)
+                                  userID: userID, serverID: embyServerID)
         }
     }
 
@@ -179,16 +178,6 @@ final class AppModel {
 
 extension MediaBackendKind {
     var downloadBackendKind: DownloadBackendKind {
-        switch self {
-        case .plex:     return .plex
-        case .jellyfin: return .jellyfin
-        case .emby:     return .emby
-        }
-    }
-}
-
-extension DownloadBackendKind {
-    var mediaBackendKind: MediaBackendKind {
         switch self {
         case .plex:     return .plex
         case .jellyfin: return .jellyfin
