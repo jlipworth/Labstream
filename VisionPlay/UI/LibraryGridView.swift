@@ -44,7 +44,9 @@ struct LibrariesView: View {
             LibraryGridView(emby: view)
         }
         .navigationDestination(for: MediaItem.self) { item in
-            DetailView(item: item)
+            // Capture the active backend as the item's origin (#100) so actions resolve
+            // against the source backend even after a backend switch.
+            DetailView(item: item, originBackend: appModel.activeBackend)
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }

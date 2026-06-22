@@ -184,4 +184,21 @@ extension MediaBackendKind {
         case .emby:     return .emby
         }
     }
+
+    /// Bridge to PMSKit's backend enum (used by the pure backend-resolution helpers, #100).
+    var backendChoice: MediaBackendChoice {
+        switch self {
+        case .plex:     return .plex
+        case .jellyfin: return .jellyfin
+        case .emby:     return .emby
+        }
+    }
+
+    init(_ choice: MediaBackendChoice) {
+        switch choice {
+        case .plex:     self = .plex
+        case .jellyfin: self = .jellyfin
+        case .emby:     self = .emby
+        }
+    }
 }

@@ -61,3 +61,22 @@ public enum MediaBackendSwitch {
         return credentials.hasSavedSession(for: target) ? .restoreSavedSession : .requireLogin
     }
 }
+
+/// Decides which backend an already-loaded media item must be played/acted against.
+///
+/// A detail screen captures a `MediaItem` value with no backend tag and may outlive a
+/// backend switch (#100). Playback, watched-toggle, and download must target the backend
+/// the item ORIGINATED from — resolving a stale ratingKey against whatever backend happens
+/// to be active now sends, e.g., an Emby ratingKey to a Jellyfin server. This is a pure
+/// function so the rule ("origin always wins, regardless of the current active backend")
+/// is unit-testable without the SwiftUI view tree.
+public enum PlaybackBackendResolver {
+    /// The backend an item's actions must use. Always the item's origin backend; the
+    /// currently-active backend is intentionally ignored (it exists only to document that
+    /// the decision does NOT depend on it).
+    public static func backend(forItemOrigin origin: MediaBackendChoice,
+                               currentActive: MediaBackendChoice) -> MediaBackendChoice {
+        _ = currentActive
+        return origin
+    }
+}
