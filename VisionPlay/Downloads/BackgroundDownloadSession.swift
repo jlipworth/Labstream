@@ -203,15 +203,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         task.resume()
     }
 
-    /// Path + query of a request URL with the `X-Plex-Token` value redacted and the
-    /// host omitted — safe to log for diagnosing a transcode/download rejection without
-    /// leaking the token or the server hostname.
+    /// Path + query of a request URL with token-bearing query values redacted and the host omitted —
+    /// safe to log for diagnosing a transcode/download rejection without leaking credentials or the
+    /// server hostname.
     static func sanitizedPathQuery(_ url: URL?) -> String {
         guard let url, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return "nil"
         }
-        comps.queryItems = comps.queryItems?.map {
-            $0.name == "X-Plex-Token" ? URLQueryItem(name: $0.name, value: "REDACTED") : $0
+        let secretNames = ["X-Plex-Token", "api_key", "ApiKey", "apikey", "token", "access_token"]
+        comps.queryItems = comps.queryItems?.map { item in
+            secretNames.contains { $0.caseInsensitiveCompare(item.name) == .orderedSame }
+                ? URLQueryItem(name: item.name, value: "REDACTED")
+                : item
         }
         let query = comps.query.map { "?\($0)" } ?? ""
         return comps.path + query
@@ -617,4 +620,3 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 }
-

@@ -124,6 +124,32 @@ struct EmbyDownloadTests {
         #expect(transcoding.first?["Protocol"] as? String == "http")
     }
 
+    @Test func compatibleRemuxPlaybackInfoRequestAdvertisesHEVCStaticMp4() throws {
+        let request = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-9",
+            itemId: "item-1",
+            mediaSourceId: "mediasource_1",
+            maxStaticBitrate: 200_000_000)
+
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/emby/Items/item-1/PlaybackInfo")
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["MediaSourceId"] as? String == "mediasource_1")
+        #expect(object["AllowVideoStreamCopy"] as? Bool == true)
+        let profile = try #require(object["DeviceProfile"] as? [String: Any])
+        #expect(profile["Name"] as? String == "VisionPlay-Compatible-Download")
+        let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
+        let first = try #require(transcoding.first)
+        #expect(first["Container"] as? String == "mp4")
+        #expect(first["Protocol"] as? String == "http")
+        #expect(first["Context"] as? String == "Static")
+        #expect(first["VideoCodec"] as? String == "h264,hevc")
+    }
+
     // MARK: - Negotiated verdict decoding (the crux)
 
     /// Anonymized capture of the MKV worst case from a real Emby 4.9 download PlaybackInfo:
