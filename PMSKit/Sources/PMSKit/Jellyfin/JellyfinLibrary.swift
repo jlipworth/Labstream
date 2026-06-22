@@ -248,6 +248,60 @@ public enum JellyfinLibrary {
         return req
     }
 
+    /// #83 "Original quality (compatible)" remux download request.
+    ///
+    /// Asks Jellyfin to stream-COPY the video into an MP4 container (preserving original video
+    /// quality) and copy or transcode-to-AAC the audio. The crux is `videoCodec` listing the
+    /// SOURCE's real video codec alongside `allowVideoStreamCopy=true` + `enableAutoStreamCopy=true`
+    /// — that combination is what makes the server emit `-c:v copy` instead of a re-encode (gated
+    /// server-side by `EncodingHelper.CanStreamCopyVideo`; the server still falls back to a real
+    /// transcode if copy is refused for interlaced/anamorphic/HDR/level reasons).
+    ///
+    /// NOT range-resumable (a remux stream reports `Accept-Ranges: none`, no Content-Length), so the
+    /// caller treats it as forward-only and restarts on failure. For HEVC sources the COMPLETED file
+    /// needs a `hev1`→`hvc1` MP4 tag fixup before AVFoundation will decode it (Jellyfin's
+    /// progressive mp4 path does not force `hvc1`).
+    public static func compatibleRemuxDownloadRequest(server: URL,
+                                                      token: String,
+                                                      identity: JellyfinClientIdentity,
+                                                      itemId: String,
+                                                      mediaSourceId: String?,
+                                                      videoCodec: String,
+                                                      copyAudio: Bool,
+                                                      playSessionId: String? = nil) throws -> URLRequest {
+        let url = try JellyfinPlayback.jellyfinURL(server: server, path: "/Videos/\(itemId)/stream.mp4")
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        // List the source's real video codec so the server is allowed to copy it; keep h264 in the
+        // list as the fallback re-encode target if copy is refused.
+        let videoCodecList = videoCodec == "h264" ? "h264" : "\(videoCodec),h264"
+        var query = [
+            URLQueryItem(name: "static", value: "false"),
+            URLQueryItem(name: "container", value: "mp4"),
+            URLQueryItem(name: "videoCodec", value: videoCodecList),
+            URLQueryItem(name: "audioCodec", value: "aac"),
+            URLQueryItem(name: "audioBitRate", value: "192000"),
+            URLQueryItem(name: "maxAudioChannels", value: "6"),
+            URLQueryItem(name: "allowVideoStreamCopy", value: "true"),
+            URLQueryItem(name: "allowAudioStreamCopy", value: copyAudio ? "true" : "false"),
+            URLQueryItem(name: "enableAutoStreamCopy", value: "true"),
+            URLQueryItem(name: "breakOnNonKeyFrames", value: "false"),
+            URLQueryItem(name: "deviceId", value: identity.deviceId),
+        ]
+        if let playSessionId, !playSessionId.isEmpty {
+            query.append(URLQueryItem(name: "playSessionId", value: playSessionId))
+        }
+        if let mediaSourceId, !mediaSourceId.isEmpty {
+            query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
+        }
+        comps.queryItems = query
+        guard let built = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        var req = authenticatedRequest(url: built, token: token, identity: identity)
+        req.setValue("*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
     public static func imageURL(server: URL,
                                 itemId: String,
                                 imageType: JellyfinImageType,

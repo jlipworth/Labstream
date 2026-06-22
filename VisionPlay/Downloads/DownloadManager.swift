@@ -54,6 +54,10 @@ public final class DownloadManager {
         case original
         /// Server-side optimize to a named preset (the server's real target name).
         case optimize(targetName: String)
+        /// #83: original-quality compatible remux (Jellyfin/Emby only) — copy the video stream into
+        /// an offline-playable MP4, transcoding only audio/container as needed. Forward-only (a
+        /// remux stream is not range-resumable). Plex falls back to `.optimize` for this choice.
+        case optimizeCompatible
     }
 
     /// Internal control-flow error for async optimize work that outlived the row it belonged to.
@@ -495,7 +499,8 @@ public final class DownloadManager {
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: optimizeTargetName,
-                                            session: backendSession)
+                                            session: backendSession,
+                                            downloadLane: Self.downloadLane(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -591,6 +596,13 @@ public final class DownloadManager {
 
         case .optimize(let targetName):
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
+                                             metadata: metadata, session: backendSession)
+
+        case .optimizeCompatible:
+            // #83 is a Jellyfin/Emby-only lane. Plex's optimized-version model already produces a
+            // compatible file at original video quality via its "Original video quality" target, so
+            // map the choice onto that target rather than introducing a no-op Plex path.
+            await triggerOptimizeAndDownload(item: item, targetName: Self.originalFallbackOptimizeTarget(),
                                              metadata: metadata, session: backendSession)
         }
     }
@@ -775,6 +787,7 @@ public final class DownloadManager {
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
         let jellyfinMediaSourceID = mediaSourceIDOverride ?? Self.jellyfinMediaSourceID(media: media, part: part)
+        var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
@@ -782,7 +795,8 @@ public final class DownloadManager {
                                                 return nil
                                             }(),
                                             session: backendSession,
-                                            mediaSourceID: jellyfinMediaSourceID)
+                                            mediaSourceID: jellyfinMediaSourceID,
+                                            downloadLane: Self.downloadLane(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -823,6 +837,62 @@ public final class DownloadManager {
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = playSessionId
                 mintedPlaySessionId = playSessionId
+
+            case .optimizeCompatible:
+                // #83: original-quality compatible remux. Re-probe PlaybackInfo here instead of
+                // trusting the in-memory `Part` streams: retry after relaunch reconstructs a lean
+                // `MediaItem` without stream arrays, and the server's codec/container verdict
+                // is the authoritative remux gate.
+                guard let userId = backendSession.userID, !userId.isEmpty else {
+                    throw DownloadError.notAuthenticated
+                }
+                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+                let infoReq = try JellyfinPlayback.downloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    itemId: itemId, userId: userId,
+                    mediaSourceId: jellyfinMediaSourceID,
+                    maxStaticBitrate: 200_000_000)
+                let (data, response) = try await URLSession.shared.data(for: infoReq)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
+                }
+                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
+                let decision = try JellyfinPlayback.downloadDecision(response: info,
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                resolvedJellyfinMediaSourceID = decision.mediaSourceId
+                let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+                    videoCodec: decision.videoCodec,
+                    audioCodec: decision.audioCodec,
+                    sourceContainer: decision.container)
+                let routeIsRemux = eligibility.isEligible
+                recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "negotiated_direct_play": .bool(decision.supportsDirectPlay),
+                    "negotiated_direct_stream": .bool(decision.supportsDirectStream),
+                    "container": .label(decision.container ?? "unknown"),
+                    "route": .label(routeIsRemux ? "compatible_remux" : "transcode"),
+                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+                ])
+                if routeIsRemux, let videoCodec = eligibility.videoCodec {
+                    // Output keeps original video bytes → expected size ≈ original source size.
+                    expectedBytes = decision.size ?? part?.size
+                    request = try JellyfinLibrary.compatibleRemuxDownloadRequest(
+                        server: server, token: token, identity: identity, itemId: itemId,
+                        mediaSourceId: decision.mediaSourceId,
+                        videoCodec: videoCodec, copyAudio: eligibility.copiesAudio,
+                        playSessionId: decision.playSessionId)
+                } else {
+                    // Stale UI/retry fallback: keep the download safe and playable when the
+                    // source video cannot be copied into the compatible MP4 lane.
+                    let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
+                    expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                                 videoBitrateBps: profile.videoBitrateBps)
+                    request = Self.jellyfinTranscodedDownloadRequest(
+                        server, token, identity, itemId, decision.mediaSourceId,
+                        decision.playSessionId, profile)
+                }
+                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                mintedPlaySessionId = decision.playSessionId
             }
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -845,13 +915,17 @@ public final class DownloadManager {
         if let mintedPlaySessionId {
             store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
         }
+        if let resolvedJellyfinMediaSourceID,
+           resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
+            store.setMediaSourceID(ratingKey: ratingKey, resolvedJellyfinMediaSourceID)
+        }
         refreshRecords()
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
+        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
                            server: server, token: token)
         if case .original = choice {
-            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
+            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                        part: part, server: server, token: token, identity: identity)
         }
 
@@ -863,11 +937,15 @@ public final class DownloadManager {
                 "url_shape": .urlShape(request.url),
                 "expected_bytes": .bytes(expectedBytes),
             ])
-            // A Jellyfin `.optimize` download streams the file directly from the transcoder —
-            // there is no separate "render then static download" phase, so the byte rate is
-            // transcode-gated for the entire transfer. Mark it so the rate isn't misread as a
-            // network problem. `.original` is a static file stream → network-bound, not marked.
-            if case .optimize = choice { transcodeSourcedDownloads.insert(ratingKey) }
+            // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
+            // the transcoder/remuxer — there is no separate "render then static download" phase, so
+            // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
+            // Mark it so the rate isn't misread as a network problem. `.original` is a static file
+            // stream → network-bound, range-resumable, not marked.
+            switch choice {
+            case .optimize, .optimizeCompatible: transcodeSourcedDownloads.insert(ratingKey)
+            case .original: break
+            }
             try session.start(ratingKey: ratingKey,
                               with: request,
                               to: destination,
@@ -1050,7 +1128,8 @@ public final class DownloadManager {
                                                 return nil
                                             }(),
                                             session: backendSession,
-                                            mediaSourceID: embyMediaSourceHint)
+                                            mediaSourceID: embyMediaSourceHint,
+                                            downloadLane: Self.downloadLane(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -1068,17 +1147,29 @@ public final class DownloadManager {
         // original download — a bitrate cap must NEVER force a transcode verdict for a download.
         let decision: EmbyPlayback.EmbyDownloadPlaybackDecision
         do {
-            let infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity,
-                userId: userId, itemId: itemId,
-                mediaSourceId: embyMediaSourceHint,
-                maxStaticBitrate: 200_000_000)
+            let infoReq: URLRequest
+            if case .optimizeCompatible = choice {
+                // #83: keep the normal download profile conservative for the forced-transcode lane,
+                // but use a remux profile here so HEVC stream-copy eligibility is visible.
+                infoReq = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    userId: userId, itemId: itemId,
+                    mediaSourceId: embyMediaSourceHint,
+                    maxStaticBitrate: 200_000_000)
+            } else {
+                infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    userId: userId, itemId: itemId,
+                    mediaSourceId: embyMediaSourceHint,
+                    maxStaticBitrate: 200_000_000)
+            }
             let (data, response) = try await URLSession.shared.data(for: infoReq)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
             }
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            decision = try EmbyPlayback.downloadDecision(response: info)
+            decision = try EmbyPlayback.downloadDecision(response: info,
+                                                         preferredMediaSourceId: embyMediaSourceHint)
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1093,32 +1184,48 @@ public final class DownloadManager {
             return
         }
 
-        // Two-gate detection rule: original ⇔ negotiated DirectPlay AND locally playable container.
-        // The user's `.optimize` choice always forces the transcode lane; `.original` is honoured
-        // only when the negotiation agrees.
+        // Three-way route detection against the AUTHORITATIVE negotiated verdict:
+        //   .original          ⇔ negotiated DirectPlay AND locally playable container
+        //   .compatibleRemux   ⇔ user chose it AND source video copyable (#83)
+        //   .transcode         ⇔ otherwise (forced h264/aac re-encode)
+        // The user's `.optimize` choice always forces the transcode lane.
         let containerGate = Self.isLocallyPlayableOriginal(part: part)
             || ["mp4", "m4v", "mov"].contains((decision.container ?? "").lowercased())
-        let useOriginal: Bool
+        let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+            videoCodec: decision.videoCodec, audioCodec: decision.audioCodec,
+            sourceContainer: decision.container)
+        enum EmbyDownloadRoute { case original, compatibleRemux, transcode }
+        let route: EmbyDownloadRoute
         switch choice {
         case .original:
-            useOriginal = decision.supportsDirectPlay && containerGate
+            route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
+        case .optimizeCompatible:
+            // Honour the compatible lane when the source video is stream-copy eligible. The
+            // negotiated DirectStream flag may be false for audio-only transcode cases (for
+            // example HEVC + DTS -> MP4 + AAC), which still preserve original video quality.
+            route = remuxEligibility.isEligible ? .compatibleRemux : .transcode
         case .optimize:
-            useOriginal = false
+            route = .transcode
         }
         recordDownloadDiagnostic("downloads.emby_decision", fields: [
             "download_id": .identifier(ratingKey),
             "negotiated_direct_play": .bool(decision.supportsDirectPlay),
+            "negotiated_direct_stream": .bool(decision.supportsDirectStream),
             "container": .label(decision.container ?? "unknown"),
             "container_gate": .bool(containerGate),
-            "route": .label(useOriginal ? "original" : "transcode"),
+            "route": .label(route == .original ? "original" : route == .compatibleRemux ? "compatible_remux" : "transcode"),
             "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
         ])
 
         var request: URLRequest
         var destination: URL
         var expectedBytes: Int?
+        // Both the transcode and compatible-remux lanes are encoder-served, forward-only, and mint a
+        // server-side session that MUST be torn down on a terminal transition.
+        let useServerSession = (route != .original)
         do {
-            if useOriginal {
+            switch route {
+            case .original:
                 let ext = decision.container ?? part?.container ?? media?.container ?? "mp4"
                 destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
@@ -1127,7 +1234,23 @@ public final class DownloadManager {
                     itemId: itemId, mediaSourceId: decision.mediaSourceId, container: ext)
                 // Emby's Part.size is nil — MediaSource.Size is the only storage signal.
                 expectedBytes = decision.size
-            } else {
+
+            case .compatibleRemux:
+                // #83: copy the original video into MP4, transcode audio→AAC as needed. Output keeps
+                // original video bytes → expected size ≈ source size (the AVPlayer probe + HEVC tag
+                // fixup are the correctness gate; a server copy failure falls to a retry, not silent
+                // corruption).
+                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+                request = try EmbyLibrary.compatibleRemuxDownloadRequest(
+                    server: server, token: token, identity: identity, userId: userId,
+                    itemId: itemId, mediaSourceId: decision.mediaSourceId,
+                    playSessionId: decision.playSessionId,
+                    videoCodec: remuxEligibility.videoCodec ?? "h264",
+                    copyAudio: remuxEligibility.copiesAudio,
+                    audioBitrate: 192_000)
+                expectedBytes = decision.size
+
+            case .transcode:
                 // Emby mints a codecless `/videos/{id}/stream` URL that ffmpeg stream-COPIES and
                 // fails on (HTTP 500) for HEVC/DTS sources; build the EXPLICIT static `stream.mp4`
                 // transcode URL with the minted PlaySessionId instead (see transcodedDownloadRequest).
@@ -1178,14 +1301,15 @@ public final class DownloadManager {
             recordDownloadDiagnostic("downloads.start", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
-                "choice": .label(useOriginal ? "original" : Self.diagnosticChoiceLabel(choice)),
+                "choice": .label(route == .original ? "original" : route == .compatibleRemux ? "optimize_compatible" : Self.diagnosticChoiceLabel(choice)),
                 "url_shape": .urlShape(request.url),
                 "expected_bytes": .bytes(expectedBytes),
             ])
-            if !useOriginal {
-                // Transcode download: rate is encoder-gated (served as it renders), and the
-                // minted PlaySessionId MUST be torn down on terminal transition. #84: persist it
-                // onto the row so a hard app kill can still tear the encoder down on next launch.
+            if useServerSession {
+                // Transcode/remux download: rate is encoder-gated (served as it renders), forward-only
+                // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
+                // transition. #84: persist it onto the row so a hard app kill can still tear the
+                // encoder down on next launch.
                 transcodeSourcedDownloads.insert(ratingKey)
                 embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 store.setPlaySessionID(ratingKey: ratingKey, decision.playSessionId)
@@ -1309,6 +1433,10 @@ public final class DownloadManager {
         let choice: DownloadChoice
         if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
             choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
+        } else if metadata?.resolvedDownloadLane() == .compatibleRemux {
+            // #83: a persisted compatible-remux row has no optimizeTargetName, so without the lane
+            // discriminator it would rehydrate as `.original` and silently drop the user's intent.
+            choice = .optimizeCompatible
         } else if metadata != nil {
             // #84: stored rows know the original user intent. `makeMediaItem()` intentionally does
             // not rehydrate full MediaSource/Part arrays, so deriving this from `part` after a
@@ -1332,7 +1460,9 @@ public final class DownloadManager {
                 return
             }
             guard !self.activeJobs.contains(record.ratingKey) else { return }
-            self.store.remove(ratingKey: record.ratingKey)
+            // Keep the failed row visible until `downloadJellyfin` successfully seeds the
+            // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
+            // mark this existing row `.failed` instead of making the retry affordance disappear.
             await self.downloadJellyfin(item, choice: choice,
                                         mediaIndex: mediaIndex,
                                         partIndex: partIndex,
@@ -1356,6 +1486,10 @@ public final class DownloadManager {
         let choice: DownloadChoice
         if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
             choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
+        } else if metadata?.resolvedDownloadLane() == .compatibleRemux {
+            // #83: preserve the compatible-remux intent (downloadEmby re-probes PlaybackInfo and
+            // re-decides remux-vs-transcode, falling back safely if the source is no longer copyable).
+            choice = .optimizeCompatible
         } else {
             choice = .original
         }
@@ -1372,7 +1506,9 @@ public final class DownloadManager {
                 return
             }
             guard !self.activeJobs.contains(record.ratingKey) else { return }
-            self.store.remove(ratingKey: record.ratingKey)
+            // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
+            // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
+            // existing row `.failed` instead of making the retry affordance disappear.
             await self.downloadEmby(item, choice: choice,
                                     mediaIndex: mediaIndex,
                                     partIndex: partIndex,
@@ -1586,6 +1722,10 @@ public final class DownloadManager {
         switch choice {
         case .original:
             mediaBytes = part?.size
+        case .optimizeCompatible:
+            // #83: the video stream is COPIED, so the output is close to the original size (audio may
+            // shrink slightly when transcoded to AAC). Use the source size as the storage estimate.
+            mediaBytes = part?.size
         case .optimize(let targetName):
             if targetName.localizedCaseInsensitiveCompare("Original Quality") == .orderedSame {
                 mediaBytes = part?.size
@@ -1714,6 +1854,19 @@ public final class DownloadManager {
             return "original"
         case .optimize(let targetName):
             return "optimize:\(targetName)"
+        case .optimizeCompatible:
+            return "optimize_compatible"
+        }
+    }
+
+    /// #83: the persisted lane discriminator for a choice. Stored on the row so a retry/resume after
+    /// an app kill preserves the user's intent — original and compatible-remux both lack an
+    /// `optimizeTargetName`, so the legacy inference can't tell them apart.
+    private static func downloadLane(for choice: DownloadChoice) -> DownloadLane {
+        switch choice {
+        case .original: return .original
+        case .optimize: return .optimize
+        case .optimizeCompatible: return .compatibleRemux
         }
     }
 
@@ -1846,7 +1999,8 @@ public final class DownloadManager {
                                         optimizeTargetName: String? = nil,
                                         optimizeQueueTitle: String? = nil,
                                         session: BackendSession,
-                                        mediaSourceID: String? = nil) -> OfflineMetadata {
+                                        mediaSourceID: String? = nil,
+                                        downloadLane: DownloadLane? = nil) -> OfflineMetadata {
         let sourcePartID = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id
         return OfflineMetadata(ratingKey: item.ratingKey,
                                key: item.key,
@@ -1887,7 +2041,8 @@ public final class DownloadManager {
                                backendServerID: session.serverID,
                                backendUserID: session.userID,
                                mediaSourceID: mediaSourceID,
-                               playSessionID: nil)
+                               playSessionID: nil,
+                               downloadLane: downloadLane)
     }
 
     /// Human-readable resolution label for the chosen media version, for the offline-library

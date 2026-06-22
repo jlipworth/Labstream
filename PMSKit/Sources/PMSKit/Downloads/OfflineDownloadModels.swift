@@ -168,6 +168,23 @@ public struct OfflineMarker: Codable, Sendable, Equatable {
     }
 }
 
+/// Which download lane produced a persisted row (#83). The lane is NOT recoverable from
+/// `optimizeTargetName` alone — original (no target) and compatible-remux (no target) would be
+/// indistinguishable — so it is persisted explicitly and consulted by `retry*` /
+/// `resumePendingServerPrepDownloads`. Absent on rows written before #83: callers fall back to the
+/// legacy "presence of `optimizeTargetName`" inference, which still maps original↔optimize
+/// correctly for those rows (they never used the compatible lane).
+public enum DownloadLane: String, Codable, Sendable, Equatable {
+    /// Byte-for-byte original file (range-resumable).
+    case original
+    /// Bitrate-capped server transcode to a preset (forward-only).
+    case optimize
+    /// #83: original-quality compatible remux — copy video, remux to MP4, audio→AAC as needed.
+    /// Forward-only (a remux stream is not range-resumable), so it falls out of the resume-data
+    /// recovery path the other lanes use; restart-from-zero on failure.
+    case compatibleRemux
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -261,6 +278,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Server play-session id for a transcoded JF/Emby (or Plex optimize) job, persisted
     /// so the encoder can be torn down after a hard app kill (was in-memory only).
     public var playSessionID: String?
+    /// #83: which download lane produced this row. Persisted so a retry/resume after an app kill
+    /// preserves the user's intent — original (no target) vs compatible-remux (no target) are
+    /// otherwise indistinguishable. Absent on pre-#83 rows (see `resolvedDownloadLane`).
+    public var downloadLane: DownloadLane?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -305,7 +326,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 backendServerID: String? = nil,
                 backendUserID: String? = nil,
                 mediaSourceID: String? = nil,
-                playSessionID: String? = nil) {
+                playSessionID: String? = nil,
+                downloadLane: DownloadLane? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -350,6 +372,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.backendUserID = backendUserID
         self.mediaSourceID = mediaSourceID
         self.playSessionID = playSessionID
+        self.downloadLane = downloadLane
     }
 
     public init(from decoder: Decoder) throws {
@@ -398,6 +421,15 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         backendUserID = try c.decodeIfPresent(String.self, forKey: .backendUserID)
         mediaSourceID = try c.decodeIfPresent(String.self, forKey: .mediaSourceID)
         playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
+        downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
+    }
+
+    /// #83: resolve this row's lane. New rows persist `downloadLane`; pre-#83 rows fall back to the
+    /// legacy inference (optimize ⇔ a non-empty `optimizeTargetName`, else original) — correct for
+    /// those rows because the compatible-remux lane did not exist when they were written.
+    public func resolvedDownloadLane() -> DownloadLane {
+        if let downloadLane { return downloadLane }
+        return (optimizeTargetName?.isEmpty == false) ? .optimize : .original
     }
 
     /// Backend for this row. New rows store `backendKind`; pre-#84 rows fall back to
