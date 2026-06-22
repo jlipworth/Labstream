@@ -841,7 +841,7 @@ public final class DownloadManager {
             case .optimizeCompatible:
                 // #83: original-quality compatible remux. Re-probe PlaybackInfo here instead of
                 // trusting the in-memory `Part` streams: retry after relaunch reconstructs a lean
-                // `MediaItem` without stream arrays, and the server's SupportsDirectStream verdict
+                // `MediaItem` without stream arrays, and the server's codec/container verdict
                 // is the authoritative remux gate.
                 guard let userId = backendSession.userID, !userId.isEmpty else {
                     throw DownloadError.notAuthenticated
@@ -864,7 +864,7 @@ public final class DownloadManager {
                     videoCodec: decision.videoCodec,
                     audioCodec: decision.audioCodec,
                     sourceContainer: decision.container)
-                let routeIsRemux = decision.supportsDirectStream && eligibility.isEligible
+                let routeIsRemux = eligibility.isEligible
                 recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
                     "download_id": .identifier(ratingKey),
                     "negotiated_direct_play": .bool(decision.supportsDirectPlay),
@@ -882,8 +882,8 @@ public final class DownloadManager {
                         videoCodec: videoCodec, copyAudio: eligibility.copiesAudio,
                         playSessionId: decision.playSessionId)
                 } else {
-                    // Stale UI/retry fallback: keep the download safe and playable rather than
-                    // attempting a copy the server says it cannot DirectStream.
+                    // Stale UI/retry fallback: keep the download safe and playable when the
+                    // source video cannot be copied into the compatible MP4 lane.
                     let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
                     expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                                  videoBitrateBps: profile.videoBitrateBps)
@@ -1186,7 +1186,7 @@ public final class DownloadManager {
 
         // Three-way route detection against the AUTHORITATIVE negotiated verdict:
         //   .original          ⇔ negotiated DirectPlay AND locally playable container
-        //   .compatibleRemux   ⇔ user chose it AND negotiated DirectStream AND video copyable (#83)
+        //   .compatibleRemux   ⇔ user chose it AND source video copyable (#83)
         //   .transcode         ⇔ otherwise (forced h264/aac re-encode)
         // The user's `.optimize` choice always forces the transcode lane.
         let containerGate = Self.isLocallyPlayableOriginal(part: part)
@@ -1200,10 +1200,10 @@ public final class DownloadManager {
         case .original:
             route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
         case .optimizeCompatible:
-            // Honour the compatible lane only when the server can DirectStream AND the source video
-            // is stream-copy eligible; otherwise fall back to the safe forced transcode.
-            route = (decision.supportsDirectStream && remuxEligibility.isEligible)
-                ? .compatibleRemux : .transcode
+            // Honour the compatible lane when the source video is stream-copy eligible. The
+            // negotiated DirectStream flag may be false for audio-only transcode cases (for
+            // example HEVC + DTS -> MP4 + AAC), which still preserve original video quality.
+            route = remuxEligibility.isEligible ? .compatibleRemux : .transcode
         case .optimize:
             route = .transcode
         }
@@ -1460,7 +1460,9 @@ public final class DownloadManager {
                 return
             }
             guard !self.activeJobs.contains(record.ratingKey) else { return }
-            self.store.remove(ratingKey: record.ratingKey)
+            // Keep the failed row visible until `downloadJellyfin` successfully seeds the
+            // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
+            // mark this existing row `.failed` instead of making the retry affordance disappear.
             await self.downloadJellyfin(item, choice: choice,
                                         mediaIndex: mediaIndex,
                                         partIndex: partIndex,
@@ -1504,7 +1506,9 @@ public final class DownloadManager {
                 return
             }
             guard !self.activeJobs.contains(record.ratingKey) else { return }
-            self.store.remove(ratingKey: record.ratingKey)
+            // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
+            // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
+            // existing row `.failed` instead of making the retry affordance disappear.
             await self.downloadEmby(item, choice: choice,
                                     mediaIndex: mediaIndex,
                                     partIndex: partIndex,
