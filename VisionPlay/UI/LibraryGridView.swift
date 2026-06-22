@@ -395,9 +395,11 @@ struct LibraryGridView: View {
             // the rail when it resolves. Uses the SAME offset math as Plex.
             firstCharacters = AlphabetBucket.buckets(from: await rawCounts, total: total)
         } catch {
-            _ = await rawCounts
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
+            // Let the structured `async let` cancel at scope exit. Do not await the
+            // alphabet probes after the first-page request has failed; otherwise a
+            // network/auth failure can hold the error UI behind all 26 rail probes.
         }
     }
 
@@ -430,9 +432,11 @@ struct LibraryGridView: View {
             ])
             firstCharacters = AlphabetBucket.buckets(from: await rawCounts, total: total)
         } catch {
-            _ = await rawCounts
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
+            // Let the structured `async let` cancel at scope exit. Do not await the
+            // alphabet probes after the first-page request has failed; otherwise a
+            // network/auth failure can hold the error UI behind all 26 rail probes.
         }
     }
 
