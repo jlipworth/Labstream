@@ -70,7 +70,10 @@ struct HomeView: View {
             if item.isMusicContainer || item.isAudioPlaylist {
                 musicDestination(for: item, sectionKey: nil)
             } else {
-                DetailView(item: item)
+                // Capture the active backend as the item's origin (#100) so Play / watched /
+                // download resolve against the backend the item came from even if the user
+                // switches backends while this detail is still on the stack.
+                DetailView(item: item, originBackend: appModel.activeBackend)
             }
         }
         // Re-run whenever the server URL resolves after discovery/rediscovery.

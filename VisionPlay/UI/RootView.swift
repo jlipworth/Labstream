@@ -53,20 +53,31 @@ struct RootView: View {
 
     var body: some View {
         TabView(selection: $selection) {
+            // Browse tabs are keyed on `appModel.activeBackend` so a backend switch
+            // tears down and rebuilds each stack — dropping any pushed DetailView and
+            // resetting the root — instead of leaving a stale item from the previous
+            // backend mounted (#100). `.onChange` below also clears the lifted paths so
+            // the rebuilt stack does not re-push the old snapshots. Offline/Settings are
+            // deliberately NOT keyed: Downloads is cross-backend by design (each
+            // DownloadRecord carries its own backendKind) and must persist across switches.
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack(path: $homePath) { HomeView() }
                     .environment(\.cinemaOriginTab, .home)
+                    .id(appModel.activeBackend)
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
                 NavigationStack(path: $librariesPath) { LibrariesView() }
                     .environment(\.cinemaOriginTab, .libraries)
+                    .id(appModel.activeBackend)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack(path: $searchPath) { SearchView() }
                     .environment(\.cinemaOriginTab, .search)
+                    .id(appModel.activeBackend)
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
                 NavigationStack(path: $musicPath) { MusicLibraryView() }
+                    .id(appModel.activeBackend)
             }
             Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
                 NavigationStack {
@@ -85,6 +96,18 @@ struct RootView: View {
         // ornament floats below the window glass, the platform idiom for transport.
         .ornament(attachmentAnchor: .scene(.bottom)) {
             MiniPlayerBar()
+        }
+        // Backend switch (#100): clear every lifted browse path so the rebuilt,
+        // backend-keyed NavigationStacks (see `.id(appModel.activeBackend)` above) do
+        // not re-push a stale DetailView from the previous backend. The `.id()` change
+        // tears the stack views down; clearing the external path bindings here prevents
+        // the fresh stacks from immediately re-appending the old snapshots. Offline's
+        // path is intentionally left alone — Downloads is cross-backend (#100).
+        .onChange(of: appModel.activeBackend) { _, _ in
+            homePath = NavigationPath()
+            librariesPath = NavigationPath()
+            searchPath = NavigationPath()
+            musicPath = NavigationPath()
         }
         // Now Playing's "go to artist/album": land on the Music tab and push.
         .onChange(of: musicPlayer.navigationRequest) { _, item in

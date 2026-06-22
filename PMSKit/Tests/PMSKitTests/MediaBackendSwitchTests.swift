@@ -130,3 +130,34 @@ struct MediaBackendSwitchTests {
         #expect(!credentials.hasSavedSession(for: .plex))
     }
 }
+
+/// Defense-in-depth for #100: an item's actions (play / watched / download) must always
+/// target the backend the item ORIGINATED from, never whatever backend happens to be active
+/// when the action fires (a stale detail can survive a backend switch).
+@Suite("Playback backend resolver (#100)")
+struct PlaybackBackendResolverTests {
+    @Test func originAlwaysWinsRegardlessOfActiveBackend() {
+        for origin in [MediaBackendChoice.plex, .jellyfin, .emby] {
+            for active in [MediaBackendChoice.plex, .jellyfin, .emby] {
+                let resolved = PlaybackBackendResolver.backend(forItemOrigin: origin,
+                                                               currentActive: active)
+                #expect(resolved == origin,
+                        "origin \(origin) must win over active \(active)")
+            }
+        }
+    }
+
+    @Test func embyItemNeverResolvesToJellyfinAfterSwitch() {
+        // The exact bug in the report: an Emby movie's Play after an Emby→Jellyfin switch.
+        let resolved = PlaybackBackendResolver.backend(forItemOrigin: .emby,
+                                                       currentActive: .jellyfin)
+        #expect(resolved == .emby)
+    }
+
+    @Test func matchingBackendIsUnchanged() {
+        // No switch occurred: origin == active, resolver still returns the origin.
+        let resolved = PlaybackBackendResolver.backend(forItemOrigin: .plex,
+                                                       currentActive: .plex)
+        #expect(resolved == .plex)
+    }
+}
