@@ -252,7 +252,7 @@ struct SettingsView: View {
         } header: {
             Text("Backend")
         } footer: {
-            Text("Switching keeps Plex and Jellyfin credentials separate. If the selected backend has a saved session, VisionPlay reconnects automatically; otherwise it opens that backend’s sign-in flow.")
+            Text("Switching keeps each backend’s credentials separate. If the selected backend has a saved session, VisionPlay reconnects automatically; otherwise it opens that backend’s sign-in flow.")
         }
     }
 
