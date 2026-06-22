@@ -13,8 +13,10 @@ public enum MediaBrowserLibraryGridPolicy {
             return "Movie"
         case "tvshows":
             return "Series"
+        case "homevideos", "livetv":
+            return "Video"
         default:
-            return "Movie,Series,Season,Episode"
+            return "Movie,Series,Season,Episode,Video"
         }
     }
 

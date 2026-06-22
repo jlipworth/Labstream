@@ -13,8 +13,14 @@ struct MediaBrowserLibraryGridPolicyTests {
         #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: "tvshows") == false)
     }
 
+    @Test func homeVideoLibrariesUseStandaloneVideoItems() {
+        #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: "homevideos") == "Video")
+        #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: "livetv") == "Video")
+        #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: "homevideos") == false)
+    }
+
     @Test func unknownLibrariesKeepImmediateChildrenAndMixedTypes() {
-        #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: nil) == "Movie,Series,Season,Episode")
+        #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: nil) == "Movie,Series,Season,Episode,Video")
         #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: nil) == false)
     }
 

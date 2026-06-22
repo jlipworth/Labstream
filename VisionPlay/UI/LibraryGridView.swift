@@ -55,9 +55,11 @@ struct LibrariesView: View {
         case .plex:
             return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
         case .jellyfin:
-            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil")"
+            // Match HomeView's #93 cache-bust: re-auth to the same server changes the
+            // token, so the library list must refresh instead of reusing stale/empty state.
+            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil"):\(appModel.jellyfinAccessToken ?? "nil")"
         case .emby:
-            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil")"
+            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil"):\(appModel.embyAccessToken ?? "nil")"
         }
     }
 
@@ -223,6 +225,7 @@ struct LibraryGridView: View {
     @State private var firstCharacters: [AlphabetBucket] = []
     @State private var loadState: HomeView.LoadState = .idle
     @State private var loadingPages: Set<Int> = []
+    @State private var loadedIdentity: String?
 
     private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
                                     spacing: DS.Space.xl)]
@@ -296,29 +299,42 @@ struct LibraryGridView: View {
             }
         }
         .navigationTitle(source.title)
-        .task { await load() }
+        .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private var loadIdentity: String {
+        switch source {
+        case .plex(let section):
+            return "plex:\(section.key):\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+        case .jellyfin(let view):
+            return "jellyfin:\(view.id):\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil"):\(appModel.jellyfinAccessToken ?? "nil")"
+        case .emby(let view):
+            return "emby:\(view.id):\(appModel.embyServerBaseURL?.absoluteString ?? "nil"):\(appModel.embyAccessToken ?? "nil")"
+        }
     }
 
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back from an item; reloading the whole grid then
-        // would dump the scroll position the user is returning to. Load once.
-        if !force, case .loaded = loadState { return }
+        // would dump the scroll position the user is returning to. Load once per backend
+        // session identity; a re-auth to the same server must bust this cache (#93).
+        let activeIdentity = loadIdentity
+        if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         loadState = .loading
         loadingPages = []
         firstCharacters = []
 
         switch source {
         case .plex(let section):
-            await loadPlex(section: section)
+            await loadPlex(section: section, loadedIdentity: activeIdentity)
         case .jellyfin(let view):
-            await loadJellyfin(view: view)
+            await loadJellyfin(view: view, loadedIdentity: activeIdentity)
         case .emby(let view):
-            await loadEmby(view: view)
+            await loadEmby(view: view, loadedIdentity: activeIdentity)
         }
     }
 
-    private func loadPlex(section: PlexSection) async {
+    private func loadPlex(section: PlexSection, loadedIdentity identity: String) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: "Plex",
                                                      fields: ["page_size": pageSize])
@@ -346,6 +362,7 @@ struct LibraryGridView: View {
             }
             slots = fresh
             firstCharacters = (await initialsResponse)?.libraryEntries(totalSize: total) ?? []
+            loadedIdentity = identity
             loadState = .loaded
             span.end(fields: [
                 "item_count": page.count,
@@ -360,7 +377,7 @@ struct LibraryGridView: View {
         }
     }
 
-    private func loadJellyfin(view: JellyfinLibraryLink) async {
+    private func loadJellyfin(view: JellyfinLibraryLink, loadedIdentity identity: String) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: "Jellyfin",
                                                      fields: ["page_size": pageSize])
@@ -386,6 +403,10 @@ struct LibraryGridView: View {
             }
             slots = fresh
             firstCharacters = []
+            // A 200/empty first page is indistinguishable from the transient false-empty
+            // library state in #93. Show it, but don't pin it so returning to the grid
+            // re-fetches automatically rather than sticking until pull-to-refresh.
+            loadedIdentity = page.items.isEmpty ? nil : identity
             loadState = .loaded
             span.end(fields: [
                 "item_count": page.items.count,
@@ -403,7 +424,7 @@ struct LibraryGridView: View {
         }
     }
 
-    private func loadEmby(view: EmbyLibraryLink) async {
+    private func loadEmby(view: EmbyLibraryLink, loadedIdentity identity: String) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: "Emby",
                                                      fields: ["page_size": pageSize])
@@ -425,6 +446,7 @@ struct LibraryGridView: View {
             }
             slots = fresh
             firstCharacters = []
+            loadedIdentity = page.items.isEmpty ? nil : identity
             loadState = .loaded
             span.end(fields: [
                 "item_count": page.items.count,
