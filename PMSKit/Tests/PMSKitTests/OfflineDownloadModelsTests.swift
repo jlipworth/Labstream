@@ -81,6 +81,24 @@ struct OfflineDownloadModelsTests {
         #expect(stored.resolvedBackendKind(ratingKey: "emby:99") == .plex)
     }
 
+    @Test("resolvedDownloadLane falls back for legacy rows and honors stored compatible-remux")
+    func resolvedDownloadLaneFallbackAndStoredField() throws {
+        let legacyOriginal = try decode(OfflineMetadata.self,
+                                        from: #"{"ratingKey":"123","title":"t"}"#)
+        #expect(legacyOriginal.downloadLane == nil)
+        #expect(legacyOriginal.resolvedDownloadLane() == .original)
+
+        let legacyOptimize = try decode(OfflineMetadata.self,
+                                        from: #"{"ratingKey":"123","title":"t","optimizeTargetName":"1080p 8 Mbps"}"#)
+        #expect(legacyOptimize.downloadLane == nil)
+        #expect(legacyOptimize.resolvedDownloadLane() == .optimize)
+
+        let compatible = try decode(OfflineMetadata.self,
+                                    from: #"{"ratingKey":"jellyfin:123","title":"t","downloadLane":"compatibleRemux"}"#)
+        #expect(compatible.downloadLane == .compatibleRemux)
+        #expect(compatible.resolvedDownloadLane() == .compatibleRemux)
+    }
+
     @Test("a record persisted before D5 (no metadata) decodes with nil metadata")
     func recordWithoutMetadataDecodes() throws {
         // DownloadRecord persists `localURL` as a URL; metadata + poster are optional.
@@ -145,7 +163,8 @@ struct OfflineDownloadModelsTests {
             backendServerID: "server-123",
             backendUserID: "user-456",
             mediaSourceID: "media-source-789",
-            playSessionID: "visionplay-download-abc")
+            playSessionID: "visionplay-download-abc",
+            downloadLane: .compatibleRemux)
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)

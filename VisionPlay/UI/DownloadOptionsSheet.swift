@@ -97,7 +97,7 @@ struct DownloadOptionsSheet: View {
     private func runProbe() async {
         guard existingRecord == nil else { return }
         if appModel.activeBackend == .jellyfin {
-            runJellyfinProbe()
+            await runJellyfinProbe()
             return
         }
         if appModel.activeBackend == .emby {
@@ -135,7 +135,7 @@ struct DownloadOptionsSheet: View {
                             originalStreamableButOfflineUnsupported: unsupportedOriginal)
     }
 
-    private func runJellyfinProbe() {
+    private func runJellyfinProbe() async {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
         let originalLocallyPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
@@ -143,12 +143,53 @@ struct DownloadOptionsSheet: View {
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
-        // #83: offer the compatible-remux lane when the raw container isn't locally playable but the
-        // source video can be stream-copied into MP4 (derived from the part's stream codecs).
-        let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(part: part)
-        let compatibleRemux = remuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable)
-            ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
-            : nil
+        let mediaSourceId = selectedMediaSourceID(media: media, part: part)
+        let localRemuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(part: part)
+        let shouldProbeRemux = localRemuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable)
+        var probeFailed = false
+        var compatibleRemux: CompatibleRemuxOption?
+        if shouldProbeRemux {
+            guard let server = appModel.jellyfinServerBaseURL,
+                  let token = appModel.jellyfinAccessToken,
+                  let userId = appModel.jellyfinUserID else {
+                probeFailed = true
+                compatibleRemux = nil
+                let presets = jellyfinPresets
+                selectedChoice = preferredSelection(originalAvailable: original != nil,
+                                                    compatibleRemuxAvailable: false,
+                                                    presets: presets)
+                probeState = .ready(original: original,
+                                    compatibleRemux: nil,
+                                    presets: presets,
+                                    probeFailed: true,
+                                    originalStreamableButOfflineUnsupported: original == nil)
+                return
+            }
+            do {
+                let req = try JellyfinPlayback.downloadPlaybackInfoRequest(
+                    server: server, token: token, identity: appModel.identity.jellyfin,
+                    itemId: item.ratingKey, userId: userId, mediaSourceId: mediaSourceId,
+                    maxStaticBitrate: 200_000_000)
+                let (data, response) = try await URLSession.shared.data(for: req)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
+                let decision = try JellyfinPlayback.downloadDecision(response: info,
+                                                                     preferredMediaSourceId: mediaSourceId)
+                let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+                    videoCodec: decision.videoCodec,
+                    audioCodec: decision.audioCodec,
+                    sourceContainer: decision.container)
+                compatibleRemux = (decision.supportsDirectStream
+                                   && remuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable))
+                    ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
+                    : nil
+            } catch {
+                probeFailed = true
+                compatibleRemux = nil
+            }
+        }
         let presets = jellyfinPresets
         selectedChoice = preferredSelection(originalAvailable: original != nil,
                                             compatibleRemuxAvailable: compatibleRemux != nil,
@@ -156,7 +197,7 @@ struct DownloadOptionsSheet: View {
         probeState = .ready(original: original,
                             compatibleRemux: compatibleRemux,
                             presets: presets,
-                            probeFailed: false,
+                            probeFailed: probeFailed,
                             originalStreamableButOfflineUnsupported: original == nil && compatibleRemux == nil)
     }
 
@@ -170,6 +211,7 @@ struct DownloadOptionsSheet: View {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
         let presets = embyPresets
+        let mediaSourceId = selectedMediaSourceID(media: media, part: part)
         guard let server = appModel.embyServerBaseURL,
               let token = appModel.embyAccessToken,
               let userId = appModel.embyUserID else {
@@ -190,6 +232,7 @@ struct DownloadOptionsSheet: View {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity,
                 userId: userId, itemId: item.ratingKey,
+                mediaSourceId: mediaSourceId,
                 maxStaticBitrate: 200_000_000)
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -212,15 +255,40 @@ struct DownloadOptionsSheet: View {
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
-        // #83: offer the compatible-remux lane when the server can DirectStream AND the source video
-        // is stream-copy eligible AND it isn't already a locally-playable raw original.
-        let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-            videoCodec: negotiatedVideoCodec, audioCodec: negotiatedAudioCodec,
-            sourceContainer: negotiatedContainer)
-        let compatibleRemux = (!probeFailed && negotiatedDirectStream
-                               && remuxEligibility.shouldOffer(originalLocallyPlayable: original != nil))
-            ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
-            : nil
+        // #83: use the dedicated compatible-remux PlaybackInfo profile for DirectStream probing.
+        // The normal download profile remains conservative for the forced-transcode lane.
+        var compatibleRemux: CompatibleRemuxOption?
+        if !probeFailed, original == nil {
+            do {
+                let remuxReq = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    userId: userId, itemId: item.ratingKey,
+                    mediaSourceId: mediaSourceId,
+                    maxStaticBitrate: 200_000_000)
+                let (data, response) = try await URLSession.shared.data(for: remuxReq)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw URLError(.badServerResponse)
+                }
+                let info = try EmbyPlaybackInfoResponse.decode(from: data)
+                let decision = try EmbyPlayback.downloadDecision(response: info,
+                                                                 preferredMediaSourceId: mediaSourceId)
+                negotiatedDirectStream = decision.supportsDirectStream
+                negotiatedVideoCodec = decision.videoCodec
+                negotiatedAudioCodec = decision.audioCodec
+                negotiatedContainer = decision.container
+                let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+                    videoCodec: negotiatedVideoCodec,
+                    audioCodec: negotiatedAudioCodec,
+                    sourceContainer: negotiatedContainer)
+                compatibleRemux = (negotiatedDirectStream
+                                   && remuxEligibility.shouldOffer(originalLocallyPlayable: false))
+                    ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
+                    : nil
+            } catch {
+                probeFailed = true
+                compatibleRemux = nil
+            }
+        }
         // "Streamable but offline-unsupported" = the server would direct-play it but the container
         // can't be a raw offline local file (e.g. mkv) and no compatible remux is offered.
         let unsupportedOriginal = !probeFailed && negotiatedDirectPlay && original == nil && compatibleRemux == nil
@@ -457,6 +525,16 @@ struct DownloadOptionsSheet: View {
         case .optimizeCompatible: return .optimizeCompatible
         case .optimize(let preset): return .optimize(targetName: preset)
         }
+    }
+
+    private func selectedMediaSourceID(media: Media?, part: Part?) -> String? {
+        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
+        for key in keys.compactMap({ $0 }) {
+            guard let marker = key.range(of: "/media/") else { continue }
+            let source = String(key[marker.upperBound...])
+            if !source.isEmpty { return source }
+        }
+        return nil
     }
 
     // MARK: - Already-downloaded state

@@ -18,6 +18,8 @@ public enum HEVCTagFixup {
     private static let hev1: [UInt8] = Array("hev1".utf8)
     private static let hvc1: [UInt8] = Array("hvc1".utf8)
     private static let hvcC: [UInt8] = Array("hvcC".utf8)
+    private static let searchWindow = 256
+    private static let fileChunkSize = 1024 * 1024
 
     /// Rewrite `hev1` sample entries to `hvc1` in-place within `data`. Returns the number of entries
     /// rewritten (0 when the file has no `hev1` HEVC sample entry — e.g. it is `hvc1` already, or not
@@ -32,7 +34,6 @@ public enum HEVCTagFixup {
         // child for HEVC is the `hvcC` config box. We confirm an `hvcC` appears in a bounded window
         // after the FourCC so we only flip genuine HEVC sample entries, never an `hev1` byte run that
         // happens to occur inside media data.
-        let searchWindow = 256
         while i + 4 <= bytes.count {
             if bytes[i] == hev1[0], bytes[i + 1] == hev1[1],
                bytes[i + 2] == hev1[2], bytes[i + 3] == hev1[3],
@@ -64,16 +65,54 @@ public enum HEVCTagFixup {
         return false
     }
 
-    /// Apply the fixup to a completed download file on disk. Reads the file, rewrites any `hev1`
-    /// sample entries to `hvc1`, and writes it back atomically only if something changed. Returns
-    /// the number of entries rewritten; 0 (and no write) when nothing matched. Throws only on I/O.
+    /// Apply the fixup to a completed download file on disk. Scans and patches the file in bounded
+    /// chunks instead of materializing a multi-GB offline movie in memory (and instead of making an
+    /// atomic full-file copy that can temporarily require another copy of the download on disk).
+    /// Returns the number of entries rewritten; 0 when nothing matched. Throws only on I/O.
     @discardableResult
     public static func rewriteFile(at url: URL) throws -> Int {
-        var data = try Data(contentsOf: url, options: .mappedIfSafe)
-        let count = rewriteSampleEntries(in: &data)
-        if count > 0 {
-            try data.write(to: url, options: .atomic)
+        let handle = try FileHandle(forUpdating: url)
+        defer { try? handle.close() }
+
+        var rewritten = 0
+        var rewrittenOffsets = Set<UInt64>()
+        var overlap = [UInt8]()
+        var chunkStart: UInt64 = 0
+
+        while true {
+            let chunkData = try handle.read(upToCount: fileChunkSize) ?? Data()
+            if chunkData.isEmpty { break }
+
+            let chunkBytes = [UInt8](chunkData)
+            let baseOffset = chunkStart - UInt64(overlap.count)
+            let scanBytes = overlap + chunkBytes
+            var i = 0
+            while i + 4 <= scanBytes.count {
+                if scanBytes[i] == hev1[0], scanBytes[i + 1] == hev1[1],
+                   scanBytes[i + 2] == hev1[2], scanBytes[i + 3] == hev1[3],
+                   hasConfigBox(in: scanBytes, near: i + 4, window: searchWindow) {
+                    let absoluteOffset = baseOffset + UInt64(i)
+                    if !rewrittenOffsets.contains(absoluteOffset) {
+                        try handle.seek(toOffset: absoluteOffset)
+                        try handle.write(contentsOf: Data(hvc1))
+                        rewrittenOffsets.insert(absoluteOffset)
+                        rewritten += 1
+                        // Resume sequential scanning after the in-place write.
+                        try handle.seek(toOffset: chunkStart + UInt64(chunkBytes.count))
+                    }
+                    i += 4
+                } else {
+                    i += 1
+                }
+            }
+
+            let keep = min(searchWindow + 4, scanBytes.count)
+            overlap = Array(scanBytes.suffix(keep))
+            chunkStart += UInt64(chunkBytes.count)
         }
-        return count
+        if rewritten > 0 {
+            try handle.synchronize()
+        }
+        return rewritten
     }
 }

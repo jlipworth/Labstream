@@ -787,6 +787,7 @@ public final class DownloadManager {
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
         let jellyfinMediaSourceID = mediaSourceIDOverride ?? Self.jellyfinMediaSourceID(media: media, part: part)
+        var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
         let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
@@ -838,24 +839,60 @@ public final class DownloadManager {
                 mintedPlaySessionId = playSessionId
 
             case .optimizeCompatible:
-                // #83: original-quality compatible remux. Eligibility (video copyable) is decided
-                // from the part's stream codecs; the sheet only OFFERS this when eligible, but guard
-                // here too so a stale row can't request a copy of an uncopyable codec.
-                let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(part: part)
-                guard let videoCodec = eligibility.videoCodec, eligibility.isEligible else {
-                    throw DownloadError.invalidDownload("Source video codec is not stream-copy eligible.")
+                // #83: original-quality compatible remux. Re-probe PlaybackInfo here instead of
+                // trusting the in-memory `Part` streams: retry after relaunch reconstructs a lean
+                // `MediaItem` without stream arrays, and the server's SupportsDirectStream verdict
+                // is the authoritative remux gate.
+                guard let userId = backendSession.userID, !userId.isEmpty else {
+                    throw DownloadError.notAuthenticated
                 }
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                // Output keeps original video bytes → expected size ≈ original part size.
-                expectedBytes = part?.size
-                let playSessionId = "visionplay-download-\(UUID().uuidString)"
-                request = try JellyfinLibrary.compatibleRemuxDownloadRequest(
-                    server: server, token: token, identity: identity, itemId: itemId,
+                let infoReq = try JellyfinPlayback.downloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    itemId: itemId, userId: userId,
                     mediaSourceId: jellyfinMediaSourceID,
-                    videoCodec: videoCodec, copyAudio: eligibility.copiesAudio,
-                    playSessionId: playSessionId)
-                jellyfinPlaySessionByRatingKey[ratingKey] = playSessionId
-                mintedPlaySessionId = playSessionId
+                    maxStaticBitrate: 200_000_000)
+                let (data, response) = try await URLSession.shared.data(for: infoReq)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
+                }
+                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
+                let decision = try JellyfinPlayback.downloadDecision(response: info,
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                resolvedJellyfinMediaSourceID = decision.mediaSourceId
+                let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+                    videoCodec: decision.videoCodec,
+                    audioCodec: decision.audioCodec,
+                    sourceContainer: decision.container)
+                let routeIsRemux = decision.supportsDirectStream && eligibility.isEligible
+                recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "negotiated_direct_play": .bool(decision.supportsDirectPlay),
+                    "negotiated_direct_stream": .bool(decision.supportsDirectStream),
+                    "container": .label(decision.container ?? "unknown"),
+                    "route": .label(routeIsRemux ? "compatible_remux" : "transcode"),
+                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+                ])
+                if routeIsRemux, let videoCodec = eligibility.videoCodec {
+                    // Output keeps original video bytes → expected size ≈ original source size.
+                    expectedBytes = decision.size ?? part?.size
+                    request = try JellyfinLibrary.compatibleRemuxDownloadRequest(
+                        server: server, token: token, identity: identity, itemId: itemId,
+                        mediaSourceId: decision.mediaSourceId,
+                        videoCodec: videoCodec, copyAudio: eligibility.copiesAudio,
+                        playSessionId: decision.playSessionId)
+                } else {
+                    // Stale UI/retry fallback: keep the download safe and playable rather than
+                    // attempting a copy the server says it cannot DirectStream.
+                    let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
+                    expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                                                                 videoBitrateBps: profile.videoBitrateBps)
+                    request = Self.jellyfinTranscodedDownloadRequest(
+                        server, token, identity, itemId, decision.mediaSourceId,
+                        decision.playSessionId, profile)
+                }
+                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                mintedPlaySessionId = decision.playSessionId
             }
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -878,13 +915,17 @@ public final class DownloadManager {
         if let mintedPlaySessionId {
             store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
         }
+        if let resolvedJellyfinMediaSourceID,
+           resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
+            store.setMediaSourceID(ratingKey: ratingKey, resolvedJellyfinMediaSourceID)
+        }
         refreshRecords()
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
+        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
                            server: server, token: token)
         if case .original = choice {
-            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: jellyfinMediaSourceID,
+            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                        part: part, server: server, token: token, identity: identity)
         }
 
@@ -1106,17 +1147,29 @@ public final class DownloadManager {
         // original download — a bitrate cap must NEVER force a transcode verdict for a download.
         let decision: EmbyPlayback.EmbyDownloadPlaybackDecision
         do {
-            let infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity,
-                userId: userId, itemId: itemId,
-                mediaSourceId: embyMediaSourceHint,
-                maxStaticBitrate: 200_000_000)
+            let infoReq: URLRequest
+            if case .optimizeCompatible = choice {
+                // #83: keep the normal download profile conservative for the forced-transcode lane,
+                // but use a remux profile here so HEVC stream-copy eligibility is visible.
+                infoReq = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    userId: userId, itemId: itemId,
+                    mediaSourceId: embyMediaSourceHint,
+                    maxStaticBitrate: 200_000_000)
+            } else {
+                infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    userId: userId, itemId: itemId,
+                    mediaSourceId: embyMediaSourceHint,
+                    maxStaticBitrate: 200_000_000)
+            }
             let (data, response) = try await URLSession.shared.data(for: infoReq)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
             }
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            decision = try EmbyPlayback.downloadDecision(response: info)
+            decision = try EmbyPlayback.downloadDecision(response: info,
+                                                         preferredMediaSourceId: embyMediaSourceHint)
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),

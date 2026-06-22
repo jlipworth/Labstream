@@ -74,4 +74,24 @@ struct HEVCTagFixupTests {
         try Data(Array("....avc1....".utf8)).write(to: h264URL)
         #expect(try HEVCTagFixup.rewriteFile(at: h264URL) == 0)   // no write, no match
     }
+
+    @Test func rewritesFileWhenSampleEntryStraddlesReadChunk() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let url = dir.appendingPathComponent("boundary.mp4")
+        var bytes = [UInt8](repeating: 0xEE, count: 1024 * 1024 - 2)
+        bytes += Array("hev1".utf8)
+        bytes += [UInt8](repeating: 0xAB, count: 78)
+        bytes += Array("hvcC".utf8)
+        bytes += [UInt8](repeating: 0xCD, count: 16)
+        try Data(bytes).write(to: url)
+
+        #expect(try HEVCTagFixup.rewriteFile(at: url) == 1)
+        let rewritten = try Data(contentsOf: url)
+        #expect(contains(rewritten, "hvc1") == true)
+        #expect(contains(rewritten, "hev1") == false)
+    }
 }
