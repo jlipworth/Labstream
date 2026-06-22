@@ -28,14 +28,15 @@ build/
 Packages/
 Package.resolved
 
-# Secrets — never commit Plex tokens / client identifiers
+# Secrets — never commit PMS tokens / client identifiers
 scripts/ci-hygiene.local
 *.token
 secrets.plist
 Secrets.swift
 .env
+*.env
 # Live PMS integration-probe creds (real token + hostname) — see *.example
-scripts/plex-live.env
+scripts/*-live.env
 # Local-only extra forbidden-string list for ci-hygiene.sh (holds the real host/IP) — never commit
 scripts/ci-hygiene.local
 # cloc scratch output
