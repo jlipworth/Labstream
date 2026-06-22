@@ -92,6 +92,26 @@ extension MediaItem {
         return parts.isEmpty ? title : parts.joined(separator: " · ")
     }
 
+    /// The canonical 2:3 movie-poster aspect (width / height) used as the fallback when a
+    /// backend reports no per-item image ratio (e.g. Plex). Mirrors `DS.Poster.aspect` so
+    /// the UI layer and this pure helper agree without PMSKit depending on the app's
+    /// design-system. See GH #101.
+    public static let defaultPosterAspect: Double = 2.0 / 3.0
+
+    /// Poster frame aspect (width / height) to render this item at: the backend's real
+    /// `primaryImageAspectRatio` when known and sane, else `fallback` (default 2:3).
+    ///
+    /// This is the heart of the GH #101 fix — Jellyfin YouTube (16:9) / Twitch (square) art
+    /// and TV episode stills carry their true ratio here, so poster cells size to the real
+    /// shape instead of cropping into a fixed 2:3 box. Plex (no ratio) keeps 2:3.
+    ///
+    /// Non-positive / non-finite values are ignored (treated as unknown) so a garbage
+    /// payload can never collapse a cell to zero or NaN.
+    public func resolvedPosterAspect(fallback: Double = MediaItem.defaultPosterAspect) -> Double {
+        guard let aspect = primaryImageAspectRatio, aspect.isFinite, aspect > 0 else { return fallback }
+        return aspect
+    }
+
     /// "S{parentIndex}E{index}" when both numbers are present, else just whichever is
     /// known, else `nil`.
     public var seasonEpisodeCode: String? {
