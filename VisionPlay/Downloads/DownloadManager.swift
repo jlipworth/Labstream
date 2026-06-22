@@ -920,6 +920,10 @@ public final class DownloadManager {
             store.setMediaSourceID(ratingKey: ratingKey, resolvedJellyfinMediaSourceID)
         }
         refreshRecords()
+        // #102: cache the poster locally (best-effort) so artwork shows offline. Unlike the
+        // Plex lane this MUST use the authenticated MediaBrowser image request.
+        cacheJellyfinPoster(ratingKey: ratingKey, item: item, server: server,
+                            token: token, identity: identity)
         cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
@@ -1291,6 +1295,10 @@ public final class DownloadManager {
             store.setMediaSourceID(ratingKey: ratingKey, decision.mediaSourceId)
         }
         refreshRecords()
+        // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
+        // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
+        cacheEmbyPoster(ratingKey: ratingKey, item: item, server: server,
+                        token: token, identity: identity, userId: userId)
         // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
         // scrubber. This is a static `/Items/{id}/Images/Chapter/{index}` GET — no PlaySessionId /
         // encoder negotiation — so it is safe to fire here independent of the media transfer.
@@ -2131,8 +2139,17 @@ public final class DownloadManager {
     /// error, empty body, write failure) returns `false` and is never surfaced — a missing
     /// poster is never a download error.
     private nonisolated static func fetchAndWritePoster(from url: URL, to destination: URL) async -> Bool {
+        await fetchAndWritePoster(request: URLRequest(url: url), to: destination)
+    }
+
+    /// Same best-effort fetch + atomic write as the URL variant, but driven by a
+    /// pre-resolved `URLRequest`. The MediaBrowser (Jellyfin/Emby) image endpoints are
+    /// NOT satisfied by Plex-style token-in-query — they need the `Authorization` header
+    /// (Emby also `userId`) that `*.authenticatedRequest(...)` attaches — so those lanes
+    /// must come through here with an authenticated request.
+    private nonisolated static func fetchAndWritePoster(request: URLRequest, to destination: URL) async -> Bool {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse,
                !(200...299).contains(http.statusCode) { return false }
             guard !data.isEmpty else { return false }
@@ -2140,6 +2157,54 @@ public final class DownloadManager {
             return true
         } catch {
             return false
+        }
+    }
+
+    /// Best-effort cache of a Jellyfin item's poster so the offline library shows artwork
+    /// without the server (#102). Mirrors `cacheJellyfinTrickPlay` (authenticated,
+    /// off-main-actor side-asset cache). Resolves the item's inline synthetic Primary ref
+    /// (`item.thumb`), falling back to the Backdrop ref (`item.art`); a fetch failure
+    /// leaves the row poster-less and never fails the download.
+    private func cacheJellyfinPoster(ratingKey: String, item: MediaItem, server: URL,
+                                     token: String, identity: JellyfinClientIdentity) {
+        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
+        let store = self.store
+        let primaryRef = item.thumb
+        let backdropRef = item.art
+        Task { [weak self] in
+            let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
+                                                              token: token, identity: identity))
+                ?? (try? JellyfinLibrary.posterRequest(syntheticRef: backdropRef, server: server,
+                                                       token: token, identity: identity))
+            guard let request,
+                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
+            await MainActor.run {
+                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    /// Best-effort cache of an Emby item's poster (#102). Same shape as
+    /// `cacheJellyfinPoster`, but the Emby image endpoint additionally needs `userId` on
+    /// the authenticated request.
+    private func cacheEmbyPoster(ratingKey: String, item: MediaItem, server: URL,
+                                 token: String, identity: EmbyClientIdentity, userId: String) {
+        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
+        let store = self.store
+        let primaryRef = item.thumb
+        let backdropRef = item.art
+        Task { [weak self] in
+            let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,
+                                                          token: token, identity: identity, userId: userId))
+                ?? (try? EmbyLibrary.posterRequest(syntheticRef: backdropRef, server: server,
+                                                   token: token, identity: identity, userId: userId))
+            guard let request,
+                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
+            await MainActor.run {
+                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
+                self?.refreshRecords()
+            }
         }
     }
 

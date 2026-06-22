@@ -204,33 +204,17 @@ struct PosterImage: View {
     }
 
     private var parsedEmbyImagePath: (itemId: String, type: EmbyImageType, tag: String?)? {
-        guard let path,
-              let url = URL(string: path),
-              url.scheme == "emby",
-              url.host == "item" else { return nil }
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 2 else { return nil }
-        guard let type = EmbyImageType(rawValue: parts[1]) else { return nil }
-        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first { $0.name == "tag" }?
-            .value
-        return (parts[0], type, tag)
+        guard let parsed = MediaBrowserSyntheticImageRef.parse(path, scheme: EmbyFlavor.syntheticScheme) else {
+            return nil
+        }
+        return (parsed.itemId, parsed.type, parsed.tag)
     }
 
     private var parsedJellyfinImagePath: (itemId: String, type: JellyfinImageType, tag: String?)? {
-        guard let path,
-              let url = URL(string: path),
-              url.scheme == "jellyfin",
-              url.host == "item" else { return nil }
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 2 else { return nil }
-        guard let type = JellyfinImageType(rawValue: parts[1]) else { return nil }
-        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first { $0.name == "tag" }?
-            .value
-        return (parts[0], type, tag)
+        guard let parsed = MediaBrowserSyntheticImageRef.parse(path, scheme: JellyfinFlavor.syntheticScheme) else {
+            return nil
+        }
+        return (parsed.itemId, parsed.type, parsed.tag)
     }
 }
 
