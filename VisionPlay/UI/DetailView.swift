@@ -1231,6 +1231,7 @@ private extension MediaItem {
                   parentIndex: parentIndex, index: index, originalTitle: originalTitle,
                   lastViewedAt: lastViewedAt, parentYear: parentYear,
                   ratingCount: ratingCount, composite: composite, leafCount: leafCount,
-                  playlistType: playlistType)
+                  playlistType: playlistType,
+                  primaryImageAspectRatio: primaryImageAspectRatio)
     }
 }

@@ -56,6 +56,9 @@ struct LibrariesView: View {
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
+            reloadIfVisibilityChanged(notification)
+        }
         .sheet(item: $firstRunPrompt) { prompt in
             LibraryVisibilityPickerSheet(prompt: prompt) { hiddenIDs in
                 visibilityStore.setHiddenIDs(hiddenIDs, forBackendKey: prompt.backendKey)
@@ -245,6 +248,15 @@ struct LibrariesView: View {
         firstRunPrompt = LibraryVisibilityPrompt(backendKey: backendKey,
                                                  candidates: candidates,
                                                  preselectedHidden: preselected)
+    }
+
+    /// Settings edits write through `LibraryVisibilityStore` while this tab can remain mounted
+    /// in the background. Reload the visible list for the active backend so returning from
+    /// Settings immediately reflects newly hidden/shown libraries (#104).
+    private func reloadIfVisibilityChanged(_ notification: Notification) {
+        guard let backendKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String,
+              backendKey == appModel.libraryVisibilityBackendKey else { return }
+        Task { await load(force: true) }
     }
 
     private func candidate(plex section: PlexSection) -> LibraryVisibility.Candidate {
