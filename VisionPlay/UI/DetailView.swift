@@ -285,8 +285,8 @@ struct DetailView: View {
                 Label(String(format: "%.1f", rating), systemImage: "star.fill")
                     .foregroundStyle(.yellow)
             }
-            // Critic rating sits next to the audience star — a separate value (Plex
-            // `audienceRating`, JF/Emby `CriticRating`) the previous UI dropped (#76).
+            // Critic rating sits next to the star only when the backend exposes a distinct
+            // critic/aggregate field. Plex `audienceRating` is intentionally not mapped here.
             if let critic = detailed.criticRating, critic > 0 {
                 Label(String(format: "%.1f", critic), systemImage: "rosette")
                     .foregroundStyle(.orange)
