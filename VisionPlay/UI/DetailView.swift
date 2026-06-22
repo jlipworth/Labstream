@@ -19,6 +19,12 @@ import PMSKit
 /// falls back to the passed-in item if the refresh fails.
 struct DetailView: View {
     let item: MediaItem
+    /// The backend this detail's item ORIGINATED from, captured when the view is pushed
+    /// (#100). Play / watched-toggle / download resolve against this backend rather than
+    /// the live `appModel.activeBackend`, so a stale detail that survives a backend switch
+    /// can never send its ratingKey to the wrong server. `nil` → fall back to the active
+    /// backend (preserves behavior for any caller that doesn't pass an origin).
+    let originBackend: MediaBackendKind?
 
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
@@ -56,9 +62,21 @@ struct DetailView: View {
     /// reflects it immediately, before/independent of the scrobble round-trip.
     @State private var watchedOverride: Bool?
 
-    init(item: MediaItem) {
+    init(item: MediaItem, originBackend: MediaBackendKind? = nil) {
         self.item = item
+        self.originBackend = originBackend
         _detailed = State(initialValue: item)
+    }
+
+    /// Backend that Play / watched / download must act against (#100): the item's origin
+    /// backend when known, resolved through the pure `PlaybackBackendResolver` so the rule
+    /// ("origin always wins over the current active backend") is unit-testable. Falls back
+    /// to the live active backend when no origin was captured.
+    private var actionBackend: MediaBackendKind {
+        guard let originBackend else { return appModel.activeBackend }
+        return MediaBackendKind(
+            PlaybackBackendResolver.backend(forItemOrigin: originBackend.backendChoice,
+                                            currentActive: appModel.activeBackend.backendChoice))
     }
 
     /// An episode's show as a pushable container item (episode hierarchy:
@@ -126,46 +144,52 @@ struct DetailView: View {
     private var leafDetail: some View {
         ScrollView {
             HStack(alignment: .top, spacing: DS.Space.xxxl) {
+                // Hero sizes to the item's real artwork ratio when the backend reports one
+                // (e.g. a 16:9 episode still renders 16:9 instead of cropped 2:3); Plex and
+                // any item without a ratio keep the canonical 2:3 poster shape (GH #101).
                 PosterImage(path: detailed.thumb,
                             width: DS.Poster.detailWidth,
-                            height: DS.Poster.height(for: DS.Poster.detailWidth),
+                            height: CGFloat(Double(DS.Poster.detailWidth) / detailed.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
                             cornerRadius: DS.Radius.card)
                     .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
 
                 VStack(alignment: .leading, spacing: DS.Space.xl) {
-                    // For an episode, lead with the show name + "S{parentIndex}E{index}"
-                    // so the header reads like Plex/Emby, then the episode title.
+                    // For an episode, keep the small contextual "eyebrow" (show + S/E code)
+                    // separate from the large episode title. Putting S58E2 and a long title in
+                    // one HStack makes the title wrap awkwardly beside the code instead of using
+                    // the full text column width (GH #101/#106 live-test polish).
                     if detailed.kind == .episode {
                         VStack(alignment: .leading, spacing: DS.Space.xs) {
-                            if let show = detailed.grandparentTitle, !show.isEmpty {
-                                // Tappable like the music pages' artist links: pushes
-                                // the show's season browser onto the same stack.
-                                if let showItem {
-                                    NavigationLink(value: showItem) {
+                            HStack(spacing: DS.Space.sm) {
+                                if let show = detailed.grandparentTitle, !show.isEmpty {
+                                    // Tappable like the music pages' artist links: pushes
+                                    // the show's season browser onto the same stack.
+                                    if let showItem {
+                                        NavigationLink(value: showItem) {
+                                            Text(show)
+                                                .font(.title3.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, DS.Space.sm)
+                                                .contentShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .hoverEffect(.highlight)
+                                        .padding(.leading, -DS.Space.sm)
+                                    } else {
                                         Text(show)
                                             .font(.title3.weight(.semibold))
                                             .foregroundStyle(.secondary)
-                                            .padding(.horizontal, DS.Space.sm)
-                                            .contentShape(Capsule())
                                     }
-                                    .buttonStyle(.plain)
-                                    .hoverEffect(.highlight)
-                                    .padding(.leading, -DS.Space.sm)
-                                } else {
-                                    Text(show)
-                                        .font(.title3.weight(.semibold))
-                                        .foregroundStyle(.secondary)
                                 }
-                            }
-                            HStack(spacing: DS.Space.sm) {
                                 if let code = detailed.seasonEpisodeCode {
                                     Text(code)
                                         .font(.title3.weight(.bold))
                                         .foregroundStyle(.tint)
                                 }
-                                Text(detailed.title)
-                                    .font(.largeTitle.bold())
                             }
+                            Text(detailed.title)
+                                .font(.largeTitle.bold())
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
                         Text(detailed.title)
@@ -392,7 +416,7 @@ struct DetailView: View {
         if let local = localURL {
             Button {
                 musicPlayer.pauseForVideo()
-                let key = downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind)
+                let key = downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind)
                 let record = downloadManager.records.first { $0.ratingKey == key && $0.status == .complete }
                 // Prefer the persisted download snapshot as the authoritative source: it describes the
                 // exact downloaded variant (part, chapters, cached subtitles), whereas the live
@@ -676,7 +700,7 @@ struct DetailView: View {
         watchedOverride = !wasWatched
 
         do {
-            switch appModel.activeBackend {
+            switch actionBackend {
             case .plex:
                 guard let server = appModel.serverBaseURL,
                       let token = appModel.serverToken else {
@@ -709,7 +733,7 @@ struct DetailView: View {
         // launch the video player. Unreachable in normal flow.
         guard !detailed.isMusic else { return }
         let span = PerformanceInstrumentation.begin(.playbackResolve,
-                                                     backend: appModel.activeBackend.performanceLabel,
+                                                     backend: actionBackend.performanceLabel,
                                                      fields: [
                                                         "resume": detailed.viewOffset ?? 0,
                                                         "quality_kbps": activeMaxVideoBitrateKbps,
@@ -717,7 +741,7 @@ struct DetailView: View {
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
         playingItem = itemWithResumeRewind(detailed)
-        switch appModel.activeBackend {
+        switch actionBackend {
         case .plex:
             remotePlayback = nil
             embyRemotePlayback = nil
@@ -835,18 +859,18 @@ struct DetailView: View {
     }
 
     private var localURL: URL? {
-        return downloadManager.localURL(for: downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind))
+        return downloadManager.localURL(for: downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind))
     }
 
     private var isDownloading: Bool {
-        let key = downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind)
+        let key = downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind)
         return downloadManager.records.contains {
             $0.ratingKey == key && ($0.status == .queued || $0.status == .downloading)
         }
     }
 
     private var downloadLabel: String {
-        let key = downloadManager.recordKey(for: detailed, backend: appModel.activeBackend.downloadBackendKind)
+        let key = downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind)
         if let rec = downloadManager.records.first(where: { $0.ratingKey == key }) {
             if rec.status == .failed { return "Download Failed" }
             if rec.status == .complete { return "Downloaded" }
@@ -920,9 +944,11 @@ struct DetailView: View {
     }
 
     private func refreshMetadata() async {
+        // Resolve metadata against the item's origin backend (#100), not the live active
+        // backend, so a detail that lingered across a switch refreshes from the right server.
         let span = PerformanceInstrumentation.begin(.detailMetadata,
-                                                     backend: appModel.activeBackend.performanceLabel)
-        if appModel.activeBackend == .jellyfin {
+                                                     backend: actionBackend.performanceLabel)
+        if actionBackend == .jellyfin {
             if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
                 detailed = full
                 selectedMediaIndex = 0
@@ -933,7 +959,7 @@ struct DetailView: View {
             }
             return
         }
-        if appModel.activeBackend == .emby {
+        if actionBackend == .emby {
             if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
                 detailed = full
                 selectedMediaIndex = 0
@@ -1061,13 +1087,14 @@ struct ContainerBrowserView: View {
             }
         }
         .navigationTitle(container.grandparentTitle ?? container.title)
-        .task { await load() }
+        .id(container.ratingKey)
+        .task(id: container.ratingKey) { await load() }
     }
 
     /// Seasons as a poster grid (same look as a library section).
     private var seasonGrid: some View {
         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-            ForEach(children) { season in
+            ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, season in
                 NavigationLink(value: season) {
                     PosterCell(item: season, width: DS.Poster.gridMin)
                 }
@@ -1081,7 +1108,7 @@ struct ContainerBrowserView: View {
     /// "S{parentIndex}E{index} · {title}" — Plex/Emby style.
     private var episodeList: some View {
         LazyVStack(spacing: DS.Space.md) {
-            ForEach(children) { episode in
+            ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, episode in
                 NavigationLink(value: episode) {
                     EpisodeRow(episode: episode)
                 }
@@ -1091,14 +1118,34 @@ struct ContainerBrowserView: View {
         .padding(DS.Space.xl)
     }
 
+    private func recordContainerChildrenDiagnostics(_ loaded: [MediaItem],
+                                                    normalized: [MediaItem],
+                                                    backend: String) {
+        guard childrenAreEpisodes else { return }
+        let summary = BrowseDiagnostics.containerChildren(rawItems: loaded,
+                                                          normalizedItems: normalized,
+                                                          backend: backend,
+                                                          container: container,
+                                                          childrenAreEpisodes: childrenAreEpisodes)
+        AppDiagnostics.record(.browse, "container.children", fields: summary.fields)
+        #if DEBUG
+        NSLog("%@", "container.children \(summary.consoleLine)")
+        #endif
+    }
+
     private func load() async {
-        // `.task` re-fires when popping back from a pushed season/episode; reloading
-        // then resets the scroll position the user is returning to. Load once.
-        if case .loaded = loadState { return }
+        // Always reload when this browser appears. Season/episode payloads are small, and this
+        // avoids keeping a stale, duplicated child snapshot alive across navigation restoration
+        // or backend/model changes.
+        children = []
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                children = try await JellyfinBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
+                let loaded = try await JellyfinBrowseService(appModel: appModel)
+                    .items(parentId: container.ratingKey, recursive: false)
+                let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+                recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Jellyfin")
+                children = normalized
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -1108,7 +1155,11 @@ struct ContainerBrowserView: View {
         if appModel.activeBackend == .emby {
             loadState = .loading
             do {
-                children = try await EmbyBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
+                let loaded = try await EmbyBrowseService(appModel: appModel)
+                    .items(parentId: container.ratingKey, recursive: false)
+                let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+                recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Emby")
+                children = normalized
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -1125,10 +1176,47 @@ struct ContainerBrowserView: View {
                                      identity: appModel.identity, ratingKey: container.ratingKey)
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            children = resp.mediaContainer.metadata
+            let loaded = resp.mediaContainer.metadata
+            let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+            recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Plex")
+            children = normalized
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+private extension MediaItem {
+    /// Stable per-row identity for season/episode container browsers. Keep backend id in the
+    /// SwiftUI identity so taps still route to the exact item when rows are legitimately distinct.
+    var containerRowIdentity: String {
+        [ratingKey, type, parentIndex.map(String.init), index.map(String.init), title]
+            .compactMap { $0 }
+            .joined(separator: "|")
+    }
+
+    /// Visible episode identity for de-duping server duplicates. Jellyfin can expose multiple
+    /// physical entries/versions with distinct item ids but identical S/E/title/artwork; a season
+    /// browser should show one row for that episode, not four indistinguishable rows.
+    var episodeDisplayIdentity: String {
+        [parentIndex.map(String.init), index.map(String.init), title]
+            .compactMap { $0 }
+            .joined(separator: "|")
+    }
+}
+
+private extension Array where Element == MediaItem {
+    /// Normalize a show/season child payload at the UI boundary: sort episode lists by numeric
+    /// S/E order and collapse visible duplicate episode rows. Use display identity for episodes
+    /// (S/E/title) rather than backend id, because duplicate files can arrive as separate Jellyfin
+    /// items while being impossible to distinguish in this list.
+    func normalizedForContainerBrowser(childrenAreEpisodes: Bool) -> [MediaItem] {
+        let ordered = childrenAreEpisodes ? sortedByEpisodeOrder() : self
+        var seen = Set<String>()
+        return ordered.filter { item in
+            let key = childrenAreEpisodes ? item.episodeDisplayIdentity : item.containerRowIdentity
+            return seen.insert(key).inserted
         }
     }
 }
@@ -1205,6 +1293,7 @@ private extension MediaItem {
                   parentIndex: parentIndex, index: index, originalTitle: originalTitle,
                   lastViewedAt: lastViewedAt, parentYear: parentYear,
                   ratingCount: ratingCount, composite: composite, leafCount: leafCount,
-                  playlistType: playlistType)
+                  playlistType: playlistType,
+                  primaryImageAspectRatio: primaryImageAspectRatio)
     }
 }

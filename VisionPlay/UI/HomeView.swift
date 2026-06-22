@@ -70,12 +70,18 @@ struct HomeView: View {
             if item.isMusicContainer || item.isAudioPlaylist {
                 musicDestination(for: item, sectionKey: nil)
             } else {
-                DetailView(item: item)
+                // Capture the active backend as the item's origin (#100) so Play / watched /
+                // download resolve against the backend the item came from even if the user
+                // switches backends while this detail is still on the stack.
+                DetailView(item: item, originBackend: appModel.activeBackend)
             }
         }
         // Re-run whenever the server URL resolves after discovery/rediscovery.
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
+            reloadHomeIfVisibilityChanged(notification)
+        }
     }
 
     private var loadIdentity: String {
@@ -158,7 +164,13 @@ struct HomeView: View {
             loadState = .loading
             do {
                 let service = JellyfinBrowseService(appModel: appModel)
-                let views = try await service.userViewLinks()
+                let allViews = try await service.userViewLinks()
+                // Mirror the Libraries screen: hide library rails the user has hidden (#104).
+                // Jellyfin/Emby Home rails are library-scoped (built from `views`), so filtering
+                // `views` here keeps Home consistent. (Plex Home uses non-library `/hubs` and is
+                // deferred — see #104.)
+                let hidden = LibraryVisibilityStore().hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+                let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 jellyfinViews = views
                 let load = try await service.homeRails(for: views)
                 jellyfinRails = load.rails
@@ -184,7 +196,10 @@ struct HomeView: View {
             loadState = .loading
             do {
                 let service = EmbyBrowseService(appModel: appModel)
-                let views = try await service.userViewLinks()
+                let allViews = try await service.userViewLinks()
+                // See the Jellyfin branch: hide hidden-library rails (#104). Plex Home deferred.
+                let hidden = LibraryVisibilityStore().hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+                let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 embyViews = views
                 let load = try await service.homeRails(for: views)
                 embyRails = load.rails
@@ -229,6 +244,17 @@ struct HomeView: View {
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
+    }
+
+    /// Jellyfin/Emby Home rails are filtered by the same hidden-library set as the Libraries
+    /// screen (#104). Settings can change that set while Home remains mounted in its tab, so
+    /// refresh the active MediaBrowser home when the relevant backend key changes. Plex Home uses
+    /// non-library `/hubs` and is intentionally deferred for #104, so no reload is needed there.
+    private func reloadHomeIfVisibilityChanged(_ notification: Notification) {
+        guard appModel.activeBackend != .plex,
+              let backendKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String,
+              backendKey == appModel.libraryVisibilityBackendKey else { return }
+        Task { await load(force: true) }
     }
 }
 
@@ -329,7 +355,12 @@ struct PosterCell: View {
     let item: MediaItem
     var width: CGFloat = DS.Poster.railWidth
 
-    private var height: CGFloat { DS.Poster.height(for: width) }
+    /// Render at the item's real artwork ratio when the backend reports one (Jellyfin/Emby
+    /// `PrimaryImageAspectRatio`: 16:9 YouTube, square Twitch, 16:9 episode stills), else the
+    /// canonical 2:3 poster. Plex reports no ratio, so it stays 2:3 (GH #101).
+    private var height: CGFloat {
+        CGFloat(Double(width) / item.resolvedPosterAspect(fallback: Double(DS.Poster.aspect)))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {

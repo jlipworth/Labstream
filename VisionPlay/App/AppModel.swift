@@ -125,6 +125,27 @@ final class AppModel {
         }
     }
 
+    /// Token-free, per-backend identity used to scope library-visibility persistence (#104).
+    /// Survives re-auth (the token changes, the server/user identity does not) — deliberately
+    /// NOT the token-bearing `loadIdentity` cache keys. `nil` for an unresolvable identity, which
+    /// callers treat as "all libraries visible".
+    var libraryVisibilityBackendKey: String? {
+        switch activeBackend {
+        case .plex:
+            return LibraryVisibility.backendKey(backend: .plex,
+                                                serverID: selectedServer?.clientIdentifier,
+                                                baseURLHost: serverBaseURL?.host)
+        case .jellyfin:
+            return LibraryVisibility.backendKey(backend: .jellyfin,
+                                                serverID: jellyfinServerID,
+                                                baseURLHost: jellyfinServerBaseURL?.host)
+        case .emby:
+            return LibraryVisibility.backendKey(backend: .emby,
+                                                serverID: embyServerID,
+                                                baseURLHost: embyServerBaseURL?.host)
+        }
+    }
+
     var isBrowseReady: Bool {
         switch activeBackend {
         case .plex:
@@ -182,6 +203,23 @@ extension MediaBackendKind {
         case .plex:     return .plex
         case .jellyfin: return .jellyfin
         case .emby:     return .emby
+        }
+    }
+
+    /// Bridge to PMSKit's backend enum (used by the pure backend-resolution helpers, #100).
+    var backendChoice: MediaBackendChoice {
+        switch self {
+        case .plex:     return .plex
+        case .jellyfin: return .jellyfin
+        case .emby:     return .emby
+        }
+    }
+
+    init(_ choice: MediaBackendChoice) {
+        switch choice {
+        case .plex:     self = .plex
+        case .jellyfin: self = .jellyfin
+        case .emby:     self = .emby
         }
     }
 }

@@ -12,6 +12,12 @@ struct LibrariesView: View {
     @State private var loadState: HomeView.LoadState = .idle
     @State private var loadedIdentity: String?
 
+    /// First-run library picker (#104). Holds the candidates + pre-checked hidden ids for the
+    /// backend key whose prompt hasn't been shown yet; presented as a sheet from the loaded list.
+    @State private var firstRunPrompt: LibraryVisibilityPrompt?
+
+    private let visibilityStore = LibraryVisibilityStore()
+
     var body: some View {
         Group {
             switch loadState {
@@ -44,10 +50,28 @@ struct LibrariesView: View {
             LibraryGridView(emby: view)
         }
         .navigationDestination(for: MediaItem.self) { item in
-            DetailView(item: item)
+            // Capture the active backend as the item's origin (#100) so actions resolve
+            // against the source backend even after a backend switch.
+            DetailView(item: item, originBackend: appModel.activeBackend)
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
+            reloadIfVisibilityChanged(notification)
+        }
+        .sheet(item: $firstRunPrompt) { prompt in
+            LibraryVisibilityPickerSheet(prompt: prompt) { hiddenIDs in
+                visibilityStore.setHiddenIDs(hiddenIDs, forBackendKey: prompt.backendKey)
+                visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
+                firstRunPrompt = nil
+                Task { await load(force: true) }
+            } onCancel: {
+                // "Show all" / dismissal: record the prompt as shown so it never re-appears,
+                // leaving everything visible (empty hidden set).
+                visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
+                firstRunPrompt = nil
+            }
+        }
     }
 
     private var loadIdentity: String {
@@ -149,7 +173,12 @@ struct LibrariesView: View {
 
         if appModel.activeBackend == .jellyfin {
             do {
-                jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                let allViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                let backendKey = appModel.libraryVisibilityBackendKey
+                maybePresentFirstRunPrompt(backendKey: backendKey,
+                                           candidates: allViews.map { candidate(jellyfin: $0) })
+                let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
+                jellyfinViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 loadedIdentity = loadIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": jellyfinViews.count])
@@ -162,7 +191,12 @@ struct LibrariesView: View {
 
         if appModel.activeBackend == .emby {
             do {
-                embyViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                let allViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                let backendKey = appModel.libraryVisibilityBackendKey
+                maybePresentFirstRunPrompt(backendKey: backendKey,
+                                           candidates: allViews.map { candidate(emby: $0) })
+                let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
+                embyViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 loadedIdentity = loadIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": embyViews.count])
@@ -185,7 +219,12 @@ struct LibrariesView: View {
             // un-hide: the Music tab is their dedicated entry point and listing the
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
-            sections = resp.mediaContainer.directory.filter { !$0.isMusic }
+            let nonMusic = resp.mediaContainer.directory.filter { !$0.isMusic }
+            let backendKey = appModel.libraryVisibilityBackendKey
+            maybePresentFirstRunPrompt(backendKey: backendKey,
+                                       candidates: nonMusic.map { candidate(plex: $0) })
+            let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
+            sections = LibraryVisibility.visible(nonMusic, hiddenIDs: hidden) { $0.key }
             loadedIdentity = loadIdentity
             loadState = .loaded
             span.end(fields: ["library_count": sections.count])
@@ -193,6 +232,49 @@ struct LibrariesView: View {
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
+    }
+
+    // MARK: First-run library picker (#104)
+
+    /// On the first successful library load for a backend key whose prompt hasn't been shown,
+    /// arm the first-run picker pre-checking known-noise libraries. Tied to the load (not auth
+    /// state) so the server/views are known and it works for both fresh login and restored session.
+    private func maybePresentFirstRunPrompt(backendKey: String?,
+                                            candidates: [LibraryVisibility.Candidate]) {
+        guard let backendKey, !candidates.isEmpty else { return }
+        guard !visibilityStore.hasShownPrompt(forBackendKey: backendKey) else { return }
+        guard firstRunPrompt == nil else { return }
+        let preselected = LibraryVisibility.defaultHiddenSelection(from: candidates)
+        firstRunPrompt = LibraryVisibilityPrompt(backendKey: backendKey,
+                                                 candidates: candidates,
+                                                 preselectedHidden: preselected)
+    }
+
+    /// Settings edits write through `LibraryVisibilityStore` while this tab can remain mounted
+    /// in the background. Reload the visible list for the active backend so returning from
+    /// Settings immediately reflects newly hidden/shown libraries (#104).
+    private func reloadIfVisibilityChanged(_ notification: Notification) {
+        guard let backendKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String,
+              backendKey == appModel.libraryVisibilityBackendKey else { return }
+        Task { await load(force: true) }
+    }
+
+    private func candidate(plex section: PlexSection) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: section.key,
+                                    title: section.title,
+                                    kind: LibrarySectionKind(plexType: section.type).visibilityKindToken)
+    }
+
+    private func candidate(jellyfin view: JellyfinLibraryLink) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: view.id,
+                                    title: view.title,
+                                    kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
+    }
+
+    private func candidate(emby view: EmbyLibraryLink) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: view.id,
+                                    title: view.title,
+                                    kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
     }
 }
 
@@ -397,6 +479,16 @@ struct LibraryGridView: View {
                            includeItemTypes: jellyfinLibraryItemTypes(for: view),
                            fields: JellyfinLibrary.gridItemFields)
             let total = max(page.total ?? page.items.count, page.items.count)
+            recordGridPageDiagnostics(page.items,
+                                      backend: "Jellyfin",
+                                      sourceID: view.id,
+                                      sourceName: view.title,
+                                      sourceKind: view.collectionType,
+                                      recursive: jellyfinLibraryRecursive(for: view),
+                                      includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                                      startIndex: 0,
+                                      limit: pageSize,
+                                      total: total)
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
                 fresh[i] = item
@@ -440,6 +532,16 @@ struct LibraryGridView: View {
                            includeItemTypes: embyLibraryItemTypes(for: view),
                            fields: EmbyLibrary.gridItemFields)
             let total = max(page.total ?? page.items.count, page.items.count)
+            recordGridPageDiagnostics(page.items,
+                                      backend: "Emby",
+                                      sourceID: view.id,
+                                      sourceName: view.title,
+                                      sourceKind: view.collectionType,
+                                      recursive: embyLibraryRecursive(for: view),
+                                      includeItemTypes: embyLibraryItemTypes(for: view),
+                                      startIndex: 0,
+                                      limit: pageSize,
+                                      total: total)
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
                 fresh[i] = item
@@ -510,18 +612,28 @@ struct LibraryGridView: View {
                                                          backend: "Jellyfin",
                                                          fields: ["page": page, "page_size": pageSize])
             do {
-                let page = try await JellyfinBrowseService(appModel: appModel)
+                let pageResult = try await JellyfinBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
                                recursive: jellyfinLibraryRecursive(for: view),
                                startIndex: start,
                                limit: pageSize,
                                includeItemTypes: jellyfinLibraryItemTypes(for: view),
                                fields: JellyfinLibrary.gridItemFields)
-                for (i, item) in page.items.enumerated()
+                recordGridPageDiagnostics(pageResult.items,
+                                          backend: "Jellyfin",
+                                          sourceID: view.id,
+                                          sourceName: view.title,
+                                          sourceKind: view.collectionType,
+                                          recursive: jellyfinLibraryRecursive(for: view),
+                                          includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                                          startIndex: start,
+                                          limit: pageSize,
+                                          total: pageResult.total)
+                for (i, item) in pageResult.items.enumerated()
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
-                span.end(fields: ["item_count": page.items.count])
+                span.end(fields: ["item_count": pageResult.items.count])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
@@ -531,18 +643,28 @@ struct LibraryGridView: View {
                                                          backend: "Emby",
                                                          fields: ["page": page, "page_size": pageSize])
             do {
-                let page = try await EmbyBrowseService(appModel: appModel)
+                let pageResult = try await EmbyBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
                                recursive: embyLibraryRecursive(for: view),
                                startIndex: start,
                                limit: pageSize,
                                includeItemTypes: embyLibraryItemTypes(for: view),
                                fields: EmbyLibrary.gridItemFields)
-                for (i, item) in page.items.enumerated()
+                recordGridPageDiagnostics(pageResult.items,
+                                          backend: "Emby",
+                                          sourceID: view.id,
+                                          sourceName: view.title,
+                                          sourceKind: view.collectionType,
+                                          recursive: embyLibraryRecursive(for: view),
+                                          includeItemTypes: embyLibraryItemTypes(for: view),
+                                          startIndex: start,
+                                          limit: pageSize,
+                                          total: pageResult.total)
+                for (i, item) in pageResult.items.enumerated()
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
-                span.end(fields: ["item_count": page.items.count])
+                span.end(fields: ["item_count": pageResult.items.count])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
@@ -550,6 +672,33 @@ struct LibraryGridView: View {
         }
         loadingPages.remove(page)
     }
+
+    private func recordGridPageDiagnostics(_ items: [MediaItem],
+                                           backend: String,
+                                           sourceID: String,
+                                           sourceName: String,
+                                           sourceKind: String?,
+                                           recursive: Bool,
+                                           includeItemTypes: String,
+                                           startIndex: Int,
+                                           limit: Int,
+                                           total: Int?) {
+        let summary = BrowseDiagnostics.libraryGridPage(items: items,
+                                                        backend: backend,
+                                                        sourceID: sourceID,
+                                                        sourceName: sourceName,
+                                                        sourceKind: sourceKind,
+                                                        recursive: recursive,
+                                                        includeItemTypes: includeItemTypes,
+                                                        startIndex: startIndex,
+                                                        limit: limit,
+                                                        total: total)
+        AppDiagnostics.record(.browse, "library_grid.page", fields: summary.fields)
+        #if DEBUG
+        NSLog("%@", "library.grid.items \(summary.consoleLine)")
+        #endif
+    }
+
     /// Probe each A–Z letter's item count for the Jellyfin alphabet rail, IN PARALLEL
     /// (GH #96). Returns letters with at least one item, in alphabetical order, as raw
     /// `(display, count)` pairs — the caller turns them into `AlphabetBucket`s with the

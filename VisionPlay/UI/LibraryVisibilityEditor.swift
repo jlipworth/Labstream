@@ -1,0 +1,192 @@
+import SwiftUI
+import PMSKit
+
+/// The first-run library picker payload (#104): the candidates to choose from, the backend key
+/// they belong to, and the pre-checked "hide" set (known-noise libraries). Identifiable so it can
+/// drive a `.sheet(item:)`.
+struct LibraryVisibilityPrompt: Identifiable {
+    let id = UUID()
+    let backendKey: String
+    let candidates: [LibraryVisibility.Candidate]
+    let preselectedHidden: Set<String>
+}
+
+/// First-run sheet that lets the user confirm which libraries to show. Toggles are framed as
+/// "Show" (on = visible); known-noise libraries start OFF (pre-checked to hide). Nothing is
+/// hidden until the user taps "Done"; "Show All" leaves everything visible.
+struct LibraryVisibilityPickerSheet: View {
+    let prompt: LibraryVisibilityPrompt
+    /// Called with the final HIDDEN id set on confirm.
+    let onConfirm: (Set<String>) -> Void
+    let onCancel: () -> Void
+
+    @State private var hidden: Set<String>
+
+    init(prompt: LibraryVisibilityPrompt,
+         onConfirm: @escaping (Set<String>) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.prompt = prompt
+        self.onConfirm = onConfirm
+        self.onCancel = onCancel
+        _hidden = State(initialValue: prompt.preselectedHidden)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                SwiftUI.Section {
+                    ForEach(prompt.candidates, id: \.id) { candidate in
+                        Toggle(isOn: bindingForVisible(candidate.id)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(candidate.title)
+                                Text(LibrarySectionKind(visibilityKindToken: candidate.kind).subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Show in Libraries")
+                } footer: {
+                    Text("Choose which libraries appear on the Libraries screen. Collections, folders, home-video, and trailer libraries are turned off by default — turn any back on to keep it. You can change this anytime in Settings.")
+                }
+            }
+            .navigationTitle("Choose Libraries")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Show All") { onCancel() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { onConfirm(hidden) }
+                }
+            }
+        }
+    }
+
+    private func bindingForVisible(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !hidden.contains(id) },
+            set: { visible in
+                if visible { hidden.remove(id) } else { hidden.insert(id) }
+            }
+        )
+    }
+}
+
+/// Settings editor (#104): live per-library Show/Hide toggles for the active backend, persisting
+/// to `LibraryVisibilityStore`. Re-fetches the current library list on appear so newly-added
+/// server libraries surface (and default visible).
+struct LibraryVisibilityEditor: View {
+    @Environment(AppModel.self) private var appModel
+
+    @State private var candidates: [LibraryVisibility.Candidate] = []
+    @State private var hidden: Set<String> = []
+    @State private var loadState: LoadState = .loading
+
+    private let store = LibraryVisibilityStore()
+
+    private enum LoadState: Equatable {
+        case loading
+        case loaded
+        case failed(String)
+        case unavailable
+    }
+
+    var body: some View {
+        Form {
+            switch loadState {
+            case .loading:
+                HStack { ProgressView(); Text("Loading libraries…").foregroundStyle(.secondary) }
+            case .failed(let message):
+                Text(message).foregroundStyle(.secondary)
+            case .unavailable:
+                Text("Connect to a server to choose libraries.").foregroundStyle(.secondary)
+            case .loaded:
+                if candidates.isEmpty {
+                    Text("This server has no libraries.").foregroundStyle(.secondary)
+                } else {
+                    SwiftUI.Section {
+                        ForEach(candidates, id: \.id) { candidate in
+                            Toggle(isOn: bindingForVisible(candidate.id)) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(candidate.title)
+                                    Text(LibrarySectionKind(visibilityKindToken: candidate.kind).subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } footer: {
+                        Text("Turn a library off to hide it from the Libraries screen for this server. New libraries on the server appear automatically. Choices are kept separately per backend.")
+                    }
+                }
+            }
+        }
+        .navigationTitle("Libraries")
+        .task { await load() }
+    }
+
+    private func bindingForVisible(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { !hidden.contains(id) },
+            set: { visible in
+                hidden = store.toggle(id: id, hidden: !visible,
+                                      forBackendKey: appModel.libraryVisibilityBackendKey)
+            }
+        )
+    }
+
+    private func load() async {
+        let backendKey = appModel.libraryVisibilityBackendKey
+        guard backendKey != nil else { loadState = .unavailable; return }
+        hidden = store.hiddenIDs(forBackendKey: backendKey)
+        do {
+            candidates = try await fetchCandidates()
+            loadState = .loaded
+        } catch {
+            loadState = .failed(friendlyMessage(error))
+        }
+    }
+
+    private func fetchCandidates() async throws -> [LibraryVisibility.Candidate] {
+        switch appModel.activeBackend {
+        case .plex:
+            guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+                throw LibraryVisibilityEditorError.noServer
+            }
+            let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
+            let resp = try await appModel.client.send(req, as: SectionsResponse.self)
+            return resp.mediaContainer.directory
+                .filter { !$0.isMusic }
+                .map { LibraryVisibility.Candidate(id: $0.key, title: $0.title,
+                                                   kind: LibrarySectionKind(plexType: $0.type).visibilityKindToken) }
+        case .jellyfin:
+            return try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                .map { LibraryVisibility.Candidate(id: $0.id, title: $0.title,
+                                                   kind: LibrarySectionKind(collectionType: $0.collectionType).visibilityKindToken) }
+        case .emby:
+            return try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                .map { LibraryVisibility.Candidate(id: $0.id, title: $0.title,
+                                                   kind: LibrarySectionKind(collectionType: $0.collectionType).visibilityKindToken) }
+        }
+    }
+}
+
+private enum LibraryVisibilityEditorError: Error { case noServer }
+
+/// Convenience init so the picker/editor can recover a `LibrarySectionKind` from a stored token.
+extension LibrarySectionKind {
+    init(visibilityKindToken token: String) {
+        switch token.lowercased() {
+        case "movies": self = .movies
+        case "tvshows": self = .tvShows
+        case "music": self = .music
+        case "collections": self = .collections
+        case "homevideos": self = .homeVideos
+        case "livetv": self = .liveTV
+        case "photos": self = .photos
+        case "folders": self = .folders
+        default: self = .other
+        }
+    }
+}
