@@ -51,7 +51,7 @@ struct EmbyBrowseService {
                nameStartsWith: String? = nil,
                sortBy: String = "SortName",
                sortOrder: String = "Ascending",
-               includeItemTypes: String = "Movie,Series,Season,Episode",
+               includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                fields: String = EmbyLibrary.fullItemFields,
                filters: [String] = []) async throws -> [MediaItem] {
         let page = try await itemsPage(parentId: parentId,
@@ -76,7 +76,7 @@ struct EmbyBrowseService {
                    nameStartsWith: String? = nil,
                    sortBy: String = "SortName",
                    sortOrder: String = "Ascending",
-                   includeItemTypes: String = "Movie,Series,Season,Episode",
+                   includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                    fields: String = EmbyLibrary.fullItemFields,
                    filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
@@ -165,7 +165,7 @@ struct EmbyBrowseService {
     }
 
     func latestItems(parentId: String?,
-                     includeItemTypes: String = "Movie,Episode",
+                     includeItemTypes: String = "Movie,Episode,Video",
                      limit: Int = 20) async throws -> [MediaItem] {
         let context = try context()
         let req = try EmbyLibrary.latestItemsRequest(server: context.server,
@@ -330,13 +330,15 @@ struct EmbyBrowseService {
 }
 
 private func latestItemTypes(for view: EmbyLibraryLink) -> String {
-    switch view.collectionType {
+    switch view.collectionType?.lowercased() {
     case "movies":
         return "Movie"
     case "tvshows":
         return "Episode"
+    case "homevideos", "livetv":
+        return "Video"
     default:
-        return "Movie,Episode"
+        return "Movie,Episode,Video"
     }
 }
 

@@ -48,7 +48,7 @@ struct JellyfinLibraryTests {
         #expect(query["userId"] == "user-1")
         #expect(query["parentId"] == "view-1")
         #expect(query["recursive"] == "false")
-        #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode")
+        #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode,Video")
         #expect(query["enableUserData"] == "true")
         #expect(query["fields"]?.contains("MediaSources") == true)
         #expect(query["fields"]?.contains("OfficialRating") == true)
@@ -98,7 +98,7 @@ struct JellyfinLibraryTests {
         #expect(query["userId"] == "user-1")
         #expect(query["parentId"] == "view-1")
         #expect(query["limit"] == "12")
-        #expect(query["includeItemTypes"] == "Movie,Episode")
+        #expect(query["includeItemTypes"] == "Movie,Episode,Video")
         #expect(query["enableUserData"] == "true")
         #expect(query["excludeActiveSessions"] == "false")
     }
@@ -433,6 +433,35 @@ struct JellyfinLibraryTests {
         #expect(item.parentRatingKey == "season-1")
         #expect(item.parentIndex == 1)
         #expect(item.index == 2)
+    }
+
+    @Test func mapsStandaloneVideoDtoToPlayableMediaItem() throws {
+        let dto = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
+        {
+          "Id": "video-1",
+          "Name": "A Recording",
+          "Type": "Video",
+          "RunTimeTicks": 12000000000,
+          "ImageTags": { "Primary": "video-tag" },
+          "MediaSources": [{
+            "Id": "source-1",
+            "Container": "mp4",
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "h264" },
+              { "Index": 1, "Type": "Audio", "Codec": "aac" }
+            ]
+          }]
+        }
+        """#.utf8))
+
+        let item = try #require(dto.toMediaItem())
+        #expect(item.ratingKey == "video-1")
+        #expect(item.title == "A Recording")
+        #expect(item.type == "video")
+        #expect(item.duration == 1_200_000)
+        #expect(item.thumb == "jellyfin://item/video-1/Primary?tag=video-tag")
+        #expect(item.media?.first?.part.first?.key == "jellyfin://item/video-1/media/source-1")
+        #expect(item.isPlayableLeaf)
     }
 
     @Test func textSubtitleRequestUsesHeaderAuthAndPathStyle() throws {

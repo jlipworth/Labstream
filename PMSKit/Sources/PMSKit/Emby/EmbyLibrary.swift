@@ -25,7 +25,7 @@ public enum EmbyLibrary {
                                     nameStartsWith: String? = nil,
                                     sortBy: String = "SortName",
                                     sortOrder: String = "Ascending",
-                                    includeItemTypes: String = "Movie,Series,Season,Episode",
+                                    includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                                     fields: String = fullItemFields,
                                     filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(fields: fields)
@@ -56,7 +56,7 @@ public enum EmbyLibrary {
                                           limit: Int = 20) throws -> URLRequest {
         var query = [
             URLQueryItem(name: "Limit", value: String(limit)),
-            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode"),
+            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode,Video"),
             URLQueryItem(name: "Fields", value: fullItemFields),
             URLQueryItem(name: "EnableUserData", value: "true"),
             URLQueryItem(name: "EnableImages", value: "true"),
@@ -91,7 +91,7 @@ public enum EmbyLibrary {
                                           identity: EmbyClientIdentity,
                                           userId: String,
                                           parentId: String? = nil,
-                                          includeItemTypes: String = "Movie,Episode",
+                                          includeItemTypes: String = "Movie,Episode,Video",
                                           limit: Int = 20) throws -> URLRequest {
         var query = [
             URLQueryItem(name: "Limit", value: String(limit)),
@@ -289,7 +289,7 @@ public enum EmbyLibrary {
 
     private static func baseItemsQuery(fields: String = fullItemFields) -> [URLQueryItem] {
         [
-            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Series,Season,Episode"),
+            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Series,Season,Episode,Video"),
             URLQueryItem(name: "Fields", value: fields),
             URLQueryItem(name: "EnableUserData", value: "true"),
             URLQueryItem(name: "SortBy", value: "SortName"),

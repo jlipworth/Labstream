@@ -178,6 +178,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case "Series": return "show"
         case "Season": return "season"
         case "Episode": return "episode"
+        case "Video": return "video"
         default: return nil
         }
     }
