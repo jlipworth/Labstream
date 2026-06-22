@@ -87,6 +87,22 @@ enum LibrarySectionKind {
         }
     }
 
+    /// Lower-cased token matching `LibraryVisibility.noiseKinds` (#104), so the first-run
+    /// picker's noise pre-selection shares one vocabulary with this enum.
+    var visibilityKindToken: String {
+        switch self {
+        case .movies: return "movies"
+        case .tvShows: return "tvshows"
+        case .music: return "music"
+        case .collections: return "collections"
+        case .homeVideos: return "homevideos"
+        case .liveTV: return "livetv"
+        case .photos: return "photos"
+        case .folders: return "folders"
+        case .other: return "other"
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .movies: return "film"

@@ -161,7 +161,13 @@ struct HomeView: View {
             loadState = .loading
             do {
                 let service = JellyfinBrowseService(appModel: appModel)
-                let views = try await service.userViewLinks()
+                let allViews = try await service.userViewLinks()
+                // Mirror the Libraries screen: hide library rails the user has hidden (#104).
+                // Jellyfin/Emby Home rails are library-scoped (built from `views`), so filtering
+                // `views` here keeps Home consistent. (Plex Home uses non-library `/hubs` and is
+                // deferred — see #104.)
+                let hidden = LibraryVisibilityStore().hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+                let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 jellyfinViews = views
                 let load = try await service.homeRails(for: views)
                 jellyfinRails = load.rails
@@ -187,7 +193,10 @@ struct HomeView: View {
             loadState = .loading
             do {
                 let service = EmbyBrowseService(appModel: appModel)
-                let views = try await service.userViewLinks()
+                let allViews = try await service.userViewLinks()
+                // See the Jellyfin branch: hide hidden-library rails (#104). Plex Home deferred.
+                let hidden = LibraryVisibilityStore().hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+                let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 embyViews = views
                 let load = try await service.homeRails(for: views)
                 embyRails = load.rails
