@@ -127,9 +127,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
 
     // MARK: - Extended metadata (#76 — cast/studios/critic rating, title logo)
 
-    /// Separate critic/aggregate rating distinct from the audience `rating`. Plex
-    /// `audienceRating`; Jellyfin/Emby `CriticRating`. The detail header shows it as a
-    /// second badge next to the audience star. `nil` when the backend doesn't rate it.
+    /// Separate backend-supplied critic/aggregate rating where available. Jellyfin/Emby
+    /// expose this as `CriticRating`; Plex `audienceRating` is an audience score, not a
+    /// critic score, so the Plex decoder deliberately leaves this nil.
     public let criticRating: Double?
     /// Cast (`Role` on Plex, `People` of type Actor on Jellyfin/Emby). Surfaced as a
     /// "Cast" line on the detail header. Empty/nil when absent.
@@ -215,7 +215,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case contentRating
         case tagline
         case genres = "Genre"
-        case criticRating = "audienceRating"
+        case criticRating
         case roles = "Role"
         case directors = "Director"
         case studios = "Country"
@@ -260,6 +260,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
         tagline = try c.decodeIfPresent(String.self, forKey: .tagline)
         genres = try c.decodeIfPresent([Tag].self, forKey: .genres)
+        // Plex does not expose a same-semantics top-level critic field in the payloads we use.
+        // Do NOT map `audienceRating` here: that produced bogus orange critic badges on Plex
+        // detail pages (for example an audience score of 36 rendering as `36.0`).
         criticRating = try c.decodeIfPresent(Double.self, forKey: .criticRating)
         roles = try c.decodeIfPresent([Tag].self, forKey: .roles)
         directors = try c.decodeIfPresent([Tag].self, forKey: .directors)

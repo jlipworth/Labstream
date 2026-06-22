@@ -224,9 +224,9 @@ struct ArtworkMetadataTests {
         #expect(item.studios == nil)
     }
 
-    // MARK: - #76 — Plex cast/studios/critic/logo decoding
+    // MARK: - #76 — Plex cast/studios/logo decoding
 
-    @Test func plexDecodesCastStudiosCriticAndLogo() throws {
+    @Test func plexDecodesCastStudiosAndLogoWithoutAudienceRatingAsCritic() throws {
         let json = """
         {"MediaContainer":{"Metadata":[
           {"ratingKey":"42","title":"Arrival","type":"movie","year":2016,
@@ -242,7 +242,9 @@ struct ArtworkMetadataTests {
         let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
         let item = c.mediaContainer.metadata[0]
         #expect(item.rating == 7.9)
-        #expect(item.criticRating == 8.4)
+        // Plex `audienceRating` is not a critic score; it must not render as the orange
+        // MediaBrowser CriticRating badge.
+        #expect(item.criticRating == nil)
         #expect(item.roles?.map(\.tag) == ["Amy Adams", "Jeremy Renner"])
         #expect(item.directors?.map(\.tag) == ["Denis Villeneuve"])
         #expect(item.studios?.map(\.tag) == ["United States of America"])
