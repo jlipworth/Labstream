@@ -3,6 +3,25 @@
 Project-specific guidance also lives in `CLAUDE.md`; read it for the full build/test
 loop and hard constraints. This file mirrors the points that matter most for Codex.
 
+## Deploy to a physical Apple Vision Pro
+
+On-device install (over Wi-Fi, via `devicectl`) is wrapped in one script — use it instead
+of re-deriving the device signing, which has a recurring trap: the `DEVELOPMENT_TEAM` is
+the signing cert's **OU** (`XXXXXXXXXX`), NOT the parenthetical in its name (`YYYYYYYYYY`).
+
+```sh
+scripts/deploy-to-device.sh            # build (signed) + install to the paired Vision Pro
+scripts/deploy-to-device.sh --launch   # also launch (headset must be awake/worn)
+scripts/deploy-to-device.sh --no-build # reinstall last build without rebuilding
+```
+
+One-time GUI prereqs (an agent can't do these): pair the headset, and sign an Apple ID
+into Xcode ▸ Settings ▸ Accounts (a keychain cert alone is not enough → "No Account for
+Team" build failure). Free-team provisioning profiles expire ~7 days — just re-run the
+script. The dev build shares the bundle id `com.jlipworth.VisionPlay` with the App Store
+build, so only one is installed at a time (the dev install clobbers App Store state).
+Full detail + traps: `.claude/skills/deploy-to-device/SKILL.md`.
+
 ## Worktree simulators
 
 Each git worktree gets its own visionOS simulator so parallel worktrees don't clobber
