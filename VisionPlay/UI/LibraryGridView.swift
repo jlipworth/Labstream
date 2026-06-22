@@ -374,7 +374,7 @@ struct LibraryGridView: View {
         do {
             let page = try await service
                 .itemsPage(parentId: view.id,
-                           recursive: false,
+                           recursive: jellyfinLibraryRecursive(for: view),
                            startIndex: 0,
                            limit: pageSize,
                            includeItemTypes: jellyfinLibraryItemTypes(for: view),
@@ -413,7 +413,7 @@ struct LibraryGridView: View {
         do {
             let page = try await service
                 .itemsPage(parentId: view.id,
-                           recursive: false,
+                           recursive: embyLibraryRecursive(for: view),
                            startIndex: 0,
                            limit: pageSize,
                            includeItemTypes: embyLibraryItemTypes(for: view),
@@ -490,7 +490,7 @@ struct LibraryGridView: View {
             do {
                 let page = try await JellyfinBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
-                               recursive: false,
+                               recursive: jellyfinLibraryRecursive(for: view),
                                startIndex: start,
                                limit: pageSize,
                                includeItemTypes: jellyfinLibraryItemTypes(for: view),
@@ -511,7 +511,7 @@ struct LibraryGridView: View {
             do {
                 let page = try await EmbyBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
-                               recursive: false,
+                               recursive: embyLibraryRecursive(for: view),
                                startIndex: start,
                                limit: pageSize,
                                includeItemTypes: embyLibraryItemTypes(for: view),
@@ -542,7 +542,7 @@ struct LibraryGridView: View {
             for (index, letter) in letters.enumerated() {
                 group.addTask {
                     let page = try? await service.itemsPage(parentId: view.id,
-                                                            recursive: false,
+                                                            recursive: jellyfinLibraryRecursive(for: view),
                                                             limit: 1,
                                                             nameStartsWith: letter,
                                                             includeItemTypes: itemTypes,
@@ -569,7 +569,7 @@ struct LibraryGridView: View {
             for (index, letter) in letters.enumerated() {
                 group.addTask {
                     let page = try? await service.itemsPage(parentId: view.id,
-                                                            recursive: false,
+                                                            recursive: embyLibraryRecursive(for: view),
                                                             limit: 1,
                                                             nameStartsWith: letter,
                                                             includeItemTypes: itemTypes,
@@ -589,25 +589,19 @@ struct LibraryGridView: View {
 }
 
 private func embyLibraryItemTypes(for view: EmbyLibraryLink) -> String {
-    switch view.collectionType?.lowercased() {
-    case "movies":
-        return "Movie"
-    case "tvshows":
-        return "Series"
-    default:
-        return "Movie,Series,Season,Episode"
-    }
+    MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
+}
+
+private func embyLibraryRecursive(for view: EmbyLibraryLink) -> Bool {
+    MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
 }
 
 private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {
-    switch view.collectionType?.lowercased() {
-    case "movies":
-        return "Movie"
-    case "tvshows":
-        return "Series"
-    default:
-        return "Movie,Series,Season,Episode"
-    }
+    MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
+}
+
+private func jellyfinLibraryRecursive(for view: JellyfinLibraryLink) -> Bool {
+    MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
 }
 
 private struct LibraryPlaceholderPoster: View {
