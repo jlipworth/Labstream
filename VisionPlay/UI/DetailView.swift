@@ -1099,6 +1099,7 @@ struct ContainerBrowserView: View {
             loadState = .loading
             do {
                 children = try await JellyfinBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
+                if childrenAreEpisodes { children = children.sortedByEpisodeOrder() }
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -1109,6 +1110,7 @@ struct ContainerBrowserView: View {
             loadState = .loading
             do {
                 children = try await EmbyBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
+                if childrenAreEpisodes { children = children.sortedByEpisodeOrder() }
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -1126,6 +1128,7 @@ struct ContainerBrowserView: View {
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
             children = resp.mediaContainer.metadata
+            if childrenAreEpisodes { children = children.sortedByEpisodeOrder() }
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))

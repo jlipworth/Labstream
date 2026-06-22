@@ -104,6 +104,28 @@ extension MediaItem {
     }
 }
 
+extension Array where Element == MediaItem {
+    /// Episodes sorted into natural broadcast order by `(parentIndex ?? 0, index ?? 0)`.
+    ///
+    /// Backend-agnostic: Plex returns season children in index order by default, but
+    /// Emby/Jellyfin fetch with `SortBy=SortName` (alphabetical by title), which scrambles
+    /// episodes into arbitrary order (e.g. S4E4, E1, E2, E10). Applying this numeric sort
+    /// at the render seam guarantees correct order on every backend and hardens Plex
+    /// against any future change in server defaults (GH #106).
+    ///
+    /// Because the sort key is the numeric `index` (not the string title), multi-digit
+    /// episodes order correctly (E10 after E9, not lexicographically), and specials sort
+    /// naturally — season 0 / episode 0 come first via the `?? 0` default. The sort is
+    /// stable, so items sharing a key keep their original relative order.
+    public func sortedByEpisodeOrder() -> [MediaItem] {
+        enumerated().sorted { lhs, rhs in
+            let l = (lhs.element.parentIndex ?? 0, lhs.element.index ?? 0, lhs.offset)
+            let r = (rhs.element.parentIndex ?? 0, rhs.element.index ?? 0, rhs.offset)
+            return l < r
+        }.map(\.element)
+    }
+}
+
 /// Resolves the correct LEAF `MediaItem` (the one with a `Media`/`Part`) to play or
 /// download, given an item and — for containers — a way to fetch its children.
 ///
