@@ -12,6 +12,12 @@ struct LibrariesView: View {
     @State private var loadState: HomeView.LoadState = .idle
     @State private var loadedIdentity: String?
 
+    /// First-run library picker (#104). Holds the candidates + pre-checked hidden ids for the
+    /// backend key whose prompt hasn't been shown yet; presented as a sheet from the loaded list.
+    @State private var firstRunPrompt: LibraryVisibilityPrompt?
+
+    private let visibilityStore = LibraryVisibilityStore()
+
     var body: some View {
         Group {
             switch loadState {
@@ -50,6 +56,19 @@ struct LibrariesView: View {
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+        .sheet(item: $firstRunPrompt) { prompt in
+            LibraryVisibilityPickerSheet(prompt: prompt) { hiddenIDs in
+                visibilityStore.setHiddenIDs(hiddenIDs, forBackendKey: prompt.backendKey)
+                visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
+                firstRunPrompt = nil
+                Task { await load(force: true) }
+            } onCancel: {
+                // "Show all" / dismissal: record the prompt as shown so it never re-appears,
+                // leaving everything visible (empty hidden set).
+                visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
+                firstRunPrompt = nil
+            }
+        }
     }
 
     private var loadIdentity: String {
@@ -151,7 +170,12 @@ struct LibrariesView: View {
 
         if appModel.activeBackend == .jellyfin {
             do {
-                jellyfinViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                let allViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                let backendKey = appModel.libraryVisibilityBackendKey
+                maybePresentFirstRunPrompt(backendKey: backendKey,
+                                           candidates: allViews.map { candidate(jellyfin: $0) })
+                let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
+                jellyfinViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 loadedIdentity = loadIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": jellyfinViews.count])
@@ -164,7 +188,12 @@ struct LibrariesView: View {
 
         if appModel.activeBackend == .emby {
             do {
-                embyViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                let allViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                let backendKey = appModel.libraryVisibilityBackendKey
+                maybePresentFirstRunPrompt(backendKey: backendKey,
+                                           candidates: allViews.map { candidate(emby: $0) })
+                let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
+                embyViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 loadedIdentity = loadIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": embyViews.count])
@@ -187,7 +216,12 @@ struct LibrariesView: View {
             // un-hide: the Music tab is their dedicated entry point and listing the
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
-            sections = resp.mediaContainer.directory.filter { !$0.isMusic }
+            let nonMusic = resp.mediaContainer.directory.filter { !$0.isMusic }
+            let backendKey = appModel.libraryVisibilityBackendKey
+            maybePresentFirstRunPrompt(backendKey: backendKey,
+                                       candidates: nonMusic.map { candidate(plex: $0) })
+            let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
+            sections = LibraryVisibility.visible(nonMusic, hiddenIDs: hidden) { $0.key }
             loadedIdentity = loadIdentity
             loadState = .loaded
             span.end(fields: ["library_count": sections.count])
@@ -195,6 +229,40 @@ struct LibrariesView: View {
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
+    }
+
+    // MARK: First-run library picker (#104)
+
+    /// On the first successful library load for a backend key whose prompt hasn't been shown,
+    /// arm the first-run picker pre-checking known-noise libraries. Tied to the load (not auth
+    /// state) so the server/views are known and it works for both fresh login and restored session.
+    private func maybePresentFirstRunPrompt(backendKey: String?,
+                                            candidates: [LibraryVisibility.Candidate]) {
+        guard let backendKey, !candidates.isEmpty else { return }
+        guard !visibilityStore.hasShownPrompt(forBackendKey: backendKey) else { return }
+        guard firstRunPrompt == nil else { return }
+        let preselected = LibraryVisibility.defaultHiddenSelection(from: candidates)
+        firstRunPrompt = LibraryVisibilityPrompt(backendKey: backendKey,
+                                                 candidates: candidates,
+                                                 preselectedHidden: preselected)
+    }
+
+    private func candidate(plex section: PlexSection) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: section.key,
+                                    title: section.title,
+                                    kind: LibrarySectionKind(plexType: section.type).visibilityKindToken)
+    }
+
+    private func candidate(jellyfin view: JellyfinLibraryLink) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: view.id,
+                                    title: view.title,
+                                    kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
+    }
+
+    private func candidate(emby view: EmbyLibraryLink) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: view.id,
+                                    title: view.title,
+                                    kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
     }
 }
 
