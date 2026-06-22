@@ -69,7 +69,12 @@ struct DownloadOptionsSheet: View {
                         if unsupportedOriginal, compatibleRemux == nil {
                             originalUnsupportedSection
                         }
-                        optimizeSection(presets: presets, probeFailed: probeFailed,
+                        if let plexOriginalPreset = plexOriginalOptimizePreset(in: presets) {
+                            plexOriginalQualitySection(preset: plexOriginalPreset)
+                        }
+                        optimizeSection(presets: optimizePresetsExcludingPlexOriginal(presets),
+                                        allPresets: presets,
+                                        probeFailed: probeFailed,
                                         originalAvailable: original != nil)
                         storageLimitSection
                         infoSection
@@ -96,6 +101,7 @@ struct DownloadOptionsSheet: View {
 
     private func runProbe() async {
         guard existingRecord == nil else { return }
+        downloadLog.notice("download-sheet-run-probe item=\(item.ratingKey, privacy: .public) activeBackend=\(appModel.activeBackend.rawValue, privacy: .public) mediaIndex=\(mediaIndex, privacy: .public)")
         if appModel.activeBackend == .jellyfin {
             await runJellyfinProbe()
             return
@@ -147,8 +153,9 @@ struct DownloadOptionsSheet: View {
         // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
         // not decide remux eligibility from the local Part alone. Ask PlaybackInfo whenever the
         // raw file is not already locally playable, then use the server's authoritative codec and
-        // DirectStream verdict to decide whether "Original quality (compatible)" can be offered.
+        // codec/container verdict to decide whether "Original quality (compatible)" can be offered.
         let shouldProbeRemux = !originalLocallyPlayable
+        downloadLog.notice("download-sheet-jellyfin-probe-start item=\(item.ratingKey, privacy: .public) originalPlayable=\(originalLocallyPlayable, privacy: .public) mediaSource=\(mediaSourceId ?? "nil", privacy: .public)")
         var probeFailed = false
         var compatibleRemux: CompatibleRemuxOption?
         if shouldProbeRemux {
@@ -168,32 +175,50 @@ struct DownloadOptionsSheet: View {
                                     originalStreamableButOfflineUnsupported: original == nil)
                 return
             }
-            do {
-                let req = try JellyfinPlayback.downloadPlaybackInfoRequest(
-                    server: server, token: token, identity: appModel.identity.jellyfin,
-                    itemId: item.ratingKey, userId: userId, mediaSourceId: mediaSourceId,
-                    maxStaticBitrate: 200_000_000)
-                let (data, response) = try await URLSession.shared.data(for: req)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw URLError(.badServerResponse)
+            var didRetryCancellation = false
+            while true {
+                do {
+                    let req = try JellyfinPlayback.downloadPlaybackInfoRequest(
+                        server: server, token: token, identity: appModel.identity.jellyfin,
+                        itemId: item.ratingKey, userId: userId, mediaSourceId: mediaSourceId,
+                        maxStaticBitrate: 200_000_000)
+                    let (data, response) = try await URLSession.shared.data(for: req)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        throw URLError(.badServerResponse)
+                    }
+                    let info = try JellyfinPlaybackInfoResponse.decode(from: data)
+                    let decision = try JellyfinPlayback.downloadDecision(response: info,
+                                                                         preferredMediaSourceId: mediaSourceId)
+                    let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+                        videoCodec: decision.videoCodec,
+                        audioCodec: decision.audioCodec,
+                        sourceContainer: decision.container)
+                    compatibleRemux = remuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable)
+                        ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
+                        : nil
+                    downloadLog.notice("download-sheet-jellyfin-probe-result item=\(item.ratingKey, privacy: .public) directStream=\(decision.supportsDirectStream, privacy: .public) video=\(remuxEligibility.videoCodec ?? "nil", privacy: .public) audio=\(remuxEligibility.audioCodec ?? "nil", privacy: .public) container=\(remuxEligibility.sourceContainer, privacy: .public) offer=\(compatibleRemux != nil, privacy: .public)")
+                    break
+                } catch {
+                    if isCancellation(error) {
+                        if Task.isCancelled {
+                            downloadLog.notice("download-sheet-jellyfin-probe-cancelled item=\(item.ratingKey, privacy: .public) taskCancelled=true")
+                            return
+                        }
+                        if !didRetryCancellation {
+                            didRetryCancellation = true
+                            downloadLog.notice("download-sheet-jellyfin-probe-cancelled item=\(item.ratingKey, privacy: .public) retry=true")
+                            continue
+                        }
+                    }
+                    probeFailed = true
+                    compatibleRemux = nil
+                    downloadLog.error("download-sheet-jellyfin-probe-failed item=\(item.ratingKey, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                    break
                 }
-                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
-                let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: mediaSourceId)
-                let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-                    videoCodec: decision.videoCodec,
-                    audioCodec: decision.audioCodec,
-                    sourceContainer: decision.container)
-                compatibleRemux = (decision.supportsDirectStream
-                                   && remuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable))
-                    ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
-                    : nil
-            } catch {
-                probeFailed = true
-                compatibleRemux = nil
             }
         }
         let presets = jellyfinPresets
+        downloadLog.notice("download-sheet-jellyfin-ready item=\(item.ratingKey, privacy: .public) probeFailed=\(probeFailed, privacy: .public) original=\(original != nil, privacy: .public) remux=\(compatibleRemux != nil, privacy: .public)")
         selectedChoice = preferredSelection(originalAvailable: original != nil,
                                             compatibleRemuxAvailable: compatibleRemux != nil,
                                             presets: presets)
@@ -202,6 +227,12 @@ struct DownloadOptionsSheet: View {
                             presets: presets,
                             probeFailed: probeFailed,
                             originalStreamableButOfflineUnsupported: original == nil && compatibleRemux == nil)
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == URLError.cancelled.rawValue
     }
 
     /// Emby probe: POST the DOWNLOAD PlaybackInfo (Static-mp4 device profile) and read the
@@ -226,7 +257,6 @@ struct DownloadOptionsSheet: View {
 
         let identity = appModel.identity.emby
         var negotiatedDirectPlay = false
-        var negotiatedDirectStream = false
         var negotiatedContainer: String?
         var negotiatedVideoCodec: String?
         var negotiatedAudioCodec: String?
@@ -244,7 +274,6 @@ struct DownloadOptionsSheet: View {
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
             let decision = try EmbyPlayback.downloadDecision(response: info)
             negotiatedDirectPlay = decision.supportsDirectPlay
-            negotiatedDirectStream = decision.supportsDirectStream
             negotiatedContainer = decision.container
             negotiatedVideoCodec = decision.videoCodec
             negotiatedAudioCodec = decision.audioCodec
@@ -258,7 +287,7 @@ struct DownloadOptionsSheet: View {
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
-        // #83: use the dedicated compatible-remux PlaybackInfo profile for DirectStream probing.
+        // #83: use the dedicated compatible-remux PlaybackInfo profile for codec/container probing.
         // The normal download profile remains conservative for the forced-transcode lane.
         var compatibleRemux: CompatibleRemuxOption?
         if !probeFailed, original == nil {
@@ -275,7 +304,6 @@ struct DownloadOptionsSheet: View {
                 let info = try EmbyPlaybackInfoResponse.decode(from: data)
                 let decision = try EmbyPlayback.downloadDecision(response: info,
                                                                  preferredMediaSourceId: mediaSourceId)
-                negotiatedDirectStream = decision.supportsDirectStream
                 negotiatedVideoCodec = decision.videoCodec
                 negotiatedAudioCodec = decision.audioCodec
                 negotiatedContainer = decision.container
@@ -283,8 +311,7 @@ struct DownloadOptionsSheet: View {
                     videoCodec: negotiatedVideoCodec,
                     audioCodec: negotiatedAudioCodec,
                     sourceContainer: negotiatedContainer)
-                compatibleRemux = (negotiatedDirectStream
-                                   && remuxEligibility.shouldOffer(originalLocallyPlayable: false))
+                compatibleRemux = remuxEligibility.shouldOffer(originalLocallyPlayable: false)
                     ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
                     : nil
             } catch {
@@ -343,6 +370,17 @@ struct DownloadOptionsSheet: View {
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"
         ]
+    }
+
+
+    private func plexOriginalOptimizePreset(in presets: [String]) -> String? {
+        guard appModel.activeBackend == .plex else { return nil }
+        return presets.first { $0.localizedCaseInsensitiveCompare("Original video quality") == .orderedSame }
+    }
+
+    private func optimizePresetsExcludingPlexOriginal(_ presets: [String]) -> [String] {
+        guard plexOriginalOptimizePreset(in: presets) != nil else { return presets }
+        return presets.filter { $0.localizedCaseInsensitiveCompare("Original video quality") != .orderedSame }
     }
 
     // MARK: - Sections
@@ -428,8 +466,39 @@ struct DownloadOptionsSheet: View {
         return parts.isEmpty ? "Original file" : parts.joined(separator: " · ")
     }
 
+
     @ViewBuilder
-    private func optimizeSection(presets: [String], probeFailed: Bool,
+    private func plexOriginalQualitySection(preset: String) -> some View {
+        SwiftUI.Section {
+            Button {
+                selectedChoice = .optimize(preset)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Original video quality").foregroundStyle(.primary)
+                        Text("Plex original-quality offline copy")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if selectedChoice == .optimize(preset) {
+                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } header: {
+            Text("Original quality")
+        } footer: {
+            Text("Creates a compatible offline copy at Plex's original video quality. Plex may prepare the file on the server before downloading.")
+        }
+    }
+
+    @ViewBuilder
+    private func optimizeSection(presets: [String], allPresets: [String], probeFailed: Bool,
                                  originalAvailable: Bool) -> some View {
         SwiftUI.Section {
             ForEach(presets, id: \.self) { preset in
@@ -464,11 +533,11 @@ struct DownloadOptionsSheet: View {
             if selectedChoice == .optimizeCompatible {
                 return
             }
-            if case .optimize(let selected)? = selectedChoice, presets.contains(selected) {
+            if case .optimize(let selected)? = selectedChoice, allPresets.contains(selected) {
                 return
             }
             selectedChoice = preferredSelection(originalAvailable: originalAvailable,
-                                                compatibleRemuxAvailable: false, presets: presets)
+                                                compatibleRemuxAvailable: false, presets: allPresets)
         }
     }
 
