@@ -11,6 +11,36 @@ import Testing
 
 @Suite("Artwork & metadata (#86 / #76)")
 struct ArtworkMetadataTests {
+    private let fallbackArtworkFields: Set<String> = [
+        "ParentThumbItemId",
+        "ParentThumbImageTag",
+        "ParentBackdropItemId",
+        "ParentBackdropImageTags",
+        "ParentPrimaryImageItemId",
+        "ParentPrimaryImageTag",
+        "SeriesPrimaryImageTag",
+    ]
+
+    private func fieldSet(_ fields: String) -> Set<String> {
+        Set(fields.split(separator: ",").map(String.init))
+    }
+
+    @Test func mediaBrowserFieldStringsRequestFallbackCompanionFields() {
+        // The mapper decodes both image tags and their owning item ids. If either half is
+        // omitted from list/detail field strings, grid art can mint a fallback image against
+        // the wrong item id (or miss the fallback entirely) before a live probe catches it.
+        let fieldSets = [
+            fieldSet(JellyfinLibrary.gridItemFields),
+            fieldSet(JellyfinLibrary.fullItemFields),
+            fieldSet(EmbyLibrary.gridItemFields),
+            fieldSet(EmbyLibrary.fullItemFields),
+        ]
+        for fields in fieldSets {
+            #expect(fields.isSuperset(of: fallbackArtworkFields))
+        }
+        #expect(fieldSet(JellyfinLibrary.fullItemFields).isSuperset(of: ["People", "Studios", "CriticRating"]))
+        #expect(fieldSet(EmbyLibrary.fullItemFields).isSuperset(of: ["People", "Studios", "CriticRating"]))
+    }
 
     // MARK: - #86 — parent/series artwork fallback (Jellyfin)
 
@@ -74,6 +104,22 @@ struct ArtworkMetadataTests {
         #expect(item.thumb == "jellyfin://item/series-1/Primary?tag=series-poster-tag")
     }
 
+    @Test func seasonMissingPrimaryDoesNotUseParentThumbBeforeSeriesPoster() throws {
+        let dto = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
+        {
+          "Id": "season-10", "Name": "Season 2", "Type": "Season",
+          "SeriesId": "series-1", "ParentId": "series-1",
+          "ImageTags": {},
+          "ParentThumbItemId": "series-1", "ParentThumbImageTag": "series-landscape-thumb",
+          "SeriesPrimaryImageTag": "series-poster-tag"
+        }
+        """#.utf8))
+        let item = try #require(dto.toMediaItem())
+        // #86's season poster chain is own Primary → series Primary. ParentThumb is an
+        // episode-row fallback and can be landscape-shaped, so it must not win for seasons.
+        #expect(item.thumb == "jellyfin://item/series-1/Primary?tag=series-poster-tag")
+    }
+
     @Test func episodeBackdropFallsBackToParentBackdrop() throws {
         let dto = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
         {
@@ -116,6 +162,27 @@ struct ArtworkMetadataTests {
         let item = try #require(dto.toMediaItem())
         // The still slot (thumb) prefers the dedicated Thumb image when present.
         #expect(item.thumb == "jellyfin://item/episode-5/Thumb?tag=own-ep-still")
+    }
+
+    @Test func nonEpisodeItemsDoNotPreferThumbOverPrimaryPoster() throws {
+        let movie = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
+        {
+          "Id": "movie-thumb", "Name": "A Movie", "Type": "Movie",
+          "ImageTags": { "Primary": "movie-poster", "Thumb": "movie-landscape" }
+        }
+        """#.utf8))
+        let season = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
+        {
+          "Id": "season-thumb", "Name": "Season 1", "Type": "Season",
+          "ImageTags": { "Primary": "season-poster", "Thumb": "season-landscape" }
+        }
+        """#.utf8))
+
+        let movieItem = try #require(movie.toMediaItem())
+        let seasonItem = try #require(season.toMediaItem())
+        // Logo/Thumb support must not replace poster/grid art for non-episode rows.
+        #expect(movieItem.thumb == "jellyfin://item/movie-thumb/Primary?tag=movie-poster")
+        #expect(seasonItem.thumb == "jellyfin://item/season-thumb/Primary?tag=season-poster")
     }
 
     // MARK: - #76 — Logo, cast/studios, critic rating (Jellyfin/Emby)
