@@ -119,7 +119,7 @@ enum DebugPlexDownloadProbe {
                 "status": .label(status),
                 "progress_pct": .int(Int((progress * 100).rounded())),
             ])
-            if record?.status == .complete || record?.status == .failed { break }
+            if record?.isComplete == true || record?.status == .failed { break }
             try? await Task.sleep(for: .seconds(5))
         }
         AppDiagnostics.record(.downloads, "probe.plex_download.done", fields: [

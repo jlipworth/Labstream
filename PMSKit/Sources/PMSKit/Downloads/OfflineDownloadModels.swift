@@ -8,6 +8,10 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
     case queued        // seeded, transfer not yet started / no live task yet
     case downloading   // a background task is actively writing bytes
     case complete      // validated file is on disk and playable
+    // #98: the byte transfer completed, but the local AVPlayer startup probe did not confirm
+    // playback. Keep the file playable/inspectable instead of deleting it or forcing a 0% retry;
+    // the row remains explicitly distinct from a validated `.complete` download.
+    case unverified    // complete file kept; playback probe was inconclusive/failed
     case failed        // transfer or validation failed; row kept so it can be retried
     // #95: a recoverable interruption (e.g. headset-off killed the transfer) that handed back
     // URLSession resume data. NOT a failure — the partial bytes + resume blob are retained so a
@@ -49,6 +53,9 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
         case .complete:
             // A completed row is only usable if its validated file still exists.
             return fileExists ? .complete : .failed
+        case .unverified:
+            // A probe-inconclusive completed row is still useful only while the file remains.
+            return fileExists ? .unverified : .failed
         case .queued, .downloading:
             if hasLiveTask { return current }   // task survived; leave it
             // No live task and never validated -> can't trust it; make it retryable.
@@ -524,9 +531,13 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
 
     public var id: String { ratingKey }
 
-    /// Convenience: a download is usable only when explicitly marked complete.
-    /// Drives the player gate so a stalled-at-100% row never opens an empty file.
-    public var isComplete: Bool { status == .complete }
+    /// Convenience: a download has a finished local file that the user can try to play.
+    /// Drives the player gate so a stalled-at-100% row never opens an empty file. `.unverified`
+    /// rows (#98) are complete byte transfers preserved after an inconclusive local playback probe.
+    public var isComplete: Bool { status == .complete || status == .unverified }
+
+    /// True when the transfer completed but the local playback probe did not confirm startup.
+    public var isUnverified: Bool { status == .unverified }
 
     public init(ratingKey: String,
                 title: String,

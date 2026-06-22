@@ -615,10 +615,16 @@ struct DownloadOptionsSheet: View {
     private func existingSection(_ record: DownloadRecord) -> some View {
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
+        let isPaused = record.status == .paused
         SwiftUI.Section {
             if isComplete {
-                Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                if record.isUnverified {
+                    Label("Downloaded; playback not verified", systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.yellow)
+                } else {
+                    Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
                 Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
                     .font(.caption).foregroundStyle(.secondary)
             } else if isFailed {
@@ -628,6 +634,17 @@ struct DownloadOptionsSheet: View {
                     retryDownload()
                     dismiss()
                 } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
+            } else if isPaused {
+                Label("Download paused", systemImage: "pause.circle")
+                    .foregroundStyle(.secondary)
+                if record.bytes > 0 {
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button {
+                    retryDownload()
+                    dismiss()
+                } label: { Label("Resume Download", systemImage: "play.circle") }
             } else {
                 Label("Downloading…", systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)

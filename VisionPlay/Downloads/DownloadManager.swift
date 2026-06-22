@@ -174,7 +174,7 @@ public final class DownloadManager {
             Task { @MainActor in self?.refreshRecords() }
         }
         // D3: surface background-delegate failures instead of silently dropping the
-        // row. The delegate records a `.failed` status in the store and hands us the
+        // row. Hard failures record a `.failed` status in the store and hand us the
         // reason here so `lastError` can drive the OfflineLibraryView message + retry.
         self.session.onError = { [weak self] ratingKey, error in
             Task { @MainActor in
@@ -217,7 +217,7 @@ public final class DownloadManager {
     func teardownOrphanedEncodersOnLaunch() {
         for record in records {
             guard let md = record.metadata, let psid = md.playSessionID, !psid.isEmpty,
-                  record.status == .failed || record.status == .complete else { continue }
+                  record.status == .failed || record.status == .complete || record.status == .unverified else { continue }
             let kind = md.resolvedBackendKind(ratingKey: record.ratingKey)
             // Need a live session for that backend to issue the DELETE.
             guard let live = appModel.backendSession(for: kind) else { continue }
@@ -1387,7 +1387,9 @@ public final class DownloadManager {
         // resume data, so transcoded JF/Emby rows naturally fall through to the clean restart
         // below. If the resume task is later rejected by the server (200 full-restart / 416), the
         // normal failure path makes the row retryable again from scratch.
-        if record.status == .paused, let resumeData = store.resumeData(ratingKey: ratingKey) {
+        if record.status == .paused,
+           store.supportsPersistedResumeData(ratingKey: ratingKey),
+           let resumeData = store.resumeData(ratingKey: ratingKey) {
             store.clearResumeData(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, .downloading)
             if session.resume(ratingKey: ratingKey, resumeData: resumeData, to: record.localURL) {
@@ -1972,7 +1974,8 @@ public final class DownloadManager {
         // releases too — its slot is re-acquired by `retry()` on resume, and releasing also fires
         // any encoder teardown should a transcoded row ever land here.
         let terminalKeys = Set(fresh.filter {
-            $0.status == .complete || $0.status == .failed || $0.status == .paused
+            $0.status == .complete || $0.status == .unverified
+                || $0.status == .failed || $0.status == .paused
         }.map(\.ratingKey))
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
     }
