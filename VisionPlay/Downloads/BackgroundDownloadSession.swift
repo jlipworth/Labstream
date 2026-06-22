@@ -494,14 +494,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "bytes": .bytes(bytes),
                     "preserved": .bool(true),
                 ])
-                // GH #98: do NOT delete the file on a probe failure. The probe is an intermittent
-                // false-negative on COMPLETE downloads; deleting forces a wasteful 0% re-download and
-                // discards good bytes. A `.failed` row never reconciles back to `.complete`
-                // (see DownloadStatus.reconciledStatus), so keeping the bytes is safe, lets a retry
-                // reuse/inspect them, and preserves the file for on-device diagnosis.
+                // GH #98: do NOT delete or fail the file on a probe miss. The probe is an
+                // intermittent false-negative on COMPLETE downloads; deleting/failing forces a
+                // wasteful 0% re-download and discards good bytes. Keep the row playable but
+                // explicitly unverified so the user can try the local file and the bytes remain
+                // available for on-device ffprobe/root-cause work.
                 self.clearRetryCount(ratingKey: ratingKey)
-                self.store.setStatus(ratingKey: ratingKey, .failed)
-                self.onError?(ratingKey, .invalidDownload("Downloaded file did not start local playback (\(validation.reason))."))
+                self.store.setStatus(ratingKey: ratingKey, .unverified)
             }
             self.onChange?()
         }
@@ -583,6 +582,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // The partial bytes are retained (reconcile keeps a `.paused` row's file).
             if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
                !resumeData.isEmpty {
+                guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else {
+                    downloadLog.error("transfer-nonresumable ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public) resumeData=true")
+                    AppDiagnostics.record(.downloads, "downloads.transfer_nonresumable", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "error": .error(error),
+                        "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+                        "resume_data_present": .bool(true),
+                    ])
+                    clearRetryCount(ratingKey: entry.ratingKey)
+                    store.setStatus(ratingKey: entry.ratingKey, .failed)
+                    onError?(entry.ratingKey, .transferFailed("Download interrupted; this transcoded stream can’t resume from its byte offset. Retry will restart from the beginning."))
+                    onChange?()
+                    return
+                }
                 downloadLog.error("transfer-paused ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.transfer_paused", fields: [
                     "download_id": .identifier(entry.ratingKey),
@@ -644,6 +657,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
               Self.transientDownloadErrorCodes.contains(error.code),
               let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
               !resumeData.isEmpty else { return false }
+        // #95: JF/Emby optimized downloads are live transcode streams; do not offset-resume them
+        // even if URLSession hands back a blob. Let the caller surface a restart-required failure
+        // instead of silently trying a 200-full-restart/416-prone resume.
+        guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else { return false }
 
         lock.lock()
         let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1

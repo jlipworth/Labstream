@@ -212,7 +212,7 @@ final class DownloadStore: @unchecked Sendable {
     /// Absolute local URL for a completed download, if indexed AND present on disk.
     func localURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         let url = baseDirectory.appendingPathComponent(row.relativePath)
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
@@ -220,14 +220,14 @@ final class DownloadStore: @unchecked Sendable {
     /// Absolute local Plex BIF cache URL for a completed download, if present on disk.
     func plexBIFURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         return resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath)
     }
 
     /// Absolute local Jellyfin trickplay playlist URL for a completed download, if present on disk.
     func jellyfinTrickPlayPlaylistURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         return resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath)
     }
 
@@ -379,6 +379,23 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
         guard let relative, !relative.isEmpty else { return false }
         return fileManager.fileExists(atPath: baseDirectory.appendingPathComponent(relative).path)
+    }
+
+    /// #95: URLSession resume blobs are only safe for byte-range-resumable sources. Jellyfin/Emby
+    /// optimized downloads are live `static=false` transcode streams with no stable validator, so
+    /// even a resume blob can 200-full-restart or 416. Surface those interruptions as a clean
+    /// restart-required failure instead of a misleading "Paused — tap to resume" row.
+    func supportsPersistedResumeData(ratingKey: String) -> Bool {
+        lock.lock()
+        let row = rows[ratingKey]
+        lock.unlock()
+        guard let row else { return false }
+        let optimized = row.metadata?.optimizeTargetName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+        let nonResumableBackend = row.ratingKey.hasPrefix("jellyfin:")
+            || row.ratingKey.hasPrefix("emby:")
+        return !(optimized && nonResumableBackend)
     }
 
     /// #95: drop a row's persisted resume blob + its recorded path once it's consumed (a resume

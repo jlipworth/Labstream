@@ -97,6 +97,7 @@ public struct OfflineLibraryView: View {
         // failed-but-100% body are now distinct, observable states.
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
+        let isUnverified = record.isUnverified
         // #95: a recoverable interruption is resumable, not failed — show a non-red "will resume"
         // affordance and a Resume control that continues from the saved byte offset.
         let isPaused = record.status == .paused
@@ -105,7 +106,7 @@ public struct OfflineLibraryView: View {
         HStack(spacing: 16) {
             // D5: show the locally-cached poster when present (works fully offline);
             // otherwise fall back to a small offline glyph tile.
-            offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed)
+            offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed, isUnverified: isUnverified)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -275,7 +276,8 @@ public struct OfflineLibraryView: View {
         Set(manager.records.map { backendKind(for: $0) }).count > 1
     }
 
-    private func tileGlyph(isComplete: Bool, isFailed: Bool) -> String {
+    private func tileGlyph(isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> String {
+        if isUnverified { return "exclamationmark.circle.fill" }
         if isComplete { return "arrow.down.circle.fill" }
         if isFailed { return "exclamationmark.circle" }
         return "arrow.down.circle"
@@ -297,7 +299,7 @@ public struct OfflineLibraryView: View {
 
     /// The locally-cached poster (D5) when present, else the neutral glyph tile.
     @ViewBuilder
-    private func offlinePoster(for record: DownloadRecord, isComplete: Bool, isFailed: Bool) -> some View {
+    private func offlinePoster(for record: DownloadRecord, isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> some View {
         if let posterURL = record.posterURL,
            let data = try? Data(contentsOf: posterURL),
            let uiImage = UIImage(data: data) {
@@ -311,9 +313,9 @@ public struct OfflineLibraryView: View {
                 .fill(.regularMaterial)
                 .frame(width: 44, height: 66)
                 .overlay {
-                    Image(systemName: tileGlyph(isComplete: isComplete, isFailed: isFailed))
+                    Image(systemName: tileGlyph(isComplete: isComplete, isFailed: isFailed, isUnverified: isUnverified))
                         .font(.title3)
-                        .foregroundStyle(isComplete ? .green : (isFailed ? .red : .secondary))
+                        .foregroundStyle(isUnverified ? .yellow : (isComplete ? .green : (isFailed ? .red : .secondary)))
                 }
         }
     }
@@ -485,7 +487,9 @@ public struct OfflineLibraryView: View {
 
     /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
     private func completeCaption(for record: DownloadRecord) -> String {
-        var parts = [byteString(record.bytes)]
+        var parts = record.isUnverified
+            ? ["Downloaded — playback not verified", byteString(record.bytes)]
+            : [byteString(record.bytes)]
         if let r = resolutionLabel(for: record) { parts.append(r) }
         return parts.joined(separator: " • ")
     }
