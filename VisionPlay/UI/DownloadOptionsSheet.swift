@@ -407,7 +407,7 @@ struct DownloadOptionsSheet: View {
     private var originalUnsupportedSection: some View {
         SwiftUI.Section {
             Label {
-                Text("The original can stream, but its file container may not play as a raw offline local file here. Use Original video quality to keep source quality in a compatible offline copy, or pick a bitrate preset to save space.")
+                Text("The original can stream, but its file container may not play as a raw offline local file here. Original quality is not available for this item/server response, so pick a bitrate preset to create a compatible offline copy.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } icon: {
