@@ -329,7 +329,12 @@ struct PosterCell: View {
     let item: MediaItem
     var width: CGFloat = DS.Poster.railWidth
 
-    private var height: CGFloat { DS.Poster.height(for: width) }
+    /// Render at the item's real artwork ratio when the backend reports one (Jellyfin/Emby
+    /// `PrimaryImageAspectRatio`: 16:9 YouTube, square Twitch, 16:9 episode stills), else the
+    /// canonical 2:3 poster. Plex reports no ratio, so it stays 2:3 (GH #101).
+    private var height: CGFloat {
+        CGFloat(Double(width) / item.resolvedPosterAspect(fallback: Double(DS.Poster.aspect)))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {

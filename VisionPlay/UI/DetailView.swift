@@ -126,9 +126,12 @@ struct DetailView: View {
     private var leafDetail: some View {
         ScrollView {
             HStack(alignment: .top, spacing: DS.Space.xxxl) {
+                // Hero sizes to the item's real artwork ratio when the backend reports one
+                // (e.g. a 16:9 episode still renders 16:9 instead of cropped 2:3); Plex and
+                // any item without a ratio keep the canonical 2:3 poster shape (GH #101).
                 PosterImage(path: detailed.thumb,
                             width: DS.Poster.detailWidth,
-                            height: DS.Poster.height(for: DS.Poster.detailWidth),
+                            height: CGFloat(Double(DS.Poster.detailWidth) / detailed.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
                             cornerRadius: DS.Radius.card)
                     .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
 
