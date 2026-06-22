@@ -479,6 +479,16 @@ struct LibraryGridView: View {
                            includeItemTypes: jellyfinLibraryItemTypes(for: view),
                            fields: JellyfinLibrary.gridItemFields)
             let total = max(page.total ?? page.items.count, page.items.count)
+            recordGridPageDiagnostics(page.items,
+                                      backend: "Jellyfin",
+                                      sourceID: view.id,
+                                      sourceName: view.title,
+                                      sourceKind: view.collectionType,
+                                      recursive: jellyfinLibraryRecursive(for: view),
+                                      includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                                      startIndex: 0,
+                                      limit: pageSize,
+                                      total: total)
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
                 fresh[i] = item
@@ -522,6 +532,16 @@ struct LibraryGridView: View {
                            includeItemTypes: embyLibraryItemTypes(for: view),
                            fields: EmbyLibrary.gridItemFields)
             let total = max(page.total ?? page.items.count, page.items.count)
+            recordGridPageDiagnostics(page.items,
+                                      backend: "Emby",
+                                      sourceID: view.id,
+                                      sourceName: view.title,
+                                      sourceKind: view.collectionType,
+                                      recursive: embyLibraryRecursive(for: view),
+                                      includeItemTypes: embyLibraryItemTypes(for: view),
+                                      startIndex: 0,
+                                      limit: pageSize,
+                                      total: total)
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
                 fresh[i] = item
@@ -592,18 +612,28 @@ struct LibraryGridView: View {
                                                          backend: "Jellyfin",
                                                          fields: ["page": page, "page_size": pageSize])
             do {
-                let page = try await JellyfinBrowseService(appModel: appModel)
+                let pageResult = try await JellyfinBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
                                recursive: jellyfinLibraryRecursive(for: view),
                                startIndex: start,
                                limit: pageSize,
                                includeItemTypes: jellyfinLibraryItemTypes(for: view),
                                fields: JellyfinLibrary.gridItemFields)
-                for (i, item) in page.items.enumerated()
+                recordGridPageDiagnostics(pageResult.items,
+                                          backend: "Jellyfin",
+                                          sourceID: view.id,
+                                          sourceName: view.title,
+                                          sourceKind: view.collectionType,
+                                          recursive: jellyfinLibraryRecursive(for: view),
+                                          includeItemTypes: jellyfinLibraryItemTypes(for: view),
+                                          startIndex: start,
+                                          limit: pageSize,
+                                          total: pageResult.total)
+                for (i, item) in pageResult.items.enumerated()
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
-                span.end(fields: ["item_count": page.items.count])
+                span.end(fields: ["item_count": pageResult.items.count])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
@@ -613,18 +643,28 @@ struct LibraryGridView: View {
                                                          backend: "Emby",
                                                          fields: ["page": page, "page_size": pageSize])
             do {
-                let page = try await EmbyBrowseService(appModel: appModel)
+                let pageResult = try await EmbyBrowseService(appModel: appModel)
                     .itemsPage(parentId: view.id,
                                recursive: embyLibraryRecursive(for: view),
                                startIndex: start,
                                limit: pageSize,
                                includeItemTypes: embyLibraryItemTypes(for: view),
                                fields: EmbyLibrary.gridItemFields)
-                for (i, item) in page.items.enumerated()
+                recordGridPageDiagnostics(pageResult.items,
+                                          backend: "Emby",
+                                          sourceID: view.id,
+                                          sourceName: view.title,
+                                          sourceKind: view.collectionType,
+                                          recursive: embyLibraryRecursive(for: view),
+                                          includeItemTypes: embyLibraryItemTypes(for: view),
+                                          startIndex: start,
+                                          limit: pageSize,
+                                          total: pageResult.total)
+                for (i, item) in pageResult.items.enumerated()
                 where slots.indices.contains(start + i) {
                     slots[start + i] = item
                 }
-                span.end(fields: ["item_count": page.items.count])
+                span.end(fields: ["item_count": pageResult.items.count])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
@@ -632,6 +672,33 @@ struct LibraryGridView: View {
         }
         loadingPages.remove(page)
     }
+
+    private func recordGridPageDiagnostics(_ items: [MediaItem],
+                                           backend: String,
+                                           sourceID: String,
+                                           sourceName: String,
+                                           sourceKind: String?,
+                                           recursive: Bool,
+                                           includeItemTypes: String,
+                                           startIndex: Int,
+                                           limit: Int,
+                                           total: Int?) {
+        let summary = BrowseDiagnostics.libraryGridPage(items: items,
+                                                        backend: backend,
+                                                        sourceID: sourceID,
+                                                        sourceName: sourceName,
+                                                        sourceKind: sourceKind,
+                                                        recursive: recursive,
+                                                        includeItemTypes: includeItemTypes,
+                                                        startIndex: startIndex,
+                                                        limit: limit,
+                                                        total: total)
+        AppDiagnostics.record(.browse, "library_grid.page", fields: summary.fields)
+        #if DEBUG
+        NSLog("%@", "library.grid.items \(summary.consoleLine)")
+        #endif
+    }
+
     /// Probe each A–Z letter's item count for the Jellyfin alphabet rail, IN PARALLEL
     /// (GH #96). Returns letters with at least one item, in alphabetical order, as raw
     /// `(display, count)` pairs — the caller turns them into `AlphabetBucket`s with the

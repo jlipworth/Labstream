@@ -509,9 +509,10 @@ public final class DownloadManager {
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
-        // D5: cache the poster locally (best-effort) so artwork shows offline. A fetch
-        // failure is not a download failure — it just leaves the row without a poster.
-        cachePoster(ratingKey: ratingKey, thumb: item.thumb ?? item.art,
+        // D5/#102: cache poster-shaped artwork locally so artwork shows offline. Episodes
+        // often expose a landscape still as `thumb`, which looks wrong in the Offline tab's
+        // small portrait tile; prefer the show/season poster when TV hierarchy provides it.
+        cachePoster(ratingKey: ratingKey, thumb: Self.offlinePosterRef(for: item),
                     server: server, token: token)
         cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
                      server: server, token: token)
@@ -2109,6 +2110,16 @@ public final class DownloadManager {
         OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
     }
 
+    /// Artwork reference to cache for the Offline tab's small portrait tile. For episodes,
+    /// prefer the show poster, then season poster, before the episode still/backdrop; forcing a
+    /// landscape still into the portrait row tile was visibly distorted during b8 live testing.
+    private static func offlinePosterRef(for item: MediaItem) -> String? {
+        if item.kind == .episode {
+            return item.grandparentThumb ?? item.parentThumb ?? item.thumb ?? item.art
+        }
+        return item.thumb ?? item.art
+    }
+
     /// Download + cache the item's poster locally so the offline library shows artwork
     /// without the server (D5). Best-effort: any failure leaves the row poster-less and
     /// never fails the download. Fetches via the same `/photo/:/transcode` path the
@@ -2166,7 +2177,7 @@ public final class DownloadManager {
                                      token: String, identity: JellyfinClientIdentity) {
         let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
         let store = self.store
-        let primaryRef = item.thumb
+        let primaryRef = Self.offlinePosterRef(for: item)
         let backdropRef = item.art
         Task { [weak self] in
             let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
@@ -2189,7 +2200,7 @@ public final class DownloadManager {
                                  token: String, identity: EmbyClientIdentity, userId: String) {
         let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
         let store = self.store
-        let primaryRef = item.thumb
+        let primaryRef = Self.offlinePosterRef(for: item)
         let backdropRef = item.art
         Task { [weak self] in
             let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,

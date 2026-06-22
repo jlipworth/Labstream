@@ -154,39 +154,42 @@ struct DetailView: View {
                     .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
 
                 VStack(alignment: .leading, spacing: DS.Space.xl) {
-                    // For an episode, lead with the show name + "S{parentIndex}E{index}"
-                    // so the header reads like Plex/Emby, then the episode title.
+                    // For an episode, keep the small contextual "eyebrow" (show + S/E code)
+                    // separate from the large episode title. Putting S58E2 and a long title in
+                    // one HStack makes the title wrap awkwardly beside the code instead of using
+                    // the full text column width (GH #101/#106 live-test polish).
                     if detailed.kind == .episode {
                         VStack(alignment: .leading, spacing: DS.Space.xs) {
-                            if let show = detailed.grandparentTitle, !show.isEmpty {
-                                // Tappable like the music pages' artist links: pushes
-                                // the show's season browser onto the same stack.
-                                if let showItem {
-                                    NavigationLink(value: showItem) {
+                            HStack(spacing: DS.Space.sm) {
+                                if let show = detailed.grandparentTitle, !show.isEmpty {
+                                    // Tappable like the music pages' artist links: pushes
+                                    // the show's season browser onto the same stack.
+                                    if let showItem {
+                                        NavigationLink(value: showItem) {
+                                            Text(show)
+                                                .font(.title3.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                                .padding(.horizontal, DS.Space.sm)
+                                                .contentShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .hoverEffect(.highlight)
+                                        .padding(.leading, -DS.Space.sm)
+                                    } else {
                                         Text(show)
                                             .font(.title3.weight(.semibold))
                                             .foregroundStyle(.secondary)
-                                            .padding(.horizontal, DS.Space.sm)
-                                            .contentShape(Capsule())
                                     }
-                                    .buttonStyle(.plain)
-                                    .hoverEffect(.highlight)
-                                    .padding(.leading, -DS.Space.sm)
-                                } else {
-                                    Text(show)
-                                        .font(.title3.weight(.semibold))
-                                        .foregroundStyle(.secondary)
                                 }
-                            }
-                            HStack(spacing: DS.Space.sm) {
                                 if let code = detailed.seasonEpisodeCode {
                                     Text(code)
                                         .font(.title3.weight(.bold))
                                         .foregroundStyle(.tint)
                                 }
-                                Text(detailed.title)
-                                    .font(.largeTitle.bold())
                             }
+                            Text(detailed.title)
+                                .font(.largeTitle.bold())
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
                         Text(detailed.title)
@@ -1084,13 +1087,14 @@ struct ContainerBrowserView: View {
             }
         }
         .navigationTitle(container.grandparentTitle ?? container.title)
-        .task { await load() }
+        .id(container.ratingKey)
+        .task(id: container.ratingKey) { await load() }
     }
 
     /// Seasons as a poster grid (same look as a library section).
     private var seasonGrid: some View {
         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-            ForEach(children) { season in
+            ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, season in
                 NavigationLink(value: season) {
                     PosterCell(item: season, width: DS.Poster.gridMin)
                 }
@@ -1104,7 +1108,7 @@ struct ContainerBrowserView: View {
     /// "S{parentIndex}E{index} · {title}" — Plex/Emby style.
     private var episodeList: some View {
         LazyVStack(spacing: DS.Space.md) {
-            ForEach(children) { episode in
+            ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, episode in
                 NavigationLink(value: episode) {
                     EpisodeRow(episode: episode)
                 }
@@ -1114,15 +1118,34 @@ struct ContainerBrowserView: View {
         .padding(DS.Space.xl)
     }
 
+    private func recordContainerChildrenDiagnostics(_ loaded: [MediaItem],
+                                                    normalized: [MediaItem],
+                                                    backend: String) {
+        guard childrenAreEpisodes else { return }
+        let summary = BrowseDiagnostics.containerChildren(rawItems: loaded,
+                                                          normalizedItems: normalized,
+                                                          backend: backend,
+                                                          container: container,
+                                                          childrenAreEpisodes: childrenAreEpisodes)
+        AppDiagnostics.record(.browse, "container.children", fields: summary.fields)
+        #if DEBUG
+        NSLog("%@", "container.children \(summary.consoleLine)")
+        #endif
+    }
+
     private func load() async {
-        // `.task` re-fires when popping back from a pushed season/episode; reloading
-        // then resets the scroll position the user is returning to. Load once.
-        if case .loaded = loadState { return }
+        // Always reload when this browser appears. Season/episode payloads are small, and this
+        // avoids keeping a stale, duplicated child snapshot alive across navigation restoration
+        // or backend/model changes.
+        children = []
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                children = try await JellyfinBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
-                if childrenAreEpisodes { children = children.sortedByEpisodeOrder() }
+                let loaded = try await JellyfinBrowseService(appModel: appModel)
+                    .items(parentId: container.ratingKey, recursive: false)
+                let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+                recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Jellyfin")
+                children = normalized
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -1132,8 +1155,11 @@ struct ContainerBrowserView: View {
         if appModel.activeBackend == .emby {
             loadState = .loading
             do {
-                children = try await EmbyBrowseService(appModel: appModel).items(parentId: container.ratingKey, recursive: false)
-                if childrenAreEpisodes { children = children.sortedByEpisodeOrder() }
+                let loaded = try await EmbyBrowseService(appModel: appModel)
+                    .items(parentId: container.ratingKey, recursive: false)
+                let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+                recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Emby")
+                children = normalized
                 loadState = .loaded
             } catch {
                 loadState = .failed(friendlyMessage(error))
@@ -1150,11 +1176,47 @@ struct ContainerBrowserView: View {
                                      identity: appModel.identity, ratingKey: container.ratingKey)
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            children = resp.mediaContainer.metadata
-            if childrenAreEpisodes { children = children.sortedByEpisodeOrder() }
+            let loaded = resp.mediaContainer.metadata
+            let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
+            recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Plex")
+            children = normalized
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+private extension MediaItem {
+    /// Stable per-row identity for season/episode container browsers. Keep backend id in the
+    /// SwiftUI identity so taps still route to the exact item when rows are legitimately distinct.
+    var containerRowIdentity: String {
+        [ratingKey, type, parentIndex.map(String.init), index.map(String.init), title]
+            .compactMap { $0 }
+            .joined(separator: "|")
+    }
+
+    /// Visible episode identity for de-duping server duplicates. Jellyfin can expose multiple
+    /// physical entries/versions with distinct item ids but identical S/E/title/artwork; a season
+    /// browser should show one row for that episode, not four indistinguishable rows.
+    var episodeDisplayIdentity: String {
+        [parentIndex.map(String.init), index.map(String.init), title]
+            .compactMap { $0 }
+            .joined(separator: "|")
+    }
+}
+
+private extension Array where Element == MediaItem {
+    /// Normalize a show/season child payload at the UI boundary: sort episode lists by numeric
+    /// S/E order and collapse visible duplicate episode rows. Use display identity for episodes
+    /// (S/E/title) rather than backend id, because duplicate files can arrive as separate Jellyfin
+    /// items while being impossible to distinguish in this list.
+    func normalizedForContainerBrowser(childrenAreEpisodes: Bool) -> [MediaItem] {
+        let ordered = childrenAreEpisodes ? sortedByEpisodeOrder() : self
+        var seen = Set<String>()
+        return ordered.filter { item in
+            let key = childrenAreEpisodes ? item.episodeDisplayIdentity : item.containerRowIdentity
+            return seen.insert(key).inserted
         }
     }
 }
