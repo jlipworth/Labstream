@@ -51,6 +51,67 @@ struct JellyfinPlaybackTests {
         #expect(hlsProfile["BreakOnNonKeyFrames"] as? Bool == false)
     }
 
+    @Test func downloadPlaybackInfoRequestPostsCompatibleStaticMp4Profile() throws {
+        let request = try JellyfinPlayback.downloadPlaybackInfoRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            itemId: "movie-1",
+            userId: "user-1",
+            mediaSourceId: "source-1",
+            maxStaticBitrate: 200_000_000)
+
+        #expect(request.url == URL(string: "https://jellyfin.example.test/base/Items/movie-1/PlaybackInfo"))
+        #expect(request.httpMethod == "POST")
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["UserId"] as? String == "user-1")
+        #expect(object["MediaSourceId"] as? String == "source-1")
+        #expect(object["MaxStaticBitrate"] as? Int == 200_000_000)
+        #expect(object["AllowVideoStreamCopy"] as? Bool == true)
+        let profile = try #require(object["DeviceProfile"] as? [String: Any])
+        #expect(profile["Name"] as? String == "VisionPlay-Compatible-Download")
+        let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
+        let first = try #require(transcoding.first)
+        #expect(first["Container"] as? String == "mp4")
+        #expect(first["Protocol"] as? String == "http")
+        #expect(first["Context"] as? String == "Static")
+        #expect(first["VideoCodec"] as? String == "h264,hevc")
+    }
+
+    @Test func downloadDecisionSurfacesDirectStreamAndCodecs() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "download-play-1",
+          "MediaSources": [{
+            "Id": "source-1",
+            "Container": "mkv",
+            "Size": 123456789,
+            "Bitrate": 9000000,
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": true,
+            "SupportsTranscoding": true,
+            "TranscodeReasons": ["ContainerNotSupported"],
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc" },
+              { "Index": 1, "Type": "Audio", "Codec": "dts" }
+            ]
+          }]
+        }
+        """#.utf8))
+
+        let decision = try JellyfinPlayback.downloadDecision(response: response,
+                                                            preferredMediaSourceId: "source-1")
+        #expect(decision.playSessionId == "download-play-1")
+        #expect(decision.mediaSourceId == "source-1")
+        #expect(decision.supportsDirectStream == true)
+        #expect(decision.container == "mkv")
+        #expect(decision.size == 123456789)
+        #expect(decision.videoCodec == "hevc")
+        #expect(decision.audioCodec == "dts")
+        #expect(decision.transcodeReasons == ["ContainerNotSupported"])
+    }
+
     @Test func resolvesServerRelativeTranscodingURLFromPlaybackInfoWithStableHLSOverrides() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {

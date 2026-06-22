@@ -303,6 +303,42 @@ public enum EmbyPlayback {
         return req
     }
 
+    /// `POST /Items/{Id}/PlaybackInfo` for the #83 "Original quality (compatible)" offline lane.
+    /// Separate from `downloadPlaybackInfoRequest`: the normal download profile intentionally keeps
+    /// HEVC out of the static MP4 transcode verdict so the forced-transcode lane stays conservative,
+    /// while this profile explicitly permits h264/hevc video stream-copy to test remux eligibility.
+    public static func compatibleRemuxDownloadPlaybackInfoRequest(server: URL,
+                                                                  token: String,
+                                                                  identity: EmbyClientIdentity,
+                                                                  userId: String,
+                                                                  itemId: String,
+                                                                  mediaSourceId: String? = nil,
+                                                                  maxStaticBitrate: Int) throws -> URLRequest {
+        let url = try embyURL(server: server,
+                              path: "/Items/\(itemId)/PlaybackInfo",
+                              queryItems: [URLQueryItem(name: "UserId", value: userId)])
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(EmbyAuth.authorizationHeader(identity: identity, userId: userId, token: token),
+                     forHTTPHeaderField: "Authorization")
+        var body: [String: Any] = [
+            "UserId": userId,
+            "MaxStaticBitrate": maxStaticBitrate,
+            "MaxStreamingBitrate": maxStaticBitrate,
+            "EnableDirectPlay": true,
+            "EnableDirectStream": true,
+            "EnableTranscoding": true,
+            "AllowVideoStreamCopy": true,
+            "AllowAudioStreamCopy": true,
+            "DeviceProfile": visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
+        ]
+        if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return req
+    }
+
     /// Typed negotiated verdict for an offline download, distilled from a download PlaybackInfo
     /// response. The crux of the detection rule:
     /// - `supportsDirectPlay` is the AUTHORITATIVE negotiated value (NOT the optimistic naked-item
@@ -314,10 +350,17 @@ public enum EmbyPlayback {
         public let playSessionId: String
         public let mediaSourceId: String
         public let supportsDirectPlay: Bool
+        /// #83: negotiated remux signal — true ⇔ the server can DirectStream (container remux,
+        /// codecs copied). Used to gate the "Original quality (compatible)" lane.
+        public let supportsDirectStream: Bool
         public let transcodingURL: String?
         public let size: Int?
         public let container: String?
         public let bitrate: Int?
+        /// #83: source video/audio codec tokens (first video/audio stream), for the compatible-remux
+        /// eligibility decision (`OfflineDownloadDecision.compatibleRemuxEligibility`).
+        public let videoCodec: String?
+        public let audioCodec: String?
         public let transcodeReasons: [String]
     }
 
@@ -335,14 +378,19 @@ public enum EmbyPlayback {
         guard let mediaSourceId = source.id, !mediaSourceId.isEmpty else {
             throw EmbyPlaybackError.missingMediaSourceId
         }
+        let videoStream = source.mediaStreams.first { $0.type == "Video" }
+        let audioStream = source.mediaStreams.first { $0.type == "Audio" }
         return EmbyDownloadPlaybackDecision(
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
             supportsDirectPlay: source.supportsDirectPlay,
+            supportsDirectStream: source.supportsDirectStream,
             transcodingURL: source.transcodingURL.flatMap { $0.isEmpty ? nil : $0 },
             size: source.size,
             container: source.container?.split(separator: ",").first.map(String.init),
             bitrate: source.bitrate,
+            videoCodec: source.videoCodec ?? videoStream?.codec,
+            audioCodec: source.audioCodec ?? audioStream?.codec,
             transcodeReasons: source.transcodeReasons)
     }
 
@@ -663,6 +711,28 @@ public enum EmbyPlayback {
                     "Container": "mp4",
                     "Protocol": "http",
                     "VideoCodec": "h264",
+                    "AudioCodec": "aac",
+                    "Context": "Static",
+                    "BreakOnNonKeyFrames": false,
+                ],
+            ],
+        ]
+    }
+
+    static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+        [
+            "Name": "VisionPlay-Compatible-Download",
+            "MaxStaticBitrate": maxStaticBitrate,
+            "MaxStreamingBitrate": maxStaticBitrate,
+            "DirectPlayProfiles": [
+                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
+            ],
+            "TranscodingProfiles": [
+                [
+                    "Type": "Video",
+                    "Container": "mp4",
+                    "Protocol": "http",
+                    "VideoCodec": "h264,hevc",
                     "AudioCodec": "aac",
                     "Context": "Static",
                     "BreakOnNonKeyFrames": false,

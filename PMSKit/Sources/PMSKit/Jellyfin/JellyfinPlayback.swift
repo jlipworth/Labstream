@@ -81,12 +81,14 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
     public let transcodingSubProtocol: String?
     public let transcodingContainer: String?
     public let requiredHTTPHeaders: [String: String]?
+    public let size: Int?
     public let bitrate: Int?
     public let width: Int?
     public let height: Int?
     public let videoCodec: String?
     public let audioCodec: String?
     public let mediaStreams: [JellyfinItemMediaStreamDto]
+    public let transcodeReasons: [String]
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
@@ -100,12 +102,14 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
         case transcodingSubProtocol = "TranscodingSubProtocol"
         case transcodingContainer = "TranscodingContainer"
         case requiredHTTPHeaders = "RequiredHttpHeaders"
+        case size = "Size"
         case bitrate = "Bitrate"
         case width = "Width"
         case height = "Height"
         case videoCodec = "VideoCodec"
         case audioCodec = "AudioCodec"
         case mediaStreams = "MediaStreams"
+        case transcodeReasons = "TranscodeReasons"
     }
 
     public init(from decoder: Decoder) throws {
@@ -121,12 +125,14 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
         transcodingSubProtocol = try c.decodeIfPresent(String.self, forKey: .transcodingSubProtocol)
         transcodingContainer = try c.decodeIfPresent(String.self, forKey: .transcodingContainer)
         requiredHTTPHeaders = try c.decodeIfPresent([String: String].self, forKey: .requiredHTTPHeaders)
+        size = try c.decodeIfPresent(Int.self, forKey: .size)
         bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
         width = try c.decodeIfPresent(Int.self, forKey: .width)
         height = try c.decodeIfPresent(Int.self, forKey: .height)
         videoCodec = try c.decodeIfPresent(String.self, forKey: .videoCodec)
         audioCodec = try c.decodeIfPresent(String.self, forKey: .audioCodec)
         mediaStreams = try c.decodeIfPresent([JellyfinItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
+        transcodeReasons = try c.decodeIfPresent([String].self, forKey: .transcodeReasons) ?? []
     }
 
     func playbackSourceMetadata(audioStreamIndex: Int? = nil) -> JellyfinPlaybackSourceMetadata {
@@ -170,6 +176,23 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
                 compatible.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
                 compatible.first)?.index
     }
+}
+
+public struct JellyfinDownloadPlaybackDecision: Sendable, Equatable {
+    public let playSessionId: String
+    public let mediaSourceId: String
+    public let supportsDirectPlay: Bool
+    /// #83: negotiated remux signal — true iff the server says this source can DirectStream
+    /// (container remux with stream-copy where possible) under the download/remux device profile.
+    public let supportsDirectStream: Bool
+    public let transcodingURL: String?
+    public let size: Int?
+    public let container: String?
+    public let bitrate: Int?
+    /// Source video/audio codec tokens (first video/audio stream), for compatible-remux eligibility.
+    public let videoCodec: String?
+    public let audioCodec: String?
+    public let transcodeReasons: [String]
 }
 
 public enum JellyfinPlaybackError: Error, Sendable, Equatable {
@@ -217,6 +240,75 @@ public enum JellyfinPlayback {
 
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req
+    }
+
+    /// `POST /Items/{Id}/PlaybackInfo` for the #83 "Original quality (compatible)" offline lane.
+    ///
+    /// This is intentionally separate from `playbackInfoRequest` (which asks for HLS playback) and
+    /// from Jellyfin's hand-built bitrate transcode URL. The profile advertises a **Static/http MP4**
+    /// target that permits h264/hevc video stream-copy, so `SupportsDirectStream` answers the exact
+    /// question the download sheet/retry path needs: can this item be remuxed while preserving the
+    /// source video stream?
+    public static func downloadPlaybackInfoRequest(server: URL,
+                                                   token: String,
+                                                   identity: JellyfinClientIdentity,
+                                                   itemId: String,
+                                                   userId: String,
+                                                   mediaSourceId: String? = nil,
+                                                   maxStaticBitrate: Int) throws -> URLRequest {
+        let url = try jellyfinURL(server: server, path: "/Items/\(itemId)/PlaybackInfo")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token),
+                     forHTTPHeaderField: "Authorization")
+
+        var body: [String: Any] = [
+            "UserId": userId,
+            "MaxStaticBitrate": maxStaticBitrate,
+            "MaxStreamingBitrate": maxStaticBitrate,
+            "EnableDirectPlay": true,
+            "EnableDirectStream": true,
+            "EnableTranscoding": true,
+            "AllowVideoStreamCopy": true,
+            "AllowAudioStreamCopy": true,
+            "AutoOpenLiveStream": true,
+            "DeviceProfile": visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
+        ]
+        if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
+
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return req
+    }
+
+    /// Distill a download/remux PlaybackInfo response into the typed verdict used by the offline
+    /// compatible-remux lane. Throws when the response cannot identify a playable media source.
+    public static func downloadDecision(response: JellyfinPlaybackInfoResponse,
+                                        preferredMediaSourceId: String? = nil) throws -> JellyfinDownloadPlaybackDecision {
+        guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
+            throw JellyfinPlaybackError.missingPlaySessionId
+        }
+        guard let source = chooseDownloadSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
+            throw JellyfinPlaybackError.noMediaSources
+        }
+        guard let mediaSourceId = source.id, !mediaSourceId.isEmpty else {
+            throw JellyfinPlaybackError.missingMediaSourceId
+        }
+        let videoStream = source.mediaStreams.first { $0.type == "Video" }
+        let audioStream = source.mediaStreams.first { $0.type == "Audio" }
+        return JellyfinDownloadPlaybackDecision(
+            playSessionId: playSessionId,
+            mediaSourceId: mediaSourceId,
+            supportsDirectPlay: source.supportsDirectPlay,
+            supportsDirectStream: source.supportsDirectStream,
+            transcodingURL: source.transcodingURL.flatMap { $0.isEmpty ? nil : $0 },
+            size: source.size,
+            container: source.container?.split(separator: ",").first.map(String.init),
+            bitrate: source.bitrate,
+            videoCodec: source.videoCodec ?? videoStream?.codec,
+            audioCodec: source.audioCodec ?? audioStream?.codec,
+            transcodeReasons: source.transcodeReasons)
     }
 
     public static func resolveStream(response: JellyfinPlaybackInfoResponse,
@@ -373,6 +465,18 @@ public enum JellyfinPlayback {
             sources.first
     }
 
+    static func chooseDownloadSource(_ sources: [JellyfinMediaSourceInfo],
+                                     preferredMediaSourceId: String?) -> JellyfinMediaSourceInfo? {
+        if let preferredMediaSourceId,
+           let source = sources.first(where: { $0.id == preferredMediaSourceId }) {
+            return source
+        }
+        return sources.first(where: { $0.supportsDirectStream }) ??
+            sources.first(where: { $0.supportsDirectPlay }) ??
+            sources.first(where: { $0.transcodingURL != nil }) ??
+            sources.first
+    }
+
     static func visionOSDeviceProfile(maxStreamingBitrate: Int) -> [String: Any] {
         [
             "Name": "VisionPlay",
@@ -392,6 +496,28 @@ public enum JellyfinPlayback {
                     "MinSegments": 2,
                     "BreakOnNonKeyFrames": false,
                     "EnableSubtitlesInManifest": true,
+                ],
+            ],
+        ]
+    }
+
+    static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+        [
+            "Name": "VisionPlay-Compatible-Download",
+            "MaxStaticBitrate": maxStaticBitrate,
+            "MaxStreamingBitrate": maxStaticBitrate,
+            "DirectPlayProfiles": [
+                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
+            ],
+            "TranscodingProfiles": [
+                [
+                    "Type": "Video",
+                    "Container": "mp4",
+                    "Protocol": "http",
+                    "VideoCodec": "h264,hevc",
+                    "AudioCodec": "aac",
+                    "Context": "Static",
+                    "BreakOnNonKeyFrames": false,
                 ],
             ],
         ]
