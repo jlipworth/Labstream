@@ -13,6 +13,7 @@ public enum DiagnosticCategory: String, CaseIterable, Codable, Sendable, Equatab
     case auth = "Auth"
     case discovery = "Discovery"
     case networking = "Networking"
+    case browse = "Browse"
     case settingsUI = "Settings/UI"
 
     public var logCategory: String { rawValue }

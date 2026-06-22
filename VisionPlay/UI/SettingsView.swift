@@ -54,6 +54,7 @@ struct SettingsView: View {
         Form {
             backendSection
             serverSection
+            librariesSection
             playbackSection
             storageSection
             maintenanceSection
@@ -251,7 +252,7 @@ struct SettingsView: View {
         } header: {
             Text("Backend")
         } footer: {
-            Text("Switching keeps Plex and Jellyfin credentials separate. If the selected backend has a saved session, VisionPlay reconnects automatically; otherwise it opens that backend’s sign-in flow.")
+            Text("Switching keeps each backend’s credentials separate. If the selected backend has a saved session, VisionPlay reconnects automatically; otherwise it opens that backend’s sign-in flow.")
         }
     }
 
@@ -443,6 +444,22 @@ struct SettingsView: View {
             connectionStatus = status
         }
         checkingPlexServers = false
+    }
+
+    // MARK: Libraries (#104)
+
+    private var librariesSection: some View {
+        SwiftUI.Section {
+            NavigationLink {
+                LibraryVisibilityEditor()
+            } label: {
+                Label("Choose Libraries", systemImage: "rectangle.stack.badge.person.crop")
+            }
+        } header: {
+            Text("Libraries")
+        } footer: {
+            Text("Pick which libraries appear on the Libraries screen for this server. Choices are saved per backend; new server libraries appear automatically.")
+        }
     }
 
     // MARK: Storage

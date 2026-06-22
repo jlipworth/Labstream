@@ -67,7 +67,9 @@ struct SearchView: View {
             if item.isMusicContainer {
                 musicDestination(for: item, sectionKey: nil)
             } else {
-                DetailView(item: item)
+                // Capture the active backend as the item's origin (#100) so actions resolve
+                // against the source backend even after a backend switch.
+                DetailView(item: item, originBackend: appModel.activeBackend)
             }
         }
         .searchable(text: $query, prompt: "Movies, shows, music…")

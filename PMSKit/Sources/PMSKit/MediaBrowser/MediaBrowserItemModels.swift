@@ -101,6 +101,11 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     public let seasonName: String?
     public let parentIndexNumber: Int?
     public let indexNumber: Int?
+    /// Primary-image aspect ratio (width / height) the server computed for this item's
+    /// poster art (`PrimaryImageAspectRatio`). ~1.778 for 16:9 (YouTube), ~1.0 for square
+    /// channel art, ~0.667 for a 2:3 movie poster. Surfaced on `MediaItem` so poster cells
+    /// size to the real shape instead of force-cropping to 2:3. See GH #101.
+    public let primaryImageAspectRatio: Double?
 
     // MARK: - Parent/series image tags (artwork fallback — see #86)
     //
@@ -149,6 +154,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case seasonName = "SeasonName"
         case parentIndexNumber = "ParentIndexNumber"
         case indexNumber = "IndexNumber"
+        case primaryImageAspectRatio = "PrimaryImageAspectRatio"
         case seriesPrimaryImageTag = "SeriesPrimaryImageTag"
         case parentThumbItemId = "ParentThumbItemId"
         case parentThumbImageTag = "ParentThumbImageTag"
@@ -186,6 +192,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         seasonName = try c.decodeIfPresent(String.self, forKey: .seasonName)
         parentIndexNumber = try c.decodeIfPresent(Int.self, forKey: .parentIndexNumber)
         indexNumber = try c.decodeIfPresent(Int.self, forKey: .indexNumber)
+        primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
         seriesPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .seriesPrimaryImageTag)
         parentThumbItemId = try c.decodeIfPresent(String.self, forKey: .parentThumbItemId)
         parentThumbImageTag = try c.decodeIfPresent(String.self, forKey: .parentThumbImageTag)
@@ -269,7 +276,8 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             parentRatingKey: parentId,
             parentThumb: parentThumbPath ?? seriesPrimaryPath,
             parentIndex: parentIndexNumber,
-            index: indexNumber)
+            index: indexNumber,
+            primaryImageAspectRatio: primaryImageAspectRatio)
     }
 
     /// Season-thumb fallback: prefer the `ParentThumb*` companion (owning id + tag), else

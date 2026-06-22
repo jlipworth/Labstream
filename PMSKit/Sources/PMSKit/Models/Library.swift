@@ -191,6 +191,12 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// Playlist flavor (PMS `playlistType`: `audio` / `video` / `photo`). Routing
     /// uses it to keep video playlists OUT of the music module.
     public let playlistType: String?
+    /// Primary-image aspect ratio (width / height) reported by the backend, when known.
+    /// Jellyfin/Emby expose this as `PrimaryImageAspectRatio` (e.g. ~1.778 for 16:9 YouTube
+    /// art, ~1.0 for square channel art, ~0.667 for a 2:3 movie poster); Plex does not, so
+    /// it decodes nil there. Poster rendering falls back to the canonical 2:3 when nil. See
+    /// GH #101.
+    public let primaryImageAspectRatio: Double?
 
     public var id: String { ratingKey }
 
@@ -236,6 +242,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case composite
         case leafCount
         case playlistType
+        case primaryImageAspectRatio
     }
 
     public init(from decoder: Decoder) throws {
@@ -291,6 +298,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         composite = try c.decodeIfPresent(String.self, forKey: .composite)
         leafCount = try c.decodeIfPresent(Int.self, forKey: .leafCount)
         playlistType = try c.decodeIfPresent(String.self, forKey: .playlistType)
+        // Plex payloads omit this key (→ nil → 2:3 fallback); Jellyfin/Emby supply it via
+        // the synthetic mapper in MediaBrowserBaseItemDto.toMediaItem(). See GH #101.
+        primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
     }
 
     public init(ratingKey: String,
@@ -332,7 +342,8 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 ratingCount: Int? = nil,
                 composite: String? = nil,
                 leafCount: Int? = nil,
-                playlistType: String? = nil) {
+                playlistType: String? = nil,
+                primaryImageAspectRatio: Double? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -373,6 +384,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.composite = composite
         self.leafCount = leafCount
         self.playlistType = playlistType
+        self.primaryImageAspectRatio = primaryImageAspectRatio
     }
 }
 

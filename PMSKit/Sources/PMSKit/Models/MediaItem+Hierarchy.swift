@@ -92,6 +92,26 @@ extension MediaItem {
         return parts.isEmpty ? title : parts.joined(separator: " · ")
     }
 
+    /// The canonical 2:3 movie-poster aspect (width / height) used as the fallback when a
+    /// backend reports no per-item image ratio (e.g. Plex). Mirrors `DS.Poster.aspect` so
+    /// the UI layer and this pure helper agree without PMSKit depending on the app's
+    /// design-system. See GH #101.
+    public static let defaultPosterAspect: Double = 2.0 / 3.0
+
+    /// Poster frame aspect (width / height) to render this item at: the backend's real
+    /// `primaryImageAspectRatio` when known and sane, else `fallback` (default 2:3).
+    ///
+    /// This is the heart of the GH #101 fix — Jellyfin YouTube (16:9) / Twitch (square) art
+    /// and TV episode stills carry their true ratio here, so poster cells size to the real
+    /// shape instead of cropping into a fixed 2:3 box. Plex (no ratio) keeps 2:3.
+    ///
+    /// Non-positive / non-finite values are ignored (treated as unknown) so a garbage
+    /// payload can never collapse a cell to zero or NaN.
+    public func resolvedPosterAspect(fallback: Double = MediaItem.defaultPosterAspect) -> Double {
+        guard let aspect = primaryImageAspectRatio, aspect.isFinite, aspect > 0 else { return fallback }
+        return aspect
+    }
+
     /// "S{parentIndex}E{index}" when both numbers are present, else just whichever is
     /// known, else `nil`.
     public var seasonEpisodeCode: String? {
@@ -101,6 +121,28 @@ extension MediaItem {
         case let (nil, e?): return "E\(e)"
         case (nil, nil): return nil
         }
+    }
+}
+
+extension Array where Element == MediaItem {
+    /// Episodes sorted into natural broadcast order by `(parentIndex ?? 0, index ?? 0)`.
+    ///
+    /// Backend-agnostic: Plex returns season children in index order by default, but
+    /// Emby/Jellyfin fetch with `SortBy=SortName` (alphabetical by title), which scrambles
+    /// episodes into arbitrary order (e.g. S4E4, E1, E2, E10). Applying this numeric sort
+    /// at the render seam guarantees correct order on every backend and hardens Plex
+    /// against any future change in server defaults (GH #106).
+    ///
+    /// Because the sort key is the numeric `index` (not the string title), multi-digit
+    /// episodes order correctly (E10 after E9, not lexicographically), and specials sort
+    /// naturally — season 0 / episode 0 come first via the `?? 0` default. The sort is
+    /// stable, so items sharing a key keep their original relative order.
+    public func sortedByEpisodeOrder() -> [MediaItem] {
+        enumerated().sorted { lhs, rhs in
+            let l = (lhs.element.parentIndex ?? 0, lhs.element.index ?? 0, lhs.offset)
+            let r = (rhs.element.parentIndex ?? 0, rhs.element.index ?? 0, rhs.offset)
+            return l < r
+        }.map(\.element)
     }
 }
 
