@@ -207,10 +207,17 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         // resolve to its season thumb, then the series poster; a season with no own
         // Primary to the series poster (#86). Each fallback is minted against the OWNING
         // item id (season/series), not this item's id — the image lives on that item.
-        let primaryThumb: String? =
-            syntheticImagePath(type: .primary, tag: ownPrimary)
-            ?? parentThumbPath
-            ?? seriesPrimaryPath
+        let ownPrimaryPath = syntheticImagePath(type: .primary, tag: ownPrimary)
+        let primaryThumb: String? = {
+            switch mappedType {
+            case "episode":
+                return ownPrimaryPath ?? parentThumbPath ?? seriesPrimaryPath
+            case "season":
+                return ownPrimaryPath ?? seriesPrimaryPath
+            default:
+                return ownPrimaryPath
+            }
+        }()
 
         // Backdrop: own → parent backdrop. (Series backdrop has no companion tag field on
         // the wire, and the resolver needs a tag, so the chain ends at parent.)
@@ -218,11 +225,14 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             syntheticImagePath(type: .backdrop, tag: backdropImageTags.first)
             ?? parentBackdropPath
 
-        // Episode-still Thumb (distinct from the poster): own Thumb, else parent thumb. Used
-        // by the episode row, which reads `thumb ?? parentThumb`.
-        let stillThumb: String? =
-            syntheticImagePath(type: .thumb, tag: ownThumb)
-            ?? primaryThumb
+        // Episode-still Thumb (distinct from the poster): only episodes should prefer this
+        // landscape still in `MediaItem.thumb`. Movies/shows/seasons must keep their Primary
+        // poster in `thumb`, otherwise a backend-provided Thumb would replace poster/grid art
+        // and violate #86's "movies unaffected" acceptance.
+        let resolvedThumb: String? = {
+            guard mappedType == "episode" else { return primaryThumb }
+            return syntheticImagePath(type: .thumb, tag: ownThumb) ?? primaryThumb
+        }()
 
         let cast = people.filter { ($0.type ?? "") == "Actor" }
             .compactMap { $0.name }.filter { !$0.isEmpty }
@@ -239,7 +249,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             viewCount: userData?.played == true ? 1 : 0,
             year: productionYear,
             summary: overview,
-            thumb: stillThumb,
+            thumb: resolvedThumb,
             art: backdrop,
             media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
             chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset, itemId: id) },

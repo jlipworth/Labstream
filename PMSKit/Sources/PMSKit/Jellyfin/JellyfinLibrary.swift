@@ -361,8 +361,8 @@ public enum JellyfinLibrary {
     // `ParentThumbImageTag`/`SeriesPrimaryImageTag` etc. drive the episode/season artwork
     // fallback (#86); `Studios`/`CriticRating` drive the cast/critic metadata (#76). Both
     // field strings must stay in sync with EmbyLibrary's.
-    public static let gridItemFields = "PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ParentThumbImageTag,ParentBackdropImageTags,ParentPrimaryImageItemId,SeriesPrimaryImageTag"
-    public static let fullItemFields = "Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ParentThumbImageTag,ParentBackdropImageTags,ParentPrimaryImageItemId,SeriesPrimaryImageTag"
+    public static let gridItemFields = "PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+    public static let fullItemFields = "Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
     private static let itemFields = fullItemFields
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
