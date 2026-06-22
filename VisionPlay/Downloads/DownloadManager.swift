@@ -1142,9 +1142,6 @@ public final class DownloadManager {
             mediaIndex: mediaIndex,
             partIndex: partIndex
         ))
-        // NOTE: no poster caching here — mirrors the Jellyfin lane, which also skips it (the Plex
-        // `cachePoster` uses a Plex-only `/photo/:/transcode` path that does not apply to Emby).
-
         let identity = appModel.identity.emby
         // Authoritative negotiation: POST the DOWNLOAD device profile and read the negotiated
         // verdict. ~200 Mbps ceiling so a high-bitrate-but-compatible file still qualifies for an

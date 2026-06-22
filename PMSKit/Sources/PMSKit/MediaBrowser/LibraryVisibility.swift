@@ -99,6 +99,9 @@ public enum LibraryVisibility {
 /// - `libraryVisibility.hidden.<backendKey>` → `[String]` (JSON) of hidden library ids.
 /// - `libraryVisibility.promptShown.<backendKey>` → `Bool`.
 public struct LibraryVisibilityStore {
+    public static let didChangeNotification = Notification.Name("LibraryVisibilityStore.didChange")
+    public static let didChangeBackendKeyUserInfoKey = "backendKey"
+
     private let defaults: UserDefaults
 
     public init(defaults: UserDefaults = .standard) {
@@ -118,12 +121,15 @@ public struct LibraryVisibilityStore {
 
     public func setHiddenIDs(_ ids: Set<String>, forBackendKey backendKey: String?) {
         guard let backendKey else { return }
+        let previous = hiddenIDs(forBackendKey: backendKey)
         if ids.isEmpty {
             defaults.removeObject(forKey: hiddenKey(backendKey))
+            postChangeIfNeeded(previous: previous, current: ids, backendKey: backendKey)
             return
         }
         let data = (try? JSONEncoder().encode(ids.sorted())) ?? Data()
         defaults.set(data, forKey: hiddenKey(backendKey))
+        postChangeIfNeeded(previous: previous, current: ids, backendKey: backendKey)
     }
 
     /// Toggle a single library's hidden state, returning the updated set.
@@ -149,5 +155,12 @@ public struct LibraryVisibilityStore {
     public func markPromptShown(forBackendKey backendKey: String?) {
         guard let backendKey else { return }
         defaults.set(true, forKey: promptKey(backendKey))
+    }
+
+    private func postChangeIfNeeded(previous: Set<String>, current: Set<String>, backendKey: String) {
+        guard previous != current else { return }
+        NotificationCenter.default.post(name: Self.didChangeNotification,
+                                        object: nil,
+                                        userInfo: [Self.didChangeBackendKeyUserInfoKey: backendKey])
     }
 }

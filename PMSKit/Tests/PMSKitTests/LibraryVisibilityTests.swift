@@ -136,6 +136,53 @@ struct LibraryVisibilityTests {
         #expect(store.hiddenIDs(forBackendKey: "jellyfin:S") == ["b"])
     }
 
+    // MARK: Change notification
+
+    @Test func hiddenSetChangePostsBackendScopedNotification() {
+        let (store, _) = makeStore()
+        let key = "plex:changed-\(UUID().uuidString)"
+        final class Box: @unchecked Sendable { var backendKey: String? }
+        let box = Box()
+        let token = NotificationCenter.default.addObserver(
+            forName: LibraryVisibilityStore.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { notification in
+            let changedKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String
+            if changedKey == key {
+                box.backendKey = changedKey
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        store.setHiddenIDs(["a"], forBackendKey: key)
+
+        #expect(box.backendKey == key)
+    }
+
+    @Test func unchangedHiddenSetDoesNotPostNotification() {
+        let (store, _) = makeStore()
+        let key = "plex:unchanged-\(UUID().uuidString)"
+        final class Box: @unchecked Sendable { var notificationCount = 0 }
+        let box = Box()
+        let token = NotificationCenter.default.addObserver(
+            forName: LibraryVisibilityStore.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { notification in
+            let changedKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String
+            if changedKey == key {
+                box.notificationCount += 1
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        store.setHiddenIDs(["a"], forBackendKey: key)
+        store.setHiddenIDs(["a"], forBackendKey: key)
+
+        #expect(box.notificationCount == 1)
+    }
+
     // MARK: Prompt gating
 
     @Test func promptShowsOncePerBackendKey() {

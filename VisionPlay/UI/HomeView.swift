@@ -79,6 +79,9 @@ struct HomeView: View {
         // Re-run whenever the server URL resolves after discovery/rediscovery.
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
+            reloadHomeIfVisibilityChanged(notification)
+        }
     }
 
     private var loadIdentity: String {
@@ -241,6 +244,17 @@ struct HomeView: View {
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
+    }
+
+    /// Jellyfin/Emby Home rails are filtered by the same hidden-library set as the Libraries
+    /// screen (#104). Settings can change that set while Home remains mounted in its tab, so
+    /// refresh the active MediaBrowser home when the relevant backend key changes. Plex Home uses
+    /// non-library `/hubs` and is intentionally deferred for #104, so no reload is needed there.
+    private func reloadHomeIfVisibilityChanged(_ notification: Notification) {
+        guard appModel.activeBackend != .plex,
+              let backendKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String,
+              backendKey == appModel.libraryVisibilityBackendKey else { return }
+        Task { await load(force: true) }
     }
 }
 
