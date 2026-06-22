@@ -101,8 +101,8 @@ public struct OfflineChapter: Codable, Sendable, Equatable {
     public var tag: String?
     public var startTimeOffset: Int?
     public var endTimeOffset: Int?
-    /// Original server thumbnail key. Binary chapter images are not cached yet; keeping the key
-    /// lets a future online refresh/cache migration identify the source image.
+    /// Original server thumbnail key. Offline downloads may also cache the resolved binary chapter
+    /// image as a side asset; keeping this key preserves the source mapping for retries/migrations.
     public var thumb: String?
 
     public init(chapterID: Int? = nil, tag: String? = nil, startTimeOffset: Int? = nil,
@@ -196,7 +196,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// The original Plex `art` (backdrop) path.
     public var art: String?
     /// Text chapter markers captured at download time so local playback can populate the
-    /// existing Chapters tab without requiring network access. Chapter images are not cached yet.
+    /// existing Chapters tab without requiring network access. Per-chapter images, when available,
+    /// are tracked separately as side-asset relative paths.
     public var chapters: [OfflineChapter]?
     /// Intro/credits/commercial ranges captured at download time so offline playback can power
     /// the existing Skip Intro / Skip Credits affordances without requiring network access.

@@ -510,8 +510,6 @@ public final class DownloadManager {
                     server: server, token: token)
         cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
                      server: server, token: token)
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
-                           server: server, token: token)
 
         switch choice {
         case .original:
@@ -541,7 +539,11 @@ public final class DownloadManager {
                 return
             }
 
-            if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
+            let expectedBytes = estimatedBytes(for: item, choice: choice,
+                                               mediaIndex: mediaIndex,
+                                               partIndex: partIndex,
+                                               backend: .plex) ?? part.size
+            if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: expectedBytes) {
                 releaseInFlight(ratingKey: ratingKey)
                 return
             }
@@ -553,6 +555,8 @@ public final class DownloadManager {
                                         localURL: destination, bytes: 0, progress: 0,
                                         metadata: metadata))
             refreshRecords()
+            cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
+                               server: server, token: token)
             cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
             do {
                 recordDownloadDiagnostic("downloads.start", fields: [
@@ -1597,23 +1601,27 @@ public final class DownloadManager {
                                                           videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
             }
         }
-        // Add the duration-proportional thumbnail-cache estimate for every backend that caches one
-        // (not just Jellyfin) so the preflight doesn't under-count for Plex. Text-subtitle sidecars
-        // are small and variable, so they're accounted post-hoc from disk via
-        // `DownloadRecord.sideAssetBytes` rather than pre-estimated here. Resolve against the job's
-        // OWN backend (#84), never the active lane.
-        let sideAssetBytes = Self.estimatedSideAssetBytes(durationMs: item.duration, backend: resolvedBackend)
+        // Add the thumbnail-cache estimate for every backend that caches one (not just Jellyfin) so
+        // the preflight doesn't under-count for Plex/Emby. Text-subtitle sidecars are small and
+        // variable, so they're accounted post-hoc from disk via `DownloadRecord.sideAssetBytes`
+        // rather than pre-estimated here. Resolve against the job's OWN backend (#84), never the
+        // active lane.
+        let chapterImageCount = item.chapters?.filter { $0.thumb?.isEmpty == false }.count ?? 0
+        let sideAssetBytes = Self.estimatedSideAssetBytes(durationMs: item.duration,
+                                                         backend: resolvedBackend,
+                                                         chapterImageCount: chapterImageCount)
         guard sideAssetBytes > 0 else { return mediaBytes }
         return (mediaBytes ?? 0) + sideAssetBytes
     }
 
     /// Rough pre-download estimate of a backend's thumbnail-cache side assets. Plex BIF + Jellyfin
     /// tile sheets are duration-proportional scrub-preview data of comparable magnitude and share
-    /// one model. EVERY backend now also caches per-chapter images (#88/#89), bounded by chapter
-    /// count (not duration); we approximate that with a small duration-proportional allowance so the
-    /// preflight (and Emby, which has no scrub-preview cache) doesn't under-count.
-    private static func estimatedSideAssetBytes(durationMs: Int?, backend: DownloadBackendKind) -> Int {
-        let chapterImages = estimatedChapterImageBytes(durationMs: durationMs)
+    /// one model. EVERY backend now also caches per-chapter images (#88/#89), bounded by the actual
+    /// chapter image count carried by the source item.
+    private static func estimatedSideAssetBytes(durationMs: Int?,
+                                                backend: DownloadBackendKind,
+                                                chapterImageCount: Int) -> Int {
+        let chapterImages = estimatedChapterImageBytes(chapterImageCount: chapterImageCount)
         switch backend {
         case .jellyfin, .plex:
             return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs) + chapterImages
@@ -1623,11 +1631,9 @@ public final class DownloadManager {
     }
 
     /// Coarse per-chapter-image cache estimate (#88/#89). Chapters are typically a few dozen ~30 KB
-    /// 480×270 JPEGs; chapter count isn't known at preflight, so approximate ~1 chapter per 5 min.
-    private static func estimatedChapterImageBytes(durationMs: Int?) -> Int {
-        guard let durationMs, durationMs > 0 else { return 0 }
-        let chapterCount = max(1, Int(ceil(Double(durationMs) / 300_000.0)))
-        return chapterCount * 30_000
+    /// 480×270 JPEGs; only chapters with a thumbnail key are fetched.
+    private static func estimatedChapterImageBytes(chapterImageCount: Int) -> Int {
+        max(0, chapterImageCount) * 30_000
     }
 
     private func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
@@ -2309,6 +2315,8 @@ public final class DownloadManager {
                                         localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                         bytes: 0, progress: 0, metadata: optimizeMetadata))
             refreshRecords()
+            cacheChapterImages(ratingKey: ratingKey, item: sourceItem, backend: .plex,
+                               server: server, token: token)
             if let sourcePart = sourceItem.media?[safe: sourceMediaIndex]?.part[safe: sourcePartIndex] {
                 cachePlexTextSubtitles(ratingKey: ratingKey, part: sourcePart,
                                        server: server, token: token)
@@ -2413,12 +2421,19 @@ public final class DownloadManager {
         try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                          metadata: metadata,
                                          targetName: targetName)
+        var downloadMetadata = metadata
+        // If the #88 chapter-image cache landed while the Plex optimize job was rendering, preserve
+        // it across this final "start the rendered Part" upsert instead of racing it back to nil.
+        if downloadMetadata.chapterImageRelativePaths == nil {
+            downloadMetadata.chapterImageRelativePaths = store.records.first { $0.ratingKey == ratingKey }?
+                .metadata?.chapterImageRelativePaths
+        }
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: title,
                                     localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
+                                    metadata: downloadMetadata))
         refreshRecords()
         try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                         metadata: metadata,
+                                         metadata: downloadMetadata,
                                          targetName: targetName)
         let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
         recordDownloadDiagnostic("downloads.start", fields: [
