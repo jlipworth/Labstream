@@ -144,8 +144,11 @@ struct DownloadOptionsSheet: View {
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
         let mediaSourceId = selectedMediaSourceID(media: media, part: part)
-        let localRemuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(part: part)
-        let shouldProbeRemux = localRemuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable)
+        // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
+        // not decide remux eligibility from the local Part alone. Ask PlaybackInfo whenever the
+        // raw file is not already locally playable, then use the server's authoritative codec and
+        // DirectStream verdict to decide whether "Original quality (compatible)" can be offered.
+        let shouldProbeRemux = !originalLocallyPlayable
         var probeFailed = false
         var compatibleRemux: CompatibleRemuxOption?
         if shouldProbeRemux {
