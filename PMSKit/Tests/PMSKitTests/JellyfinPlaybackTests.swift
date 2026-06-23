@@ -296,4 +296,43 @@ struct JellyfinPlaybackTests {
         #expect(result.requiredHTTPHeaders["Authorization"]?.contains("Token=\"token-abc\"") == true)
         #expect(result.playMethod == .directPlay)
     }
+
+
+    @Test func progressRequestsBuildExpectedBodies() throws {
+        let progress = try JellyfinPlayback.progressRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-1",
+            itemId: "movie-1",
+            mediaSourceId: "source-1",
+            playSessionId: "play-1",
+            playMethod: .transcode,
+            positionTicks: 50_000_000,
+            isPaused: false)
+
+        let url = try #require(progress.url)
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(comps.path == "/base/Sessions/Playing/Progress")
+        #expect(progress.httpMethod == "POST")
+        #expect(progress.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+        let body = try #require(progress.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["UserId"] as? String == "user-1")
+        #expect(object["ItemId"] as? String == "movie-1")
+        #expect(object["MediaSourceId"] as? String == "source-1")
+        #expect(object["PlaySessionId"] as? String == "play-1")
+        #expect(object["PositionTicks"] as? Int == 50_000_000)
+        #expect(object["IsPaused"] as? Bool == false)
+        #expect(object["PlayMethod"] as? String == "Transcode")
+
+        let ping = try JellyfinPlayback.pingRequest(
+            server: server, token: "token-abc", identity: identity, playSessionId: "play-1")
+        let pingURL = try #require(ping.url)
+        let pingComps = try #require(URLComponents(url: pingURL, resolvingAgainstBaseURL: false))
+        #expect(pingComps.path == "/base/Sessions/Playing/Ping")
+        #expect(pingComps.queryItems?.first(where: { $0.name == "PlaySessionId" })?.value == "play-1")
+        #expect(ping.httpMethod == "POST")
+    }
+
 }
