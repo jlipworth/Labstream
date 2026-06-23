@@ -198,6 +198,29 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// GH #101.
     public let primaryImageAspectRatio: Double?
 
+    // MARK: - Movie-version grouping (#108)
+
+    /// Selectable alternate versions of the SAME logical movie, when the library grid
+    /// collapsed several distinct backend items (one per physical file/edition, distinct
+    /// `ratingKey` but identical title/year/art) into one tile. The representative tile
+    /// carries the full ordered group here (including itself); the detail screen offers a
+    /// version chooser and plays the chosen entry's `ratingKey`. `nil` for ordinary items
+    /// with a single version — this is NOT decoded from any backend payload (it is a purely
+    /// client-side, UI-layer grouping carrier), so it stays out of `CodingKeys` and the
+    /// decoder, and defaults to `nil` everywhere else.
+    public let versions: [MediaItem]?
+
+    /// Backend external-provider ids (`ProviderIds` on Jellyfin/Emby, e.g.
+    /// `{"Tmdb": "603", "Imdb": "tt0133093"}`), used to robustly identify the SAME logical
+    /// movie across distinct backend file/edition items for grid de-dup (#108). Lets the
+    /// collapser key on a real cross-edition identity (`tmdb:603`) instead of the fragile
+    /// `title|year`, so it neither false-merges different films sharing a title+year nor
+    /// mass-collapses year-less same-title items. `nil` for Plex (and for any item whose
+    /// payload omits it). This is NOT a required `CodingKeys` entry — the decoder leaves it
+    /// `nil` when absent so existing fixtures/tests decode unchanged; Jellyfin/Emby populate
+    /// it via the synthetic mapper in `MediaBrowserBaseItemDto.toMediaItem()`.
+    public let providerIds: [String: String]?
+
     public var id: String { ratingKey }
 
     enum CodingKeys: String, CodingKey {
@@ -301,6 +324,12 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         // Plex payloads omit this key (→ nil → 2:3 fallback); Jellyfin/Emby supply it via
         // the synthetic mapper in MediaBrowserBaseItemDto.toMediaItem(). See GH #101.
         primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
+        // `versions` is a client-side movie-grid grouping carrier (#108), never on the wire.
+        versions = nil
+        // `providerIds` is intentionally absent from `CodingKeys`: Plex payloads (and any
+        // existing JSON fixture) don't carry it, so the decoder defaults it to nil and all
+        // prior decoding behavior is preserved. Jellyfin/Emby fill it via `toMediaItem()`.
+        providerIds = nil
     }
 
     public init(ratingKey: String,
@@ -343,7 +372,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 composite: String? = nil,
                 leafCount: Int? = nil,
                 playlistType: String? = nil,
-                primaryImageAspectRatio: Double? = nil) {
+                primaryImageAspectRatio: Double? = nil,
+                versions: [MediaItem]? = nil,
+                providerIds: [String: String]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -385,6 +416,34 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.leafCount = leafCount
         self.playlistType = playlistType
         self.primaryImageAspectRatio = primaryImageAspectRatio
+        self.versions = versions
+        self.providerIds = providerIds
+    }
+
+    /// Return a copy of `self` carrying `versions` as its selectable movie-version group
+    /// (#108), every other field preserved verbatim. Centralizing the copy here — next to
+    /// the memberwise init — means a future `MediaItem` field is preserved automatically
+    /// instead of being silently dropped by a hand-maintained field-by-field copy at the
+    /// call site (finding 9). Used by the grid collapser on the surviving representative tile.
+    public func with(versions: [MediaItem]?) -> MediaItem {
+        MediaItem(ratingKey: ratingKey, key: key, title: title, type: type,
+                  duration: duration, viewOffset: viewOffset, viewCount: viewCount,
+                  year: year, summary: summary, thumb: thumb, art: art, media: media,
+                  librarySectionID: librarySectionID, librarySectionKey: librarySectionKey,
+                  chapters: chapters, markers: markers, rating: rating,
+                  contentRating: contentRating, tagline: tagline, genres: genres,
+                  criticRating: criticRating, roles: roles, directors: directors,
+                  studios: studios, logo: logo,
+                  grandparentTitle: grandparentTitle, grandparentRatingKey: grandparentRatingKey,
+                  grandparentThumb: grandparentThumb, parentTitle: parentTitle,
+                  parentRatingKey: parentRatingKey, parentThumb: parentThumb,
+                  parentIndex: parentIndex, index: index, originalTitle: originalTitle,
+                  lastViewedAt: lastViewedAt, parentYear: parentYear,
+                  ratingCount: ratingCount, composite: composite, leafCount: leafCount,
+                  playlistType: playlistType,
+                  primaryImageAspectRatio: primaryImageAspectRatio,
+                  versions: versions,
+                  providerIds: providerIds)
     }
 }
 

@@ -67,6 +67,7 @@ extension LibraryPagingSource {
             backendLabel: "Jellyfin",
             cacheEmptyFirstPage: false,
             awaitAlphabetBeforeInitialLoad: false,
+            collapsesMovieVersions: MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: view.collectionType),
             fetchPage: { start, limit in
                 let service = JellyfinBrowseService(appModel: appModel)
                 let recursive = jellyfinLibraryRecursive(for: view)
@@ -107,6 +108,7 @@ extension LibraryPagingSource {
             backendLabel: "Emby",
             cacheEmptyFirstPage: false,
             awaitAlphabetBeforeInitialLoad: false,
+            collapsesMovieVersions: MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: view.collectionType),
             fetchPage: { start, limit in
                 let service = EmbyBrowseService(appModel: appModel)
                 let recursive = embyLibraryRecursive(for: view)

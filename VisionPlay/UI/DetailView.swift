@@ -57,6 +57,20 @@ struct DetailView: View {
     /// underlying item out from under us so we never index past the array.
     @State private var selectedMediaIndex = 0
 
+    /// Which logical MOVIE VERSION (a distinct backend item — own ratingKey) is selected when
+    /// the grid collapsed several editions/files of one movie into this tile (GH #108). `nil`
+    /// means "the item this detail was opened with" (`item.ratingKey`). Picking a different
+    /// version re-fetches its full metadata into `detailed`, so Play/Download act on the chosen
+    /// version's ratingKey. Items with a single version never set this and behave as before.
+    @State private var selectedVersionRatingKey: String?
+
+    /// Resolved, human version labels for the collapsed movie-version chooser (#108), keyed by
+    /// each version's `ratingKey`. Grid items carry no `MediaSources`, so a brief per-version
+    /// metadata fetch (bounded to the 2–3 collapsed siblings, run concurrently) supplies a
+    /// meaningful label like "4K · HEVC". Entries that haven't resolved (or whose fetch failed)
+    /// fall back to "Version N" individually; the fetch never blocks the rest of the screen.
+    @State private var movieVersionLabels: [String: String] = [:]
+
     /// Optimistic local override of the server's watched state. `nil` means "use the
     /// value from `detailed`"; once the user toggles we hold their intent here so the row
     /// reflects it immediately, before/independent of the scrobble round-trip.
@@ -77,6 +91,19 @@ struct DetailView: View {
         return MediaBackendKind(
             PlaybackBackendResolver.backend(forItemOrigin: originBackend.backendChoice,
                                             currentActive: appModel.activeBackend.backendChoice))
+    }
+
+    /// The collapsed movie versions for this item (#108), when the grid attached more than one.
+    /// Each entry is a distinct backend item (own ratingKey) for the same logical movie.
+    private var movieVersions: [MediaItem] {
+        guard let versions = item.versions, versions.count > 1 else { return [] }
+        return versions
+    }
+
+    /// The ratingKey whose full metadata `detailed` should reflect: the user-chosen movie
+    /// version (#108) when set, else the item this detail opened with.
+    private var activeVersionRatingKey: String {
+        selectedVersionRatingKey ?? item.ratingKey
     }
 
     /// An episode's show as a pushable container item (episode hierarchy:
@@ -231,7 +258,11 @@ struct DetailView: View {
         }
         .background(artBackdrop)
         .navigationTitle(detailed.title)
-        .task {
+        // Re-fetch when the chosen movie version changes (#108) as well as on first appear;
+        // `activeVersionRatingKey` defaults to `item.ratingKey`, so single-version items run
+        // exactly once as before. The autoplay token is one-shot, so a later version switch
+        // can't re-trigger it.
+        .task(id: activeVersionRatingKey) {
             await refreshMetadata()
             // System-entry autoplay (#24): a "Play …" intent armed the router right
             // before pushing this view; consume it once metadata is in and present
@@ -242,6 +273,13 @@ struct DetailView: View {
                 playingItem = itemWithResumeRewind(detailed)
                 presentingPlayer = true
             }
+        }
+        // Resolve the collapsed versions' resolution/codec labels for the chooser (#108).
+        // Keyed on `item.ratingKey` (the versions come from `item`, which is stable for this
+        // detail), so it runs once and never blocks the rest of the screen. No-op for items
+        // with a single version.
+        .task(id: item.ratingKey) {
+            await resolveMovieVersionLabels()
         }
         .fullScreenCover(item: $localPlaybackRequest) { request in
             CustomPlayerView(localFile: request.url,
@@ -399,6 +437,8 @@ struct DetailView: View {
                 }
             }
 
+            movieVersionPicker
+
             versionPicker
 
             if let playbackErrorMessage {
@@ -488,6 +528,114 @@ struct DetailView: View {
         .buttonStyle(.bordered)
     }
 
+    /// Movie-version chooser (#108) — only shown when the grid collapsed several distinct
+    /// backend items (different editions/files of one logical movie, each its own ratingKey)
+    /// into this tile. Picking a version sets `selectedVersionRatingKey`, which re-fetches that
+    /// version's full metadata into `detailed` (via the `.task(id:)`), so Play/Download act on
+    /// the chosen version. Distinct from `versionPicker`, which switches between multiple `Media`
+    /// entries WITHIN one item. A single-version movie attaches no `versions`, so this is hidden.
+    @ViewBuilder
+    private var movieVersionPicker: some View {
+        if movieVersions.count > 1 {
+            Menu {
+                ForEach(Array(movieVersions.enumerated()), id: \.element.ratingKey) { index, version in
+                    Button {
+                        selectedVersionRatingKey = version.ratingKey
+                    } label: {
+                        if version.ratingKey == activeVersionRatingKey {
+                            Label(movieVersionLabel(version, index: index), systemImage: "checkmark")
+                        } else {
+                            Text(movieVersionLabel(version, index: index))
+                        }
+                    }
+                }
+            } label: {
+                Label("Version: \(movieVersionLabel(currentMovieVersion, index: currentMovieVersionIndex))",
+                      systemImage: "square.stack.3d.up")
+                    .font(.callout)
+            }
+            .menuStyle(.borderlessButton)
+        }
+    }
+
+    /// The currently-selected movie version (#108), defaulting to the first.
+    private var currentMovieVersion: MediaItem {
+        movieVersions.first { $0.ratingKey == activeVersionRatingKey } ?? movieVersions[0]
+    }
+
+    private var currentMovieVersionIndex: Int {
+        movieVersions.firstIndex { $0.ratingKey == activeVersionRatingKey } ?? 0
+    }
+
+    /// Label for a collapsed movie version (#108). Prefers a resolution/codec label resolved
+    /// from a brief per-version metadata fetch (`resolveMovieVersionLabels`); falls back to the
+    /// version's own first `Media` if the grid payload happened to carry one; otherwise a stable
+    /// ordinal so the menu always distinguishes the entries.
+    private func movieVersionLabel(_ version: MediaItem, index: Int) -> String {
+        if let resolved = movieVersionLabels[version.ratingKey], !resolved.isEmpty {
+            return resolved
+        }
+        if let media = version.media?.first {
+            let label = Self.versionLabel(media)
+            if label != "Version" { return label }
+        }
+        return "Version \(index + 1)"
+    }
+
+    /// Fetch each collapsed version's brief metadata concurrently to build resolution/codec
+    /// labels for the chooser (#108, finding 5). Grid items lack `MediaSources`, so without
+    /// this every entry would read "Version N". Bounded to `movieVersions` (2–3 items), run
+    /// in parallel, and resolved off the main work of the screen — a failure for one version
+    /// simply leaves its label as the "Version N" fallback.
+    @MainActor
+    private func resolveMovieVersionLabels() async {
+        let versions = movieVersions
+        guard versions.count > 1 else { return }
+        // Capture the values the fetch needs as locals so the concurrent children don't
+        // capture `self` (a non-Sendable View) across the task boundary. `appModel` is a
+        // @MainActor model and the children stay on the main actor.
+        let backend = actionBackend
+        let model = appModel
+        let ratingKeys = versions.map(\.ratingKey)
+        // Sequential awaits (bounded to 2–3 versions): each child would be `@MainActor`
+        // anyway, so a TaskGroup buys no real cross-actor concurrency here, and the
+        // region-based isolation checker rejects a `@MainActor` group child returning a
+        // tuple. A plain loop is simpler and avoids that compiler limitation.
+        for ratingKey in ratingKeys {
+            if let label = await Self.fetchVersionLabel(ratingKey: ratingKey,
+                                                        backend: backend,
+                                                        appModel: model),
+               !label.isEmpty {
+                movieVersionLabels[ratingKey] = label
+            }
+        }
+    }
+
+    /// Resolve one version's resolution/codec label from its full metadata's first `Media`.
+    /// Returns nil on any failure or when no tech specs are available, so the caller keeps the
+    /// "Version N" fallback for that entry. Static + explicitly-passed dependencies so the
+    /// concurrent task group never captures the `DetailView` value.
+    @MainActor
+    private static func fetchVersionLabel(ratingKey: String,
+                                          backend: MediaBackendKind,
+                                          appModel: AppModel) async -> String? {
+        let full: MediaItem?
+        switch backend {
+        case .jellyfin:
+            full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: ratingKey)
+        case .emby:
+            full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: ratingKey)
+        case .plex:
+            guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return nil }
+            let req = BrowseAPI.metadata(server: server, token: token,
+                                         identity: appModel.identity, ratingKey: ratingKey)
+            full = (try? await appModel.client.send(req, as: MetadataResponse.self))?.mediaContainer.metadata.first
+        }
+        guard let media = full?.media?.first else { return nil }
+        let label = Self.versionLabel(media)
+        return label == "Version" ? nil : label
+    }
+
     /// Version picker — only shown when the item ships more than one `Media` entry. Each
     /// row labels the version by resolution / codec / bitrate so the viewer can pick the
     /// 4K vs. the 1080p file, etc. The chosen index threads into both playback and the
@@ -501,14 +649,14 @@ struct DetailView: View {
                         selectedMediaIndex = index
                     } label: {
                         if index == selectedMediaIndex {
-                            Label(versionLabel(m), systemImage: "checkmark")
+                            Label(Self.versionLabel(m), systemImage: "checkmark")
                         } else {
-                            Text(versionLabel(m))
+                            Text(Self.versionLabel(m))
                         }
                     }
                 }
             } label: {
-                Label("Version: \(versionLabel(media[safe: selectedMediaIndex] ?? media[0]))",
+                Label("Version: \(Self.versionLabel(media[safe: selectedMediaIndex] ?? media[0]))",
                       systemImage: "rectangle.stack.badge.play")
                     .font(.callout)
             }
@@ -911,7 +1059,7 @@ struct DetailView: View {
     /// Tech-spec badges (resolution · codec · bitrate · container) for a version.
     private func mediaSpecBadges(_ media: Media) -> [String] {
         var specs: [String] = []
-        if let res = resolutionLabel(media) { specs.append(res) }
+        if let res = Self.resolutionLabel(media) { specs.append(res) }
         if let codec = media.videoCodec?.uppercased() { specs.append(codec) }
         if let audio = media.audioCodec?.uppercased() { specs.append(audio) }
         if let bitrate = media.bitrate, bitrate > 0 {
@@ -921,8 +1069,9 @@ struct DetailView: View {
         return specs
     }
 
-    /// Compact label for a version in the picker, e.g. "4K · HEVC · 24.0 Mbps".
-    private func versionLabel(_ media: Media) -> String {
+    /// Compact label for a version in the picker, e.g. "4K · HEVC · 24.0 Mbps". Static/pure so
+    /// the concurrent #108 version-label resolver can reuse it without capturing `self`.
+    private static func versionLabel(_ media: Media) -> String {
         var parts: [String] = []
         if let res = resolutionLabel(media) { parts.append(res) }
         if let codec = media.videoCodec?.uppercased() { parts.append(codec) }
@@ -933,7 +1082,7 @@ struct DetailView: View {
     }
 
     /// Human resolution from a `Media`'s pixel dimensions (4K / 1080p / 720p / …).
-    private func resolutionLabel(_ media: Media) -> String? {
+    private static func resolutionLabel(_ media: Media) -> String? {
         guard let h = media.height, h > 0 else { return nil }
         switch h {
         case 2000...: return "4K"
@@ -951,7 +1100,7 @@ struct DetailView: View {
         let span = PerformanceInstrumentation.begin(.detailMetadata,
                                                      backend: actionBackend.performanceLabel)
         if actionBackend == .jellyfin {
-            if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
+            if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: activeVersionRatingKey) {
                 detailed = full
                 selectedMediaIndex = 0
                 watchedOverride = nil
@@ -962,7 +1111,7 @@ struct DetailView: View {
             return
         }
         if actionBackend == .emby {
-            if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: item.ratingKey) {
+            if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: activeVersionRatingKey) {
                 detailed = full
                 selectedMediaIndex = 0
                 watchedOverride = nil
@@ -977,7 +1126,7 @@ struct DetailView: View {
             return
         }
         let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: item.ratingKey)
+                                     identity: appModel.identity, ratingKey: activeVersionRatingKey)
         if let resp = try? await appModel.client.send(req, as: MetadataResponse.self),
            let full = resp.mediaContainer.metadata.first {
             detailed = full

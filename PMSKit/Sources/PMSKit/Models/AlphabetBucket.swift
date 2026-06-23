@@ -44,4 +44,59 @@ public struct AlphabetBucket: Sendable, Equatable {
         }
         return result
     }
+
+    /// Build rail buckets directly from a fully-loaded, ordered display list (GH #108).
+    ///
+    /// For a COLLAPSING movie grid the displayed list is a stable, deduped, dense array
+    /// (load-all + collapse), so the rail must index into THAT list — not the server's
+    /// un-deduped offsets, which no longer line up after collapse (the F1 bug). Each bucket's
+    /// `offset` is the index of the first list item whose first title character maps to that
+    /// bucket, so `offset` is always a valid index into the displayed array and matches the
+    /// grid's `.id(index)` scroll targets. `firstLetter` reduces each title to its rail token:
+    /// A–Z (case-folded) for an alphabetic leading character, else "#".
+    public static func buckets(fromTitles titles: [String]) -> [AlphabetBucket] {
+        var firstIndexByToken: [String: Int] = [:]
+        var countByToken: [String: Int] = [:]
+        var tokenOrder: [String] = []
+        for (index, title) in titles.enumerated() {
+            let token = railToken(for: title)
+            if firstIndexByToken[token] == nil {
+                firstIndexByToken[token] = index
+                tokenOrder.append(token)
+            }
+            countByToken[token, default: 0] += 1
+        }
+        // Present in the order the tokens first appear in the (already-sorted) list, so a
+        // server sort that places "#"/digits before or after A–Z is honored as-is.
+        return tokenOrder.map { token in
+            AlphabetBucket(display: token,
+                           count: countByToken[token] ?? 0,
+                           offset: firstIndexByToken[token] ?? 0)
+        }
+    }
+
+    /// The rail bucket token for a title: its uppercased first letter when alphabetic, else "#".
+    ///
+    /// Leading articles ("The"/"A"/"An") are stripped first so the token matches the server's
+    /// sort-name ordering, which ignores those articles by default. Without this, a library
+    /// sorted by sort name places "The Avengers" in the "A" run while the raw title tokenizes
+    /// as "T", producing a stray, out-of-order "T" bucket at the front of the rail (GH #108).
+    private static func railToken(for title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sortable = stripLeadingArticle(trimmed)
+        guard let first = sortable.first else { return "#" }
+        if first.isLetter { return String(first).uppercased() }
+        return "#"
+    }
+
+    /// Drop a leading English article ("The "/"An "/"A ") to mirror the default
+    /// Jellyfin/Emby/Plex sort-name collation. Longest article checked first so "An " isn't
+    /// shadowed by "A ". Returns the original string when no article leads it.
+    private static func stripLeadingArticle(_ title: String) -> String {
+        let lowered = title.lowercased()
+        for article in ["the ", "an ", "a "] where lowered.hasPrefix(article) {
+            return String(title.dropFirst(article.count))
+        }
+        return title
+    }
 }

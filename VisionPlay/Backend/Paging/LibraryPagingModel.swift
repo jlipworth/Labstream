@@ -14,6 +14,11 @@ final class LibraryPagingModel {
     @ObservationIgnored private var loadingPages: Set<Int> = []
     @ObservationIgnored private var loadedIdentity: String?
     @ObservationIgnored private var activeIdentity: String?
+    /// Movie-version de-dup state (#108), present only when the source opts in
+    /// (`collapsesMovieVersions`). An append-only accumulator of all loaded pages; the grid
+    /// renders its dense, complete `collapsedItems()` directly. `nil` for sources that show
+    /// items verbatim (Plex, TV, etc.), which keep the lazy sparse-window paging below.
+    @ObservationIgnored private var collapser: MovieVersionCollapser?
 
     func load(source: LibraryPagingSource,
               force: Bool = false,
@@ -28,7 +33,23 @@ final class LibraryPagingModel {
         total = 0
         loadingPages = []
         alphabetBuckets = []
+        collapser = source.collapsesMovieVersions ? MovieVersionCollapser() : nil
 
+        if source.collapsesMovieVersions {
+            await loadAllCollapsing(source: source, identity: identity, isCurrent: isCurrent)
+        } else {
+            await loadLazy(source: source, identity: identity, isCurrent: isCurrent)
+        }
+    }
+
+    // MARK: - Non-collapsing (lazy, sparse-window) path — unchanged behavior
+
+    /// The original lazy-paged load: fetch page 0 + alphabet counts, pre-size a sparse
+    /// `slots` array to the server total, and let scroll-prefetch fill the rest. Used by
+    /// Plex, TV libraries, and every non-collapsing source. Untouched by #108.
+    private func loadLazy(source: LibraryPagingSource,
+                          identity: String,
+                          isCurrent: @MainActor () -> Bool) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: source.backendLabel,
                                                      fields: ["page_size": source.pageSize])
@@ -82,6 +103,92 @@ final class LibraryPagingModel {
         }
     }
 
+    // MARK: - Collapsing (load-all, incremental dedup) path — #108
+
+    /// Load EVERY page of a collapsing movie source up front, ingesting each into the
+    /// collapser and re-projecting the dense deduped `slots` after every page so movies
+    /// appear progressively. `total` only ever grows (it tracks the distinct movies known so
+    /// far); there are no placeholder holes; scroll-prefetch is disabled. Once the full load
+    /// finishes, the alphabet rail is built from the final collapsed list's own positions.
+    ///
+    /// Structurally fixes F1/F2/F3: the grid renders the dense collapsed list directly, so
+    /// there is no server-offset translation (F2), no shrinking estimated total (F3), and the
+    /// rail offsets index into that same list (F1).
+    private func loadAllCollapsing(source: LibraryPagingSource,
+                                   identity: String,
+                                   isCurrent: @MainActor () -> Bool) async {
+        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
+                                                     backend: source.backendLabel,
+                                                     fields: ["page_size": source.pageSize])
+        do {
+            let first = try await source.fetchPage(0, source.pageSize)
+            guard isCurrent(), activeIdentity == identity else {
+                span.end(result: "stale")
+                return
+            }
+            collapser?.ingest(first.items)
+            projectCollapsed()
+            // Show the grid immediately after the first page; keep loading the rest below.
+            loadedIdentity = (source.cacheEmptyFirstPage || !first.items.isEmpty) ? identity : nil
+            loadState = .loaded
+
+            var loadedPages = 1
+            var start = source.pageSize
+            var serverTotal = first.total
+            var lastPageWasEmpty = first.items.isEmpty
+            // Keep paging until we've covered the reported total (or hit an empty page).
+            while !lastPageWasEmpty, start < serverTotal {
+                let page = try await source.fetchPage(start, source.pageSize)
+                guard isCurrent(), activeIdentity == identity else {
+                    span.end(result: "stale")
+                    return
+                }
+                collapser?.ingest(page.items)
+                projectCollapsed()
+                loadedPages += 1
+                lastPageWasEmpty = page.items.isEmpty
+                // The server total can only be trusted to grow; never let a later page's
+                // smaller `total` cut the loop short before all items are fetched.
+                serverTotal = max(serverTotal, page.total)
+                start += source.pageSize
+            }
+
+            // Full load complete → build the rail from the final collapsed list's positions
+            // (F1 fix). Until now `alphabetBuckets` stayed empty (rail hidden during load).
+            let collapsed = collapser?.collapsedItems() ?? []
+            alphabetBuckets = AlphabetBucket.buckets(fromTitles: collapsed.map(\.title))
+            span.end(fields: [
+                "item_count": collapsed.count,
+                "total_count": serverTotal,
+                "page_count": loadedPages,
+                "alphabet_count": alphabetBuckets.count,
+            ])
+        } catch {
+            guard isCurrent(), activeIdentity == identity else {
+                span.end(result: "stale")
+                return
+            }
+            // If we already showed the first page, keep what we have rather than wiping the
+            // grid to an error; otherwise surface the failure.
+            if case .loaded = loadState {
+                span.end(result: "partial", fields: ["error": performanceErrorLabel(error)])
+            } else {
+                span.end(result: "failure", fields: ["error": performanceErrorLabel(error)])
+                loadState = .failed(friendlyMessage(error))
+            }
+        }
+    }
+
+    /// Re-derive the displayed `slots`/`total` from the collapser's complete deduped list
+    /// (#108). Dense — there are NO `nil` placeholders, so a tile never lingers as permanent
+    /// shimmer (F2) and `total` reflects exactly the distinct movies known so far, growing
+    /// monotonically as pages load (F3).
+    private func projectCollapsed() {
+        guard let collapser else { return }
+        slots = collapser.collapsedItems().map(Optional.init)
+        total = slots.count
+    }
+
     func prefetch(containing index: Int,
                   source: LibraryPagingSource,
                   isCurrent: @MainActor () -> Bool) async {
@@ -91,6 +198,12 @@ final class LibraryPagingModel {
     func loadPage(containing index: Int,
                   source: LibraryPagingSource,
                   isCurrent: @MainActor () -> Bool) async {
+        // Collapsing sources load every page up front (#108): everything is already in
+        // `slots`, there are no placeholders to fill, and the projected index is NOT a server
+        // offset — so scroll-prefetch and rail-jump page loads are no-ops here. This removes
+        // the serverOffset translation path entirely (and with it the F2 hole bug).
+        guard collapser == nil else { return }
+
         guard isCurrent(), activeIdentity == source.identity else { return }
         guard slots.indices.contains(index) else { return }
 

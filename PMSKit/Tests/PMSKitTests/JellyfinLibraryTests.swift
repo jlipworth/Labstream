@@ -409,6 +409,40 @@ struct JellyfinLibraryTests {
         #expect(part.subtitleStreams.first?.displayTitle == "English")
     }
 
+    @Test func mapsResolutionAndCodecsFromMediaStreamsWhenSourceOmitsThem() throws {
+        // Real Jellyfin carries resolution & codecs on the per-stream `MediaStreams`, NOT on the
+        // MediaSource top level (which only has Bitrate/Container). The mapper must fall back to
+        // the video/audio streams so resolution & codec badges populate (GH #108).
+        let response = try JSONDecoder().decode(JellyfinItemsResponse.self, from: Data(#"""
+        {
+          "Items": [{
+            "Id": "movie-2",
+            "Name": "Another Movie",
+            "Type": "Movie",
+            "ProductionYear": 2023,
+            "MediaSources": [{
+              "Id": "source-2",
+              "Container": "mkv",
+              "Bitrate": 26600000,
+              "MediaStreams": [
+                { "Index": 0, "Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2160 },
+                { "Index": 1, "Type": "Audio", "Codec": "truehd", "Channels": 8 }
+              ]
+            }]
+          }],
+          "TotalRecordCount": 1
+        }
+        """#.utf8))
+
+        let media = try #require(response.items.first?.toMediaItem()?.media?.first)
+        #expect(media.container == "mkv")
+        #expect(media.bitrate == 26600)
+        #expect(media.width == 3840)
+        #expect(media.height == 2160)        // → resolutionLabel reads "4K"
+        #expect(media.videoCodec == "hevc")
+        #expect(media.audioCodec == "truehd")
+    }
+
     @Test func mapsEpisodeHierarchyToMediaItem() throws {
         let dto = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
         {

@@ -36,9 +36,20 @@ public struct PlaybackScrubState: Equatable, Sendable {
         }
     }
 
-    public mutating func updateLivePosition(_ positionMs: Int, commitToleranceMs: Int = 2000) {
+    /// Feed the live player clock into the scrubber.
+    ///
+    /// `holdCommittedTarget` is the GH #110 lifecycle guard: while a seek/reopen is in flight the
+    /// presenter passes `true` so the committed target is never cleared by a transient live reading
+    /// (the live clock can briefly alternate between a near-target value and a stale pre-seek
+    /// offset during a Jellyfin/Emby/Plex stream rebuild). The presenter releases the hold via its
+    /// own seek lifecycle (seek-completion / post-rebuild readyToPlay / failure), at which point it
+    /// resumes calling this with `holdCommittedTarget == false` and the tolerance-clear below
+    /// retires the committed target once the clock has genuinely caught up.
+    public mutating func updateLivePosition(_ positionMs: Int,
+                                            commitToleranceMs: Int = 2000,
+                                            holdCommittedTarget: Bool = false) {
         livePositionMs = Self.clamp(positionMs, durationMs: durationMs)
-        guard let committedTargetMs else { return }
+        guard !holdCommittedTarget, let committedTargetMs else { return }
 
         // A committed custom seek often takes a moment to prime/rebuild the stream. During that
         // window AVPlayer can still report the pre-seek clock, which would make the UI scrubber
