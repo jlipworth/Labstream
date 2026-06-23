@@ -19,8 +19,18 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
         durationMs = fallbackDurationMs
     }
     scrubState.updateDuration(durationMs)
+    // Self-clear the seek hold once the live clock has actually landed at/after the target (the
+    // per-item readyToPlay fires once and may precede that, so the 500ms tick backstops it).
+    controller.releaseSeekHoldIfLanded()
     if !scrubState.isDragging {
-        scrubState.updateLivePosition(controller.currentResumeMs)
+        // While a user seek is in flight (in-buffer native seek, or an out-of-buffer
+        // rebuild/reopen), pass `holdCommittedTarget: true` so the committed target stays pinned:
+        // during a Jellyfin/Emby/Plex stream rebuild `currentResumeMs` can briefly alternate
+        // between a near-target reading and a stale fallback, which made the time label bounce
+        // (GH #110). The hold is released by the controller's seek lifecycle (seek completion /
+        // post-rebuild readyToPlay / failure / stop / max-hold ceiling).
+        scrubState.updateLivePosition(controller.currentResumeMs,
+                                      holdCommittedTarget: controller.isSeeking)
     }
 }
 

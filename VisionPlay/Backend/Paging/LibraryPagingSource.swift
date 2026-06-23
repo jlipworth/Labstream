@@ -24,6 +24,11 @@ struct LibraryPagingSource {
     let pageSize: Int
     let cacheEmptyFirstPage: Bool
     let awaitAlphabetBeforeInitialLoad: Bool
+    /// When true, collapse duplicate movie tiles (same title+year, distinct backend ids) to
+    /// one representative carrying the others as `versions` (GH #108). Set only for the
+    /// Jellyfin/Emby recursive movie grids that surface one item per physical file/version;
+    /// Plex (server-deduped flat listing) and non-movie libraries leave this false.
+    let collapsesMovieVersions: Bool
     let fetchPage: @MainActor @Sendable (_ start: Int, _ limit: Int) async throws -> LibraryPagingPage
     let fetchAlphabetCounts: @MainActor @Sendable () async -> [(display: String, count: Int)]
 
@@ -33,6 +38,7 @@ struct LibraryPagingSource {
          pageSize: Int = Self.defaultPageSize,
          cacheEmptyFirstPage: Bool,
          awaitAlphabetBeforeInitialLoad: Bool,
+         collapsesMovieVersions: Bool = false,
          fetchPage: @escaping @MainActor @Sendable (_ start: Int, _ limit: Int) async throws -> LibraryPagingPage,
          fetchAlphabetCounts: @escaping @MainActor @Sendable () async -> [(display: String, count: Int)]) {
         self.title = title
@@ -41,6 +47,7 @@ struct LibraryPagingSource {
         self.pageSize = pageSize
         self.cacheEmptyFirstPage = cacheEmptyFirstPage
         self.awaitAlphabetBeforeInitialLoad = awaitAlphabetBeforeInitialLoad
+        self.collapsesMovieVersions = collapsesMovieVersions
         self.fetchPage = fetchPage
         self.fetchAlphabetCounts = fetchAlphabetCounts
     }

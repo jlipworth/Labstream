@@ -90,4 +90,30 @@ struct PlaybackScrubStateTests {
         state.updateLivePosition(119_000)
         #expect(state.displayedPositionMs == 119_000)
     }
+
+    @Test("hold flag keeps committed target pinned despite a within-tolerance live reading (GH #110)")
+    func holdFlagPreventsPrematureToleranceClear() {
+        var state = PlaybackScrubState(durationMs: 120_000, livePositionMs: 64_000)
+
+        state.beginDrag(livePositionMs: 64_000)
+        state.updateDrag(fraction: 67_000.0 / 120_000.0)
+        #expect(state.commit() == 67_000)
+        #expect(state.displayedPositionMs == 67_000)
+
+        // Mid-reopen the live clock briefly reports a value within the 2000ms tolerance of the
+        // target; without the lifecycle guard this would clear committedTargetMs and let the label
+        // fall through to a (possibly stale) live position, producing the oscillation. With the
+        // hold set, the committed target stays pinned.
+        state.updateLivePosition(67_500, holdCommittedTarget: true)
+        #expect(state.displayedPositionMs == 67_000)
+
+        // It also must NOT clear when the live clock bounces back to the stale pre-seek position.
+        state.updateLivePosition(64_000, holdCommittedTarget: true)
+        #expect(state.displayedPositionMs == 67_000)
+
+        // Once the presenter releases the hold and the clock has genuinely caught up, the
+        // tolerance-clear retires the committed target and the live position takes over.
+        state.updateLivePosition(67_200, holdCommittedTarget: false)
+        #expect(state.displayedPositionMs == 67_200)
+    }
 }
