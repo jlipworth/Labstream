@@ -151,6 +151,12 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).sub-\(streamID).\(Self.safeSubtitleExtension(ext))")
     }
 
+    /// #95: on-disk destination for a ratingKey's persisted URLSession resume blob, kept as a
+    /// sibling of the media file so the relative-path convention and `remove` cleanup apply.
+    func resumeDataDestinationURL(ratingKey: String) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).resume")
+    }
+
     /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
     private func resolvedDownloadAssetURL(_ relative: String?) -> URL? {
         guard let relative, !relative.isEmpty else { return nil }
@@ -206,7 +212,7 @@ final class DownloadStore: @unchecked Sendable {
     /// Absolute local URL for a completed download, if indexed AND present on disk.
     func localURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         let url = baseDirectory.appendingPathComponent(row.relativePath)
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
@@ -214,14 +220,14 @@ final class DownloadStore: @unchecked Sendable {
     /// Absolute local Plex BIF cache URL for a completed download, if present on disk.
     func plexBIFURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         return resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath)
     }
 
     /// Absolute local Jellyfin trickplay playlist URL for a completed download, if present on disk.
     func jellyfinTrickPlayPlaylistURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return nil }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         return resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath)
     }
 
@@ -340,6 +346,70 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.mediaSourceID = mediaSourceID }
     }
 
+    /// #95: persist a URLSession resume blob for a recoverably-interrupted download and record
+    /// its relative path on the row's metadata, so a manual Resume (even after relaunch) can
+    /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
+    /// a sibling `.resume` file (it can be large). No-op if the row/metadata is gone.
+    func setResumeData(ratingKey: String, _ data: Data) {
+        let url = resumeDataDestinationURL(ratingKey: ratingKey)
+        do { try data.write(to: url, options: .atomic) }
+        catch {
+            NSLog("DownloadStore: failed to persist resume data for %@ (%@)",
+                  ratingKey, String(describing: error))
+            return
+        }
+        updateMetadata(ratingKey: ratingKey) { $0.resumeDataRelativePath = url.lastPathComponent }
+    }
+
+    /// #95: the persisted resume blob for a row, if present on disk. `nil` when the row has no
+    /// recorded resume path or the file is gone.
+    func resumeData(ratingKey: String) -> Data? {
+        lock.lock()
+        let relative = rows[ratingKey]?.metadata?.resumeDataRelativePath
+        lock.unlock()
+        guard let relative, !relative.isEmpty else { return nil }
+        return try? Data(contentsOf: baseDirectory.appendingPathComponent(relative))
+    }
+
+    /// #95: whether a row has a persisted resume blob ON DISK (used by launch reconciliation to
+    /// decide if a `.paused` row stays resumable). FS-checked without reading the blob.
+    func hasResumeData(ratingKey: String) -> Bool {
+        lock.lock()
+        let relative = rows[ratingKey]?.metadata?.resumeDataRelativePath
+        lock.unlock()
+        guard let relative, !relative.isEmpty else { return false }
+        return fileManager.fileExists(atPath: baseDirectory.appendingPathComponent(relative).path)
+    }
+
+    /// #95: URLSession resume blobs are only safe for byte-range-resumable sources. Jellyfin/Emby
+    /// optimized downloads are live `static=false` transcode streams with no stable validator, so
+    /// even a resume blob can 200-full-restart or 416. Surface those interruptions as a clean
+    /// restart-required failure instead of a misleading "Paused — tap to resume" row.
+    func supportsPersistedResumeData(ratingKey: String) -> Bool {
+        lock.lock()
+        let row = rows[ratingKey]
+        lock.unlock()
+        guard let row else { return false }
+        let optimized = row.metadata?.optimizeTargetName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+        let nonResumableBackend = row.ratingKey.hasPrefix("jellyfin:")
+            || row.ratingKey.hasPrefix("emby:")
+        return !(optimized && nonResumableBackend)
+    }
+
+    /// #95: drop a row's persisted resume blob + its recorded path once it's consumed (a resume
+    /// task was created) or invalidated (a clean restart). No-op if the row/metadata is gone.
+    func clearResumeData(ratingKey: String) {
+        lock.lock()
+        let relative = rows[ratingKey]?.metadata?.resumeDataRelativePath
+        lock.unlock()
+        if let relative, !relative.isEmpty {
+            try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(relative))
+        }
+        updateMetadata(ratingKey: ratingKey) { $0.resumeDataRelativePath = nil }
+    }
+
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
         guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }
@@ -411,6 +481,12 @@ final class DownloadStore: @unchecked Sendable {
             let hasLiveTask = liveRatingKeys.contains(key)
             let fileExists = fileManager.fileExists(
                 atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
+            // #95: does a persisted resume blob survive for this row? A `.paused` row stays
+            // resumable only while it does (checked WITHOUT reading the blob).
+            let resumeRelative = row.metadata?.resumeDataRelativePath
+            let hasResumeData = (resumeRelative?.isEmpty == false)
+                && fileManager.fileExists(
+                    atPath: baseDirectory.appendingPathComponent(resumeRelative!).path)
             // Only Plex has a server-side "prepare then static download" optimize queue that can
             // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
             // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
@@ -424,16 +500,25 @@ final class DownloadStore: @unchecked Sendable {
             let newStatus = isPlexServerPrepOptimizedJob
                 ? .queued
                 : DownloadStatus.reconciledStatus(
-                    current: row.status, fileExists: fileExists, hasLiveTask: hasLiveTask)
+                    current: row.status, fileExists: fileExists,
+                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData)
             let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
                 && (row.bytes != 0 || row.progress != 0)
             guard newStatus != row.status || shouldResetOptimizedProgress else { continue }
-            // A non-live queued/downloading row that we're demoting to `.failed` may
-            // have left a partial file behind. Delete it so dead bytes don't sit
-            // invisibly on disk — a retry rebuilds the file from scratch regardless.
-            if (row.status == .queued || row.status == .downloading) && !hasLiveTask {
+            // A non-live queued/downloading row that we're demoting to `.failed` may have left a
+            // partial file behind. Delete it so dead bytes don't sit invisibly on disk — a retry
+            // rebuilds the file from scratch regardless. #95: but a row that STAYS resumable
+            // (`.paused` with a surviving resume blob) must KEEP its partial, or the resume data
+            // is useless; only delete when we're actually demoting to a non-resumable terminal state.
+            let isStayingResumable = (newStatus == .paused)
+            if (row.status == .queued || row.status == .downloading || row.status == .paused)
+                && !hasLiveTask && !isStayingResumable {
                 try? fileManager.removeItem(
                     at: baseDirectory.appendingPathComponent(row.relativePath))
+                if resumeRelative?.isEmpty == false {
+                    try? fileManager.removeItem(
+                        at: baseDirectory.appendingPathComponent(resumeRelative!))
+                }
             }
             row.status = newStatus
             if isPlexServerPrepOptimizedJob {
@@ -464,7 +549,8 @@ final class DownloadStore: @unchecked Sendable {
             // D5/#78: also delete cached side assets so a removed download leaves nothing behind.
             var assets = [row.metadata?.posterRelativePath,
                           row.metadata?.plexBIFRelativePath,
-                          row.metadata?.jellyfinTrickPlayPlaylistRelativePath].compactMap { $0 }
+                          row.metadata?.jellyfinTrickPlayPlaylistRelativePath,
+                          row.metadata?.resumeDataRelativePath].compactMap { $0 }
             assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
             assets.append(contentsOf: Array(row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
             assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])

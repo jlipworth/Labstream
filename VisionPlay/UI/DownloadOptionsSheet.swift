@@ -411,7 +411,7 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original")
         } footer: {
-            Text("Downloads the raw source file without server conversion. This is shown only when the original container is locally playable.")
+            Text("Downloads the raw source file without server conversion. This is the most resumable route when the server supports byte ranges.")
         }
     }
 
@@ -441,7 +441,11 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original quality")
         } footer: {
-            Text("Keeps the original video quality by copying the video stream into a compatible MP4 (audio is converted only if needed). Can't pause and resume like the original-file download, so it restarts if interrupted.")
+            Label {
+                Text("Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This is not an optimized server version; it can be slower and restarts from the beginning if interrupted.")
+            } icon: {
+                Image(systemName: "info.circle")
+            }
         }
     }
 
@@ -519,11 +523,15 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Optimize on server")
         } footer: {
-            Text(probeFailed
-                 ? "Couldn't check compatibility, so your server will render a compatible version. Pick a preset."
-                 : originalAvailable
-                    ? "Recommended for offline viewing: your server renders a compatible copy using the selected preset."
-                    : "Your server renders a compatible offline version. Pick a preset.")
+            Label {
+                Text(probeFailed
+                     ? "Couldn't check compatibility, so your server will render a compatible version. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted."
+                     : originalAvailable
+                        ? "Your server renders a bitrate-capped compatible copy. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted."
+                        : "Your server renders a compatible offline version. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted.")
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
         }
         .onAppear {
             if selectedChoice == .original, originalAvailable {
@@ -615,10 +623,16 @@ struct DownloadOptionsSheet: View {
     private func existingSection(_ record: DownloadRecord) -> some View {
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
+        let isPaused = record.status == .paused
         SwiftUI.Section {
             if isComplete {
-                Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                if record.isUnverified {
+                    Label("Downloaded; playback not verified", systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.yellow)
+                } else {
+                    Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
                 Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
                     .font(.caption).foregroundStyle(.secondary)
             } else if isFailed {
@@ -628,6 +642,17 @@ struct DownloadOptionsSheet: View {
                     retryDownload()
                     dismiss()
                 } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
+            } else if isPaused {
+                Label("Download paused", systemImage: "pause.circle")
+                    .foregroundStyle(.secondary)
+                if record.bytes > 0 {
+                    Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button {
+                    retryDownload()
+                    dismiss()
+                } label: { Label("Resume Download", systemImage: "play.circle") }
             } else {
                 Label("Downloading…", systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)

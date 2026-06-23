@@ -8,7 +8,16 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
     case queued        // seeded, transfer not yet started / no live task yet
     case downloading   // a background task is actively writing bytes
     case complete      // validated file is on disk and playable
+    // #98: the byte transfer completed, but the local AVPlayer startup probe did not confirm
+    // playback. Keep the file playable/inspectable instead of deleting it or forcing a 0% retry;
+    // the row remains explicitly distinct from a validated `.complete` download.
+    case unverified    // complete file kept; playback probe was inconclusive/failed
     case failed        // transfer or validation failed; row kept so it can be retried
+    // #95: a recoverable interruption (e.g. headset-off killed the transfer) that handed back
+    // URLSession resume data. NOT a failure — the partial bytes + resume blob are retained so a
+    // Resume continues from the offset instead of restarting at 0. Decoded with `decodeIfPresent`
+    // on the row, so libraries persisted before this case keep loading.
+    case paused        // interrupted but resumable from persisted resume data
 
     /// Default lifecycle status for a row persisted BEFORE D2, which lacked an
     /// explicit `status` field (completion was inferred from `progress >= 1.0`).
@@ -32,17 +41,30 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
     ///
     /// This is the pure transition table; the app side performs the disk-existence
     /// check and the partial-file cleanup before/after calling it.
+    ///
+    /// `hasResumeData` (#95) is true when a persisted URLSession resume blob exists for the
+    /// row. A `.paused` row stays resumable across relaunch IFF that blob survived; without it
+    /// the partial can't be continued, so it demotes to `.failed` (retryable from 0).
     public static func reconciledStatus(current: DownloadStatus,
                                         fileExists: Bool,
-                                        hasLiveTask: Bool) -> DownloadStatus {
+                                        hasLiveTask: Bool,
+                                        hasResumeData: Bool = false) -> DownloadStatus {
         switch current {
         case .complete:
             // A completed row is only usable if its validated file still exists.
             return fileExists ? .complete : .failed
+        case .unverified:
+            // A probe-inconclusive completed row is still useful only while the file remains.
+            return fileExists ? .unverified : .failed
         case .queued, .downloading:
             if hasLiveTask { return current }   // task survived; leave it
             // No live task and never validated -> can't trust it; make it retryable.
             return .failed
+        case .paused:
+            // A recoverable interruption stays resumable only while its resume blob persists;
+            // if the task is somehow live again, let it run.
+            if hasLiveTask { return .downloading }
+            return hasResumeData ? .paused : .failed
         case .failed:
             return .failed
         }
@@ -282,6 +304,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// preserves the user's intent — original (no target) vs compatible-remux (no target) are
     /// otherwise indistinguishable. Absent on pre-#83 rows (see `resolvedDownloadLane`).
     public var downloadLane: DownloadLane?
+    /// #95: path (relative to the Downloads base dir) of the persisted URLSession resume blob
+    /// for a `.paused` (recoverably-interrupted) download. Stored as a sibling file because the
+    /// blob can be large. `nil` when the row isn't paused / has no resume data. Lets a manual
+    /// Resume after relaunch continue from the byte offset via `downloadTask(withResumeData:)`
+    /// instead of restarting at 0. Only range-resumable sources (static originals) ever set it.
+    public var resumeDataRelativePath: String?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -327,7 +355,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 backendUserID: String? = nil,
                 mediaSourceID: String? = nil,
                 playSessionID: String? = nil,
-                downloadLane: DownloadLane? = nil) {
+                downloadLane: DownloadLane? = nil,
+                resumeDataRelativePath: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -373,6 +402,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.mediaSourceID = mediaSourceID
         self.playSessionID = playSessionID
         self.downloadLane = downloadLane
+        self.resumeDataRelativePath = resumeDataRelativePath
     }
 
     public init(from decoder: Decoder) throws {
@@ -422,6 +452,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         mediaSourceID = try c.decodeIfPresent(String.self, forKey: .mediaSourceID)
         playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
+        resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
     }
 
     /// #83: resolve this row's lane. New rows persist `downloadLane`; pre-#83 rows fall back to the
@@ -500,9 +531,13 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
 
     public var id: String { ratingKey }
 
-    /// Convenience: a download is usable only when explicitly marked complete.
-    /// Drives the player gate so a stalled-at-100% row never opens an empty file.
-    public var isComplete: Bool { status == .complete }
+    /// Convenience: a download has a finished local file that the user can try to play.
+    /// Drives the player gate so a stalled-at-100% row never opens an empty file. `.unverified`
+    /// rows (#98) are complete byte transfers preserved after an inconclusive local playback probe.
+    public var isComplete: Bool { status == .complete || status == .unverified }
+
+    /// True when the transfer completed but the local playback probe did not confirm startup.
+    public var isUnverified: Bool { status == .unverified }
 
     public init(ratingKey: String,
                 title: String,
