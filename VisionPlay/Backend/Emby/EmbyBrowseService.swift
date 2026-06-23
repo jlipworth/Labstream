@@ -99,6 +99,41 @@ struct EmbyBrowseService {
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
+    func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
+        _ = try context()
+        let views = try await userViewLinks()
+        let groupsByIndex = try await withThrowingTaskGroup(
+            of: (Int, SearchResultGroup?).self,
+            returning: [Int: SearchResultGroup].self
+        ) { taskGroup in
+            for (index, view) in views.enumerated() {
+                taskGroup.addTask {
+                    let items = try await self.items(parentId: view.id,
+                                                     recursive: true,
+                                                     limit: limitPerLibrary,
+                                                     searchTerm: query,
+                                                     sortBy: "SortName",
+                                                     sortOrder: "Ascending",
+                                                     includeItemTypes: mediaBrowserSearchItemTypes(for: view))
+                    let group = SearchResultGroup.mediaBrowserLibrary(backendID: "emby",
+                                                                      libraryID: view.id,
+                                                                      title: view.title,
+                                                                      items: items)
+                    return (index, group)
+                }
+            }
+
+            var groupsByIndex: [Int: SearchResultGroup] = [:]
+            for try await (index, group) in taskGroup {
+                if let group { groupsByIndex[index] = group }
+            }
+            return groupsByIndex
+        }
+
+        let groups = views.indices.compactMap { groupsByIndex[$0] }
+        return SearchResults(groups: groups)
+    }
+
     func homeRails(for views: [EmbyLibraryLink]) async throws -> HomeRailsLoad<EmbyHomeRail> {
         _ = try context()
         var rails: [EmbyHomeRail] = []
@@ -326,6 +361,24 @@ struct EmbyBrowseService {
             throw ServiceError.http(http.statusCode)
         }
         return data
+    }
+}
+
+/// Search is format-normalized here, but match semantics stay native (#103):
+/// MediaBrowser `searchTerm` is not made fuzzy. Music is also intentionally absent
+/// for this first pass because `MediaBrowserBaseItemDto.toMediaItem()` currently maps
+/// only Movie/Series/Season/Episode/Video; requesting Audio/Album/MusicArtist rows
+/// would decode and then be dropped before SearchView can facet them.
+private func mediaBrowserSearchItemTypes(for view: EmbyLibraryLink) -> String {
+    switch view.collectionType?.lowercased() {
+    case "movies":
+        return "Movie"
+    case "tvshows":
+        return "Series,Season,Episode"
+    case "homevideos", "livetv":
+        return "Video"
+    default:
+        return "Movie,Series,Season,Episode,Video"
     }
 }
 

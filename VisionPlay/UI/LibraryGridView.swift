@@ -303,15 +303,18 @@ struct LibraryGridView: View {
 
     @Environment(AppModel.self) private var appModel
 
-    @State private var slots: [MediaItem?] = []
-    @State private var firstCharacters: [AlphabetBucket] = []
-    @State private var loadState: HomeView.LoadState = .idle
-    @State private var loadingPages: Set<Int> = []
-    @State private var loadedIdentity: String?
+    @State private var paging = LibraryPagingModel()
 
     private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
                                     spacing: DS.Space.xl)]
-    private let pageSize = 200
+
+    private var pagingSource: LibraryPagingSource {
+        LibraryPagingSource(gridSource: source, appModel: appModel)
+    }
+
+    private var loadIdentity: String {
+        pagingSource.identity
+    }
 
     init(section: PlexSection) {
         self.source = .plex(section)
@@ -328,7 +331,7 @@ struct LibraryGridView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                switch loadState {
+                switch paging.loadState {
                 case .idle, .loading:
                     SkeletonGrid()
                 case .failed(let message):
@@ -337,15 +340,15 @@ struct LibraryGridView: View {
                                            description: Text(message))
                         .frame(maxWidth: .infinity, minHeight: 360)
                 case .loaded:
-                    if slots.isEmpty {
+                    if paging.slots.isEmpty {
                         ContentUnavailableView("Empty library",
                                                systemImage: "rectangle.stack",
                                                description: Text("No items in \(source.title)."))
                             .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
                         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-                            ForEach(slots.indices, id: \.self) { index in
-                                if let item = slots[index] {
+                            ForEach(paging.slots.indices, id: \.self) { index in
+                                if let item = paging.slots[index] {
                                     NavigationLink(value: item) {
                                         PosterCell(item: item, width: DS.Poster.gridMin)
                                     }
@@ -355,7 +358,7 @@ struct LibraryGridView: View {
                                     LibraryPlaceholderPoster()
                                         .id(index)
                                         .onAppear {
-                                            Task { await loadPage(containing: index) }
+                                            prefetchPage(containing: index)
                                         }
                                 }
                             }
@@ -365,16 +368,9 @@ struct LibraryGridView: View {
                 }
             }
             .overlay(alignment: .trailing) {
-                if firstCharacters.count > 1, case .loaded = loadState {
-                    LibraryAlphabetRail(entries: firstCharacters) { entry in
-                        Task {
-                            await loadPage(containing: entry.offset)
-                            await MainActor.run {
-                                withAnimation(.snappy(duration: 0.25)) {
-                                    proxy.scrollTo(entry.offset, anchor: .top)
-                                }
-                            }
-                        }
+                if paging.alphabetBuckets.count > 1, case .loaded = paging.loadState {
+                    LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
+                        jump(to: entry, proxy: proxy)
                     }
                     .padding(.trailing, 10)
                 }
@@ -385,394 +381,38 @@ struct LibraryGridView: View {
         .refreshable { await load(force: true) }
     }
 
-    private var loadIdentity: String {
-        switch source {
-        case .plex(let section):
-            return "plex:\(section.key):\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
-        case .jellyfin(let view):
-            return "jellyfin:\(view.id):\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil"):\(appModel.jellyfinAccessToken ?? "nil")"
-        case .emby(let view):
-            return "emby:\(view.id):\(appModel.embyServerBaseURL?.absoluteString ?? "nil"):\(appModel.embyAccessToken ?? "nil")"
-        }
-    }
-
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back from an item; reloading the whole grid then
         // would dump the scroll position the user is returning to. Load once per backend
         // session identity; a re-auth to the same server must bust this cache (#93).
-        let activeIdentity = loadIdentity
-        if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
-        loadState = .loading
-        loadingPages = []
-        firstCharacters = []
-
-        switch source {
-        case .plex(let section):
-            await loadPlex(section: section, loadedIdentity: activeIdentity)
-        case .jellyfin(let view):
-            await loadJellyfin(view: view, loadedIdentity: activeIdentity)
-        case .emby(let view):
-            await loadEmby(view: view, loadedIdentity: activeIdentity)
+        let source = pagingSource
+        await paging.load(source: source, force: force) {
+            loadIdentity == source.identity
         }
     }
 
-    private func loadPlex(section: PlexSection, loadedIdentity identity: String) async {
-        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
-                                                     backend: "Plex",
-                                                     fields: ["page_size": pageSize])
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            span.end(result: "failure", fields: ["error": "missing_plex_server"])
-            loadState = .failed("No server selected.")
-            return
-        }
-        let req = BrowseAPI.sectionItems(server: server, token: token,
-                                         identity: appModel.identity, sectionKey: section.key,
-                                         containerStart: 0, containerSize: pageSize,
-                                         sort: "titleSort")
-        do {
-            async let itemsResponse = appModel.client.send(req, as: MetadataResponse.self)
-            async let initialsResponse: FirstCharacterResponse? = loadFirstCharacters(server: server,
-                                                                                      token: token,
-                                                                                      section: section)
-
-            let resp = try await itemsResponse
-            let page = resp.mediaContainer.metadata
-            let total = max(resp.mediaContainer.totalSize ?? page.count, page.count)
-            var fresh = [MediaItem?](repeating: nil, count: total)
-            for (i, item) in page.enumerated() where fresh.indices.contains(i) {
-                fresh[i] = item
-            }
-            slots = fresh
-            firstCharacters = (await initialsResponse)?.libraryEntries(totalSize: total) ?? []
-            loadedIdentity = identity
-            loadState = .loaded
-            span.end(fields: [
-                "item_count": page.count,
-                "total_count": total,
-                "alphabet_count": firstCharacters.count,
-            ])
-            // Make the browsed page findable in system search (#24).
-            SpotlightIndexer.index(page, server: server)
-        } catch {
-            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-            loadState = .failed(friendlyMessage(error))
-        }
-    }
-
-    private func loadJellyfin(view: JellyfinLibraryLink, loadedIdentity identity: String) async {
-        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
-                                                     backend: "Jellyfin",
-                                                     fields: ["page_size": pageSize])
-        // Run the first page and the alphabet-rail probe CONCURRENTLY (GH #96), mirroring
-        // the Plex `async let` path. Previously the rail was kicked off in a deferred
-        // `Task` AFTER the page loaded and ran 26 SEQUENTIAL letter probes, so the rail
-        // took ~10s to appear. The probe is parallelized internally (see
-        // `jellyfinAlphabetCounts`) and starts here, off the first page's critical path.
-        let service = JellyfinBrowseService(appModel: appModel)
-        async let rawCounts = jellyfinAlphabetCounts(service: service, view: view)
-        do {
-            let page = try await service
-                .itemsPage(parentId: view.id,
-                           recursive: jellyfinLibraryRecursive(for: view),
-                           startIndex: 0,
-                           limit: pageSize,
-                           includeItemTypes: jellyfinLibraryItemTypes(for: view),
-                           fields: JellyfinLibrary.gridItemFields)
-            let total = max(page.total ?? page.items.count, page.items.count)
-            recordGridPageDiagnostics(page.items,
-                                      backend: "Jellyfin",
-                                      sourceID: view.id,
-                                      sourceName: view.title,
-                                      sourceKind: view.collectionType,
-                                      recursive: jellyfinLibraryRecursive(for: view),
-                                      includeItemTypes: jellyfinLibraryItemTypes(for: view),
-                                      startIndex: 0,
-                                      limit: pageSize,
-                                      total: total)
-            var fresh = [MediaItem?](repeating: nil, count: total)
-            for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
-                fresh[i] = item
-            }
-            slots = fresh
-            firstCharacters = []
-            // A 200/empty first page is indistinguishable from the transient false-empty
-            // library state in #93. Show it, but don't pin it so returning to the grid
-            // re-fetches automatically rather than sticking until pull-to-refresh.
-            loadedIdentity = page.items.isEmpty ? nil : identity
-            loadState = .loaded
-            span.end(fields: [
-                "item_count": page.items.count,
-                "total_count": total,
-            ])
-            // The page is already shown; await the (concurrently-running) probe and apply
-            // the rail when it resolves. Uses the SAME offset math as Plex.
-            firstCharacters = AlphabetBucket.buckets(from: await rawCounts, total: total)
-        } catch {
-            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-            loadState = .failed(friendlyMessage(error))
-            // Let the structured `async let` cancel at scope exit. Do not await the
-            // alphabet probes after the first-page request has failed; otherwise a
-            // network/auth failure can hold the error UI behind all 26 rail probes.
-        }
-    }
-
-    private func loadEmby(view: EmbyLibraryLink, loadedIdentity identity: String) async {
-        let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
-                                                     backend: "Emby",
-                                                     fields: ["page_size": pageSize])
-        // Concurrent first-page + parallelized alphabet probe — see `loadJellyfin` (GH #96).
-        let service = EmbyBrowseService(appModel: appModel)
-        async let rawCounts = embyAlphabetCounts(service: service, view: view)
-        do {
-            let page = try await service
-                .itemsPage(parentId: view.id,
-                           recursive: embyLibraryRecursive(for: view),
-                           startIndex: 0,
-                           limit: pageSize,
-                           includeItemTypes: embyLibraryItemTypes(for: view),
-                           fields: EmbyLibrary.gridItemFields)
-            let total = max(page.total ?? page.items.count, page.items.count)
-            recordGridPageDiagnostics(page.items,
-                                      backend: "Emby",
-                                      sourceID: view.id,
-                                      sourceName: view.title,
-                                      sourceKind: view.collectionType,
-                                      recursive: embyLibraryRecursive(for: view),
-                                      includeItemTypes: embyLibraryItemTypes(for: view),
-                                      startIndex: 0,
-                                      limit: pageSize,
-                                      total: total)
-            var fresh = [MediaItem?](repeating: nil, count: total)
-            for (i, item) in page.items.enumerated() where fresh.indices.contains(i) {
-                fresh[i] = item
-            }
-            slots = fresh
-            firstCharacters = []
-            loadedIdentity = page.items.isEmpty ? nil : identity
-            loadState = .loaded
-            span.end(fields: [
-                "item_count": page.items.count,
-                "total_count": total,
-            ])
-            firstCharacters = AlphabetBucket.buckets(from: await rawCounts, total: total)
-        } catch {
-            span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-            loadState = .failed(friendlyMessage(error))
-            // Let the structured `async let` cancel at scope exit. Do not await the
-            // alphabet probes after the first-page request has failed; otherwise a
-            // network/auth failure can hold the error UI behind all 26 rail probes.
-        }
-    }
-
-    private func loadFirstCharacters(server: URL, token: String,
-                                     section: PlexSection) async -> FirstCharacterResponse? {
-        let req = BrowseAPI.firstCharacters(server: server, token: token,
-                                            identity: appModel.identity, sectionKey: section.key)
-        return try? await appModel.client.send(req, as: FirstCharacterResponse.self)
-    }
-
-    private func loadPage(containing index: Int) async {
-        guard slots.indices.contains(index) else { return }
-        let page = index / pageSize
-        guard !loadingPages.contains(page) else { return }
-        loadingPages.insert(page)
-        let start = page * pageSize
-
-        switch source {
-        case .plex(let section):
-            let span = PerformanceInstrumentation.begin(.libraryGridPage,
-                                                         backend: "Plex",
-                                                         fields: ["page": page, "page_size": pageSize])
-            guard let server = appModel.serverBaseURL,
-                  let token = appModel.serverToken
-            else {
-                span.end(result: "failure", fields: ["error": "missing_plex_server"])
-                loadingPages.remove(page)
-                return
-            }
-            let req = BrowseAPI.sectionItems(server: server, token: token,
-                                             identity: appModel.identity, sectionKey: section.key,
-                                             containerStart: start, containerSize: pageSize,
-                                             sort: "titleSort")
-            do {
-                let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-                let pageItems = resp.mediaContainer.metadata
-                for (i, item) in pageItems.enumerated()
-                where slots.indices.contains(start + i) {
-                    slots[start + i] = item
-                }
-                span.end(fields: ["item_count": pageItems.count])
-                SpotlightIndexer.index(pageItems, server: server)
-            } catch {
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
-            }
-        case .jellyfin(let view):
-            let span = PerformanceInstrumentation.begin(.libraryGridPage,
-                                                         backend: "Jellyfin",
-                                                         fields: ["page": page, "page_size": pageSize])
-            do {
-                let pageResult = try await JellyfinBrowseService(appModel: appModel)
-                    .itemsPage(parentId: view.id,
-                               recursive: jellyfinLibraryRecursive(for: view),
-                               startIndex: start,
-                               limit: pageSize,
-                               includeItemTypes: jellyfinLibraryItemTypes(for: view),
-                               fields: JellyfinLibrary.gridItemFields)
-                recordGridPageDiagnostics(pageResult.items,
-                                          backend: "Jellyfin",
-                                          sourceID: view.id,
-                                          sourceName: view.title,
-                                          sourceKind: view.collectionType,
-                                          recursive: jellyfinLibraryRecursive(for: view),
-                                          includeItemTypes: jellyfinLibraryItemTypes(for: view),
-                                          startIndex: start,
-                                          limit: pageSize,
-                                          total: pageResult.total)
-                for (i, item) in pageResult.items.enumerated()
-                where slots.indices.contains(start + i) {
-                    slots[start + i] = item
-                }
-                span.end(fields: ["item_count": pageResult.items.count])
-            } catch {
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
-            }
-        case .emby(let view):
-            let span = PerformanceInstrumentation.begin(.libraryGridPage,
-                                                         backend: "Emby",
-                                                         fields: ["page": page, "page_size": pageSize])
-            do {
-                let pageResult = try await EmbyBrowseService(appModel: appModel)
-                    .itemsPage(parentId: view.id,
-                               recursive: embyLibraryRecursive(for: view),
-                               startIndex: start,
-                               limit: pageSize,
-                               includeItemTypes: embyLibraryItemTypes(for: view),
-                               fields: EmbyLibrary.gridItemFields)
-                recordGridPageDiagnostics(pageResult.items,
-                                          backend: "Emby",
-                                          sourceID: view.id,
-                                          sourceName: view.title,
-                                          sourceKind: view.collectionType,
-                                          recursive: embyLibraryRecursive(for: view),
-                                          includeItemTypes: embyLibraryItemTypes(for: view),
-                                          startIndex: start,
-                                          limit: pageSize,
-                                          total: pageResult.total)
-                for (i, item) in pageResult.items.enumerated()
-                where slots.indices.contains(start + i) {
-                    slots[start + i] = item
-                }
-                span.end(fields: ["item_count": pageResult.items.count])
-            } catch {
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                // Non-fatal: remove the in-flight mark so the placeholder retries when it reappears.
+    private func prefetchPage(containing index: Int) {
+        let source = pagingSource
+        Task {
+            await paging.prefetch(containing: index, source: source) {
+                loadIdentity == source.identity
             }
         }
-        loadingPages.remove(page)
     }
 
-    private func recordGridPageDiagnostics(_ items: [MediaItem],
-                                           backend: String,
-                                           sourceID: String,
-                                           sourceName: String,
-                                           sourceKind: String?,
-                                           recursive: Bool,
-                                           includeItemTypes: String,
-                                           startIndex: Int,
-                                           limit: Int,
-                                           total: Int?) {
-        let summary = BrowseDiagnostics.libraryGridPage(items: items,
-                                                        backend: backend,
-                                                        sourceID: sourceID,
-                                                        sourceName: sourceName,
-                                                        sourceKind: sourceKind,
-                                                        recursive: recursive,
-                                                        includeItemTypes: includeItemTypes,
-                                                        startIndex: startIndex,
-                                                        limit: limit,
-                                                        total: total)
-        AppDiagnostics.record(.browse, "library_grid.page", fields: summary.fields)
-        #if DEBUG
-        NSLog("%@", "library.grid.items \(summary.consoleLine)")
-        #endif
-    }
-
-    /// Probe each A–Z letter's item count for the Jellyfin alphabet rail, IN PARALLEL
-    /// (GH #96). Returns letters with at least one item, in alphabetical order, as raw
-    /// `(display, count)` pairs — the caller turns them into `AlphabetBucket`s with the
-    /// shared offset math once `total` is known. Previously these 26 `limit: 1` probes
-    /// ran sequentially (~10s); a task group overlaps them so the rail appears in roughly
-    /// one round-trip.
-    private func jellyfinAlphabetCounts(service: JellyfinBrowseService,
-                                        view: JellyfinLibraryLink) async -> [(display: String, count: Int)] {
-        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
-        let itemTypes = jellyfinLibraryItemTypes(for: view)
-        let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
-            for (index, letter) in letters.enumerated() {
-                group.addTask {
-                    let page = try? await service.itemsPage(parentId: view.id,
-                                                            recursive: jellyfinLibraryRecursive(for: view),
-                                                            limit: 1,
-                                                            nameStartsWith: letter,
-                                                            includeItemTypes: itemTypes,
-                                                            fields: JellyfinLibrary.gridItemFields)
-                    return (index, letter, page?.total ?? 0)
+    private func jump(to entry: AlphabetBucket, proxy: ScrollViewProxy) {
+        let source = pagingSource
+        Task {
+            await paging.loadPage(containing: entry.offset, source: source) {
+                loadIdentity == source.identity
+            }
+            await MainActor.run {
+                withAnimation(.snappy(duration: 0.25)) {
+                    proxy.scrollTo(entry.offset, anchor: .top)
                 }
             }
-            var byIndex: [Int: (String, Int)] = [:]
-            for await (index, letter, count) in group where count > 0 {
-                byIndex[index] = (letter, count)
-            }
-            return byIndex
         }
-        // Re-impose alphabetical order — task-group results arrive out of order.
-        return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
     }
-
-    /// Emby twin of `jellyfinAlphabetCounts` (GH #96) — identical parallelized probe.
-    private func embyAlphabetCounts(service: EmbyBrowseService,
-                                    view: EmbyLibraryLink) async -> [(display: String, count: Int)] {
-        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
-        let itemTypes = embyLibraryItemTypes(for: view)
-        let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
-            for (index, letter) in letters.enumerated() {
-                group.addTask {
-                    let page = try? await service.itemsPage(parentId: view.id,
-                                                            recursive: embyLibraryRecursive(for: view),
-                                                            limit: 1,
-                                                            nameStartsWith: letter,
-                                                            includeItemTypes: itemTypes,
-                                                            fields: EmbyLibrary.gridItemFields)
-                    return (index, letter, page?.total ?? 0)
-                }
-            }
-            var byIndex: [Int: (String, Int)] = [:]
-            for await (index, letter, count) in group where count > 0 {
-                byIndex[index] = (letter, count)
-            }
-            return byIndex
-        }
-        return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
-    }
-
-}
-
-private func embyLibraryItemTypes(for view: EmbyLibraryLink) -> String {
-    MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
-}
-
-private func embyLibraryRecursive(for view: EmbyLibraryLink) -> Bool {
-    MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
-}
-
-private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {
-    MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
-}
-
-private func jellyfinLibraryRecursive(for view: JellyfinLibraryLink) -> Bool {
-    MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
 }
 
 private struct LibraryPlaceholderPoster: View {
@@ -809,62 +449,6 @@ private struct LibraryAlphabetRail: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 4)
         .background(.ultraThinMaterial, in: Capsule())
-    }
-}
-
-private struct FirstCharacterResponse: Decodable {
-    let mediaContainer: Container
-    enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
-
-    struct Container: Decodable {
-        let directory: [Entry]
-        enum CodingKeys: String, CodingKey {
-            case directory = "Directory"
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            directory = try c.decodeIfPresent([Entry].self, forKey: .directory) ?? []
-        }
-    }
-
-    struct Entry: Decodable {
-        let key: String?
-        let title: String?
-        let count: Int
-
-        enum CodingKeys: String, CodingKey {
-            case key
-            case title
-            case size
-            case count
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            key = try c.decodeIfPresent(String.self, forKey: .key)
-            title = try c.decodeIfPresent(String.self, forKey: .title)
-            count = (try? c.decodeLossyIntIfPresent(forKey: .size))
-                ?? (try? c.decodeLossyIntIfPresent(forKey: .count))
-                ?? 0
-        }
-    }
-
-    /// Maps the Plex first-character response onto the shared `AlphabetBucket` math so
-    /// the rail offsets match the Jellyfin/Emby probe path exactly (GH #96).
-    func libraryEntries(totalSize: Int) -> [AlphabetBucket] {
-        let counts: [(display: String, count: Int)] = mediaContainer.directory.map {
-            (display: ($0.title ?? $0.key ?? ""), count: $0.count)
-        }
-        return AlphabetBucket.buckets(from: counts, total: totalSize)
-    }
-}
-
-private extension KeyedDecodingContainer {
-    func decodeLossyIntIfPresent(forKey key: Key) throws -> Int? {
-        if let int = try decodeIfPresent(Int.self, forKey: key) { return int }
-        if let string = try decodeIfPresent(String.self, forKey: key) { return Int(string) }
-        return nil
     }
 }
 
