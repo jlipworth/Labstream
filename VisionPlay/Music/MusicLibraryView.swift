@@ -704,6 +704,9 @@ private struct PagedArtGrid<SortMenu: View>: View {
     /// re-fires on pop-back/reappear, and only a real sort CHANGE should reload
     /// (a reload would dump the user's scroll position back to the top).
     @State private var loadedSortKey: String?
+    /// Bumped for every full reload so stale page fills from an older refresh/sort
+    /// cannot mutate the newly rebuilt slot array.
+    @State private var loadGeneration = 0
 
     private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
                                     spacing: DS.Space.xl)]
@@ -735,8 +738,8 @@ private struct PagedArtGrid<SortMenu: View>: View {
                         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
                             // Position-keyed: a slot's identity is its place in the
                             // listing; its content arrives when the page loads.
-                            ForEach(slots.indices, id: \.self) { index in
-                                if let item = slots[index] {
+                            ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
+                                if let item = slot {
                                     NavigationLink(value: item) {
                                         SquareArtCell(item: item, size: MusicArt.gridMin,
                                                       subtitle: subtitle(item))
@@ -783,6 +786,8 @@ private struct PagedArtGrid<SortMenu: View>: View {
             loadState = .failed("No server selected.")
             return
         }
+        loadGeneration += 1
+        let generation = loadGeneration
         loadState = .loading
         loadingPages = []
         do {
@@ -794,10 +799,12 @@ private struct PagedArtGrid<SortMenu: View>: View {
             let total = max(resp.mediaContainer.totalSize ?? page.count, page.count)
             var fresh = [MediaItem?](repeating: nil, count: total)
             for (i, item) in page.enumerated() { fresh[i] = item }
+            guard generation == loadGeneration else { return }
             slots = fresh
             loadedSortKey = sortKey
             loadState = .loaded
         } catch {
+            guard generation == loadGeneration else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }
@@ -808,16 +815,19 @@ private struct PagedArtGrid<SortMenu: View>: View {
         guard !loadingPages.contains(page),
               let server = appModel.serverBaseURL, let token = appModel.serverToken
         else { return }
+        let generation = loadGeneration
         loadingPages.insert(page)
         let start = page * musicGridPageSize
         do {
             let req = request(server, token, appModel.identity, start)
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            guard generation == loadGeneration else { return }
             for (i, item) in resp.mediaContainer.metadata.enumerated()
             where slots.indices.contains(start + i) {
                 slots[start + i] = item
             }
         } catch {
+            guard generation == loadGeneration else { return }
             // Non-fatal: drop the in-flight mark so the placeholder retries when
             // it next appears.
             loadingPages.remove(page)
