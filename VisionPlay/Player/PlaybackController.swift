@@ -386,6 +386,102 @@ final class PlaybackController {
     /// client-side seek fallback if PMS's `#EXT-X-START` priming didn't land (P2 #9).
     private var pendingResumeMs: Int?
 
+    /// True from the moment a user seek is dispatched (`performUserSeek` / scheduled final-target
+    /// rebuild / remote reopen) until playback actually lands at the requested target. While set,
+    /// the scrubber clock holds the committed target (GH #110): `tickCustomScrubberClock` skips
+    /// `updateLivePosition` so the displayed time can't bounce between the target and a stale
+    /// `currentResumeMs` reading during a Jellyfin/Emby/Plex stream rebuild. Replaces the old
+    /// position-tolerance auto-clear, which fired too early (before the reopen completed) and had
+    /// no lifecycle guard. MUST be cleared on every completion/failure/cancel path so the label
+    /// can never freeze forever — see `setSeeking(_:)` call sites.
+    private(set) var isSeeking: Bool = false
+
+    /// Target (ms) of the in-flight user seek, used to recognize when playback has genuinely
+    /// landed at/after the requested position so we can clear `isSeeking`.
+    private var seekHoldTargetMs: Int?
+
+    /// Monotonic token bumped on every `setSeeking(true, …)`. A native-seek completion handler
+    /// captures the token at dispatch and only clears the hold if it still matches — so a stale
+    /// completion from a superseded seek can't clear the hold that a newer seek just established.
+    private var seekGeneration: Int = 0
+
+    /// `systemUptime` at which the current hold began. A safety ceiling (`maxSeekHoldSeconds`)
+    /// force-releases the hold if the live clock never reaches the target (e.g. a transcode that
+    /// starts well behind it), so the label can never freeze indefinitely. By the time the ceiling
+    /// elapses the new item has either become ready — at which point `currentResumeMs` already
+    /// reflects the true (correct) position — or failed (which clears the hold via surfaceFailure).
+    private var seekHoldStartedAt: TimeInterval?
+
+    /// Absolute upper bound on how long the scrubber may stay pinned to the seek target. Generous
+    /// enough to cover a slow Jellyfin/Emby reopen + prime, short enough that a label can never
+    /// look stuck.
+    private let maxSeekHoldSeconds: TimeInterval = 12
+
+    /// Centralized setter so every set/clear is greppable and consistently logged. Low-volume:
+    /// fires once per seek begin/end, not per tick.
+    private func setSeeking(_ seeking: Bool, targetMs: Int? = nil) {
+        if seeking {
+            seekGeneration += 1
+            seekHoldTargetMs = targetMs ?? seekHoldTargetMs
+            // FINDING 6: the max-hold ceiling must be measured from the LATEST (re)dispatched seek,
+            // not the first. Re-seed the start timestamp on EVERY `setSeeking(true, …)` so a
+            // continuous drag / rapid sequence of out-of-buffer reseeks keeps pushing the ceiling
+            // forward — it then only fires after `maxSeekHoldSeconds` of genuine no-progress on the
+            // most recent seek, instead of force-releasing mid-drag and resuming the label bounce
+            // GH #110 fixed. The ceiling still fires if a SINGLE seek truly never lands (the clock
+            // never crosses `target - slack` and no newer seek re-arms the timestamp).
+            seekHoldStartedAt = ProcessInfo.processInfo.systemUptime
+        } else {
+            seekHoldTargetMs = nil
+            seekHoldStartedAt = nil
+        }
+        guard isSeeking != seeking else { return }
+        isSeeking = seeking
+        NSLog("PlaybackController: isSeeking=%@ targetMs=%@",
+              seeking ? "true" : "false",
+              seekHoldTargetMs.map { String($0) } ?? "nil")
+    }
+
+    /// Release the hold only if it still belongs to the seek that scheduled this completion
+    /// (guards against a stale native-seek completion clearing a newer seek's hold).
+    private func clearSeekHold(ifGeneration generation: Int) {
+        guard isSeeking, seekGeneration == generation else { return }
+        setSeeking(false)
+    }
+
+    /// Tick-loop backstop (called from `tickCustomScrubberClock`): the per-item `.readyToPlay` only
+    /// fires once and may land before the remote transcode's clock reaches the target, so the
+    /// 500ms scrubber tick also polls for "live clock has reached the held target" to release the
+    /// hold. Same landed-check as the readyToPlay path; cheap no-op when not seeking.
+    func releaseSeekHoldIfLanded() {
+        clearSeekHoldIfLanded()
+    }
+
+    /// Called from the per-item `.readyToPlay` observer for a rebuild/reopen-backed seek: once the
+    /// live clock is at or past the held target (within a small slack), the rebuild has landed and
+    /// the hold is released so the scrubber resumes following the live position.
+    private func clearSeekHoldIfLanded() {
+        guard isSeeking, let target = seekHoldTargetMs else { return }
+        // Safety ceiling: never let the hold freeze the label even if the live clock never reaches
+        // the target (GH #110).
+        if let startedAt = seekHoldStartedAt,
+           ProcessInfo.processInfo.systemUptime - startedAt >= maxSeekHoldSeconds {
+            NSLog("PlaybackController: seek hold released by max-hold ceiling (target=%@)",
+                  String(target))
+            setSeeking(false)
+            return
+        }
+        let secs = player.currentTime().seconds
+        guard secs.isFinite, secs > 0 else { return }
+        let liveMs = Int(secs * 1000)
+        // Slack covers segment-boundary snapping on HLS reopens (the transcoder may start the
+        // stream a beat before the exact target). Landing at/after target — or within slack
+        // below it — means the rebuild reached the user's position.
+        if liveMs >= target - 1500 {
+            setSeeking(false)
+        }
+    }
+
     /// One-time resume target (ms) applied on the FIRST `start()` instead of the item's saved
     /// `viewOffset`. Set when the player view controller is REBUILT to recover from a wedged
     /// AVKit state after a failure (see `PlayerView`'s rebuild path): the fresh controller must
@@ -398,6 +494,10 @@ final class PlaybackController {
     var currentResumeMs: Int {
         let secs = player.currentTime().seconds
         if secs.isFinite, secs > 0 { return Int(secs * 1000) }
+        // During an in-flight user seek the live clock is briefly invalid (item detached for a
+        // reopen, or pre-prime); fall back to the seek target rather than the stale offset so the
+        // scrubber/resume position never regresses to the OLD position (GH #110).
+        if isSeeking, let seekHoldTargetMs { return seekHoldTargetMs }
         return pendingResumeMs ?? item.viewOffset ?? 0
     }
 
@@ -684,6 +784,7 @@ final class PlaybackController {
         playbackStartupSpan = nil
         playbackTask?.cancel()
         playbackTask = nil
+        setSeeking(false)
         endReconnectStatus()
         upNextTask?.cancel()
         upNextTask = nil
@@ -1621,7 +1722,14 @@ final class PlaybackController {
         let seconds = Double(clamped) / 1000
 
         guard supportsSeekReprime, !playbackError.isFailed else {
-            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            // Native seek (no reprime support, or already failed). Hold the scrubber on the target
+            // until AVPlayer reports completion (GH #110).
+            setSeeking(true, targetMs: clamped)
+            let gen = seekGeneration
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero,
+                        completionHandler: { [weak self] _ in
+                            Task { @MainActor [weak self] in self?.clearSeekHold(ifGeneration: gen) }
+                        })
             return
         }
 
@@ -1631,12 +1739,22 @@ final class PlaybackController {
                 "seek_mode": .label("native_buffered"),
                 "target": .millisecondsBucket(clamped),
             ])
-            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            // In-buffer native seek is fast; hold the scrubber until AVPlayer's own completion
+            // handler fires so even the short window can't bounce.
+            setSeeking(true, targetMs: clamped)
+            let gen = seekGeneration
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero,
+                        completionHandler: { [weak self] _ in
+                            Task { @MainActor [weak self] in self?.clearSeekHold(ifGeneration: gen) }
+                        })
         } else {
             recordPlaybackDiagnostic("playback.user_seek", fields: [
                 "seek_mode": .label("server_rebuild"),
                 "target": .millisecondsBucket(clamped),
             ])
+            // Out-of-buffer: hold the scrubber across the debounced rebuild/reopen. The hold is
+            // released by the post-rebuild `.readyToPlay` (clearSeekHoldIfLanded) or any failure.
+            setSeeking(true, targetMs: clamped)
             scheduleFinalTargetRebuild(toMs: clamped)
         }
     }
@@ -2488,6 +2606,9 @@ final class PlaybackController {
                         }
                         self.didSeek = true
                     }
+                    // A rebuild/reopen-backed user seek holds the scrubber on its target until the
+                    // fresh item is ready at/after that target; release the hold now (GH #110).
+                    self.clearSeekHoldIfLanded()
                     self.maybeRecordDiagnosticSnapshot(force: true)
                 case .failed:
                     self.recordPlaybackDiagnostic("playback.item_status", fields: [
@@ -2610,6 +2731,12 @@ final class PlaybackController {
                                                       observedPlaybackGeneration: observedPlaybackGeneration)
                     return
                 }
+                // FINDING 7: a seek landing at/near EOF can play straight to the end without the
+                // live clock crossing `target - slack` (and possibly without a distinct `.playing`
+                // transition the hold observer catches). Reaching end-of-time is a definitive
+                // "seek settled" signal, so release any in-flight hold here too rather than leaving
+                // it for the 12s ceiling. No-op when not seeking.
+                if self.isSeeking { self.setSeeking(false) }
                 self.maybeRecordDiagnosticSnapshot(force: true)
                 self.recordPlaybackDiagnostic("playback.ended", fields: [
                     "resume": .millisecondsBucket(self.currentResumeMs),
@@ -2634,6 +2761,19 @@ final class PlaybackController {
     private func handleTimeControlTransport(status: AVPlayer.TimeControlStatus) {
         currentTimeControlStatus = status
         hasObservedTimeControlStatus = true
+        // FINDING 7: a seek near end-of-file can settle at a live clock that never crosses
+        // `target - slack` (the file ends first), so the tick-loop "landed" check
+        // (`clearSeekHoldIfLanded`) would never release the hold and the label (and
+        // `currentResumeMs`, which returns `seekHoldTargetMs` while held) would stay frozen until
+        // the 12s ceiling. The player reaching `.playing` after a seek means playback genuinely
+        // resumed wherever it landed, so release the hold immediately. Independent of the clock
+        // threshold; the ceiling remains only as a last-ditch backstop. Cheap no-op when not
+        // seeking (clearSeekHold's own guard handles that).
+        if status == .playing, isSeeking {
+            NSLog("PlaybackController: seek hold released by timeControlStatus=.playing (target=%@)",
+                  seekHoldTargetMs.map { String($0) } ?? "nil")
+            setSeeking(false)
+        }
         let paused = status == .paused || self.userWantsPaused
         self.timeline.report(state: paused ? .paused : .playing, force: true)
         self.transport.set(paused: paused)
@@ -3201,6 +3341,9 @@ final class PlaybackController {
     /// `BufferingState` clears (it reports `false` on `.paused`). Recovery still rebuilds the
     /// player from `currentResumeMs` on Retry, so pausing here never strands the playhead.
     private func surfaceFailure(_ error: Error?) {
+        // Any surfaced failure ends the in-flight seek — release the scrubber hold so the label
+        // can't freeze on the unreachable target (GH #110).
+        setSeeking(false)
         cancelPendingFinalTargetRebuild()
         if let activeFinalTargetRebuildGeneration {
             finalTargetRebuildPolicy.cancelRebuild(generation: activeFinalTargetRebuildGeneration)
@@ -3513,18 +3656,33 @@ final class PlaybackController {
     /// Arm (or re-arm) the debounced final-target rebuild. Each out-of-buffer jump during a drag
     /// records the latest target; only the settled target gets a PMS restart or backend re-open.
     private func scheduleFinalTargetRebuild(toMs targetMs: Int) {
+        // Hold the scrubber on this target and make even the fallback branch of `currentResumeMs`
+        // return it (instead of the stale pre-seek offset) for the whole rebuild window (GH #110).
+        setSeeking(true, targetMs: targetMs)
+        pendingResumeMs = targetMs
         finalTargetRebuildPolicy.recordFinalTarget(offsetMs: targetMs)
         finalTargetSettleTask?.cancel()
         finalTargetSettleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.finalTargetSettleNanos)
-            guard let self, !Task.isCancelled else { return }
-            guard self.supportsSeekReprime, !self.playbackError.isFailed else { return }
-            guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else { return }
+            guard let self else { return }
+            // Any early-out here means the rebuild won't actually run, so release the hold to
+            // avoid freezing the label. Cancellation = superseded by a newer seek (which set its
+            // own hold) or stop(); leave the hold to the new owner / stop's reset.
+            guard !Task.isCancelled else { return }
+            guard self.supportsSeekReprime, !self.playbackError.isFailed else {
+                self.setSeeking(false); return
+            }
+            guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else {
+                self.setSeeking(false); return
+            }
             self.finalTargetSettleTask = nil
+            // Keep the hold target aligned with the settled (possibly newer) target.
+            self.setSeeking(true, targetMs: target)
+            self.pendingResumeMs = target
             if self.remoteStreamReopener != nil {
                 self.reopenRemoteStream(offsetMs: target, bitrateKbps: self.maxVideoBitrateKbps)
             } else {
-                guard self.isStreaming else { return }
+                guard self.isStreaming else { self.setSeeking(false); return }
                 self.beginFinalTargetRebuild(toMs: target)
             }
         }
@@ -3564,6 +3722,10 @@ final class PlaybackController {
 
     private func reopenRemoteStream(offsetMs: Int, bitrateKbps: Int) {
         guard let remoteStreamReopener else { return }
+        // Hold the scrubber on the reopen target across the detach→renegotiate→ready window so the
+        // label can't fall back to the stale offset while the item is nil (GH #110).
+        setSeeking(true, targetMs: offsetMs)
+        pendingResumeMs = offsetMs
         playbackTask?.cancel()
         playbackGeneration += 1
         let generation = playbackGeneration
@@ -3660,6 +3822,9 @@ final class PlaybackController {
                                                      now: ProcessInfo.processInfo.systemUptime) {
         case .start(let generation, let offsetMs):
             lastPrimedOffsetMs = offsetMs
+            // Hold the scrubber on the Plex rebuild target across the restart (GH #110).
+            setSeeking(true, targetMs: offsetMs)
+            pendingResumeMs = offsetMs
             recordPlaybackDiagnostic("playback.seek_rebuild_start", fields: [
                 "target": .millisecondsBucket(offsetMs),
                 "generation": .int(generation),
@@ -3683,7 +3848,11 @@ final class PlaybackController {
             finalTargetSettleTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(remaining))
                 guard let self, !Task.isCancelled else { return }
-                guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else { return }
+                guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else {
+                    // Cooldown elapsed but nothing left to rebuild — release the hold so the
+                    // label doesn't freeze (GH #110).
+                    self.setSeeking(false); return
+                }
                 self.finalTargetSettleTask = nil
                 self.beginFinalTargetRebuild(toMs: target)
             }

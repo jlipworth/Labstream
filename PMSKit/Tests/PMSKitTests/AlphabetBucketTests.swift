@@ -50,6 +50,27 @@ struct AlphabetBucketTests {
         #expect(buckets.map(\.offset) == [0, 0])
     }
 
+    @Test func titleRailStripsLeadingArticlesToMatchSortOrder() {
+        // A sort-name-ordered movie list places "The Avengers" in the "A" run. The rail must
+        // tokenize it as "A" (article stripped), not produce a stray out-of-order "T" bucket
+        // at the front (GH #108). Input order mirrors the server's article-ignoring sort.
+        // Titles in the server's article-ignoring sort order: Avatar, (The) Avengers,
+        // Batman, (An) Education, (The) Matrix.
+        let titles = ["Avatar", "The Avengers", "Batman", "An Education", "The Matrix"]
+        let buckets = AlphabetBucket.buckets(fromTitles: titles)
+        #expect(buckets.map(\.display) == ["A", "B", "E", "M"])
+        #expect(buckets.first?.offset == 0)
+        #expect(buckets.first(where: { $0.display == "A" })?.count == 2)  // Avatar, The Avengers
+        #expect(buckets.first(where: { $0.display == "M" })?.offset == 4) // "The Matrix"
+        #expect(!buckets.contains { $0.display == "T" })
+    }
+
+    @Test func titleRailBucketsNonAlphabeticUnderHash() {
+        let buckets = AlphabetBucket.buckets(fromTitles: ["1917", "300", "Alien"])
+        #expect(buckets.map(\.display) == ["#", "A"])
+        #expect(buckets.first?.count == 2)
+    }
+
     @Test func plexAndProbePathsAgreeForSameLibrary() {
         // The Plex single-call path and the Jellyfin/Emby per-letter probe path both feed
         // the SAME `buckets(from:total:)`, so identical `(display, count)` input must yield

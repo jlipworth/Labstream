@@ -122,6 +122,43 @@ extension MediaItem {
         case (nil, nil): return nil
         }
     }
+
+    /// Identity used to collapse duplicate MOVIE tiles in a library grid (#108) — distinct
+    /// backend items (one per physical file/edition, each its own `ratingKey`) that are the
+    /// SAME logical film. Co-located with the other display-identity helpers
+    /// (`displaySubtitleLine`, `seasonEpisodeCode`) so the de-dup keys live together (finding 10).
+    ///
+    /// Priority, most→least reliable (finding 4):
+    ///   1. An external provider id (`Tmdb`, then `Imdb`) → `"tmdb:<id>"` / `"imdb:<id>"`.
+    ///      This is the only key that survives differing edition titles ("Director's Cut")
+    ///      and is robust against two different films that share a title+year. The provider
+    ///      key NAME is matched case-insensitively (`tmdb`/`Tmdb`/`TMDB`).
+    ///   2. Else, when a `year` is known → `"title|year"`. Two genuinely-different films
+    ///      almost never share both, and editions of one film do, so this collapses correctly
+    ///      for the common provider-id-less case.
+    ///   3. Else (no provider id AND no year) → a UNIQUE per-item key (`"uid:<ratingKey>"`).
+    ///      This deliberately makes year-less, id-less items NEVER merge — the old `"title|?"`
+    ///      token mass-collapsed every untagged same-title item into one tile, which was the
+    ///      bug. Better to show two tiles than to hide a real film behind a false dupe.
+    public var movieVersionIdentity: String {
+        if let provider = providerIds {
+            // Case-insensitive on the key name; value trimmed/lowercased for a stable key.
+            for name in ["tmdb", "imdb"] {
+                if let match = provider.first(where: { $0.key.lowercased() == name }) {
+                    let value = match.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if !value.isEmpty { return "\(name):\(value)" }
+                }
+            }
+        }
+        if let year {
+            let normalizedTitle = title
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return "title:\(normalizedTitle)|\(year)"
+        }
+        // No reliable shared identity: keep this item distinct so it can never be merged away.
+        return "uid:\(ratingKey)"
+    }
 }
 
 extension Array where Element == MediaItem {
@@ -143,6 +180,33 @@ extension Array where Element == MediaItem {
             let r = (rhs.element.parentIndex ?? 0, rhs.element.index ?? 0, rhs.offset)
             return l < r
         }.map(\.element)
+    }
+
+    /// Collapse duplicate movie tiles to one representative per `movieVersionIdentity` group
+    /// (#108), preserving the order of first appearance. The surviving representative carries
+    /// the full ordered group (including itself) on `versions` when the group has more than
+    /// one member, so the detail screen can present a version chooser; single-member groups
+    /// keep `versions == nil` and behave exactly as before.
+    ///
+    /// O(n): a single pass keying on a stable identity. `MovieVersionCollapser` ingests pages
+    /// incrementally and re-runs this over its append-only accumulator.
+    public func collapsingMovieVersions() -> [MediaItem] {
+        var indexByKey: [String: Int] = [:]
+        var groups: [[MediaItem]] = []
+        for item in self {
+            let key = item.movieVersionIdentity
+            if let groupIndex = indexByKey[key] {
+                groups[groupIndex].append(item)
+            } else {
+                indexByKey[key] = groups.count
+                groups.append([item])
+            }
+        }
+        return groups.map { group in
+            guard group.count > 1 else { return group[0] }
+            // Representative = first seen; attach the full ordered group as selectable versions.
+            return group[0].with(versions: group)
+        }
     }
 }
 
