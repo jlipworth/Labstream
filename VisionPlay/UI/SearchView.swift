@@ -1,17 +1,17 @@
 import SwiftUI
 import PMSKit
 
-/// Search tab: queries `GET /hubs/search?query=` and renders the grouped hub
-/// results into the same Detail flow as browse. Debounced via `.task(id:)`.
+/// Search tab: queries the active backend and renders normalized library/type groups
+/// into the same Detail flow as browse. Debounced via `.task(id:)`.
 ///
 /// Music results are faceted Plexamp-style (MUSIC-DESIGN §5): Artists and Albums
 /// rails up top routing through the shared `musicDestination`, then a Songs list
-/// whose rows PLAY on tap (tracks never navigate), then the video hubs unchanged.
+/// whose rows PLAY on tap (tracks never navigate), then non-music library groups.
 struct SearchView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var query = ""
-    @State private var hubs: [Hub] = []
+    @State private var results: SearchResults = .empty
     @State private var loadState: HomeView.LoadState = .idle
     /// The query the current results were fetched for (pop-back no-op guard).
     @State private var loadedQuery: String?
@@ -34,7 +34,7 @@ struct SearchView: View {
                                        description: Text(message))
                 .frame(maxWidth: .infinity, minHeight: 300)
             case .loaded:
-                if videoHubs.isEmpty && artistResults.isEmpty
+                if nonMusicGroups.isEmpty && artistResults.isEmpty
                     && albumResults.isEmpty && trackResults.isEmpty {
                     ContentUnavailableView.search(text: query)
                         .frame(maxWidth: .infinity, minHeight: 300)
@@ -50,8 +50,8 @@ struct SearchView: View {
                         if !trackResults.isEmpty {
                             SearchSongsSection(tracks: trackResults)
                         }
-                        ForEach(videoHubs) { hub in
-                            SearchHubSection(hub: hub)
+                        ForEach(nonMusicGroups) { group in
+                            SearchLibrarySection(group: group)
                         }
                     }
                     .padding(.vertical, DS.Space.xl)
@@ -88,12 +88,16 @@ struct SearchView: View {
     /// above, faceted — stripping here is dedup, not hiding) and hubs left empty
     /// dropped. Local on purpose: the app-wide `hidingMusic` hide is gone (#17
     /// Phase 7) — Home now keeps music and only drops tracks.
-    private var videoHubs: [Hub] {
-        hubs.compactMap { hub in
-            let kept = hub.metadata.filter { !$0.isMusic }
-            guard !kept.isEmpty else { return nil }
-            return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title, type: hub.type,
-                       hubIdentifier: hub.hubIdentifier, size: hub.size, metadata: kept)
+    private var nonMusicGroups: [SearchResultGroup] {
+        results.groups.compactMap { group -> SearchResultGroup? in
+            let nonMusicHubs: [Hub] = group.hubs.compactMap { hub -> Hub? in
+                let kept = hub.metadata.filter { !$0.isMusic }
+                guard !kept.isEmpty else { return nil }
+                return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title, type: hub.type,
+                           hubIdentifier: hub.hubIdentifier, size: kept.count, metadata: kept)
+            }
+            guard !nonMusicHubs.isEmpty else { return nil }
+            return SearchResultGroup(id: group.id, title: group.title, hubs: nonMusicHubs)
         }
     }
 
@@ -105,15 +109,21 @@ struct SearchView: View {
     /// hubs (deduped) so a music item surfaced by an unexpected hub still facets.
     private func musicResults(of kind: MediaItem.Kind) -> [MediaItem] {
         var seen = Set<String>()
-        return hubs.flatMap(\.metadata).filter {
+        return results.groups.flatMap(\.hubs).flatMap(\.metadata).filter {
             $0.kind == kind && seen.insert($0.ratingKey).inserted
         }
+    }
+
+    private func plexSearchSections(server: URL, token: String) async -> [PlexSection] {
+        let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
+        let response = try? await appModel.client.send(req, as: SectionsResponse.self)
+        return response?.mediaContainer.directory ?? []
     }
 
     private func runSearch() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            hubs = []
+            results = .empty
             loadState = .idle
             return
         }
@@ -128,19 +138,10 @@ struct SearchView: View {
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                let items = try await JellyfinBrowseService(appModel: appModel)
-                    .items(parentId: nil,
-                           recursive: true,
-                           limit: 50,
-                           searchTerm: trimmed,
-                           sortBy: "SortName",
-                           sortOrder: "Ascending")
+                let searchResults = try await JellyfinBrowseService(appModel: appModel)
+                    .searchResults(query: trimmed)
                 if Task.isCancelled { return }
-                hubs = items.isEmpty ? [] : [
-                    Hub(title: "Jellyfin Results",
-                        hubIdentifier: "jellyfin-search-\(trimmed)",
-                        metadata: items),
-                ]
+                results = searchResults
                 loadedQuery = searchKey
                 loadState = .loaded
             } catch {
@@ -153,19 +154,10 @@ struct SearchView: View {
         if appModel.activeBackend == .emby {
             loadState = .loading
             do {
-                let items = try await EmbyBrowseService(appModel: appModel)
-                    .items(parentId: nil,
-                           recursive: true,
-                           limit: 50,
-                           searchTerm: trimmed,
-                           sortBy: "SortName",
-                           sortOrder: "Ascending")
+                let searchResults = try await EmbyBrowseService(appModel: appModel)
+                    .searchResults(query: trimmed)
                 if Task.isCancelled { return }
-                hubs = items.isEmpty ? [] : [
-                    Hub(title: "Emby Results",
-                        hubIdentifier: "emby-search-\(trimmed)",
-                        metadata: items),
-                ]
+                results = searchResults
                 loadedQuery = searchKey
                 loadState = .loaded
             } catch {
@@ -183,14 +175,34 @@ struct SearchView: View {
         let req = BrowseAPI.search(server: server, token: token,
                                    identity: appModel.identity, query: trimmed)
         do {
-            let resp = try await appModel.client.send(req, as: HubsResponse.self)
+            async let searchResponse = appModel.client.send(req, as: HubsResponse.self)
+            async let sections = plexSearchSections(server: server, token: token)
+            let resp = try await searchResponse
+            let plexSections = await sections
             if Task.isCancelled { return }
-            hubs = resp.mediaContainer.hub
+            results = .plexNativeHubs(resp.mediaContainer.hub, sections: plexSections)
             loadedQuery = searchKey
             loadState = .loaded
         } catch {
             if Task.isCancelled { return }
             loadState = .failed(friendlyMessage(error))
+        }
+    }
+}
+
+/// One source-library section containing one or more type/native result hubs.
+private struct SearchLibrarySection: View {
+    let group: SearchResultGroup
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xl) {
+            Text(group.title)
+                .font(.title.bold())
+                .padding(.horizontal, DS.Space.xxl)
+
+            ForEach(group.hubs) { hub in
+                SearchHubSection(hub: hub)
+            }
         }
     }
 }
