@@ -540,6 +540,7 @@ struct SettingsView: View {
     private var downloadQualityPresets: [String] {
         [
             "Original video quality",
+            "4K 40 Mbps",
             "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"

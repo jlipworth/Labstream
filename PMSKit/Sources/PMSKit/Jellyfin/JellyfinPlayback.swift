@@ -390,6 +390,102 @@ public enum JellyfinPlayback {
             sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex))
     }
 
+
+    // MARK: - Progress reporting
+
+    /// `POST /Sessions/Playing`
+    public static func playingRequest(server: URL,
+                                      token: String,
+                                      identity: JellyfinClientIdentity,
+                                      userId: String,
+                                      itemId: String,
+                                      mediaSourceId: String,
+                                      playSessionId: String,
+                                      playMethod: JellyfinPlayMethod,
+                                      positionTicks: Int = 0) throws -> URLRequest {
+        try progressBody(server: server, token: token, identity: identity, userId: userId,
+                         path: "/Sessions/Playing",
+                         itemId: itemId, mediaSourceId: mediaSourceId,
+                         playSessionId: playSessionId, playMethod: playMethod,
+                         positionTicks: positionTicks, isPaused: false)
+    }
+
+    /// `POST /Sessions/Playing/Progress`
+    public static func progressRequest(server: URL,
+                                       token: String,
+                                       identity: JellyfinClientIdentity,
+                                       userId: String,
+                                       itemId: String,
+                                       mediaSourceId: String,
+                                       playSessionId: String,
+                                       playMethod: JellyfinPlayMethod,
+                                       positionTicks: Int,
+                                       isPaused: Bool) throws -> URLRequest {
+        try progressBody(server: server, token: token, identity: identity, userId: userId,
+                         path: "/Sessions/Playing/Progress",
+                         itemId: itemId, mediaSourceId: mediaSourceId,
+                         playSessionId: playSessionId, playMethod: playMethod,
+                         positionTicks: positionTicks, isPaused: isPaused)
+    }
+
+    /// `POST /Sessions/Playing/Ping?PlaySessionId=..`
+    public static func pingRequest(server: URL,
+                                   token: String,
+                                   identity: JellyfinClientIdentity,
+                                   playSessionId: String) throws -> URLRequest {
+        let base = try jellyfinURL(server: server, path: "/Sessions/Playing/Ping")
+        guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw JellyfinPlaybackError.invalidURL
+        }
+        comps.queryItems = [URLQueryItem(name: "PlaySessionId", value: playSessionId)]
+        guard let url = comps.url else { throw JellyfinPlaybackError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token),
+                     forHTTPHeaderField: "Authorization")
+        return req
+    }
+
+    private static func progressBody(server: URL,
+                                     token: String,
+                                     identity: JellyfinClientIdentity,
+                                     userId: String,
+                                     path: String,
+                                     itemId: String,
+                                     mediaSourceId: String,
+                                     playSessionId: String,
+                                     playMethod: JellyfinPlayMethod,
+                                     positionTicks: Int,
+                                     isPaused: Bool) throws -> URLRequest {
+        let url = try jellyfinURL(server: server, path: path)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token),
+                     forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = [
+            "UserId": userId,
+            "ItemId": itemId,
+            "MediaSourceId": mediaSourceId,
+            "PlaySessionId": playSessionId,
+            "PositionTicks": positionTicks,
+            "IsPaused": isPaused,
+            "PlayMethod": jellyfinPlayMethodWireValue(playMethod),
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        return req
+    }
+
+    private static func jellyfinPlayMethodWireValue(_ method: JellyfinPlayMethod) -> String {
+        switch method {
+        case .directPlay: return "DirectPlay"
+        case .directStream: return "DirectStream"
+        case .transcode: return "Transcode"
+        }
+    }
+
     private static func streamHeaders(for source: JellyfinMediaSourceInfo,
                                       token: String,
                                       identity: JellyfinClientIdentity) -> [String: String] {

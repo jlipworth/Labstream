@@ -38,6 +38,7 @@ struct DownloadOptionsSheet: View {
 
     private enum DownloadSelection: Equatable {
         case original
+        case plexOriginalQuality(String)
         case optimizeCompatible
         case optimize(String)
     }
@@ -336,6 +337,7 @@ struct DownloadOptionsSheet: View {
     private var defaultPresets: [String] {
         filteredOptimizePresets([
             "Original video quality",
+            "4K 40 Mbps",
             "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"
@@ -356,6 +358,7 @@ struct DownloadOptionsSheet: View {
 
     private var jellyfinPresets: [String] {
         [
+            "4K 40 Mbps",
             "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"
@@ -366,6 +369,7 @@ struct DownloadOptionsSheet: View {
     // hard-coded bitrate ladder as Jellyfin; the manager maps each preset to a transcode profile.
     private var embyPresets: [String] {
         [
+            "4K 40 Mbps",
             "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
             "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
             "720p 2 Mbps", "480p 1.5 Mbps"
@@ -375,12 +379,18 @@ struct DownloadOptionsSheet: View {
 
     private func plexOriginalOptimizePreset(in presets: [String]) -> String? {
         guard appModel.activeBackend == .plex else { return nil }
-        return presets.first { $0.localizedCaseInsensitiveCompare("Original video quality") == .orderedSame }
+        return presets.first {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare("Original video quality") == .orderedSame
+        }
     }
 
     private func optimizePresetsExcludingPlexOriginal(_ presets: [String]) -> [String] {
         guard plexOriginalOptimizePreset(in: presets) != nil else { return presets }
-        return presets.filter { $0.localizedCaseInsensitiveCompare("Original video quality") != .orderedSame }
+        return presets.filter {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare("Original video quality") != .orderedSame
+        }
     }
 
     // MARK: - Sections
@@ -475,19 +485,19 @@ struct DownloadOptionsSheet: View {
     private func plexOriginalQualitySection(preset: String) -> some View {
         SwiftUI.Section {
             Button {
-                selectedChoice = .optimize(preset)
+                selectedChoice = .plexOriginalQuality(preset)
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "sparkles")
+                    Image(systemName: "wand.and.stars")
                         .foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Original video quality").foregroundStyle(.primary)
-                        Text("Plex original-quality offline copy")
+                        Text("Keeps the source quality in a compatible Plex-prepared copy")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if selectedChoice == .optimize(preset) {
+                    if selectedChoice == .plexOriginalQuality(preset) {
                         Image(systemName: "checkmark").foregroundStyle(.tint)
                     }
                 }
@@ -497,7 +507,11 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original quality")
         } footer: {
-            Text("Creates a compatible offline copy at Plex's original video quality. Plex may prepare the file on the server before downloading.")
+            Label {
+                Text("Creates a compatible offline copy at Plex's original video quality. Plex may prepare the file on the server before downloading.")
+            } icon: {
+                Image(systemName: "info.circle")
+            }
         }
     }
 
@@ -537,10 +551,10 @@ struct DownloadOptionsSheet: View {
             if selectedChoice == .original, originalAvailable {
                 return
             }
-            // A compatible-remux selection is self-contained (not in `presets`); leave it intact.
-            if selectedChoice == .optimizeCompatible {
-                return
-            }
+            // Original-quality helper selections are self-contained (not in this preset list); leave
+            // them intact.
+            if selectedChoice == .optimizeCompatible { return }
+            if case .plexOriginalQuality = selectedChoice { return }
             if case .optimize(let selected)? = selectedChoice, allPresets.contains(selected) {
                 return
             }
@@ -585,11 +599,14 @@ struct DownloadOptionsSheet: View {
     private func preferredSelection(originalAvailable: Bool,
                                     compatibleRemuxAvailable: Bool,
                                     presets: [String]) -> DownloadSelection? {
-        if defaultDownloadQuality == "Original" {
-            if originalAvailable { return .original }
-            // No raw original, but the compatible remux preserves original quality → prefer it.
-            if compatibleRemuxAvailable { return .optimizeCompatible }
+        if originalAvailable { return .original }
+        // If the source cannot be stored raw, default to the highest source-quality-preserving
+        // option before bitrate caps. Plex's version is an optimized/prepared copy; Jellyfin/Emby
+        // use the compatible remux lane.
+        if appModel.activeBackend == .plex, let plexOriginal = plexOriginalOptimizePreset(in: presets) {
+            return .plexOriginalQuality(plexOriginal)
         }
+        if compatibleRemuxAvailable { return .optimizeCompatible }
         if presets.contains(defaultDownloadQuality) { return .optimize(defaultDownloadQuality) }
         if let match = presets.first(where: { $0.localizedCaseInsensitiveContains(defaultDownloadQuality) }) {
             return .optimize(match)
@@ -602,6 +619,7 @@ struct DownloadOptionsSheet: View {
     private func managerChoice(for selection: DownloadSelection) -> DownloadManager.DownloadChoice {
         switch selection {
         case .original: return .original
+        case .plexOriginalQuality(let preset): return .optimize(targetName: preset)
         case .optimizeCompatible: return .optimizeCompatible
         case .optimize(let preset): return .optimize(targetName: preset)
         }

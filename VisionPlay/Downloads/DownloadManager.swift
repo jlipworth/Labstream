@@ -148,6 +148,10 @@ public final class DownloadManager {
     /// `teardownOrphanedEncodersOnLaunch()`.
     private var embyPlaySessionByRatingKey: [String: String] = [:]
     private var jellyfinPlaySessionByRatingKey: [String: String] = [:]
+    /// Jellyfin kills idle transcodes when no session progress/ping arrives. Offline downloads
+    /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
+    /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
+    @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [String: Task<Void, Never>] = [:]
 
     /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
     private var optimizeProgressSamples: [String: (p: Double, time: Date)] = [:]
@@ -648,7 +652,7 @@ public final class DownloadManager {
     }
 
     private static func isExplicitDownloadPresetName(_ name: String) -> Bool {
-        customDownloadProfile(named: name) != nil
+        isPlexOriginalQualityTarget(name) || customDownloadProfile(named: name) != nil
     }
 
     private static func isVisibleDownloadPresetName(_ name: String) -> Bool {
@@ -947,6 +951,16 @@ public final class DownloadManager {
         // still tear the encoder down on next launch (was in-memory only).
         if let mintedPlaySessionId {
             store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
+            if let mediaSourceID = resolvedJellyfinMediaSourceID,
+               let userID = backendSession.userID, !userID.isEmpty {
+                startJellyfinDownloadKeepalive(ratingKey: ratingKey,
+                                               itemId: itemId,
+                                               mediaSourceId: mediaSourceID,
+                                               playSessionId: mintedPlaySessionId,
+                                               session: backendSession,
+                                               userId: userID,
+                                               durationMs: item.duration)
+            }
         }
         if let resolvedJellyfinMediaSourceID,
            resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
@@ -1652,19 +1666,8 @@ public final class DownloadManager {
             guard !originalPartIDs.isEmpty else {
                 throw DownloadError.optimizeFailed("No source media parts found while resuming optimize.")
             }
-            if let existingPart = Self.existingServerOptimizedDownloadCandidate(
-                from: currentItem.media ?? [],
-                selectedSourcePartID: metadata.sourcePartID,
-                targetName: targetName) {
-                clearOptimizeProgress(ratingKey: ratingKey)
-                try startOptimizedPartDownload(ratingKey: ratingKey,
-                                               title: record.title,
-                                               part: existingPart,
-                                               metadata: metadata,
-                                               server: server,
-                                               token: token)
-                return
-            }
+            // Resume only the in-flight queue item below; do not grab some older Plex Version as a
+            // substitute for the requested target. A future UI can offer those versions explicitly.
             let backgroundProcessingKey = await bgKeyForPolling(server: server,
                                                                  token: token,
                                                                  identity: identity)
@@ -1686,9 +1689,11 @@ public final class DownloadManager {
                                                  metadata: metadata,
                                                  targetName: targetName)
             }
+            let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
+                                                      sourceHeight: sourceHeight,
                                                       backgroundProcessingKey: backgroundProcessingKey,
                                                       queueTitle: metadata.optimizeQueueTitle,
                                                       mediaTitle: record.title,
@@ -1791,7 +1796,7 @@ public final class DownloadManager {
             // shrink slightly when transcoded to AAC). Use the source size as the storage estimate.
             mediaBytes = part?.size
         case .optimize(let targetName):
-            if targetName.localizedCaseInsensitiveCompare("Original Quality") == .orderedSame {
+            if Self.isPlexOriginalQualityTarget(targetName) {
                 mediaBytes = part?.size
             } else if let profile = Self.customDownloadProfile(named: targetName) {
                 if let kbps = profile.settings.maxVideoBitrateKbps {
@@ -1990,6 +1995,7 @@ public final class DownloadManager {
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         records = fresh
+        ensureJellyfinDownloadKeepalives(for: fresh)
 
         // Release the in-flight protection for any job whose download has reached a terminal
         // state (complete / failed). The optimize-queue title and `activeJobs` slot must stay
@@ -2008,6 +2014,105 @@ public final class DownloadManager {
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
     }
 
+    private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
+        for record in records where record.status == .queued || record.status == .downloading {
+            guard jellyfinDownloadKeepaliveTasks[record.ratingKey] == nil,
+                  let metadata = record.metadata,
+                  metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .jellyfin,
+                  metadata.resolvedDownloadLane() != .original,
+                  let playSessionId = metadata.playSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !playSessionId.isEmpty,
+                  let mediaSourceId = metadata.mediaSourceID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !mediaSourceId.isEmpty,
+                  let session = appModel.backendSession(for: .jellyfin),
+                  let userId = session.userID,
+                  Self.backendSessionMatchesPersistedServer(metadata: metadata, live: session)
+            else { continue }
+
+            startJellyfinDownloadKeepalive(
+                ratingKey: record.ratingKey,
+                itemId: Self.jellyfinItemID(fromRecordKey: record.ratingKey),
+                mediaSourceId: mediaSourceId,
+                playSessionId: playSessionId,
+                session: session,
+                userId: userId,
+                durationMs: metadata.duration)
+        }
+    }
+
+    private func startJellyfinDownloadKeepalive(ratingKey: String,
+                                                 itemId: String,
+                                                 mediaSourceId: String,
+                                                 playSessionId: String,
+                                                 session: BackendSession,
+                                                 userId: String,
+                                                 durationMs: Int?) {
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
+        let identity = appModel.identity.jellyfin
+        jellyfinDownloadKeepaliveTasks[ratingKey] = Task { [weak self] in
+            guard let self else { return }
+            var sentPlaying = false
+            while !Task.isCancelled {
+                guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
+                      record.status == .queued || record.status == .downloading else { return }
+                let progress = max(0, min(record.progress, 1))
+                let positionTicks = Self.downloadPositionTicks(progress: progress, durationMs: durationMs)
+                do {
+                    if !sentPlaying {
+                        let playing = try JellyfinPlayback.playingRequest(
+                            server: session.baseURL,
+                            token: session.token,
+                            identity: identity,
+                            userId: userId,
+                            itemId: itemId,
+                            mediaSourceId: mediaSourceId,
+                            playSessionId: playSessionId,
+                            playMethod: .transcode,
+                            positionTicks: positionTicks)
+                        _ = try? await URLSession.shared.data(for: playing)
+                        sentPlaying = true
+                    }
+                    let progressReq = try JellyfinPlayback.progressRequest(
+                        server: session.baseURL,
+                        token: session.token,
+                        identity: identity,
+                        userId: userId,
+                        itemId: itemId,
+                        mediaSourceId: mediaSourceId,
+                        playSessionId: playSessionId,
+                        playMethod: .transcode,
+                        positionTicks: positionTicks,
+                        isPaused: false)
+                    _ = try? await URLSession.shared.data(for: progressReq)
+                    let ping = try JellyfinPlayback.pingRequest(server: session.baseURL,
+                                                                token: session.token,
+                                                                identity: identity,
+                                                                playSessionId: playSessionId)
+                    _ = try? await URLSession.shared.data(for: ping)
+                } catch {
+                    recordDownloadDiagnostic("downloads.jellyfin_keepalive_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "error": .error(error),
+                    ])
+                }
+                do {
+                    try await Task.sleep(for: .seconds(20))
+                } catch {
+                    return
+                }
+            }
+        }
+        recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
+    }
+
+    private static func downloadPositionTicks(progress: Double, durationMs: Int?) -> Int {
+        guard let durationMs, durationMs > 0, progress.isFinite else { return 0 }
+        let ticks = Double(durationMs) * 10_000 * max(0, min(progress, 1))
+        return ticks.isFinite ? max(0, Int(ticks.rounded())) : 0
+    }
+
     /// Drop the in-flight protection (`activeJobs` slot + protected optimize-queue title) for a
     /// ratingKey once its download is no longer in flight (completed, failed, cancelled, or
     /// deleted). Idempotent. Keeping the queue title protected past this point would block the
@@ -2015,6 +2120,7 @@ public final class DownloadManager {
     private func releaseInFlight(ratingKey: String) {
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
         if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
             activeQueueTitles.remove(title)
         }
@@ -2616,24 +2722,10 @@ public final class DownloadManager {
             guard !originalPartIDs.isEmpty else {
                 throw DownloadError.optimizeFailed("No source media parts found before optimize.")
             }
-            // Truth-first resume/retry: before creating another Plex conversion, reuse any
-            // already-rendered compatible optimized version that Plex exposes on metadata. This
-            // prevents a relaunch/retry from deleting a completed server render and starting a
-            // multi-hour transcode over from 0%.
-            let selectedSourcePartID = optimizeMetadata.sourcePartID
-            if let existingPart = Self.existingServerOptimizedDownloadCandidate(
-                from: sourceItem.media ?? item.media ?? [],
-                selectedSourcePartID: selectedSourcePartID,
-                targetName: targetName) {
-                clearOptimizeProgress(ratingKey: ratingKey)
-                try startOptimizedPartDownload(ratingKey: ratingKey,
-                                               title: item.title,
-                                               part: existingPart,
-                                               metadata: optimizeMetadata,
-                                               server: server,
-                                               token: token)
-                return
-            }
+            // Do not silently reuse older Plex Versions for a newly-requested transcode. Existing
+            // server-rendered versions may have a lower resolution/bitrate than the user's selected
+            // preset (notably Original video quality on a 4K source). If we surface reuse later, it
+            // should be an explicit menu item, not an implicit substitute for this request.
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
@@ -2643,9 +2735,11 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
+            let sourceHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
+                                                      sourceHeight: sourceHeight,
                                                       backgroundProcessingKey: await bgKeyForPolling(server: server,
                                                                                                token: token,
                                                                                                identity: identity),
@@ -2821,20 +2915,22 @@ public final class DownloadManager {
         // 2. Resolve built-in PMS target tags from the server. Custom iPad-style
         //    quality rows intentionally leave targetTagID empty and instead send
         //    Item[Device][profile] + Item[MediaSettings], matching python-plexapi.
-        let custom = Self.customDownloadProfile(named: targetName)
-        var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: targetName) : nil
+        let originalQuality = Self.isPlexOriginalQualityTarget(targetName)
+        let custom = originalQuality ? nil : Self.customDownloadProfile(named: targetName)
+        let serverTargetName = originalQuality ? Self.plexOriginalQualityTargetName : targetName
+        var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: serverTargetName) : nil
         if custom == nil,
            let targets = try? await appModel.client.send(
             OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token, identity: identity),
             as: MediaProcessingTargets.self),
-           let resolved = targets.tagID(forName: targetName) {
+           let resolved = targets.tagID(forName: serverTargetName) {
             targetTagID = resolved
         }
 
         let source = await optimizerSource(for: item, server: server, token: token, identity: identity)
 
         // 3. PUT the optimize job to the background-processing playlist.
-        let settings = custom?.settings ?? Self.mediaSettings(forTargetName: targetName)
+        let settings = custom?.settings ?? Self.mediaSettings(forTargetName: serverTargetName)
         let create = OptimizeRequest.createOnPlaylist(
             server: server, token: token, identity: identity,
             backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
@@ -3077,10 +3173,11 @@ public final class DownloadManager {
     }
 
     private static let compatibleOriginalQualityName = "Original video quality"
+    private static let plexOriginalQualityTargetName = "Original Quality"
 
     private static let customDownloadProfiles: [CustomDownloadProfile] = [
-        .init(name: compatibleOriginalQualityName, deviceProfile: "Universal TV",
-              settings: .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil)),
+        .init(name: "4K 40 Mbps", deviceProfile: "Universal TV",
+              settings: .init(videoQuality: 100, maxVideoBitrateKbps: 40_000, videoResolution: "3840x2160")),
         .init(name: "1080p 20 Mbps", deviceProfile: "Universal TV",
               settings: .init(videoQuality: 100, maxVideoBitrateKbps: 20_000, videoResolution: "1920x1080")),
         .init(name: "1080p 12 Mbps", deviceProfile: "Universal TV",
@@ -3100,11 +3197,18 @@ public final class DownloadManager {
     ]
 
     private static var customDownloadProfileNames: [String] {
-        customDownloadProfiles.map(\.name)
+        [compatibleOriginalQualityName] + customDownloadProfiles.map(\.name)
     }
 
     private static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
         customDownloadProfiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    private static func isPlexOriginalQualityTarget(_ name: String) -> Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare(compatibleOriginalQualityName) == .orderedSame
+        || name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare(plexOriginalQualityTargetName) == .orderedSame
     }
 
     private struct JellyfinTranscodeProfile {
@@ -3238,19 +3342,19 @@ public final class DownloadManager {
     /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
     /// targets endpoint resolves them). Phase 0 confirms the real ids.
     private static func conventionalTagID(forName name: String) -> Int {
-        switch name.lowercased() {
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "optimized for mobile": return 1
-        case "original quality":     return 3
-        default:                     return 2   // "Optimized for TV"
+        case "original quality", "original video quality": return 3
+        default: return 2   // "Optimized for TV"
         }
     }
 
     /// Best-known render settings per preset name (fallback caps; the server preset governs).
     private static func mediaSettings(forTargetName name: String) -> OptimizeRequest.MediaSettings {
-        switch name.lowercased() {
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "optimized for mobile":
             return .init(videoQuality: 100, maxVideoBitrateKbps: 2000, videoResolution: "1280x720")
-        case "original quality":
+        case "original quality", "original video quality":
             return .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil)
         default:
             return .init(videoQuality: 100, maxVideoBitrateKbps: 8000, videoResolution: "1920x1080")
@@ -3268,6 +3372,7 @@ public final class DownloadManager {
     private func pollForOptimizedPart(ratingKey: String,
                                       originalPartIDs: Set<Int>,
                                       targetName: String,
+                                      sourceHeight: Int?,
                                       backgroundProcessingKey: String?,
                                       queueTitle: String?,
                                       mediaTitle: String,
@@ -3279,7 +3384,8 @@ public final class DownloadManager {
                                                           token: token, identity: identity) {
                 if let newPart = Self.optimizedDownloadCandidate(from: metadata.media ?? [],
                                                                  baselinePartIDs: originalPartIDs,
-                                                                 targetName: targetName) {
+                                                                 targetName: targetName,
+                                                                 sourceHeight: sourceHeight) {
                     clearOptimizeProgress(ratingKey: ratingKey)
                     return newPart
                 }
@@ -3329,29 +3435,12 @@ public final class DownloadManager {
     /// the same item should not win unless it has Plex's optimized-version path shape.
     private static func optimizedDownloadCandidate(from media: [Media],
                                                    baselinePartIDs: Set<Int>,
-                                                   targetName: String) -> Part? {
-        for mediaItem in media where serverOptimizedMedia(mediaItem, matchesTargetName: targetName) {
+                                                   targetName: String,
+                                                   sourceHeight: Int?) -> Part? {
+        for mediaItem in media where serverOptimizedMedia(mediaItem, matchesTargetName: targetName,
+                                                          sourceHeight: sourceHeight) {
             if let part = mediaItem.part.first(where: { part in
                 !baselinePartIDs.contains(part.id)
-                    && isServerOptimizedPart(part)
-                    && isLocallyPlayableOriginal(part: part)
-            }) {
-                return part
-            }
-        }
-        return nil
-    }
-
-    /// Reuse a compatible optimized Part that Plex already exposes on item metadata. Plex stores
-    /// server-rendered optimized versions under a `Plex Versions` path; deleting the matching
-    /// type-42 queue item deletes this Part, so retries/relaunches must look for it before
-    /// creating or cleaning conversions.
-    private static func existingServerOptimizedDownloadCandidate(from media: [Media],
-                                                                 selectedSourcePartID: Int?,
-                                                                 targetName: String) -> Part? {
-        for mediaItem in media where serverOptimizedMedia(mediaItem, matchesTargetName: targetName) {
-            if let part = mediaItem.part.first(where: { part in
-                part.id != selectedSourcePartID
                     && isServerOptimizedPart(part)
                     && isLocallyPlayableOriginal(part: part)
             }) {
@@ -3365,8 +3454,15 @@ public final class DownloadManager {
     /// attempt requested. Plex metadata does not preserve our queue title on the rendered Part, so
     /// match on the durable media attributes PMS exposes: resolution and approximate bitrate. This
     /// prevents a retry from asking for 1080p 8 Mbps and silently reusing an old 720p 3 Mbps file.
-    private static func serverOptimizedMedia(_ media: Media, matchesTargetName targetName: String) -> Bool {
+    private static func serverOptimizedMedia(_ media: Media,
+                                             matchesTargetName targetName: String,
+                                             sourceHeight: Int?) -> Bool {
         let settings = customDownloadProfile(named: targetName)?.settings ?? mediaSettings(forTargetName: targetName)
+        if isPlexOriginalQualityTarget(targetName),
+           let sourceHeight, let actualHeight = media.height,
+           abs(actualHeight - sourceHeight) > 16 {
+            return false
+        }
         if let targetResolution = settings.videoResolution,
            let targetHeight = resolutionHeight(targetResolution),
            let actualHeight = media.height {
