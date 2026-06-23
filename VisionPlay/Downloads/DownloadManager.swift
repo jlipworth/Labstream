@@ -832,16 +832,44 @@ public final class DownloadManager {
                 expectedBytes = part?.size
 
             case .optimize(let targetName):
+                // Ask Jellyfin for a real PlaybackInfo session before starting the progressive
+                // transcode. A locally-minted/random PlaySessionId can make some Jellyfin
+                // servers return an immediate HTTP 500 from /Videos/{id}/stream.mp4 even though
+                // the item is otherwise streamable. The compatible-remux lane already does this;
+                // keep the bitrate-preset lane on the same server-minted session path.
+                guard let userId = backendSession.userID, !userId.isEmpty else {
+                    throw DownloadError.notAuthenticated
+                }
                 let profile = Self.jellyfinTranscodeProfile(named: targetName)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
-                let playSessionId = "visionplay-download-\(UUID().uuidString)"
+                let infoReq = try JellyfinPlayback.downloadPlaybackInfoRequest(
+                    server: server, token: token, identity: identity,
+                    itemId: itemId, userId: userId,
+                    mediaSourceId: jellyfinMediaSourceID,
+                    maxStaticBitrate: max(profile.videoBitrateBps, 200_000_000))
+                let (data, response) = try await URLSession.shared.data(for: infoReq)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
+                }
+                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
+                let decision = try JellyfinPlayback.downloadDecision(response: info,
+                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
+                resolvedJellyfinMediaSourceID = decision.mediaSourceId
                 let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
-                    server, token, identity, itemId, jellyfinMediaSourceID, playSessionId, profile)
+                    server, token, identity, itemId, decision.mediaSourceId, decision.playSessionId, profile)
                 request = transcodedRequest
-                jellyfinPlaySessionByRatingKey[ratingKey] = playSessionId
-                mintedPlaySessionId = playSessionId
+                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                mintedPlaySessionId = decision.playSessionId
+                recordDownloadDiagnostic("downloads.jellyfin_transcode_decision", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "route": .label("transcode"),
+                    "container": .label(decision.container ?? "unknown"),
+                    "source_video_codec": .label(decision.videoCodec ?? "unknown"),
+                    "source_audio_codec": .label(decision.audioCodec ?? "unknown"),
+                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+                ])
 
             case .optimizeCompatible:
                 // #83: original-quality compatible remux. Re-probe PlaybackInfo here instead of

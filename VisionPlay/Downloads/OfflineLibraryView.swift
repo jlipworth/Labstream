@@ -111,6 +111,7 @@ public struct OfflineLibraryView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(displayTitle(for: record)).font(.headline)
+                    downloadLaneBadge(for: record)
                     // Only label the backend when the library mixes them, so a
                     // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
                     // and single-backend libraries carry no visual noise.
@@ -297,6 +298,38 @@ public struct OfflineLibraryView: View {
             .accessibilityLabel("Source: \(name)")
     }
 
+    /// Show the download route next to the title so Jellyfin/Emby rows make it clear whether
+    /// the server is sending a raw file, a compatible remux, or a live transcode. This is useful
+    /// context for resumability and "why is this slower?" without making normal downloads look
+    /// like failures.
+    private func downloadLaneBadge(for record: DownloadRecord) -> some View {
+        let label: String
+        let systemImage: String
+        let tint: Color
+        switch record.metadata?.resolvedDownloadLane() ?? .original {
+        case .original:
+            label = "Original"
+            systemImage = "checkmark.seal"
+            tint = .secondary
+        case .compatibleRemux:
+            label = "Remux"
+            systemImage = "arrow.triangle.2.circlepath"
+            tint = .orange
+        case .optimize:
+            label = "Transcode"
+            systemImage = "gauge.with.dots.needle.bottom.50percent"
+            tint = .orange
+        }
+        return Label(label, systemImage: systemImage)
+            .labelStyle(.titleAndIcon)
+            .font(.caption2)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.14), in: Capsule())
+            .accessibilityLabel("Download route: \(label)")
+    }
+
     /// The locally-cached poster (D5) when present, else the neutral glyph tile.
     @ViewBuilder
     private func offlinePoster(for record: DownloadRecord, isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> some View {
@@ -448,7 +481,15 @@ public struct OfflineLibraryView: View {
             return f.isEstimated ? "~\(pct)" : pct
         }
         if isActive {
-            var head = transcodeLimited ? "Downloading (server still transcoding)" : "Downloading"
+            var head: String
+            switch record.metadata?.resolvedDownloadLane() ?? .original {
+            case .original:
+                head = "Downloading original"
+            case .compatibleRemux:
+                head = "Remuxing/download"
+            case .optimize:
+                head = transcodeLimited ? "Downloading (server still transcoding)" : "Transcoding/download"
+            }
             if let percentPiece { head += " • \(percentPiece)" }
             if let eta = manager.downloadETA[record.ratingKey], eta > 0,
                let left = timeLeftString(eta) {

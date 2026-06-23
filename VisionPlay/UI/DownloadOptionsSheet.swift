@@ -411,7 +411,7 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original")
         } footer: {
-            Text("Downloads the raw source file without server conversion. This is shown only when the original container is locally playable.")
+            Text("Downloads the raw source file without server conversion. This is the most resumable route when the server supports byte ranges.")
         }
     }
 
@@ -441,7 +441,11 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Original quality")
         } footer: {
-            Text("Keeps the original video quality by copying the video stream into a compatible MP4 (audio is converted only if needed). Can't pause and resume like the original-file download, so it restarts if interrupted.")
+            Label {
+                Text("Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This is not an optimized server version; it can be slower and restarts from the beginning if interrupted.")
+            } icon: {
+                Image(systemName: "info.circle")
+            }
         }
     }
 
@@ -519,11 +523,15 @@ struct DownloadOptionsSheet: View {
         } header: {
             Text("Optimize on server")
         } footer: {
-            Text(probeFailed
-                 ? "Couldn't check compatibility, so your server will render a compatible version. Pick a preset."
-                 : originalAvailable
-                    ? "Recommended for offline viewing: your server renders a compatible copy using the selected preset."
-                    : "Your server renders a compatible offline version. Pick a preset.")
+            Label {
+                Text(probeFailed
+                     ? "Couldn't check compatibility, so your server will render a compatible version. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted."
+                     : originalAvailable
+                        ? "Your server renders a bitrate-capped compatible copy. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted."
+                        : "Your server renders a compatible offline version. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted.")
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+            }
         }
         .onAppear {
             if selectedChoice == .original, originalAvailable {
