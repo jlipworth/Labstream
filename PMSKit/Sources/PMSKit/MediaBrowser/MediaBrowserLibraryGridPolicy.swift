@@ -20,6 +20,13 @@ public enum MediaBrowserLibraryGridPolicy {
         }
     }
 
+    /// True for movie libraries, whose recursive query returns one item per physical
+    /// file/version — distinct ids with identical title/year — so the grid must collapse them
+    /// to one tile per logical movie (GH #108). Other library kinds list distinct logical items.
+    public static func collapsesMovieVersions(collectionType: String?) -> Bool {
+        collectionType?.lowercased() == "movies"
+    }
+
     public static func recursive(collectionType: String?) -> Bool {
         switch collectionType?.lowercased() {
         case "movies":

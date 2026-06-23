@@ -101,6 +101,11 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     public let seasonName: String?
     public let parentIndexNumber: Int?
     public let indexNumber: Int?
+    /// External provider ids (`ProviderIds`, e.g. `{"Tmdb": "603", "Imdb": "tt0133093"}`).
+    /// Surfaced on `MediaItem.providerIds` to give the movie-grid collapser a robust
+    /// cross-edition identity (#108). Empty when the request didn't ask for `ProviderIds`
+    /// (the grid field list does for movie libraries) or the item carries none.
+    public let providerIds: [String: String]
     /// Primary-image aspect ratio (width / height) the server computed for this item's
     /// poster art (`PrimaryImageAspectRatio`). ~1.778 for 16:9 (YouTube), ~1.0 for square
     /// channel art, ~0.667 for a 2:3 movie poster. Surfaced on `MediaItem` so poster cells
@@ -154,6 +159,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case seasonName = "SeasonName"
         case parentIndexNumber = "ParentIndexNumber"
         case indexNumber = "IndexNumber"
+        case providerIds = "ProviderIds"
         case primaryImageAspectRatio = "PrimaryImageAspectRatio"
         case seriesPrimaryImageTag = "SeriesPrimaryImageTag"
         case parentThumbItemId = "ParentThumbItemId"
@@ -192,6 +198,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         seasonName = try c.decodeIfPresent(String.self, forKey: .seasonName)
         parentIndexNumber = try c.decodeIfPresent(Int.self, forKey: .parentIndexNumber)
         indexNumber = try c.decodeIfPresent(Int.self, forKey: .indexNumber)
+        providerIds = try c.decodeIfPresent([String: String].self, forKey: .providerIds) ?? [:]
         primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
         seriesPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .seriesPrimaryImageTag)
         parentThumbItemId = try c.decodeIfPresent(String.self, forKey: .parentThumbItemId)
@@ -277,7 +284,8 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             parentThumb: parentThumbPath ?? seriesPrimaryPath,
             parentIndex: parentIndexNumber,
             index: indexNumber,
-            primaryImageAspectRatio: primaryImageAspectRatio)
+            primaryImageAspectRatio: primaryImageAspectRatio,
+            providerIds: providerIds.isEmpty ? nil : providerIds)
     }
 
     /// Season-thumb fallback: prefer the `ParentThumb*` companion (owning id + tag), else
@@ -409,13 +417,18 @@ public struct MediaBrowserItemMediaSourceDto<Flavor: MediaBrowserFlavor>: Decoda
                         size: nil,
                         container: container,
                         streams: mediaStreams.enumerated().compactMap { $0.element.toPlexStream(fallbackID: $0.offset + 1) })
+        // Jellyfin/Emby carry resolution & codecs on the per-stream `MediaStreams`, not on the
+        // MediaSource itself (only `Bitrate`/`Container` live there). Fall back to the video /
+        // audio streams so resolution ("4K"/"1080p") and codec badges populate (GH #108).
+        let videoStream = mediaStreams.first { $0.type?.caseInsensitiveCompare("Video") == .orderedSame }
+        let audioStream = mediaStreams.first { $0.type?.caseInsensitiveCompare("Audio") == .orderedSame }
         return Media(id: index + 1,
                      duration: nil,
                      bitrate: bitrate.map { $0 / 1_000 },
-                     width: width,
-                     height: height,
-                     videoCodec: videoCodec,
-                     audioCodec: audioCodec,
+                     width: width ?? videoStream?.width,
+                     height: height ?? videoStream?.height,
+                     videoCodec: videoCodec ?? videoStream?.codec,
+                     audioCodec: audioCodec ?? audioStream?.codec,
                      container: container,
                      part: [part])
     }
