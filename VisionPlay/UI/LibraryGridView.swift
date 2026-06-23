@@ -347,8 +347,8 @@ struct LibraryGridView: View {
                             .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
                         LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-                            ForEach(paging.slots.indices, id: \.self) { index in
-                                if let item = paging.slots[index] {
+                            ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
+                                if let item = slot {
                                     NavigationLink(value: item) {
                                         PosterCell(item: item, width: DS.Poster.gridMin)
                                     }

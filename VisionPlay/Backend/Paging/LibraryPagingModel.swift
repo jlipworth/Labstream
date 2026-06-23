@@ -14,6 +14,7 @@ final class LibraryPagingModel {
     @ObservationIgnored private var loadingPages: Set<Int> = []
     @ObservationIgnored private var loadedIdentity: String?
     @ObservationIgnored private var activeIdentity: String?
+    @ObservationIgnored private var activeLoadGeneration = 0
     /// Movie-version de-dup state (#108), present only when the source opts in
     /// (`collapsesMovieVersions`). An append-only accumulator of all loaded pages; the grid
     /// renders its dense, complete `collapsedItems()` directly. `nil` for sources that show
@@ -27,6 +28,8 @@ final class LibraryPagingModel {
         if !force, loadedIdentity == identity, case .loaded = loadState { return }
 
         activeIdentity = identity
+        activeLoadGeneration += 1
+        let generation = activeLoadGeneration
         pageSize = source.pageSize
         loadState = .loading
         slots = []
@@ -36,9 +39,9 @@ final class LibraryPagingModel {
         collapser = source.collapsesMovieVersions ? MovieVersionCollapser() : nil
 
         if source.collapsesMovieVersions {
-            await loadAllCollapsing(source: source, identity: identity, isCurrent: isCurrent)
+            await loadAllCollapsing(source: source, identity: identity, generation: generation, isCurrent: isCurrent)
         } else {
-            await loadLazy(source: source, identity: identity, isCurrent: isCurrent)
+            await loadLazy(source: source, identity: identity, generation: generation, isCurrent: isCurrent)
         }
     }
 
@@ -49,6 +52,7 @@ final class LibraryPagingModel {
     /// Plex, TV libraries, and every non-collapsing source. Untouched by #108.
     private func loadLazy(source: LibraryPagingSource,
                           identity: String,
+                          generation: Int,
                           isCurrent: @MainActor () -> Bool) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: source.backendLabel,
@@ -60,7 +64,7 @@ final class LibraryPagingModel {
 
             if source.awaitAlphabetBeforeInitialLoad {
                 let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
-                guard isCurrent(), activeIdentity == identity else {
+                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                     span.end(result: "stale")
                     return
                 }
@@ -74,7 +78,7 @@ final class LibraryPagingModel {
                     "alphabet_count": buckets.count,
                 ])
             } else {
-                guard isCurrent(), activeIdentity == identity else {
+                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                     span.end(result: "stale")
                     return
                 }
@@ -88,11 +92,11 @@ final class LibraryPagingModel {
                 ])
 
                 let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
-                guard isCurrent(), activeIdentity == identity else { return }
+                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else { return }
                 alphabetBuckets = buckets
             }
         } catch {
-            guard isCurrent(), activeIdentity == identity else {
+            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                 span.end(result: "stale")
                 return
             }
@@ -116,13 +120,14 @@ final class LibraryPagingModel {
     /// rail offsets index into that same list (F1).
     private func loadAllCollapsing(source: LibraryPagingSource,
                                    identity: String,
+                                   generation: Int,
                                    isCurrent: @MainActor () -> Bool) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: source.backendLabel,
                                                      fields: ["page_size": source.pageSize])
         do {
             let first = try await source.fetchPage(0, source.pageSize)
-            guard isCurrent(), activeIdentity == identity else {
+            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                 span.end(result: "stale")
                 return
             }
@@ -139,7 +144,7 @@ final class LibraryPagingModel {
             // Keep paging until we've covered the reported total (or hit an empty page).
             while !lastPageWasEmpty, start < serverTotal {
                 let page = try await source.fetchPage(start, source.pageSize)
-                guard isCurrent(), activeIdentity == identity else {
+                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                     span.end(result: "stale")
                     return
                 }
@@ -164,7 +169,7 @@ final class LibraryPagingModel {
                 "alphabet_count": alphabetBuckets.count,
             ])
         } catch {
-            guard isCurrent(), activeIdentity == identity else {
+            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
                 span.end(result: "stale")
                 return
             }
@@ -205,6 +210,7 @@ final class LibraryPagingModel {
         guard collapser == nil else { return }
 
         guard isCurrent(), activeIdentity == source.identity else { return }
+        let generation = activeLoadGeneration
         guard slots.indices.contains(index) else { return }
 
         let window = PagingPageWindow(pageSize: source.pageSize)
@@ -219,14 +225,14 @@ final class LibraryPagingModel {
                                                      fields: ["page": page, "page_size": source.pageSize])
         do {
             let pageResult = try await source.fetchPage(start, source.pageSize)
-            guard isCurrent(), activeIdentity == source.identity else {
+            guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else {
                 span.end(result: "stale")
                 return
             }
             PagingPageWindow.insert(pageResult.items, into: &slots, at: start)
             span.end(fields: ["item_count": pageResult.items.count])
         } catch {
-            guard isCurrent(), activeIdentity == source.identity else {
+            guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else {
                 span.end(result: "stale")
                 return
             }
