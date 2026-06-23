@@ -328,6 +328,65 @@ struct OfflineDownloadModelsTests {
         }
     }
 
+    @Test("unverified rows stay playable while their file exists")
+    func unverifiedRowsStayPlayableWhileFileExists() {
+        #expect(DownloadStatus.reconciledStatus(
+            current: .unverified, fileExists: true, hasLiveTask: false) == .unverified)
+        #expect(DownloadStatus.reconciledStatus(
+            current: .unverified, fileExists: true, hasLiveTask: true) == .unverified)
+        #expect(DownloadStatus.reconciledStatus(
+            current: .unverified, fileExists: false, hasLiveTask: false) == .failed)
+
+        let record = DownloadRecord(ratingKey: "jellyfin:42", title: "Movie",
+                                    localURL: URL(fileURLWithPath: "/tmp/movie.mp4"),
+                                    status: .unverified)
+        #expect(record.isComplete)
+        #expect(record.isUnverified)
+    }
+
+    // MARK: - #95: .paused (recoverably-interrupted) rows
+
+    @Test("paused round-trips through encode/decode and decodes legacy rows without the case")
+    func pausedRoundTripsAndLegacyDecodes() throws {
+        let data = try JSONEncoder().encode(DownloadStatus.paused)
+        #expect(try JSONDecoder().decode(DownloadStatus.self, from: data) == .paused)
+        let unverifiedData = try JSONEncoder().encode(DownloadStatus.unverified)
+        #expect(try JSONDecoder().decode(DownloadStatus.self, from: unverifiedData) == .unverified)
+        // A row whose JSON omits `status` (pre-this-change) still defaults via the migration.
+        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 0.5) == .queued)
+    }
+
+    @Test("a paused row stays resumable across relaunch only while its resume blob survives")
+    func pausedRowKeptResumableWithResumeData() {
+        // No live task but the resume blob is on disk -> keep it paused (resumable).
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused, fileExists: true, hasLiveTask: false, hasResumeData: true) == .paused)
+        // The partial file alone (no resume blob) can't be continued -> demote to retryable failed.
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused, fileExists: true, hasLiveTask: false, hasResumeData: false) == .failed)
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused, fileExists: false, hasLiveTask: false, hasResumeData: false) == .failed)
+        // If the task is somehow live again, let it run.
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused, fileExists: true, hasLiveTask: true, hasResumeData: true) == .downloading)
+        // Default hasResumeData is false (backward-compatible call sites) -> failed.
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused, fileExists: true, hasLiveTask: false) == .failed)
+    }
+
+    @Test("OfflineMetadata carries resumeDataRelativePath through encode/decode")
+    func metadataCarriesResumeDataPath() throws {
+        let meta = OfflineMetadata(ratingKey: "jellyfin:42", title: "Movie", type: "movie",
+                                   resumeDataRelativePath: "jellyfin_42.resume")
+        let round = try JSONDecoder().decode(OfflineMetadata.self,
+                                             from: try JSONEncoder().encode(meta))
+        #expect(round.resumeDataRelativePath == "jellyfin_42.resume")
+        // Legacy metadata without the field decodes to nil (no silent failure).
+        let legacy = try decode(OfflineMetadata.self,
+                                from: #"{"ratingKey":"x","title":"T","type":"movie"}"#)
+        #expect(legacy.resumeDataRelativePath == nil)
+    }
+
     @Test("validation policy shortens required playback for short clips")
     func validationPolicyShortClipRequiredPlayback() {
         let short = OfflinePlaybackValidationPolicy.make(durationMs: 2_000)

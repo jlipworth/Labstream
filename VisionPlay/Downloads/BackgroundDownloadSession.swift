@@ -220,6 +220,32 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return comps.path + query
     }
 
+    /// #95: resume a `.paused` download from persisted URLSession resume data, continuing from
+    /// the byte offset instead of restarting at 0. Mirrors `start(...)`'s bookkeeping but creates
+    /// the task with `downloadTask(withResumeData:)`. Returns `false` if the resume data was
+    /// rejected (the caller then falls back to a clean restart). The OS validates the blob lazily;
+    /// a stale/invalid blob surfaces later via `didCompleteWithError` (200 full-restart / 416),
+    /// which the caller's normal failure path handles.
+    @discardableResult
+    func resume(ratingKey: String, resumeData: Data, to destination: URL) -> Bool {
+        guard !resumeData.isEmpty else { return false }
+        let task = urlSession.downloadTask(withResumeData: resumeData)
+        task.taskDescription = ratingKey
+        lock.lock()
+        retryCounts[ratingKey] = 0
+        lastProgressNotify[ratingKey] = nil
+        loggedProgressMilestones[task.taskIdentifier] = []
+        inflight[task.taskIdentifier] = (ratingKey, destination)
+        lock.unlock()
+        downloadLog.info("resume ratingKey=\(ratingKey, privacy: .public) bytes=\(resumeData.count, privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.transfer_resume", fields: [
+            "download_id": .identifier(ratingKey),
+            "resume_blob_bytes": .bytes(resumeData.count),
+        ])
+        task.resume()
+        return true
+    }
+
     /// Cancel any in-flight transfer for a ratingKey.
     func cancel(ratingKey: String) {
         AppDiagnostics.record(.downloads, "downloads.cancel_requested", fields: [
@@ -409,8 +435,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
 
         Task { [weak self] in
-            let validation = await Self.validateLocalPlayback(destination)
             guard let self else { return }
+            // GH #98: the post-download playability probe is an INTERMITTENT false-negative — on a
+            // device busy right after a heavy transcode+download, AVFoundation can transiently fail
+            // to open/advance a COMPLETE file that a later attempt on the same bytes plays fine
+            // (confirmed: a download that "did not start local playback" succeeded on a plain
+            // re-download with no other change). Retry with progressively longer timeouts before
+            // condemning the download.
+            var validation = await Self.validateLocalPlayback(destination)
+            if !validation.played {
+                for extraTimeout in [15.0, 25.0] {
+                    downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
+                    try? await Task.sleep(for: .seconds(2))
+                    validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)
+                    if validation.played { break }
+                }
+            }
             // Truncation guard: a transcode that aborts early (or a static download cut short by the
             // server while still returning HTTP 200) can open and play its first fraction of a second
             // and otherwise pass the probe. Compare the decoded duration to the EXPECTED media
@@ -446,26 +486,35 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 self.clearRetryCount(ratingKey: ratingKey)
                 self.store.setStatus(ratingKey: ratingKey, .complete)
             } else {
-                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) bytes=\(bytes, privacy: .public)")
+                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) detail=\(validation.detail ?? "nil", privacy: .public) bytes=\(bytes, privacy: .public) preserved=true")
                 AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label(validation.reason),
+                    "detail": .label(validation.detail ?? "none"),
                     "bytes": .bytes(bytes),
+                    "preserved": .bool(true),
                 ])
-                try? self.fileManager.removeItem(at: destination)
+                // GH #98: do NOT delete or fail the file on a probe miss. The probe is an
+                // intermittent false-negative on COMPLETE downloads; deleting/failing forces a
+                // wasteful 0% re-download and discards good bytes. Keep the row playable but
+                // explicitly unverified so the user can try the local file and the bytes remain
+                // available for on-device ffprobe/root-cause work.
                 self.clearRetryCount(ratingKey: ratingKey)
-                self.store.setStatus(ratingKey: ratingKey, .failed)
-                self.onError?(ratingKey, .invalidDownload("Downloaded file did not start local playback (\(validation.reason))."))
+                self.store.setStatus(ratingKey: ratingKey, .unverified)
             }
             self.onChange?()
         }
     }
 
 
-    private static func validateLocalPlayback(_ url: URL) async -> (played: Bool, reason: String, durationMs: Int?) {
+    /// - Parameter timeoutSecondsOverride: when set, overrides the policy's ready/play deadline.
+    ///   Used by the GH #98 retry to give a busy device more time before condemning a complete file.
+    /// - Returns: `detail` carries `AVPlayerItem.error` on an `item_failed` result, for diagnosis.
+    private static func validateLocalPlayback(_ url: URL, timeoutSecondsOverride: Double? = nil)
+        async -> (played: Bool, reason: String, durationMs: Int?, detail: String?) {
         let asset = AVURLAsset(url: url)
         let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
-        guard assetPlayable else { return (false, "asset_not_playable", nil) }
+        guard assetPlayable else { return (false, "asset_not_playable", nil, nil) }
         let durationMs: Int?
         if let duration = try? await asset.load(.duration),
            duration.seconds.isFinite, duration.seconds > 0 {
@@ -474,6 +523,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             durationMs = nil
         }
         let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs)
+        let timeoutSeconds = timeoutSecondsOverride ?? policy.timeoutSeconds
 
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
@@ -486,12 +536,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             player.replaceCurrentItem(with: nil)
         }
 
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(policy.timeoutSeconds * 1000)))
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(timeoutSeconds * 1000)))
         var sawReady = false
         while ContinuousClock.now < deadline {
             switch item.status {
             case .failed:
-                return (false, "item_failed", durationMs)
+                return (false, "item_failed", durationMs, item.error.map { String(describing: $0) })
             case .readyToPlay:
                 sawReady = true
             case .unknown:
@@ -501,11 +551,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let seconds = player.currentTime().seconds
             if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
-                return (true, "played", durationMs)
+                return (true, "played", durationMs, nil)
             }
             try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
-        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs)
+        return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs, nil)
     }
 
     func urlSession(_ session: URLSession,
@@ -522,6 +572,41 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
         if nsError.code != NSURLErrorCancelled {
             if retryTransientFailure(nsError, task: task, entry: entry) {
+                return
+            }
+            // #95: a recoverable interruption (commonly a long headset-off, which can produce an
+            // error OUTSIDE the narrow transient set yet still hand back resume data) should be
+            // treated as PAUSED-and-resumable, not failed. Branch on the PRESENCE of resume data
+            // rather than the error code, persist the blob so a manual Resume — even after a
+            // relaunch — continues from the offset, and surface a non-red "will resume" state.
+            // The partial bytes are retained (reconcile keeps a `.paused` row's file).
+            if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
+               !resumeData.isEmpty {
+                guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else {
+                    downloadLog.error("transfer-nonresumable ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public) resumeData=true")
+                    AppDiagnostics.record(.downloads, "downloads.transfer_nonresumable", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "error": .error(error),
+                        "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+                        "resume_data_present": .bool(true),
+                    ])
+                    clearRetryCount(ratingKey: entry.ratingKey)
+                    store.setStatus(ratingKey: entry.ratingKey, .failed)
+                    onError?(entry.ratingKey, .transferFailed("Download interrupted; this transcoded stream can’t resume from its byte offset. Retry will restart from the beginning."))
+                    onChange?()
+                    return
+                }
+                downloadLog.error("transfer-paused ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+                AppDiagnostics.record(.downloads, "downloads.transfer_paused", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "error": .error(error),
+                    "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+                ])
+                store.setResumeData(ratingKey: entry.ratingKey, resumeData)
+                clearRetryCount(ratingKey: entry.ratingKey)
+                store.setStatus(ratingKey: entry.ratingKey, .paused)
+                onError?(entry.ratingKey, .interruptedResumable)
+                onChange?()
                 return
             }
             downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
@@ -572,6 +657,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
               Self.transientDownloadErrorCodes.contains(error.code),
               let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
               !resumeData.isEmpty else { return false }
+        // #95: JF/Emby optimized downloads are live transcode streams; do not offset-resume them
+        // even if URLSession hands back a blob. Let the caller surface a restart-required failure
+        // instead of silently trying a 200-full-restart/416-prone resume.
+        guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else { return false }
 
         lock.lock()
         let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1

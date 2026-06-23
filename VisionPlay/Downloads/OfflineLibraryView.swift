@@ -97,16 +97,21 @@ public struct OfflineLibraryView: View {
         // failed-but-100% body are now distinct, observable states.
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
+        let isUnverified = record.isUnverified
+        // #95: a recoverable interruption is resumable, not failed — show a non-red "will resume"
+        // affordance and a Resume control that continues from the saved byte offset.
+        let isPaused = record.status == .paused
         let error = manager.lastError[record.ratingKey]
 
         HStack(spacing: 16) {
             // D5: show the locally-cached poster when present (works fully offline);
             // otherwise fall back to a small offline glyph tile.
-            offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed)
+            offlinePoster(for: record, isComplete: isComplete, isFailed: isFailed, isUnverified: isUnverified)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(displayTitle(for: record)).font(.headline)
+                    downloadLaneBadge(for: record)
                     // Only label the backend when the library mixes them, so a
                     // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
                     // and single-backend libraries carry no visual noise.
@@ -125,17 +130,26 @@ public struct OfflineLibraryView: View {
                     Text(error.map(message(for:)) ?? "Download failed. Tap to retry.")
                         .font(.caption)
                         .foregroundStyle(.red)
+                } else if isPaused {
+                    // #95: paused (recoverably interrupted). Show how far it got and that it
+                    // resumes, in secondary (not red) — it's not a failure.
+                    Text(pausedCaption(for: record))
+                        .font(.caption)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .foregroundStyle(.secondary)
                 } else if isComplete {
                     Text(completeCaption(for: record))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    // Both download paths serve a static file with a real Content-Length, so
-                    // `record.progress` drives the bar directly. See `displayProgress(for:)`.
+                    // Unified bar (#97): an exact Content-Length fraction for Plex/static
+                    // originals, an estimated fraction for transcoder-streamed JF/Emby rows;
+                    // nil only before any bytes flow, when we keep the spinner below.
                     if let progress = displayProgress(for: record) {
                         ProgressView(value: progress)
                             .animation(.linear(duration: 0.2), value: progress)
-                        Text(progressCaption(for: record, progress: progress))
+                        Text(progressCaption(for: record))
                             .font(.caption)
                             .monospacedDigit()
                             .lineLimit(1)
@@ -143,7 +157,7 @@ public struct OfflineLibraryView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ProgressView()
-                        Text(progressCaption(for: record, progress: nil))
+                        Text(progressCaption(for: record))
                             .font(.caption)
                             .monospacedDigit()
                             .lineLimit(1)
@@ -174,6 +188,17 @@ public struct OfflineLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .offlineRowActionControl()
+                } else if isPaused {
+                    // #95: Resume continues from the saved byte offset (manager.retry resumes a
+                    // `.paused` row from persisted resume data).
+                    Button {
+                        manager.retry(ratingKey: record.ratingKey)
+                    } label: {
+                        Image(systemName: "play.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .offlineRowActionControl()
+                    .accessibilityLabel("Resume download")
                 } else {
                     ProgressView()
                         .frame(width: Self.rowActionControlSize, height: Self.rowActionControlSize)
@@ -208,7 +233,8 @@ public struct OfflineLibraryView: View {
             if isComplete {
                 musicPlayer.pauseForVideo()
                 playing = record
-            } else if isFailed {
+            } else if isFailed || isPaused {
+                // #95: tapping a paused row resumes it (manager.retry continues from the offset).
                 manager.retry(ratingKey: record.ratingKey)
             }
         }
@@ -251,7 +277,8 @@ public struct OfflineLibraryView: View {
         Set(manager.records.map { backendKind(for: $0) }).count > 1
     }
 
-    private func tileGlyph(isComplete: Bool, isFailed: Bool) -> String {
+    private func tileGlyph(isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> String {
+        if isUnverified { return "exclamationmark.circle.fill" }
         if isComplete { return "arrow.down.circle.fill" }
         if isFailed { return "exclamationmark.circle" }
         return "arrow.down.circle"
@@ -271,9 +298,41 @@ public struct OfflineLibraryView: View {
             .accessibilityLabel("Source: \(name)")
     }
 
+    /// Show the download route next to the title so Jellyfin/Emby rows make it clear whether
+    /// the server is sending a raw file, a compatible remux, or a live transcode. This is useful
+    /// context for resumability and "why is this slower?" without making normal downloads look
+    /// like failures.
+    private func downloadLaneBadge(for record: DownloadRecord) -> some View {
+        let label: String
+        let systemImage: String
+        let tint: Color
+        switch record.metadata?.resolvedDownloadLane() ?? .original {
+        case .original:
+            label = "Original"
+            systemImage = "checkmark.seal"
+            tint = .secondary
+        case .compatibleRemux:
+            label = "Remux"
+            systemImage = "arrow.triangle.2.circlepath"
+            tint = .orange
+        case .optimize:
+            label = "Transcode"
+            systemImage = "gauge.with.dots.needle.bottom.50percent"
+            tint = .orange
+        }
+        return Label(label, systemImage: systemImage)
+            .labelStyle(.titleAndIcon)
+            .font(.caption2)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.14), in: Capsule())
+            .accessibilityLabel("Download route: \(label)")
+    }
+
     /// The locally-cached poster (D5) when present, else the neutral glyph tile.
     @ViewBuilder
-    private func offlinePoster(for record: DownloadRecord, isComplete: Bool, isFailed: Bool) -> some View {
+    private func offlinePoster(for record: DownloadRecord, isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> some View {
         if let posterURL = record.posterURL,
            let data = try? Data(contentsOf: posterURL),
            let uiImage = UIImage(data: data) {
@@ -287,9 +346,9 @@ public struct OfflineLibraryView: View {
                 .fill(.regularMaterial)
                 .frame(width: 44, height: 66)
                 .overlay {
-                    Image(systemName: tileGlyph(isComplete: isComplete, isFailed: isFailed))
+                    Image(systemName: tileGlyph(isComplete: isComplete, isFailed: isFailed, isUnverified: isUnverified))
                         .font(.title3)
-                        .foregroundStyle(isComplete ? .green : (isFailed ? .red : .secondary))
+                        .foregroundStyle(isUnverified ? .yellow : (isComplete ? .green : (isFailed ? .red : .secondary)))
                 }
         }
     }
@@ -335,7 +394,19 @@ public struct OfflineLibraryView: View {
         case .storageLimitExceeded(let m): return m
         case .transferFailed(let m):   return "Download failed: \(m)"
         case .invalidDownload(let m):  return "Download invalid: \(m)"
+        case .interruptedResumable:    return "Download paused — tap Resume to continue."
         }
+    }
+
+    /// #95: caption for a paused (recoverably-interrupted) row: how far it got + that it resumes.
+    private func pausedCaption(for record: DownloadRecord) -> String {
+        var pieces = ["Paused — tap to resume"]
+        if let f = manager.displayFraction(for: record) {
+            let pct = "\(Int(f.value * 100))%"
+            pieces.append(f.isEstimated ? "~\(pct)" : pct)
+        }
+        if record.bytes > 0 { pieces.append(byteString(record.bytes)) }
+        return pieces.joined(separator: " • ")
     }
 
     private func byteString(_ bytes: Int) -> String {
@@ -347,18 +418,21 @@ public struct OfflineLibraryView: View {
         record.metadata?.resolutionLabel
     }
 
-    /// Progress fraction for the bar. Static/original downloads use the server-reported
-    /// Content-Length progress. Jellyfin/Emby optimized downloads can stream directly from the
-    /// transcoder with no Content-Length, so progress remains indeterminate there until the
-    /// transfer completes; the row caption still shows bytes and an estimated ETA when possible.
+    /// Progress fraction for the bar. Unified across backends (#97): Plex/static-original
+    /// downloads use the exact server-reported Content-Length fraction; Jellyfin/Emby
+    /// transcoded downloads (no Content-Length) use the estimated bytes/duration×bitrate
+    /// fraction so they show a MOVING determinate bar instead of a bare spinner. `nil` only
+    /// when neither is available yet, in which case the caller keeps the spinner.
     private func displayProgress(for record: DownloadRecord) -> Double? {
-        record.progress > 0 ? record.progress : nil
+        manager.displayFraction(for: record)?.value
     }
 
     /// Caption under the in-progress bar, e.g. "23% • 106.5 MB • 12 MB/s • 1080p".
     /// Each piece is included only when known. Speed comes from the smoothed EMA in
-    /// `DownloadManager.refreshRecords` (kept — orthogonal jitter fix).
-    private func progressCaption(for record: DownloadRecord, progress: Double?) -> String {
+    /// `DownloadManager.refreshRecords` (kept — orthogonal jitter fix). The percentage is
+    /// read from the same unified `displayFraction` source the bar uses (#97), so the
+    /// caption owns its own lookup rather than threading a second progress value through.
+    private func progressCaption(for record: DownloadRecord) -> String {
         let isActive = manager.activeJobs.contains(record.ratingKey)
         if record.bytes == 0 {
             // Phase 1 — server-side optimize/transcode (the rendered file can't download
@@ -397,15 +471,33 @@ public struct OfflineLibraryView: View {
         // (gated) byte rate, so it stays honest in either case.
         let transcodeLimited = manager.isDownloadTranscodeLimited(record.ratingKey)
         var pieces: [String] = []
+        // #97: surface the percentage in EVERY backend's caption, including active rows
+        // (previously only inactive rows showed a number). The fraction is the same unified
+        // source that drives the bar; an estimated value (JF/Emby transcode, no Content-Length)
+        // is prefixed `~` so we don't imply Content-Length precision we don't have.
+        let fraction = manager.displayFraction(for: record)
+        let percentPiece = fraction.map { f -> String in
+            let pct = "\(Int(f.value * 100))%"
+            return f.isEstimated ? "~\(pct)" : pct
+        }
         if isActive {
-            var head = transcodeLimited ? "Downloading (server still transcoding)" : "Downloading"
+            var head: String
+            switch record.metadata?.resolvedDownloadLane() ?? .original {
+            case .original:
+                head = "Downloading original"
+            case .compatibleRemux:
+                head = "Remuxing/download"
+            case .optimize:
+                head = transcodeLimited ? "Downloading (server still transcoding)" : "Transcoding/download"
+            }
+            if let percentPiece { head += " • \(percentPiece)" }
             if let eta = manager.downloadETA[record.ratingKey], eta > 0,
                let left = timeLeftString(eta) {
                 head += " • ~\(left) left"
             }
             pieces.append(head)
-        } else if let progress {
-            pieces.append("\(Int(progress * 100))%")
+        } else if let percentPiece {
+            pieces.append(percentPiece)
         }
         pieces.append(byteString(record.bytes))
         // Only show a "/s" reading when it's a genuine NETWORK rate. For a transcode-gated
@@ -436,7 +528,9 @@ public struct OfflineLibraryView: View {
 
     /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
     private func completeCaption(for record: DownloadRecord) -> String {
-        var parts = [byteString(record.bytes)]
+        var parts = record.isUnverified
+            ? ["Downloaded — playback not verified", byteString(record.bytes)]
+            : [byteString(record.bytes)]
         if let r = resolutionLabel(for: record) { parts.append(r) }
         return parts.joined(separator: " • ")
     }

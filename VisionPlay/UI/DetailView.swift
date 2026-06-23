@@ -417,7 +417,7 @@ struct DetailView: View {
             Button {
                 musicPlayer.pauseForVideo()
                 let key = downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind)
-                let record = downloadManager.records.first { $0.ratingKey == key && $0.status == .complete }
+                let record = downloadManager.records.first { $0.ratingKey == key && $0.isComplete }
                 // Prefer the persisted download snapshot as the authoritative source: it describes the
                 // exact downloaded variant (part, chapters, cached subtitles), whereas the live
                 // `detailed` can reflect a different server stream/part than the file on disk. Fall back
@@ -873,7 +873,9 @@ struct DetailView: View {
         let key = downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind)
         if let rec = downloadManager.records.first(where: { $0.ratingKey == key }) {
             if rec.status == .failed { return "Download Failed" }
-            if rec.status == .complete { return "Downloaded" }
+            if rec.status == .paused { return "Download Paused" }
+            if rec.isUnverified { return "Downloaded (Unverified)" }
+            if rec.isComplete { return "Downloaded" }
             return "Downloading \(Int(rec.progress * 100))%"
         }
         return "Download"
