@@ -107,8 +107,11 @@ public final class DownloadManager {
     /// Ephemeral (never persisted); drives the "x MB/s" + ETA readout in the UI.
     public private(set) var downloadSpeed: [String: Double] = [:]
 
-    /// Last (bytes, time) sample per ratingKey, used to compute `downloadSpeed`.
-    private var speedSamples: [String: (bytes: Int, time: Date)] = [:]
+    /// Pure speed/ETA estimator per actively-downloading ratingKey, driven by `refreshRecords`
+    /// (#123). Replaces the old ad-hoc `(bytes, time)` baseline + EMA: the estimator owns the
+    /// first-emit window, the stall decay/cutoff, the backwards-bytes re-baseline, and the
+    /// Σdb/Σdt window average — all pinned by `DownloadRateEstimatorTests`. Ephemeral; never persisted.
+    private var rateEstimators: [String: DownloadRateEstimator] = [:]
 
     /// Estimated seconds remaining for the FILE-DOWNLOAD phase, per actively-downloading
     /// ratingKey. Derived from the smoothed `downloadSpeed` and the remaining bytes
@@ -322,21 +325,34 @@ public final class DownloadManager {
 
     /// Whether an active download's byte stream is gated by the server's transcoder (the file
     /// is served as it renders) rather than by the network — so a slow rate means "server still
-    /// transcoding", not "slow connection". True only for a transcode-SOURCED download (marked
-    /// at start) that is ALSO currently flowing well below realtime, so a fast-rendering optimize
-    /// job isn't mislabelled. The UI uses this to caption the phase honestly + avoid implying a
-    /// fabricated network speed. The derived ETA already reflects the real (gated) byte rate.
+    /// transcoding", not "slow connection". #123: decided by the PERSISTED lane (see
+    /// `isLiveTranscoderSourced`) rather than the old in-memory marker + 500 KB/s heuristic, so the
+    /// "/s" suppression survives relaunch and a fast-rendering optimize job is still correctly
+    /// suppressed (its byte cadence is transcoder output, not wire speed, at any rate). The UI uses
+    /// this to caption the phase honestly + avoid implying a fabricated network speed. The derived
+    /// ETA already reflects the real (gated) byte rate.
     public func isDownloadTranscodeLimited(_ ratingKey: String) -> Bool {
-        guard transcodeSourcedDownloads.contains(ratingKey),
-              let record = records.first(where: { $0.ratingKey == ratingKey }),
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }),
               record.status == .downloading else { return false }
-        // "Well below realtime": a transcode keeping up with realtime playback would deliver at
-        // least roughly the encode bitrate; a sub-realtime render dribbles far below it. We don't
-        // persist the target bitrate, so use an absolute floor — a healthy network transfer of a
-        // multi-Mbps file sustains MB/s, whereas a sub-realtime 4K→720p render trickles at tens of
-        // KB/s. Below ~500 KB/s on a transcode-sourced download is overwhelmingly transcode-gated.
-        guard let rate = downloadSpeed[ratingKey] else { return true }   // no rate yet → assume gated
-        return rate < 500_000
+        return Self.isLiveTranscoderSourced(record)
+    }
+
+    /// #123: whether a row's byte stream comes from a LIVE server transcoder rather than the wire —
+    /// so its byte cadence is transcoder OUTPUT, not network speed, and a "/s" readout would mislead.
+    /// Keyed on the PERSISTED lane (`resolvedDownloadLane`), so the suppression survives relaunch —
+    /// the old in-memory `transcodeSourcedDownloads` set + 500 KB/s heuristic did not, and a resumed
+    /// transcoded row would then show its output rate as MB/s unconditionally. Lanes:
+    /// - `.original` (incl. existing-version): static, range-resumable → genuine wire speed → false.
+    /// - `.optimize`: served as the server renders → transcoder-gated → true.
+    /// - `.compatibleRemux`: a live remux stream with NO Content-Length is transcoder-gated → true;
+    ///   but once the server reports a size (`progress > 0`) the transfer is effectively static and
+    ///   network-bound, so show the real rate → false.
+    static func isLiveTranscoderSourced(_ record: DownloadRecord) -> Bool {
+        switch record.metadata?.resolvedDownloadLane() ?? .original {
+        case .original: return false
+        case .optimize: return true
+        case .compatibleRemux: return record.progress <= 0
+        }
     }
 
     /// #84: whether the backend lane a row needs is currently configured/authenticated. The
@@ -2010,55 +2026,30 @@ public final class DownloadManager {
         let now = Date()
         let fresh = store.records
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
-        // Recompute a smoothed bytes/sec for each actively-downloading row by diffing
-        // its cumulative byte count against the previous sample. Resample on a ≥1s
-        // interval (a longer window yields a less noisy instantaneous rate) and fold it
-        // into a heavily-weighted EMA (~4s memory) so the displayed speed — and the ETA
-        // derived from it — drift smoothly instead of bouncing on every burst of the
-        // rapid progress callbacks.
+        // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
+        // cumulative byte count. The estimator owns ALL the speed/ETA math — first-emit window,
+        // stall decay→nil, backwards-bytes re-baseline, and the Σdb/Σdt window average that
+        // reconciles the displayed rate with Σbytes/elapsed. The actor just feeds `(bytes, now)`
+        // and reads back the smoothed rate + ETA; the math is pinned by `DownloadRateEstimatorTests`.
         for record in fresh where record.status == .downloading {
-            guard let prev = speedSamples[record.ratingKey] else {
-                speedSamples[record.ratingKey] = (record.bytes, now)
-                continue
-            }
-            let dt = now.timeIntervalSince(prev.time)
-            let db = record.bytes - prev.bytes
-            if dt >= 1.0 && db > 0 {
-                let instantaneous = Double(db) / dt
-                let smoothed = downloadSpeed[record.ratingKey].map { 0.75 * $0 + 0.25 * instantaneous }
-                    ?? instantaneous
-                downloadSpeed[record.ratingKey] = smoothed
-                speedSamples[record.ratingKey] = (record.bytes, now)
-            }
-        }
-        // Derive a file-download ETA from the smoothed rate + remaining bytes. Prefer the
-        // server-reported Content-Length path (`bytes / progress`). Jellyfin/Emby optimized
-        // downloads stream directly from the transcoder and often report no Content-Length,
-        // leaving progress at 0 while bytes climb; for those rows, fall back to the same
-        // duration×target-bitrate estimate already used for storage preflight. Suppress the
-        // same way the optimize ETA does (>12h → drop).
-        for record in fresh where record.status == .downloading {
-            guard let rate = downloadSpeed[record.ratingKey], rate > 0,
-                  record.bytes > 0 else {
-                downloadETA[record.ratingKey] = nil
-                continue
-            }
-            let expectedTotal: Double?
+            var estimator = rateEstimators[record.ratingKey] ?? DownloadRateEstimator()
+            let rate = estimator.sample(bytes: record.bytes, at: now)
+            // Recover the expected final size for the ETA: the exact Content-Length path
+            // (`bytes / progress`) when the server reported a size, else the same
+            // duration×target-bitrate estimate used for storage preflight (JF/Emby transcoder
+            // streams that ship no Content-Length).
+            let expectedTotal: Int?
             if record.progress > 0 {
-                expectedTotal = Double(record.bytes) / record.progress
+                expectedTotal = Int(Double(record.bytes) / record.progress)
             } else {
-                expectedTotal = Self.estimatedTranscodeBytes(for: record).map(Double.init)
+                expectedTotal = Self.estimatedTranscodeBytes(for: record)
             }
-            guard let expectedTotal, expectedTotal > Double(record.bytes) else {
-                downloadETA[record.ratingKey] = nil
-                continue
-            }
-            let remainingBytes = expectedTotal - Double(record.bytes)
-            let eta = remainingBytes / rate
-            downloadETA[record.ratingKey] = (eta.isFinite && eta < 60 * 60 * 12) ? eta : nil
+            downloadSpeed[record.ratingKey] = (rate ?? 0) > 0 ? rate : nil
+            downloadETA[record.ratingKey] = estimator.eta(expectedTotal: expectedTotal)
+            rateEstimators[record.ratingKey] = estimator
         }
-        // Drop samples for rows no longer downloading (complete / failed / removed).
-        speedSamples = speedSamples.filter { activeKeys.contains($0.key) }
+        // Drop estimators/derived values for rows no longer downloading (complete / failed / removed).
+        rateEstimators = rateEstimators.filter { activeKeys.contains($0.key) }
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         records = fresh
