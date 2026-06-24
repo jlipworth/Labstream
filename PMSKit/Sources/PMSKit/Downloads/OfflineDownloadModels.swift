@@ -331,6 +331,13 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// than restarting the conversion), and so deleting a `.preparing` row can also cancel the
     /// server-side job via `DELETE /Sync/Jobs/{id}`. `nil` for every non-Emby-convert row.
     public var embyConvertJobID: Int?
+    /// Emby convert-then-download: the FULL set of pre-existing `File` MediaSource ids on the item
+    /// captured at convert-trigger time. Persisted so a relaunch-resume identifies the freshly
+    /// converted source as "the one NOT in this set" — including when the item already had a PRIOR
+    /// converted version (which `mediaSourceID` alone, the original source, would miss). `nil` for
+    /// every non-Emby-convert row; empty when the snapshot couldn't be enumerated (the h264/mp4
+    /// recency heuristic then disambiguates).
+    public var embyConvertSnapshotIDs: [String]?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -378,7 +385,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 playSessionID: String? = nil,
                 downloadLane: DownloadLane? = nil,
                 resumeDataRelativePath: String? = nil,
-                embyConvertJobID: Int? = nil) {
+                embyConvertJobID: Int? = nil,
+                embyConvertSnapshotIDs: [String]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -426,6 +434,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.downloadLane = downloadLane
         self.resumeDataRelativePath = resumeDataRelativePath
         self.embyConvertJobID = embyConvertJobID
+        self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -477,6 +486,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
         resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
         embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
+        embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
     }
 
     /// #83: resolve this row's lane. New rows persist `downloadLane`; pre-#83 rows fall back to the

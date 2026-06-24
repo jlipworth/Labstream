@@ -167,42 +167,49 @@ struct EmbyConvertJobTests {
 
     // MARK: - Quality mapping
 
-    @Test("Original video quality maps to highest bitrate + tv profile, never the original token")
+    @Test("Original video quality maps to keep-quality bitrate + tv profile, never the original token")
     func originalQualityMapping() {
         let q = EmbyConvertRequest.convertQuality(forPresetLabel: "Original video quality")
         #expect(q.quality != "original")
         #expect(q.quality == "custom")
         #expect(q.profile == "tv")
-        #expect(q.bitrate == EmbyConvertRequest.maxConvertBitrate)
-        #expect(q.bitrate == 8_000_000)
+        #expect(q.bitrate == EmbyConvertRequest.keepQualityBitrate)
+        #expect(q.bitrate == 80_000_000)
     }
 
-    @Test("Bitrate presets map to quality:custom + the labelled bps + tv profile")
+    @Test("Bitrate presets map to quality:custom + the labelled bps + tv profile (no cap)")
     func bitratePresetMapping() {
         let p1080 = EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 8 Mbps")
         #expect(p1080.quality == "custom")
         #expect(p1080.profile == "tv")
         #expect(p1080.bitrate == 8_000_000)
 
+        #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 20 Mbps").bitrate == 20_000_000)
+        #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 12 Mbps").bitrate == 12_000_000)
+        #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 10 Mbps").bitrate == 10_000_000)
+
         let p720 = EmbyConvertRequest.convertQuality(forPresetLabel: "720p · 4 Mbps")
         #expect(p720.bitrate == 4_000_000)
+        #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "720p · 3 Mbps").bitrate == 3_000_000)
+        #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "720p · 2 Mbps").bitrate == 2_000_000)
 
         let p480 = EmbyConvertRequest.convertQuality(forPresetLabel: "480p · 1.5 Mbps")
         #expect(p480.bitrate == 1_500_000)
     }
 
-    @Test("Bitrate presets above the 8 Mbps target ceiling are capped")
-    func bitrateCappedAtTarget() {
+    @Test("High-bitrate presets are NOT capped — Emby honors arbitrary custom bitrates")
+    func highBitrateNotCapped() {
         let p4k = EmbyConvertRequest.convertQuality(forPresetLabel: "4K · 40 Mbps")
         #expect(p4k.quality == "custom")
-        #expect(p4k.bitrate == EmbyConvertRequest.maxConvertBitrate)
+        #expect(p4k.profile == "tv")
+        #expect(p4k.bitrate == 40_000_000)
     }
 
-    @Test("An unrecognized label falls back to the highest tier (custom/tv)")
+    @Test("An unrecognized label falls back to the keep-quality bitrate (custom/tv)")
     func unknownLabelFallsBack() {
         let q = EmbyConvertRequest.convertQuality(forPresetLabel: "Mystery preset")
         #expect(q.quality == "custom")
         #expect(q.profile == "tv")
-        #expect(q.bitrate == EmbyConvertRequest.maxConvertBitrate)
+        #expect(q.bitrate == EmbyConvertRequest.keepQualityBitrate)
     }
 }
