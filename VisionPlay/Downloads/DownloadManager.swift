@@ -1306,8 +1306,12 @@ public final class DownloadManager {
         let route: EmbyDownloadRoute
         switch choice {
         case .original, .existingVersion:
-            // #112: `.existingVersion` is Plex-only; never produced for Emby, but the switch must be
-            // exhaustive — treat it as a plain original negotiation here.
+            // #126: `.existingVersion` IS produced for Emby now — the UI passes the chosen converted
+            // MediaSource id as `mediaSourceIDOverride`, so `embyMediaSourceHint`/PlaybackInfo already
+            // resolved `decision` to THAT source. Both lanes then negotiate identically: a directly
+            // playable file in a local container downloads byte-for-byte (.original) via
+            // `downloadOriginalRequest`; anything else falls to transcode. (For an existing version the
+            // override-selected converted source is mp4/h264 → .original, the intended byte-for-byte path.)
             route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
         case .optimizeCompatible:
             // Honour the compatible lane when the source video is stream-copy eligible. The
