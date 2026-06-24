@@ -41,6 +41,23 @@ As of this docs pass, Jellyfin download behavior has unit/request-path coverage 
 - Simulator builds use a foreground session where background download behavior is not reliable.
 - Downloads reject HTTP error bodies and invalid final files. Very small files are not rejected by byte size alone; they still must pass local AVFoundation playback validation.
 
+### Off-head behavior (observed on hardware)
+
+The static-file transfer (`nsurlsessiond` background `URLSession`) keeps making progress with the
+headset off the head and connected to power, but **not indefinitely**. Observed: transfers continue
+for roughly the first ~30 minutes off-head, but over a span of hours they stop progressing — the
+system stops scheduling the suspended app's background transfer in deep standby, and being on power
+does not make it unbounded.
+
+Practical guidance: small/medium downloads off-head are fine; the "queue a large download, set the
+headset down for hours, come back to a finished file" workflow is **not reliable**. For large
+downloads, keep the headset on (or pick it up periodically to re-wake the session — reconciliation
+re-kicks reconnectable transfers on resume).
+
+Note this is the **Phase B** (byte-transfer) limit. It is separate from, and milder than, the Plex
+**Phase A** server-prepare poll: that poll runs in-process, so a long server render queued and then
+immediately set down may not even *start* its Phase B transfer until the headset is worn again.
+
 ## Reconcile and resume
 
 On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-flight transfer tasks and local files.
