@@ -883,6 +883,7 @@ struct DownloadOptionsSheet: View {
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
         let isPaused = record.status == .paused
+        let isPreparing = record.status == .preparing
         SwiftUI.Section {
             if isComplete {
                 if record.isUnverified {
@@ -912,6 +913,18 @@ struct DownloadOptionsSheet: View {
                     retryDownload()
                     dismiss()
                 } label: { Label("Resume Download", systemImage: "play.circle") }
+            } else if isPreparing {
+                // Emby convert-then-download: the server is rendering the file before any byte
+                // download begins. Surface it as an indeterminate "Preparing on server…" with the
+                // live convert percentage when known (same plumbing as the offline-list row).
+                Label("Preparing on server…", systemImage: "gearshape.arrow.triangle.2.circlepath")
+                if let p = downloadManager.optimizeProgress[record.ratingKey] {
+                    ProgressView(value: p)
+                    Text("\(Int(p * 100))%")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                }
             } else {
                 Label("Downloading…", systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)
