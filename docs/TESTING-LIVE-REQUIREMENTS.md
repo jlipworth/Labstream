@@ -143,6 +143,8 @@ Guidance:
 
 1. `PMSKit/Tests/PMSKitTests/Live<Name>ProbeTests.swift` — env-gated `Config?` initializer that
    returns nil → prints a skip line → no network. Send real PMSKit builders through `URLSession`.
+   For Plex probes, build on the shared `LiveProbeConfig` helper (server/token parse + the standard
+   `ClientIdentity` + `redact`).
 2. `scripts/live-<name>-probe.sh` — sources the gitignored env file, refuses to run if it's
    tracked, runs `swift test --filter Live<Name>Probe`.
 3. Document new env vars in `scripts/plex-live.env.example` (or `emby` equivalent) **and** in the
@@ -150,3 +152,17 @@ Guidance:
 4. Flip the relevant *(gap)* in `TESTING-LIVE-MATRIX.md` to the new probe name.
 5. Redact secrets in any printed URL/header; log codecs/decisions, never media titles or library
    paths (this repo is going public).
+6. **Proof discipline (avoid trivially-green tests).** Decode leniently (`try?` → nil → loud SKIP,
+   never a false RED on a 200 with an unexpected body); never silently swallow a failed control
+   leg (`Issue.record` or SKIP with a diagnostic); and don't assert an absolute value that can pass
+   for unrelated reasons — assert the specific wire-shape invariant (the *flip* a change causes,
+   a round-tripped value, an id that chains coherently).
+
+### Follow-up: shared-config dedup
+
+`LiveProbeConfig` (in `PMSKit/Tests/PMSKitTests/`) centralizes the env/identity/redaction
+boilerplate for the three #75 Plex probes (`LiveSubtitleBurnProbe`, `LivePlexBrowseProbe`,
+`LivePlexTimelineProbe`). The five older Plex/Emby `Live*Probe` files predate it and still inline
+their own `Config`/`redact`; they were intentionally left untouched to keep this change focused.
+Migrating them onto `LiveProbeConfig` (Emby needs an `EmbyClientIdentity` variant) is a clean
+follow-up.

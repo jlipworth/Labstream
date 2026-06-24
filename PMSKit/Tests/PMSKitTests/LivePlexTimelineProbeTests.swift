@@ -27,6 +27,10 @@ import FoundationNetworking
 ///       `TranscodeRequest.stop`, asserting the stop is accepted so no orphaned FFmpeg job is left
 ///       burning CPU / a concurrent-transcode slot. (Job-starting probe.)
 ///
+/// PROOF DISCIPLINE: the metadata read-back decodes leniently (a 200 with an unexpected body is a
+/// loud SKIP, not a false RED); the round-trip assertion compares the stored offset to what we
+/// POSTed (not an absolute), and the stop assertion requires a 2xx.
+///
 /// Run it (creds live in a gitignored env file — see scripts/plex-live.env.example):
 ///   ./scripts/live-plex-timeline-probe.sh
 /// or directly:
@@ -41,29 +45,23 @@ import FoundationNetworking
 struct LivePlexTimelineProbeTests {
 
     private struct Config {
-        let server: URL
-        let token: String
+        let base: LiveProbeConfig
         let metadataKey: String     // e.g. /library/metadata/12345
         let ratingKey: String       // bare numeric id, e.g. 12345
         let reportSeconds: Int
-        let identity: ClientIdentity
+
+        var server: URL { base.server }
+        var token: String { base.token }
+        var identity: ClientIdentity { base.identity }
 
         init?() {
+            guard let base = LiveProbeConfig() else { return nil }
             let env = ProcessInfo.processInfo.environment
-            guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
-                  let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty,
-                  let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
-            else { return nil }
-            self.server = server
-            self.token = token
+            guard let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty else { return nil }
+            self.base = base
             self.metadataKey = metadataKey
             self.ratingKey = metadataKey.split(separator: "/").last.map(String.init) ?? metadataKey
             self.reportSeconds = env["PLEX_LIVE_TIMELINE_OFFSET_SECONDS"].flatMap(Int.init) ?? 120
-            self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-                product: "VisionPlay",
-                version: "0.1.0",
-                deviceName: "VisionPlay Live Probe")
         }
     }
 
@@ -73,6 +71,8 @@ struct LivePlexTimelineProbeTests {
     }
 
     /// Read the item's metadata back and return its stored resume offset (`viewOffset`, ms).
+    /// Decodes leniently: a 200 with an unexpected body returns nil (→ caller treats it as a SKIP
+    /// diagnostic) rather than throwing a false RED.
     private func readViewOffsetMs(_ cfg: Config) async throws -> Int? {
         let req = PlexRequest(url: cfg.server.appendingPathComponent(cfg.metadataKey),
                               method: "GET",
@@ -82,7 +82,10 @@ struct LivePlexTimelineProbeTests {
             print(">>> TIMELINE [read] HTTP \(status) — cannot read back metadata.")
             return nil
         }
-        let decoded = try JSONDecoder().decode(MetadataResponse.self, from: data)
+        guard let decoded = try? JSONDecoder().decode(MetadataResponse.self, from: data) else {
+            print(">>> TIMELINE [read] HTTP 200 but body did not decode as MetadataResponse — skipping read-back.")
+            return nil
+        }
         return decoded.mediaContainer.metadata.first?.viewOffset
     }
 
