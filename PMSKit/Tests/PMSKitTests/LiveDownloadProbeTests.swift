@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PMSKit
 
 /// Headless live Plex download-route probe. OPT-IN: runs only with PLEX_LIVE_* env vars.

@@ -125,22 +125,30 @@ public enum DiagnosticRedactor {
         guard !input.isEmpty else { return input }
         var output = input
 
-        // Header/query-style secrets and client identifiers. Accept both `key=value`
-        // and the `key: value` header form (the separator is preserved via $2).
-        output = replace(output,
-                         pattern: #"(?i)\b(X-Plex-Token|token|access[_-]?token|api[_-]?key|apikey|password|client[_-]?identifier|X-Plex-Client-Identifier)(\s*[=:]\s*)([^\s&;,)]+)"#,
-                         template: "$1$2[redacted]")
-        output = replace(output,
-                         pattern: #"(?i)\b(Authorization:\s*)(Bearer\s+)?[^\s,;)]+"#,
-                         template: "$1[redacted]")
-        output = replace(output,
-                         pattern: #"(?i)\b(user(name)?|account|owner)=([^\s&;,)]+)"#,
-                         template: "$1=[redacted]")
-
-        // Full URLs first, before hostname/path rules can leave pieces behind.
+        // Full URLs FIRST: collapse the whole URL (scheme://…) to [url:scheme] so any
+        // embedded token/host/path goes with it. Running the secret rules first would
+        // rewrite an inline ?X-Plex-Token=… to [redacted]; the URL terminator below then
+        // stops on the ']' of [redacted] and leaves a malformed "[url:https]]".
         output = replace(output,
                          pattern: #"\b([A-Za-z][A-Za-z0-9+.-]*)://[^\s)\]}>\"']+"#,
                          template: "[url:$1]")
+
+        // Header/query-style secrets and client identifiers, for bare (non-URL) occurrences.
+        // Accept `key=value` and the `key: value` header form, and tolerate the key being
+        // wrapped/suffixed by quotes or brackets (e.g. "(X-Plex-Token)=", token"=). The
+        // separator (incl. any wrapper) is preserved via $2.
+        output = replace(output,
+                         pattern: #"(?i)\b(X-Plex-Token|tokens?|access[_-]?token|api[_-]?key|apikey|password|passwd|pwd|secret|client[_-]?identifier|X-Plex-Client-Identifier)([\s"'\)\]]*[=:]\s*)([^\s&;,)]+)"#,
+                         template: "$1$2[redacted]")
+        // Authorization header, with or without a colon ("Authorization: Bearer x",
+        // "Authorization Bearer x", "authorization = x").
+        output = replace(output,
+                         pattern: #"(?i)\b(Authorization\b[\s"'\)\]]*:?\s*)(Bearer\s+)?[^\s,;)]+"#,
+                         template: "$1[redacted]")
+        // Account/owner identifiers, both `=` and `:` forms (separator preserved via $2).
+        output = replace(output,
+                         pattern: #"(?i)\b(username|user|account|owner)(\s*[=:]\s*)([^\s&;,)]+)"#,
+                         template: "$1$2[redacted]")
 
         // Common local/library paths and anything that looks like a media filename.
         output = replace(output,
@@ -150,21 +158,30 @@ public enum DiagnosticRedactor {
                          pattern: #"(?i)\b[^\s/]+\.(mkv|mp4|m4v|mov|avi|ts|m3u8|mp3|flac|srt|ass|jpg|jpeg|png|webp)\b"#,
                          template: "[file]")
 
-        // Network locations and stable IDs.
+        // Emails whose domain is a raw IP (admin@192.0.2.10) must be redacted before the
+        // IPv4 rule, otherwise the IP is peeled to [ip] and the local-part survives.
         output = replace(output,
-                         pattern: #"(?<![0-9])(?:\d{1,3}\.){3}\d{1,3}(?![0-9])"#,
+                         pattern: #"\b[A-Z0-9._%+-]+@(?:\d{1,3}\.){3}\d{1,3}\b"#,
+                         options: [.caseInsensitive],
+                         template: "[email]")
+        // IPv4, validating each octet is 0-255 so dotted version strings such as a Plex
+        // build "1.40.2.8395" (4th group > 255) are not corrupted into [ip].
+        output = replace(output,
+                         pattern: #"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?![\d.])"#,
                          template: "[ip]")
         output = replace(output,
                          pattern: #"\[[0-9A-Fa-f:]{3,}\]"#,
                          template: "[ip]")
-        // Emails before the hostname rule, otherwise the domain is peeled into [host]
-        // and the local-part survives (alice@example.com -> alice@[host]).
+        // Emails (hostname domains) before the hostname rule, otherwise the domain is peeled
+        // into [host] and the local-part survives (alice@example.com -> alice@[host]).
         output = replace(output,
                          pattern: #"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
                          options: [.caseInsensitive],
                          template: "[email]")
+        // Bare hostnames (no scheme). Best-effort TLD allowlist — broad enough to cover
+        // common server domains; the live preview + privacy ack are the backstop for the rest.
         output = replace(output,
-                         pattern: #"\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|home|internal|plex\.direct|com|net|org|io|tv|me|dev|app)\b"#,
+                         pattern: #"\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|home|internal|plex\.direct|com|net|org|io|tv|me|dev|app|co|us|uk|ca|de|fr|es|it|nl|au|eu|se|ch|info|biz|xyz|cloud|site|online|live|pro|direct)\b"#,
                          template: "[host]")
         output = replace(output,
                          pattern: #"\b[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\b"#,
@@ -276,11 +293,26 @@ public enum DiagnosticRedactor {
         return mapped.joined(separator: "/")
     }
 
+    /// Compiled-regex cache. `redact` runs ~14 patterns per call and the feedback sheet
+    /// re-redacts the note live on every keystroke, so recompiling from source each time
+    /// produced visible input lag. NSCache is internally thread-safe (its own locking is the
+    /// external synchronization that justifies nonisolated(unsafe)); patterns are static literals.
+    nonisolated(unsafe) private static let regexCache = NSCache<NSString, NSRegularExpression>()
+
+    private static func cachedRegex(_ pattern: String,
+                                    _ options: NSRegularExpression.Options) -> NSRegularExpression? {
+        let key = "\(options.rawValue)\u{1}\(pattern)" as NSString
+        if let cached = regexCache.object(forKey: key) { return cached }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+        regexCache.setObject(regex, forKey: key)
+        return regex
+    }
+
     private static func replace(_ input: String,
                                 pattern: String,
                                 options: NSRegularExpression.Options = [],
                                 template: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return input }
+        guard let regex = cachedRegex(pattern, options) else { return input }
         let range = NSRange(location: 0, length: (input as NSString).length)
         return regex.stringByReplacingMatches(in: input, options: [], range: range, withTemplate: template)
     }

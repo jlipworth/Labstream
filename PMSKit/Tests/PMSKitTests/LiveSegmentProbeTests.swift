@@ -1,3 +1,7 @@
+// Apple-only live developer probe: uses URLSession.bytes / waitsForConnectivity, which are
+// unavailable in swift-corelibs-foundation. Compiled out on the Linux CI fleet (which has no
+// live server anyway); runs on macOS only when its live-probe env vars are set.
+#if !canImport(FoundationNetworking)
 import Testing
 import Foundation
 @testable import PMSKit
@@ -255,3 +259,4 @@ struct LiveSegmentProbeTests {
         }
     }
 }
+#endif

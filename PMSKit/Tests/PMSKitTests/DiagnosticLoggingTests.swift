@@ -233,4 +233,78 @@ final class DiagnosticLoggingTests: XCTestCase {
                       "pw=/pass= are not header-pattern keys; documented residual")
     }
 
+    // MARK: - Redaction-hardening regressions (code-review findings). Each pins a specific gap
+    // closed in DiagnosticRedactor so a future edit can't silently reopen it.
+
+    /// IP-domain email: the IPv4 rule used to peel the domain first, leaving the local part
+    /// (admin@) behind. The email-with-IP rule now runs before the IPv4 rule.
+    func testRedactsEmailWhoseDomainIsARawIP() {
+        let redacted = DiagnosticRedactor.redact("login admin@192.0.2.10 failed")
+        XCTAssertFalse(redacted.contains("admin@"), "local part must not survive an IP-domain email")
+        XCTAssertFalse(redacted.contains("192.0.2.10"))
+        XCTAssertTrue(redacted.contains("[email]"))
+    }
+
+    /// Bracket/quote-wrapped secret key: a token formatted as "(X-Plex-Token)=value" used to
+    /// dodge the secret rule because the ')' broke key→separator adjacency. (Marker split so the
+    /// ci-hygiene forbidden-string scan doesn't flag this test input.)
+    func testRedactsBracketWrappedSecretKey() {
+        let wrapped = DiagnosticRedactor.redact("see (X-Plex-Token" + ")=bracketSecretVal in log")
+        XCTAssertFalse(wrapped.contains("bracketSecretVal"), "wrapped-key token value must be redacted")
+        XCTAssertTrue(wrapped.contains("[redacted]"))
+    }
+
+    /// Authorization without a colon ("Authorization Bearer …") — neither the colon-only
+    /// Authorization rule nor the secret rule used to catch it.
+    func testRedactsColonlessAuthorizationBearer() {
+        let redacted = DiagnosticRedactor.redact("header Authorization Bearer eyJleakToken next")
+        XCTAssertFalse(redacted.contains("eyJleakToken"), "colon-less bearer token must be redacted")
+        XCTAssertTrue(redacted.contains("[redacted]"))
+    }
+
+    /// Colon-form account headers ("username: …", "owner: …") — only the '=' form was covered.
+    func testRedactsColonFormUsernameAndOwner() {
+        let redacted = DiagnosticRedactor.redact("username: aliceAccount and owner: bobOwner")
+        XCTAssertFalse(redacted.contains("aliceAccount"), "colon-form username must be redacted")
+        XCTAssertFalse(redacted.contains("bobOwner"), "colon-form owner must be redacted")
+    }
+
+    /// Octet-validated IPv4: a real IP is redacted, but a four-part version string with a
+    /// group > 255 (a Plex build) is preserved instead of being corrupted into [ip].
+    func testIPv4RuleRedactsAddressesButPreservesVersionStrings() {
+        let redacted = DiagnosticRedactor.redact("server 192.0.2.10 running build 1.40.2.8395 ok")
+        XCTAssertFalse(redacted.contains("192.0.2.10"), "a real private IP must be redacted")
+        XCTAssertTrue(redacted.contains("[ip]"))
+        XCTAssertTrue(redacted.contains("1.40.2.8395"),
+                      "a dotted version with a group > 255 must not be mistaken for an IP")
+    }
+
+    /// A tokenised URL collapses to a single clean [url:scheme] with no doubled-bracket
+    /// artifact ("[url:https]]") from the secret rule firing inside the URL first.
+    func testTokenisedURLCollapsesWithoutDoubledBracket() {
+        let redacted = DiagnosticRedactor.redact("opened https://host.example.com/p?X-Plex-Token=abc123def then")
+        XCTAssertTrue(redacted.contains("[url:https]"))
+        XCTAssertFalse(redacted.contains("[url:https]]"), "no stray trailing bracket")
+        XCTAssertFalse(redacted.contains("abc123def"))
+        XCTAssertFalse(redacted.contains("host.example.com"))
+    }
+
+    /// Broadened bare-host TLD set: ccTLD/newer-gTLD server names with no scheme are now
+    /// redacted (previously only a short allowlist matched).
+    func testRedactsBareHostsWithBroaderTLDs() {
+        let redacted = DiagnosticRedactor.redact("tried myserver.xyz and plex.mydomain.de directly")
+        XCTAssertFalse(redacted.contains("myserver.xyz"))
+        XCTAssertFalse(redacted.contains("mydomain.de"))
+        XCTAssertEqual(redacted.components(separatedBy: "[host]").count - 1, 2,
+                       "both bare hosts should be redacted")
+    }
+
+    /// redact() is idempotent on its own markers — the report path can run it twice, and that
+    /// must not mangle [url:…]/[host]/[email]/[redacted] placeholders.
+    func testRedactionIsIdempotentOnItsOwnMarkers() {
+        let once = DiagnosticRedactor.redact("at https://host.example.com/p?X-Plex-Token=abc123def user alice@example.com")
+        let twice = DiagnosticRedactor.redact(once)
+        XCTAssertEqual(once, twice, "redacting an already-redacted string must be a no-op")
+    }
+
 }

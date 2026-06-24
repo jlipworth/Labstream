@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// URLSession policies shared by app executors that talk to Plex.
 public enum PlexSessionConfiguration {
@@ -16,7 +19,12 @@ public enum PlexSessionConfiguration {
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
+        // `waitsForConnectivity` is a settable property on Apple platforms but get-only in
+        // swift-corelibs-foundation (Linux CI). The Linux default already fails fast, so the
+        // setter is simply omitted there.
+        #if !canImport(FoundationNetworking)
         config.waitsForConnectivity = false
+        #endif
         return config
     }
 
@@ -35,7 +43,12 @@ public enum PlexSessionConfiguration {
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
+        // `waitsForConnectivity` is a settable property on Apple platforms but get-only in
+        // swift-corelibs-foundation (Linux CI). The Linux default already fails fast, so the
+        // setter is simply omitted there.
+        #if !canImport(FoundationNetworking)
         config.waitsForConnectivity = false
+        #endif
         return config
     }
 }

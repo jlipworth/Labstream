@@ -1,5 +1,8 @@
 import XCTest
 @testable import PMSKit
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 final class UpstreamConnectionTests: XCTestCase {
     // Wedge-class error used to simulate a poisoned socket.

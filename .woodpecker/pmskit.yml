@@ -1,0 +1,21 @@
+# .woodpecker/pmskit.yml
+# Portable Swift package tests on the Linux fleet — this is the CI gate for the
+# DiagnosticRedactor privacy boundary (and the rest of PMSKit's logic). The Apple-only
+# loopback media proxy (#33) is compiled out via `#if canImport(Network)`, so the package
+# builds on Linux. The full visionOS app build + sim run remain a macOS check (tracked in #115).
+
+when:
+  event: [push, pull_request, manual]
+
+steps:
+  - name: pmskit-tests
+    image: swift:6.2
+    commands:
+      - cd PMSKit
+      # Run the two test runners as SEPARATE invocations. A single `swift test` that drives
+      # BOTH XCTest and Swift Testing deadlocks under swift-corelibs-foundation on Linux
+      # (each runner passes fine on its own; the hang is in SwiftPM's combined-runner handoff).
+      # macOS runs the combined suite fine. --no-parallel keeps the Swift Testing runner off
+      # its Linux-flaky parallel path. Each step finishes in ~0.1s.
+      - swift test --no-parallel --disable-swift-testing   # XCTest only (64 tests)
+      - swift test --no-parallel --disable-xctest          # Swift Testing only (581 tests)

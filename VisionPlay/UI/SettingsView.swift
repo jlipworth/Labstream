@@ -88,12 +88,23 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $presentingFeedback) {
-            FeedbackSheet(reportText: diagnosticReportText, githubIssuesURL: Self.feedbackIssuesURL)
+            FeedbackSheet(reportText: diagnosticReportText,
+                          githubIssuesURL: Self.feedbackIssuesURL,
+                          appVersionBuild: "\(Self.appVersion) (\(Self.appBuild))",
+                          osVersion: Self.shortOSVersion)
         }
     }
 
     /// Single source of truth for the web bug-report link (template-prefilled new-issue URL).
     static let feedbackIssuesURL = URL(string: "https://github.com/jlipworth/VisionPlay/issues/new?template=bug_report.yml")!
+
+    /// "26.5"-style version for prefilling the bug form's visionOS field (the full
+    /// `operatingSystemVersionString` carries a build suffix the form doesn't want).
+    static var shortOSVersion: String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        let base = "\(v.majorVersion).\(v.minorVersion)"
+        return v.patchVersion == 0 ? base : "\(base).\(v.patchVersion)"
+    }
 
     // MARK: Playback
 
@@ -675,7 +686,7 @@ struct SettingsView: View {
                 ])
                 presentingFeedback = true
             } label: {
-                Label("Send feedback to developer", systemImage: "envelope")
+                Label("Send feedback to developer", systemImage: "exclamationmark.bubble")
             }
         } header: {
             Text("Diagnostics")
