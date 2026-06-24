@@ -62,6 +62,12 @@ public final class DownloadManager {
         /// an offline-playable MP4, transcoding only audio/container as needed. Forward-only (a
         /// remux stream is not range-resumable). Plex falls back to `.optimize` for this choice.
         case optimizeCompatible
+        /// #112: download an EXISTING server-generated Plex Version exactly as-is. This is a static
+        /// byte-for-byte transfer of the chosen `Media`/`Part` (range-resumable, like `.original`),
+        /// but deliberately bypasses the original direct-play preflight/locally-playable gates —
+        /// the user explicitly picked a pre-rendered server version — and never touches the Plex
+        /// optimize queue (no render/re-render). The chosen version is addressed by `mediaIndex`.
+        case existingVersion
     }
 
     /// Internal control-flow error for async optimize work that outlived the row it belonged to.
@@ -553,55 +559,31 @@ public final class DownloadManager {
                 return
             }
 
-            let expectedBytes = estimatedBytes(for: item, choice: choice,
-                                               mediaIndex: mediaIndex,
-                                               partIndex: partIndex,
-                                               backend: .plex) ?? part.size
-            if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: expectedBytes) {
+            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+                                        metadata: metadata, choiceLabel: "original",
+                                        choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
+                                        server: server, token: token)
+
+        case .existingVersion:
+            // #112: download an EXISTING server-generated Plex Version exactly as-is. Same static
+            // byte-for-byte transfer as `.original`, but the user explicitly picked a pre-rendered
+            // server version, so we DELIBERATELY skip the original direct-play preflight (the
+            // version is already a server-prepared file) and NEVER touch the optimize queue.
+            guard let part = chosenMedia?.part[safe: partIndex] else {
+                recordDownloadDiagnostic("downloads.start_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Plex"),
+                    "reason": .label("no_existing_version_part"),
+                ])
+                lastError[ratingKey] = .transferFailed("No server version part to download.")
                 releaseInFlight(ratingKey: ratingKey)
                 return
             }
-            let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
-            let destination = store.destinationURL(ratingKey: ratingKey,
-                                                   ext: ext.isEmpty ? "mp4" : ext)
-            // Seed a 0% record so the UI shows the job immediately.
-            store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                        localURL: destination, bytes: 0, progress: 0,
-                                        metadata: metadata))
-            refreshRecords()
-            cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
-                               server: server, token: token)
-            cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
-            do {
-                recordDownloadDiagnostic("downloads.start", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "choice": .label("original"),
-                    "url_shape": .urlShape(url),
-                    "expected_bytes": .bytes(part.size),
-                ])
-                try session.start(ratingKey: ratingKey, from: url, to: destination,
-                                  expectedBytes: part.size)
-                refreshRecords()
-            } catch let error as DownloadError {
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "error": .label(String(describing: error)),
-                ])
-                lastError[ratingKey] = error
-                store.setStatus(ratingKey: ratingKey, .failed)
-                refreshRecords()
-            } catch {
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "error": .error(error),
-                ])
-                lastError[ratingKey] = .transferFailed(String(describing: error))
-                store.setStatus(ratingKey: ratingKey, .failed)
-                refreshRecords()
-            }
+            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
+            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+                                        metadata: metadata, choiceLabel: "existing_version",
+                                        choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
+                                        server: server, token: token)
 
         case .optimize(let targetName):
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
@@ -613,6 +595,65 @@ public final class DownloadManager {
             // map the choice onto that target rather than introducing a no-op Plex path.
             await triggerOptimizeAndDownload(item: item, targetName: Self.originalFallbackOptimizeTarget(),
                                              metadata: metadata, session: backendSession)
+        }
+    }
+
+    /// Shared tail for the two Plex STATIC part-download lanes (`.original` after its preflight, and
+    /// `.existingVersion`): storage check, seed the row, cache side assets, then kick off the
+    /// background transfer of a single `Part` byte-for-byte. Neither lane renders server-side, so
+    /// the optimize queue is untouched. `choiceLabel` only tags diagnostics.
+    private func startStaticPlexPartDownload(ratingKey: String, item: MediaItem, part: Part, url: URL,
+                                             metadata: OfflineMetadata, choiceLabel: String,
+                                             choice: DownloadChoice, mediaIndex: Int, partIndex: Int,
+                                             server: URL, token: String) {
+        let expectedBytes = estimatedBytes(for: item, choice: choice,
+                                           mediaIndex: mediaIndex,
+                                           partIndex: partIndex,
+                                           backend: .plex) ?? part.size
+        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: expectedBytes) {
+            releaseInFlight(ratingKey: ratingKey)
+            return
+        }
+        let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
+        let destination = store.destinationURL(ratingKey: ratingKey,
+                                               ext: ext.isEmpty ? "mp4" : ext)
+        // Seed a 0% record so the UI shows the job immediately.
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: destination, bytes: 0, progress: 0,
+                                    metadata: metadata))
+        refreshRecords()
+        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
+                           server: server, token: token)
+        cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
+        do {
+            recordDownloadDiagnostic("downloads.start", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "choice": .label(choiceLabel),
+                "url_shape": .urlShape(url),
+                "expected_bytes": .bytes(part.size),
+            ])
+            try session.start(ratingKey: ratingKey, from: url, to: destination,
+                              expectedBytes: part.size)
+            refreshRecords()
+        } catch let error as DownloadError {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "error": .label(String(describing: error)),
+            ])
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            refreshRecords()
         }
     }
 
@@ -823,7 +864,10 @@ public final class DownloadManager {
         var mintedPlaySessionId: String?
         do {
             switch choice {
-            case .original:
+            case .original, .existingVersion:
+                // #112: `.existingVersion` is a Plex-only lane (server-generated Plex Versions). It
+                // is never produced for Jellyfin, but the switch must be exhaustive — treat it as a
+                // plain original static download here.
                 let ext = part?.container ?? media?.container ?? "mp4"
                 destination = store.destinationURL(ratingKey: ratingKey,
                                                    ext: ext.isEmpty ? "mp4" : ext)
@@ -995,7 +1039,7 @@ public final class DownloadManager {
             // stream → network-bound, range-resumable, not marked.
             switch choice {
             case .optimize, .optimizeCompatible: transcodeSourcedDownloads.insert(ratingKey)
-            case .original: break
+            case .original, .existingVersion: break
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
@@ -1245,7 +1289,9 @@ public final class DownloadManager {
         enum EmbyDownloadRoute { case original, compatibleRemux, transcode }
         let route: EmbyDownloadRoute
         switch choice {
-        case .original:
+        case .original, .existingVersion:
+            // #112: `.existingVersion` is Plex-only; never produced for Emby, but the switch must be
+            // exhaustive — treat it as a plain original negotiation here.
             route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
         case .optimizeCompatible:
             // Honour the compatible lane when the source video is stream-copy eligible. The
@@ -1476,6 +1522,19 @@ public final class DownloadManager {
                                                                server: server,
                                                                token: token,
                                                                identity: self.appModel.identity) ?? item
+            // #112: a row that downloaded an EXISTING server version (a non-source `Media` index on
+            // the `.original` static lane) retries by re-downloading that exact version as-is — NOT
+            // by re-probing into an optimize/render. Honour it only while that version still exists
+            // on the server; otherwise fall through to the normal source-quality retry below.
+            if mediaIndex > 0,
+               metadata?.resolvedDownloadLane() == .original,
+               currentItem.media?.indices.contains(mediaIndex) == true {
+                self.store.remove(ratingKey: ratingKey)
+                await self.download(currentItem, choice: .existingVersion,
+                                    mediaIndex: mediaIndex, partIndex: partIndex)
+                self.refreshRecords()
+                return
+            }
             let probe = await self.directPlayProbe(for: currentItem, server: server, token: token,
                                                    mediaIndex: mediaIndex, partIndex: partIndex)
             let media = currentItem.media?.indices.contains(mediaIndex) == true ? currentItem.media?[mediaIndex] : currentItem.media?.first
@@ -1789,7 +1848,9 @@ public final class DownloadManager {
         let part = media?.part[safe: partIndex]
         let mediaBytes: Int?
         switch choice {
-        case .original:
+        case .original, .existingVersion:
+            // #112: an existing server version is a static byte-for-byte part transfer, so the
+            // chosen part's size is the storage estimate (same as `.original`).
             mediaBytes = part?.size
         case .optimizeCompatible:
             // #83: the video stream is COPIED, so the output is close to the original size (audio may
@@ -1921,6 +1982,8 @@ public final class DownloadManager {
         switch choice {
         case .original:
             return "original"
+        case .existingVersion:
+            return "existing_version"
         case .optimize(let targetName):
             return "optimize:\(targetName)"
         case .optimizeCompatible:
@@ -1934,6 +1997,10 @@ public final class DownloadManager {
     private static func downloadLane(for choice: DownloadChoice) -> DownloadLane {
         switch choice {
         case .original: return .original
+        // #112: an existing server version downloads as a static, range-resumable part — the same
+        // transfer characteristics as `.original`, so it persists/resumes on the `.original` lane.
+        // (The version is addressed by the row's persisted `mediaIndex`.)
+        case .existingVersion: return .original
         case .optimize: return .optimize
         case .optimizeCompatible: return .compatibleRemux
         }
