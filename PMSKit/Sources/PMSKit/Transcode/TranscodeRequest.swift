@@ -10,7 +10,7 @@ import Foundation
 /// has a long-standing bug where it passes `partIndex=mediaIndex` (research/09); we do
 /// NOT replicate that — `mediaIndex` and `partIndex` are independent here.
 public struct TranscodeRequest: Sendable, Equatable {
-    /// Server base URL, e.g. `https://192.168.1.10:32400`.
+    /// Server base URL, e.g. `https://192.0.2.10:32400`.
     public let server: URL
     /// Plex auth token, sent as the `X-Plex-Token` QUERY param (not a header) on streaming URLs.
     public let token: String

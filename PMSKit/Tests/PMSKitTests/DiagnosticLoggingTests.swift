@@ -19,12 +19,12 @@ final class DiagnosticLoggingTests: XCTestCase {
     }
 
     func testRedactionRemovesSecretsUrlsHostsPathsFilenamesAndRawIdentifiers() {
-        let raw = "https://alice.example.com:32400/library/metadata/1?X-Plex-Token=secret-token clientIdentifier=ABCDEF0123456789ABCDEF0123456789 host=192.168.1.44 file=/Users/alice/Movies/Blade Runner 2049.mkv email=alice@example.com"
+        let raw = "https://alice.example.com:32400/library/metadata/1?X-Plex-Token=secret-token clientIdentifier=ABCDEF0123456789ABCDEF0123456789 host=192.0.2.44 file=/Users/alice/Movies/Blade Runner 2049.mkv email=alice@example.com"
         let redacted = DiagnosticRedactor.redact(raw)
 
         XCTAssertFalse(redacted.contains("secret-token"))
         XCTAssertFalse(redacted.contains("alice.example.com"))
-        XCTAssertFalse(redacted.contains("192.168.1.44"))
+        XCTAssertFalse(redacted.contains("192.0.2.44"))
         XCTAssertFalse(redacted.contains("/Users/alice"))
         XCTAssertFalse(redacted.contains("Blade Runner 2049.mkv"))
         XCTAssertFalse(redacted.contains("alice@example.com"))

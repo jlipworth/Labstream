@@ -26,7 +26,7 @@ public enum TimelineRequest {
     /// `key` IS the bare number.
     ///
     /// - Parameters:
-    ///   - server: base server URL (scheme+host+port), e.g. `https://192.168.1.10:32400`.
+    ///   - server: base server URL (scheme+host+port), e.g. `https://192.0.2.10:32400`.
     ///   - token: Plex auth token (sent both as a query param and a header).
     ///   - identity: client identity for the standard `X-Plex-*` headers.
     ///   - ratingKey: bare numeric rating key, e.g. `"101"`.

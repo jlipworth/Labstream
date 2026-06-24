@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let server = URL(string: "https://192.168.1.10:32400")!
+private let server = URL(string: "https://192.0.2.10:32400")!
 private let id = ClientIdentity(clientIdentifier: "CID",
                                 product: "VisionPlay",
                                 version: "0.1.0",
@@ -214,7 +214,7 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let url = MusicRequest.trackStreamURL(server: server, token: "tok",
                                           partKey: "library/parts/123/456/file.mp3")
     #expect(url.absoluteString
-        == "https://192.168.1.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
+        == "https://192.0.2.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
     // Inline playback: download=1 would force attachment disposition.
     #expect(url.absoluteString.contains("download") == false)
 }
@@ -224,7 +224,7 @@ private let id = ClientIdentity(clientIdentifier: "CID",
                                           partKey: "/library/parts/123/456/file.mp3")
     #expect(url.path == "/library/parts/123/456/file.mp3")
     #expect(url.absoluteString
-        == "https://192.168.1.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
+        == "https://192.0.2.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
 }
 
 @Test func trackStreamURLPercentEncodesReservedQuerySeparators() throws {

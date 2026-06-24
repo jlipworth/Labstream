@@ -53,18 +53,8 @@ struct LiveEmbyDownloadProbeTests {
         }
     }
 
-    /// Strip token / api_key value AND scheme+host before logging. The repo will be public.
-    private func redact(_ string: String, token: String, server: URL) -> String {
-        var out = string
-        if !token.isEmpty { out = out.replacingOccurrences(of: token, with: "<redacted-token>") }
-        if let scheme = server.scheme, let host = server.host {
-            let port = server.port.map { ":\($0)" } ?? ""
-            out = out.replacingOccurrences(of: "\(scheme)://\(host)\(port)", with: "<server>")
-            out = out.replacingOccurrences(of: host, with: "<host>")
-        }
-        out = out.replacingOccurrences(of: #"(?i)(api_key=)[^&\s"]+"#, with: "$1<redacted>", options: .regularExpression)
-        return out
-    }
+    // Scrubbing is centralized in `LiveProbeConfig.redact` (shared by every Plex + Emby probe);
+    // its default credential-key set already covers `api_key`.
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -103,7 +93,7 @@ struct LiveEmbyDownloadProbeTests {
             let response = try EmbyPlaybackInfoResponse.decode(from: data)
             decision = try EmbyPlayback.downloadDecision(response: response)
             mintedPlaySessionId = decision.playSessionId
-            let safeTU = decision.transcodingURL.map { redact($0, token: cfg.token, server: cfg.server) } ?? "nil"
+            let safeTU = decision.transcodingURL.map { LiveProbeConfig.redact($0, token: cfg.token, server: cfg.server) } ?? "nil"
             print(">>> LIVE [downloadDecision] directPlay=\(decision.supportsDirectPlay) size=\(decision.size.map(String.init) ?? "nil") container=\(decision.container ?? "nil") reasons=\(decision.transcodeReasons) transcodingUrl=\(safeTU)")
             // The download profile must negotiate a single-file (non-HLS) transcode for MKV.
             if let tu = decision.transcodingURL {

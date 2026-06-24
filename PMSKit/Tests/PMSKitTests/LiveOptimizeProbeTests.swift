@@ -26,29 +26,23 @@ import FoundationNetworking
 struct LiveOptimizeProbeTests {
 
     private struct LiveConfig {
-        let server: URL
-        let token: String
+        let base: LiveProbeConfig
         let metadataKey: String          // /library/metadata/<ratingKey>
         let ratingKey: String
         let title: String
-        let identity: ClientIdentity
+        var server: URL { base.server }
+        var token: String { base.token }
+        var identity: ClientIdentity { base.identity }
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
-                  let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty,
+            guard let base = LiveProbeConfig(env),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
-            self.server = server
-            self.token = token
+            self.base = base
             self.metadataKey = metadataKey
             self.ratingKey = (metadataKey as NSString).lastPathComponent
             self.title = env["PLEX_LIVE_TITLE"] ?? "VisionPlay Probe Optimize"
-            self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-                product: "VisionPlay",
-                version: "0.1.0",
-                deviceName: "VisionPlay Live Probe")
         }
     }
 
@@ -61,22 +55,25 @@ struct LiveOptimizeProbeTests {
                     headers: PlexHeaders.standard(identity: cfg.identity, token: cfg.token))
     }
 
-    /// Send + dump status, headers of interest, and raw body.
+    /// Send + dump status, headers of interest, and raw body. The raw body carries real media
+    /// titles/paths, so it is scrubbed through `LiveProbeConfig.redact` before logging (public repo).
+    /// Returns (body, status) or nil on a transport error.
     @discardableResult
-    private func dump(_ label: String, _ req: PlexRequest) async -> Data? {
+    private func dump(_ label: String, _ req: PlexRequest, _ cfg: LiveConfig) async -> (Data, Int)? {
         do {
             let (data, response) = try await URLSession.shared.data(for: req.urlRequest())
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? -1
             let contentLength = http?.value(forHTTPHeaderField: "Content-Length") ?? "nil"
-            let body = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-utf8>"
+            let rawBody = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-utf8>"
+            let body = LiveProbeConfig.redact(rawBody, token: cfg.token, server: cfg.server)
             print("""
             >>> LIVE [\(label)] HTTP \(status), Content-Length=\(contentLength), \(data.count) bytes
             >>> LIVE [\(label)] body:
             \(body)
             >>> LIVE [\(label)] end body
             """)
-            return data
+            return (data, status)
         } catch {
             print(">>> LIVE [\(label)] ERROR: \(error)")
             return nil
@@ -91,14 +88,18 @@ struct LiveOptimizeProbeTests {
 
         // 1. Background-processing playlist: GET /playlists?type=42 → read its `key`.
         await dump("playlists.type42",
-                   request(cfg, path: "/playlists", query: [.init(name: "type", value: "42")]))
+                   request(cfg, path: "/playlists", query: [.init(name: "type", value: "42")]), cfg)
 
         // 2. Server's real media-processing targets (name + targetTagID). The exact path is
         //    what we're confirming; try the best-known endpoint and log whatever comes back.
-        await dump("mediaProcessingTargets", request(cfg, path: "/media/processing/targets"))
+        await dump("mediaProcessingTargets", request(cfg, path: "/media/processing/targets"), cfg)
 
-        // 3. Item metadata BEFORE optimize — snapshot existing Media/Part ids.
-        await dump("metadata.before", request(cfg, path: cfg.metadataKey))
+        // 3. Item metadata BEFORE optimize — snapshot existing Media/Part ids. This is a
+        //    deterministic authenticated GET: assert it succeeds so the probe fails loudly on an
+        //    unreachable server / bad token instead of "passing" green. (The experimental optimize
+        //    POSTs below stay logged-only — discovering their accepted shape is the point.)
+        let before = await dump("metadata.before", request(cfg, path: cfg.metadataKey), cfg)
+        #expect(before?.1 == 200, "metadata.before expected HTTP 200, got \(before?.1.description ?? "transport error")")
 
         // 4. Attempt to enqueue an optimize via the playlist `items` grammar. We POST to the
         //    conventional background-processing items path; READ THE STATUS/BODY to learn the
@@ -116,15 +117,15 @@ struct LiveOptimizeProbeTests {
             .init(name: "Item[MediaSettings][videoResolution]", value: "1920x1080"),
         ]
         await dump("optimize.post",
-                   request(cfg, path: "/playlists/items", method: "POST", query: optimizeItems))
+                   request(cfg, path: "/playlists/items", method: "POST", query: optimizeItems), cfg)
 
         // 5. Item metadata AFTER optimize — show how the new optimized Media/Part appears
         //    (diff its ids against step 3). May need a delay before the part materializes.
-        await dump("metadata.after", request(cfg, path: cfg.metadataKey))
+        await dump("metadata.after", request(cfg, path: cfg.metadataKey), cfg)
 
         // 6. Static-part Content-Length: HEAD the FIRST existing part with ?download=1 and
         //    confirm a real Content-Length (proves the static-file download premise).
-        if let data = await dump("metadata.forParts", request(cfg, path: cfg.metadataKey)),
+        if let (data, _) = await dump("metadata.forParts", request(cfg, path: cfg.metadataKey), cfg),
            let decoded = try? JSONDecoder().decode(MetadataResponse.self, from: data),
            let partKey = decoded.mediaContainer.metadata.first?.media?.first?.part.first?.key {
             var headReq = request(cfg, path: partKey,
@@ -132,7 +133,7 @@ struct LiveOptimizeProbeTests {
                                           .init(name: "X-Plex-Token", value: cfg.token)])
             headReq = PlexRequest(url: headReq.url, method: "HEAD",
                                   queryItems: headReq.queryItems, headers: headReq.headers)
-            await dump("part.download.head", headReq)
+            await dump("part.download.head", headReq, cfg)
         }
 
         print(">>> LIVE optimize discovery complete — read the lines above for the contract.")

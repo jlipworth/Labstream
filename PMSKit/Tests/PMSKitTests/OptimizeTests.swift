@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let server = URL(string: "https://192.168.1.10:32400")!
+private let server = URL(string: "https://192.0.2.10:32400")!
 private let id = ClientIdentity(clientIdentifier: "CID",
                                 product: "VisionPlay",
                                 version: "0.1.0",
@@ -13,7 +13,7 @@ private let id = ClientIdentity(clientIdentifier: "CID",
                                    ratingKey: "101", title: "Blade Runner",
                                    targetTagID: .tv1080p8Mbps)
     #expect(r.url.path.contains("optimize"))
-    #expect(r.method == "PUT" || r.method == "POST")   // pinned to PUT per python-plexapi
+    #expect(r.method == "PUT")   // pinned to PUT per python-plexapi (Plex optimize/sync requires PUT)
     func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
     #expect(v("title") == "Blade Runner")
 }
@@ -68,5 +68,5 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let url = OptimizeRequest.downloadURL(server: server, token: "tok",
                                           partKey: "/library/parts/55/file.mp4")
     #expect(url.path == "/library/parts/55/file.mp4")
-    #expect(url.host == "192.168.1.10")
+    #expect(url.host == "192.0.2.10")
 }

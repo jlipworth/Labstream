@@ -14,31 +14,25 @@ import FoundationNetworking
 struct LiveDownloadProbeTests {
 
     private struct LiveConfig {
-        let server: URL
-        let token: String
+        let base: LiveProbeConfig
         let metadataKey: String
         let maxVideoBitrateKbps: Int
         let mediaIndex: Int
         let partIndex: Int
-        let identity: ClientIdentity
+        var server: URL { base.server }
+        var token: String { base.token }
+        var identity: ClientIdentity { base.identity }
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
-                  let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty,
+            guard let base = LiveProbeConfig(env, deviceName: "VisionPlay Live Download Probe"),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
-            self.server = server
-            self.token = token
+            self.base = base
             self.metadataKey = metadataKey
             self.maxVideoBitrateKbps = env["PLEX_LIVE_MAX_KBPS"].flatMap(Int.init) ?? 200_000
             self.mediaIndex = env["PLEX_LIVE_MEDIA_INDEX"].flatMap(Int.init) ?? 0
             self.partIndex = env["PLEX_LIVE_PART_INDEX"].flatMap(Int.init) ?? 0
-            self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-                product: "VisionPlay",
-                version: "0.1.0",
-                deviceName: "VisionPlay Live Download Probe")
         }
     }
 
@@ -80,7 +74,9 @@ struct LiveDownloadProbeTests {
             return
         }
 
-        let (metadataData, _) = try await send("metadata", request(cfg, path: cfg.metadataKey))
+        let (metadataData, metadataHTTP) = try await send("metadata", request(cfg, path: cfg.metadataKey))
+        #expect((200..<300).contains(metadataHTTP?.statusCode ?? -1),
+                "metadata expected 2xx, got \(metadataHTTP?.statusCode ?? -1)")
         let metadata = try JSONDecoder().decode(MetadataResponse.self, from: metadataData)
         guard let item = metadata.mediaContainer.metadata.first else {
             print(">>> DL route=optimize reason=no_metadata")
@@ -103,7 +99,9 @@ struct LiveDownloadProbeTests {
                                          sessionID: "live-download-probe-\(UUID().uuidString)",
                                          mediaIndex: cfg.mediaIndex,
                                          partIndex: cfg.partIndex)
-        let (decisionData, _) = try await send("directPlayProbe", transcode.directPlayProbeRequest())
+        let (decisionData, decisionHTTP) = try await send("directPlayProbe", transcode.directPlayProbeRequest())
+        #expect((200..<300).contains(decisionHTTP?.statusCode ?? -1),
+                "directPlayProbe expected 2xx, got \(decisionHTTP?.statusCode ?? -1)")
         let decision = try JSONDecoder().decode(DecisionResponse.self, from: decisionData)
         let eligibility = OfflineDownloadDecision.originalEligibility(decision: decision, part: part)
 
