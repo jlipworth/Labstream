@@ -119,25 +119,39 @@ redirect to `triggerConvertAndDownload` instead. Unchanged:
 Net: every Emby download that isn't already a direct copy becomes a prepare-then-download,
 hence resumable.
 
-### Quality default
+### Quality — honor the existing picker (Plex parity)
 
-Default `profile:"mobile"` + `quality:"8000000"` (highest non-`original` tier → h264/mp4,
-max compatibility, ~8 Mbps cap). Surfacing a quality picker and the 8 Mbps cap caveat to
-the user is a follow-up, not part of this spec.
+`DownloadOptionsSheet` already offers a full quality picker (Original video quality, 4K
+40 Mbps, 1080p 20/12/10/8 Mbps, 720p 4/3/2 Mbps, 480p 1.5 Mbps) that drives the Plex
+optimize targets. The convert lane honors the **same** picker for parity: each preset maps
+to an Emby convert `quality` (bitrate) + `profile`/resolution cap. h264/mp4 output
+(direct-play on visionOS) is the constant.
+
+Mapping detail (one live-verified gotcha): the `originalmediafolder` target **rejects the
+literal `quality:"original"`** (HTTP 500). So the picker's "Original video quality" maps to
+a **custom profile** at the source bitrate/resolution (keep-quality), not the `"original"`
+token. Bitrate presets map directly (`"8000000"` etc.); resolution caps (4K/1080p/720p/
+480p) map via the profile's max width/height. The exact custom-profile mapping for
+keep-original is confirmed during implementation (rip the web UI's custom-profile request
+if needed).
 
 ## State & UI
 
 - New `DownloadRecord` status `.preparing` (distinct from `.downloading`) carrying
   server-side `Progress` (0–100). UI: "Preparing on server… N%", then transitions to the
   normal download progress once bytes flow.
-- Cancel during `.preparing` → DELETE the job (it's ours, via the marker) and drop the
-  record.
+- **Cancel = delete the row (Plex parity).** No new cancel UI. The existing
+  `delete(ratingKey:)` gesture handles it: for Plex it cancels the transfer and the
+  stale-job cleanup removes the optimize queue item; for Emby, because we persist the Sync
+  `jobId` in record metadata, `delete` of a `.preparing` row additionally issues
+  `DELETE /Sync/Jobs/{id}` to kill the server-side conversion (verified working live).
 
 ## Error handling
 
-- Create 4xx/5xx → fail the record with the server message; do not silently fall back to
-  streaming transcode (that would reintroduce the non-resumable behavior we're removing —
-  but offer a retry).
+- Create 4xx/5xx → fail the record with the server message and **offer retry only**. No
+  "stream instead" fallback — that would silently reintroduce the non-resumable behavior
+  this feature removes. (Failures are realistically network / server-error, so retry is
+  the right and only escape.)
 - Job `Failed`/`Cancelled` server-side → fail the record, keep the marker job for
   diagnostics, surface "server conversion failed."
 - Converted source not found after `Completed` → fail with a diagnostic; do not download
@@ -155,11 +169,19 @@ the user is a follow-up, not part of this spec.
   confirm offline playback. Verify the converted file persists for a second instant
   (reuse) download.
 
-## Open questions for review
+## Resolved decisions (review pass 2026-06-25)
 
-1. Quality default — ship `mobile`/8 Mbps now, picker later? (recommended) Or block on a
-   picker?
-2. On create failure, retry-only vs. offer a one-time "stream instead" escape hatch
-   (non-resumable)?
-3. Should `.preparing` jobs be cancelable from the existing downloads UI, or is
-   swipe-to-delete enough?
+1. **Quality:** honor the existing picker for full Plex parity (no "later"); map each
+   preset to Emby `quality`/`profile`. "Original video quality" → custom profile at source
+   bitrate/res (literal `"original"` 500s on `originalmediafolder`).
+2. **Create failure:** retry-only; no streaming fallback.
+3. **Cancel:** reuse the existing delete-the-row gesture; for Emby it also issues
+   `DELETE /Sync/Jobs/{id}` via the persisted job id. No new UI.
+
+## Remaining implementation-time unknown
+
+- The exact Emby request for a **keep-original-quality / resolution-capped custom
+  profile** (the picker's non-bitrate presets). Verified: literal `quality:"original"`
+  500s; bitrate tiers + `profile:"mobile"` work. The custom-profile mapping is captured
+  live (web UI rip) as the first implementation step if the documented `quality:"custom"` +
+  `bitrate` + profile-resolution fields don't validate directly.
