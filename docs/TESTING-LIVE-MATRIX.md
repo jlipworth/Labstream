@@ -47,8 +47,8 @@ on-device behavior (does AVPlayer render the burned pixels?) stays device-only.
 | Server/backend selection & sign-in (Plex link code, Jellyfin, Emby Connect PIN) | `PinAuthTests`, `EmbyAuthTests`, `EmbyConnectTests`, `JellyfinAuthTests`, `PlexAccountTests` | `LiveEmbyProbe` (auth + `System/Info/Public`) | Checklist A (link code, Emby PIN UX) |
 | Resource/server discovery | `ResourceDiscoveryTests`, `UpstreamConnectionTests` | *(gap — covered indirectly by every Plex probe's connect)* | Checklist A |
 | Home rails / hubs load | `HomeRailsLoadTests`, `HubsResponse` decode in `DecodingTests` | *(gap)* | Checklist A/B |
-| Library grid browse + paging | `MediaBrowserLibraryGridPolicyTests`, `PagingPageWindowTests`, `BrowseUIGateTests`, `LibraryVisibilityTests`, `AlphabetBucketTests` | `LiveEmbyProbe` (browse + DTO mapping); *(Plex browse: gap)* | Checklist B |
-| TV hierarchy (show → season → episode) | `TVHierarchyTests`, `EpisodeOrderingTests`, `ChildrenRequest` | *(gap)* | Checklist B |
+| Library grid browse + paging | `MediaBrowserLibraryGridPolicyTests`, `PagingPageWindowTests`, `BrowseUIGateTests`, `LibraryVisibilityTests`, `AlphabetBucketTests` | `LiveEmbyProbe` (browse + DTO mapping); **`LivePlexBrowseProbe`** (sections + grid + paging) | Checklist B |
+| TV hierarchy (show → season → episode) | `TVHierarchyTests`, `EpisodeOrderingTests`, `ChildrenRequest` | **`LivePlexBrowseProbe`** (`/children` traversal; parent/grandparent ids chain coherently) | Checklist B |
 | Movie version collapse | `MovieVersionCollapseTests` | *(gap)* | Checklist B |
 | Detail page (extended metadata: cast/rating/logo) | `ArtworkMetadataTests`, `DecodingTests` | *(gap)* | Checklist B |
 | Music browse/filter/playlists | `MusicFilterTests`, `MusicRequestTests`, `PlaylistRequestTests` | *(gap)* | Checklist C |
@@ -71,9 +71,9 @@ on-device behavior (does AVPlayer render the burned pixels?) stays device-only.
 | Direct-play / compatible-remux routing | `CompatibleRemuxEligibilityTests`, `CompatibleRemuxRequestTests`, `FinalTargetRebuildPolicyTests` | `LiveDecisionProbe` (direct-play probe path) | Checklist B |
 | Playback failure / fallback policy | `PlaybackFailurePolicyTests`, `PlaybackStateTests` | *(gap — failure injection)* | Checklist B |
 | Scrub / seek / chapter controls | `PlaybackScrubStateTests`, `PlaybackSeekControlTests`, `ChapterSelectionTests` | *(gap)* | Checklist B |
-| Timeline / progress reporting & resume | `PlaybackStateTests`, `QueueMutationTests` | `LiveEmbyProbe` (Emby progress); *(Plex timeline: gap)* | Checklist B |
+| Timeline / progress reporting & resume | `PlaybackStateTests`, `QueueMutationTests` | `LiveEmbyProbe` (Emby progress); **`LivePlexTimelineProbe`** (`/:/timeline` report → `viewOffset` read-back round-trip) | Checklist B |
 | Queue mutation (play next / shuffle) | `QueueMutationTests` | *(gap)* | Checklist B/C |
-| Session stop / transcode cleanup | `MediaSessionProxyTests` | `LiveEmbyProbe` (active-encoding stop); *(Plex stop: gap)* | Checklist B |
+| Session stop / transcode cleanup | `MediaSessionProxyTests` | `LiveEmbyProbe` (active-encoding stop); **`LivePlexTimelineProbe`** (`TranscodeRequest.stop` ends a started session) | Checklist B |
 | Cinema/expanded routing | `CinemaExitRoutingTests`, `SystemEntryRoutingTests` | n/a (immersive space) | Checklist B (device-only) |
 
 ## 4. Subtitles
@@ -121,17 +121,16 @@ and [`scripts/live-subtitle-burn-probe.sh`](../scripts/live-subtitle-burn-probe.
 
 ## Coverage gaps worth filling next (not built here — YAGNI)
 
-The matrix names every *(gap)* explicitly so the backlog is visible rather than implied. The
-highest-value live probes still missing, in rough priority:
+The matrix names every *(gap)* explicitly so the backlog is visible rather than implied. The two
+highest-value Plex gaps are now built: **`LivePlexBrowseProbe`** (sections + grid + TV hierarchy)
+and **`LivePlexTimelineProbe`** (progress round-trip + session stop). Still missing, in rough
+priority:
 
-1. **Plex browse + TV hierarchy live probe** — the Emby lane has `LiveEmbyProbe` proving browse +
-   DTO mapping; Plex browse/sections/children have unit coverage but no live wire-shape probe.
-2. **Plex timeline/progress + session-stop live probe** — Emby has both; Plex resume round-trip and
-   transcode-stop are unit-tested but not live-proven.
-3. **Live sidecar text-subtitle fetch** — the burn path is now live-proven (★); the *text/sidecar*
+1. **Live sidecar text-subtitle fetch** — the burn path is now live-proven (★); the *text/sidecar*
    path (`/library/streams/...` SRT/VTT fetch + parse) is only unit-tested.
-4. **Offline playback decision live probe** — proving a downloaded copy is preferred over a live
+2. **Offline playback decision live probe** — proving a downloaded copy is preferred over a live
    stream when present.
+3. **Queue mutation live probe** — play-next / shuffle play-queue ops are unit-tested only.
 
 Each would follow the exact same opt-in, env-gated, no-secret pattern as the existing probes.
 Adding one is: a `Live<Name>ProbeTests.swift`, a `scripts/live-<name>-probe.sh`, any new env vars

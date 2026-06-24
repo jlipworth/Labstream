@@ -35,6 +35,8 @@ server-side jobs — see "Cleanup / reset" below.)
 | **A transcode-requiring video** at a deep duration (≥1h) | Deep-offset segment priming + cap-forced transcode. | `LiveSegmentProbe` |
 | **A video with an embedded image-based subtitle track** (PGS/VOBSUB — e.g. a Blu-ray rip) | Burn-in must re-encode; image subs can't be sidecar'd, so they cleanly force `transcode`. | `LiveSubtitleBurnProbe` (★ #75 proof) |
 | **A downloadable item** (compatible local container) + **a transcode-only item** | Original-vs-optimizer download route decision. | `LiveDownloadProbe`, `LiveOptimizeProbe`, `LiveDownloadStatusProbe` |
+| **A library section key + a TV show** (show with seasons + episodes) | Sections list, item grid + paging, and the show→season→episode `/children` traversal with coherent parent/grandparent ids. | `LivePlexBrowseProbe` |
+| **A progress-tracking video item on a DEDICATED test account** | `/:/timeline` progress report → `viewOffset` read-back round-trip, and a startable transcode session to stop. Writes a resume point, so it must target a throwaway account. | `LivePlexTimelineProbe` |
 | **(Emby lane) an Emby server, user id, and item id** | Emby auth/browse/playback/download wire shape. | `LiveEmbyProbe`, `LiveEmbyDownloadProbe` |
 
 **Stability matters more than realism.** Pin metadata keys / item ids that will not be re-scanned
@@ -56,6 +58,9 @@ inject the same names as masked secrets.
 | `PLEX_LIVE_METADATA_KEY` | decision/segment probes | Item key, e.g. `/library/metadata/12345`. |
 | `PLEX_LIVE_SUBTITLE_METADATA_KEY` | `LiveSubtitleBurnProbe` | Item with an embedded image-based subtitle track. Falls back to `PLEX_LIVE_METADATA_KEY`. |
 | `PLEX_LIVE_SUBTITLE_STREAM_ID` | `LiveSubtitleBurnProbe` (optional) | Pin a specific subtitle stream id; otherwise the probe auto-discovers the first image-based subtitle. |
+| `PLEX_LIVE_SECTION_KEY` | `LivePlexBrowseProbe` | A library section key (from `/library/sections`, e.g. `1`). |
+| `PLEX_LIVE_SHOW_METADATA_KEY` | `LivePlexBrowseProbe` | A TV show item — bare ratingKey or `/library/metadata/<id>`; the probe extracts the bare key for the `/children` traversal. |
+| `PLEX_LIVE_TIMELINE_OFFSET_SECONDS` | `LivePlexTimelineProbe` (optional) | Offset (s) to report and read back; default 120. |
 | `PLEX_LIVE_TITLE` | `LiveOptimizeProbe` | Title for the optimize discovery probe. |
 | `PLEX_LIVE_MAX_KBPS`, `PLEX_LIVE_OFFSET_SECONDS`, `PLEX_LIVE_SEGMENTS`, `PLEX_LIVE_MEDIA_INDEX`, `PLEX_LIVE_PART_INDEX`, `PLEX_LIVE_CLIENT_ID`, `PLEX_LIVE_POLLS`, `PLEX_LIVE_POLL_INTERVAL_SECONDS` | various (optional) | Tunables; sensible defaults baked into each probe. |
 
@@ -72,18 +77,25 @@ point at an alternate env file path.
 ## Cleanup / reset expectations
 
 - **Read-only probes** (`LiveDecisionProbe`, `LiveSegmentProbe`, `LiveSubtitleBurnProbe`,
-  `LiveDownloadStatusProbe`, browse/metadata reads): no server-side mutation. Nothing to clean up.
-  The subtitle-burn probe only asks the **decision** endpoint — it does not open a `start.m3u8`
-  transcode session — so it leaves no FFmpeg job behind.
-- **Job-starting probes** (`LiveDownloadProbe`, `LiveOptimizeProbe`, `LiveEmbyDownloadProbe`, and
-  any future probe that hits `start.m3u8`): may spawn a server-side transcode/optimize. The CI
-  server should run a **periodic reaper** (or the suite a teardown step) that cancels orphaned
-  optimize/transcode sessions for the test account between runs. `TranscodeRequest.stop(...)` and
-  the Emby `activeEncodingStopRequest` exist for graceful teardown; a probe that opens a session
-  should stop it. Treat the test account's active-session list as expected-empty at run start.
+  `LiveDownloadStatusProbe`, `LivePlexBrowseProbe`, browse/metadata reads): no server-side mutation.
+  Nothing to clean up. The subtitle-burn and browse probes only read/ask the **decision** or
+  metadata endpoints — they do not open a `start.m3u8` transcode session — so they leave no FFmpeg
+  job behind.
+- **Job-starting probes** (`LiveDownloadProbe`, `LiveOptimizeProbe`, `LiveEmbyDownloadProbe`,
+  `LivePlexTimelineProbe`, and any future probe that hits `start.m3u8`): may spawn a server-side
+  transcode/optimize. The CI server should run a **periodic reaper** (or the suite a teardown step)
+  that cancels orphaned optimize/transcode sessions for the test account between runs.
+  `TranscodeRequest.stop(...)` and the Emby `activeEncodingStopRequest` exist for graceful
+  teardown; a probe that opens a session should stop it (`LivePlexTimelineProbe` calls
+  `TranscodeRequest.stop` on the session it starts, and asserts the stop returns 2xx). Treat the
+  test account's active-session list as expected-empty at run start.
+- **Progress writes are TEST-ACCOUNT ONLY.** `LivePlexTimelineProbe` POSTs a `/:/timeline` update,
+  which **mutates the item's resume point (`viewOffset`)**. It must run only against a dedicated
+  throwaway account so it never touches a real user's resume points. The probe makes this loud
+  (skip-line + script banner). If a fixed pristine resume state matters, reset the test item's
+  `viewOffset` between runs (re-report `time=0`, or `/:/unscrobble`).
 - **No state accumulation.** Probes must not create library items, playlists, or persistent
-  downloads on the live server. Progress/timeline writes (if a future probe adds them) must target
-  the dedicated test account so they never touch a real user's resume points.
+  downloads on the live server.
 
 ## CI enablement
 
@@ -111,6 +123,8 @@ steps:
       - cd PMSKit
       - swift test --filter LiveSubtitleBurnProbe   # ★ #75 representative E2E proof
       - swift test --filter LiveDecisionProbe
+      - swift test --filter LivePlexBrowseProbe      # sections + grid + TV hierarchy
+      - swift test --filter LivePlexTimelineProbe    # progress round-trip + session stop (TEST ACCT)
       # add other Live*Probe filters as the live fixtures are provisioned
 ```
 
