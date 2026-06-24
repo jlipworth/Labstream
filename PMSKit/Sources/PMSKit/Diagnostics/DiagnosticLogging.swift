@@ -470,6 +470,7 @@ public struct DiagnosticReportContext: Sendable, Equatable {
 public enum DiagnosticReportRenderer {
     public static func render(context: DiagnosticReportContext,
                               events: [DiagnosticEvent],
+                              metricKitSummaries: [MetricKitDiagnosticSummary] = [],
                               maxEvents: Int = 80,
                               generatedAt: Date = Date()) -> String {
         let shownEvents = Array(events.suffix(max(0, maxEvents)))
@@ -501,6 +502,8 @@ public enum DiagnosticReportRenderer {
         lines.append("- Diagnostic logging enabled: \(context.loggingEnabled ? "yes" : "no")")
         lines.append("- Ring buffer events: \(events.count) total, showing last \(shownEvents.count)")
         lines.append("- Collection is local and export is user-initiated.")
+        lines.append("")
+        lines.append(contentsOf: MetricKitDiagnosticSummarizer.reportSection(for: metricKitSummaries))
         lines.append("")
         lines.append("Recent playback snapshot")
         if let snapshot = latestPlaybackSnapshot(in: events) {
