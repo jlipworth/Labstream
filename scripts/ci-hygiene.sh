@@ -194,6 +194,29 @@ if ((${#scan_paths[@]} > 0)); then
   )
 fi
 
+# Scrubbed signing identity — fingerprint guard (Apple Team ID OU + cert id).
+# Same one-way model as the host/IP guard above: the plaintext 10-char ids exist
+# nowhere in this repo, but any tracked file that reintroduces one hashes to a
+# listed digest and fails the build. The host/IP regex never matches a bare id,
+# so these need their own extraction pass.
+forbidden_id_digests='
+e8ca5e1278c94c76b351af689f194cd28094ecd15bbb8ea4d055a4579bfa2dfe
+047834168b9826ba6e2c297e12de4082820a8126ca50e15bb29f1c1e3543bc86
+'
+signing_id_re='[A-Za-z0-9]{10}'
+if ((${#scan_paths[@]} > 0)); then
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    digest="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]' | sha256_hex)"
+    if printf '%s\n' "$forbidden_id_digests" | grep -qxF "$digest"; then
+      fail "reintroduced a scrubbed Apple Team ID / signing cert id (matched a forbidden fingerprint)"
+    fi
+  done < <(
+    git grep -I -hE -- "$signing_id_re" -- "${scan_paths[@]}" 2>/dev/null \
+      | grep -oE "$signing_id_re" | sort -u
+  )
+fi
+
 
 if [[ -f pyproject.toml ]]; then
   if ! command -v uv >/dev/null 2>&1; then
