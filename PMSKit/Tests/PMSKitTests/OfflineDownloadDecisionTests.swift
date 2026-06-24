@@ -56,3 +56,33 @@ import Foundation
     #expect(OfflineDownloadDecision.containerLabel(part: part) == "m4v")
     #expect(OfflineDownloadDecision.isLocallyPlayableOriginal(part: part) == true)
 }
+
+// MARK: - #125 existing server-version offline gate
+
+@Test func existingVersionPlayableForMp4H264() {
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "h264") == true)
+}
+
+@Test func existingVersionPlayableForMp4Hevc() {
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "hevc") == true)
+    // HEVC aliases normalize and pass too.
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mov", videoCodec: "h265") == true)
+}
+
+@Test func existingVersionNotPlayableForMkv() {
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mkv", videoCodec: "h264") == false)
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "ts", videoCodec: "hevc") == false)
+}
+
+@Test func existingVersionFailsClosedOnUnknownContainer() {
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: nil, videoCodec: "h264") == false)
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "", videoCodec: "h264") == false)
+}
+
+@Test func existingVersionFailsClosedOnExoticOrUnknownCodec() {
+    // Right container, wrong/undecodable codec.
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "av1") == false)
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "mpeg2video") == false)
+    // Fail closed when the codec token is missing too (no preflight on this lane).
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: nil) == false)
+}
