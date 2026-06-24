@@ -9,6 +9,13 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: **reinstalling wipes the container → re-login
 required**.
 
+> **Automated coverage map (issue #75):** this checklist is the *manual* headset/sim pass. Its
+> automated counterpart — which mocked-unit / live-probe layer covers each screen, menu, playback,
+> download, profile and subtitle flow — is [`docs/TESTING-LIVE-MATRIX.md`](docs/TESTING-LIVE-MATRIX.md),
+> with live-server requirements + CI enablement in
+> [`docs/TESTING-LIVE-REQUIREMENTS.md`](docs/TESTING-LIVE-REQUIREMENTS.md). Device-only rows below
+> are exactly the ones those docs mark as manual gates.
+
 ---
 
 ## A. Sign-in & player fundamentals
