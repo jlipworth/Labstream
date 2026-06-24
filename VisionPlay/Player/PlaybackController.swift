@@ -1893,6 +1893,30 @@ final class PlaybackController {
         let offsetSeconds: Int? = if let resumeMs, resumeMs > 0 { resumeMs / 1000 } else { nil }
         let burnSubtitleStreamID = selectedBurnSubtitleStreamIDForCurrentPreferences()
 
+        // #118: PMS ignores the `subtitles=burn`/`subtitleStreamID` query params on the
+        // transcode URL for image-based (PGS/VOBSUB) subtitles — it only burns a subtitle that
+        // is *selected on the part*. So when we intend to burn, PUT the selection onto the part
+        // first (same mechanic as `selectAudioStream`), then build the transcode below. We
+        // deliberately do NOT deselect (`subtitleStreamID=0`) when not burning: non-burn text
+        // subs ride `subtitles=auto` as soft HLS renditions off the part's *selected* stream,
+        // so deselecting would suppress them.
+        if let burnSubtitleStreamID, let part = sourcePartForCurrentMedia() {
+            do {
+                try await client.send(StreamSelectionRequest.selectSubtitleStream(server: server,
+                                                                                  token: token,
+                                                                                  identity: identity,
+                                                                                  partID: part.id,
+                                                                                  subtitleStreamID: burnSubtitleStreamID))
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                NSLog("PlaybackController: #118 selected burn subtitle stream %d on part %d before transcode build",
+                      burnSubtitleStreamID, part.id)
+            } catch {
+                // Non-fatal: fall through and still request the transcode. The burn just won't
+                // apply (the pre-#118 behavior) rather than failing the whole stream start.
+                NSLog("PlaybackController: subtitle burn selection PUT failed: %@", Self.safeErrorSummary(error))
+            }
+        }
+
         let transcode = TranscodeRequest(server: server,
                                          token: token,
                                          identity: identity,
