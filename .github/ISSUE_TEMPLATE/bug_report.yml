@@ -1,0 +1,133 @@
+name: Bug report
+description: Report a problem with VisionPlay (playback, downloads, browse, music, subtitles, …).
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        VisionPlay talks only to **your own** Plex / Jellyfin / Emby server and sends
+        nothing to the developer, so this issue is the only thing we'll see — please
+        give us enough to reproduce it. The fastest, safest way to share context is the
+        built-in **diagnostic report** (Settings ▸ Diagnostics), which is redacted for
+        you. See the field near the bottom of this form.
+
+        Before filing, a quick scan of the [Support guide](https://github.com/jlipworth/VisionPlay/blob/main/SUPPORT.md)
+        may already answer common playback / sign-in / remote-access questions.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the problem.
+      placeholder: When I play a 4K HEVC movie over remote access, the screen stays black and the spinner never clears.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: Playback should start (or fall back to a transcoded stream).
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Number the steps so we can follow them exactly.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Media backend
+      description: Which server were you connected to?
+      options:
+        - Plex
+        - Jellyfin
+        - Emby
+        - Not sure / not relevant
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which part of the app does this involve?
+      options:
+        - Playback (streaming)
+        - Downloads / offline
+        - Browse / search / library
+        - Music
+        - Subtitles
+        - Sign-in / account
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: VisionPlay version and build
+      description: "From Settings ▸ About (Version and Build). Example: 1.2.0 (1)."
+      placeholder: "1.2.0 (1)"
+    validations:
+      required: true
+  - type: input
+    id: visionos-version
+    attributes:
+      label: visionOS version
+      description: "Settings ▸ General ▸ About on the headset. Example: visionOS 26.5."
+      placeholder: "26.5"
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Server type and version
+      description: >
+        The server product and version, if you know it (Settings ▸ About shows the
+        connected server's version). Do NOT include your server's name, URL, or IP.
+      placeholder: "Plex Media Server 1.40.x  /  Jellyfin 10.9.x  /  Emby 4.8.x"
+    validations:
+      required: false
+  - type: textarea
+    id: diagnostic-report
+    attributes:
+      label: Diagnostic report (redacted)
+      description: >
+        In the app, go to **Settings ▸ Diagnostics**, turn on **Enable diagnostic
+        logging**, reproduce the problem once, then tap **Send feedback to developer**
+        (or **Copy diagnostic report**) and paste it here. The report is automatically
+        redacted — it omits tokens, client identifiers, hostnames/IP addresses, full
+        URLs, usernames, library paths, filenames, and media titles. See the
+        [Report a bug guide](https://github.com/jlipworth/VisionPlay/blob/main/docs/REPORTING-BUGS.md)
+        for the full walkthrough. Optional, but it greatly speeds up a fix.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: >
+        Screenshots, video, frequency (always / sometimes), whether it's new since an
+        update, etc. Please make sure any screenshot or video does not reveal your
+        server address or media titles if you'd rather keep them private.
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy-ack
+    attributes:
+      label: Privacy check
+      description: This repository is public — everything in this issue is publicly visible.
+      options:
+        - label: >
+            I have reviewed everything I'm submitting (including the diagnostic report,
+            screenshots, and any logs) and removed anything I don't want public — in
+            particular tokens, my server's name/URL/IP, usernames, and media titles.
+          required: true
