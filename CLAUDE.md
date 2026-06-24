@@ -38,6 +38,41 @@ cd PMSKit && swift test
 New Swift files are picked up automatically (file-system-synchronized groups) — never
 edit the pbxproj to add one.
 
+### Installing on a physical Vision Pro (device testing)
+
+The simulator flow above builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install on
+hardware. A real headset needs a code-signed **device** build (product lands in
+`Debug-xros`, NOT `Debug-xrsimulator`):
+
+```sh
+# Headset must show "available (paired)" — "unavailable" means it's asleep/off-network.
+# Wake it, put it on the SAME Wi-Fi as this Mac, Developer Mode on
+# (Settings > Privacy & Security > Developer Mode), and this Mac trusted.
+xcrun devicectl list devices         # grab the Vision Pro's identifier (UDID)
+
+DEVID=<device-udid>
+rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xros/VisionPlay.app
+xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS,id=$DEVID" -configuration Debug \
+  -allowProvisioningUpdates DEVELOPMENT_TEAM=<your-team-id> build
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xros/VisionPlay.app | head -1)
+xcrun devicectl device install app --device "$DEVID" "$APP"
+```
+
+⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
+`error: No Account for Team "<id>"` / `No profiles for 'com.jlipworth.VisionPlay' were found`
+**even though** `security find-identity -p codesigning -v` shows a valid "Apple Development"
+cert. The keychain cert alone is NOT enough for CLI automatic provisioning — Xcode must have
+the matching Apple ID **account** signed in (Xcode → Settings → Accounts → + → Apple ID).
+**Claude cannot do this** (it needs the user's credentials), so when it surfaces, the fix is
+the user's to perform. Two paths:
+- **User signs the account into Xcode once**, then Claude re-runs the `xcodebuild` above.
+- **User installs straight from Xcode** (open the project, pick the headset, Run) — Xcode
+  signs interactively and is the most reliable path for a first device install.
+
+Device testing is otherwise the USER's half (the headset is the device-only gate); Claude
+owns the build/install command once signing is unblocked.
+
 ### Verification expectation — a green build is NOT "done"
 
 Compiling is necessary but not sufficient. Any time you change app code — yourself OR via
