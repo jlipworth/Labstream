@@ -31,7 +31,7 @@ Use live probes to confirm wire shape and server behavior before documenting a b
 
 ### LiveEmbyProbe gate
 
-The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](../scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
+The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
 
 It is opt-in and a no-op unless `EMBY_LIVE_SERVER`, `EMBY_LIVE_TOKEN`, `EMBY_LIVE_USER_ID`, and `EMBY_LIVE_ITEM_ID` are set, so plain `swift test` and CI stay hermetic. Credentials live ONLY in the gitignored `scripts/emby-live.env`; the script refuses to run if that file is somehow tracked by git. The probe redacts the token, `api_key`, `X-Emby-Token`, and the live scheme/host before printing any URL or header.
 
@@ -65,7 +65,7 @@ Keep these as manual Apple Vision Pro checks:
 - Jellyfin browse/playback/download request paths are implemented and unit-tested, but Jellyfin downloads still need explicit live validation before being called headset-proven.
 - Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are implemented (parallel lane), unit-tested, and the wire shape is live-proven via `LiveEmbyProbe`. Emby Connect PIN request/exchange shape is implemented and live-verified, with in-headset PIN UX still tracked in the manual checklist. Emby downloads/offline are not implemented. In-headset Emby playback/progress/cleanup remains a device-only gate.
 
-The manual checklist remains in [`../TESTING-CHECKLIST.md`](../TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
+The manual checklist remains in [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/VisionPlay/blob/main/TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
 
 ## Remaining Emby validation gates
 

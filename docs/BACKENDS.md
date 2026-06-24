@@ -1,6 +1,6 @@
 # Backends
 
-VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but the app has real Jellyfin and Emby login, browse, and playback code. Emby playback (sign-in, browse, playback-info stream resolution, progress, and active-encoding cleanup) was live-validated against a real Emby server; the original planning map lives in [`research/17-emby-backend-support.md`](research/17-emby-backend-support.md). Emby downloads/offline are not implemented yet.
+VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but the app has real Jellyfin and Emby login, browse, and playback code. Emby playback (sign-in, browse, playback-info stream resolution, progress, and active-encoding cleanup) was live-validated against a real Emby server; the original planning map lives in [`research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md). Emby downloads/offline are not implemented yet.
 
 ## Comparison
 
@@ -19,7 +19,7 @@ VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remain
 
 ## Abstraction rule
 
-Avoid inventing a broad backend protocol until the duplicated shape is proven. Plex, Jellyfin, and Emby differ in auth, stream resolution, header requirements, download semantics, and progress reporting. Keep shared code in pure helpers and model bridges; keep server-specific behavior explicit. The Emby lane is deliberately parallel to Jellyfin even though their wire shapes overlap heavily — a future shared "emby-family" seam is proposed (not yet built) in [`proposals/emby-jellyfin-code-sharing.md`](proposals/emby-jellyfin-code-sharing.md).
+Avoid inventing a broad backend protocol until the duplicated shape is proven. Plex, Jellyfin, and Emby differ in auth, stream resolution, header requirements, download semantics, and progress reporting. Keep shared code in pure helpers and model bridges; keep server-specific behavior explicit. The Emby lane is deliberately parallel to Jellyfin even though their wire shapes overlap heavily — a future shared "emby-family" seam is proposed (not yet built) in [`proposals/emby-jellyfin-code-sharing.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/proposals/emby-jellyfin-code-sharing.md).
 
 ## Current asymmetry
 
@@ -33,4 +33,4 @@ Emby uses `EmbyBrowseService` and the `EmbyLibrary`/`EmbyPlayback`/`EmbyAuth` re
 
 Only behavior that is implemented AND live-validated against a real Emby server is documented here as supported. Emby Connect PIN request/exchange shape is implemented and live-verified, but the in-headset PIN UX still needs the checklist smoke pass before calling it user-validated.
 
-Emby downloads/offline and LAN discovery remain unimplemented and must not be presented as supported. Keep [`research/17-emby-backend-support.md`](research/17-emby-backend-support.md) as the planning map for detailed wire notes and unbuilt slices.
+Emby downloads/offline and LAN discovery remain unimplemented and must not be presented as supported. Keep [`research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md) as the planning map for detailed wire notes and unbuilt slices.

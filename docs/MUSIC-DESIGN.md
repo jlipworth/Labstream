@@ -1,7 +1,7 @@
 # VisionPlay Music — Final Design (issues #17, #22)
 
 Status: approved design, 2026-06-10. Synthesized from three design explorations
-("pragmatic" base, with judge-endorsed grafts from "apple-native" and
+("pragmatic" base, with selected grafts from "apple-native" and
 "plexamp-faithful"). Companion docs: `docs/DEVELOPMENT.md` (platform findings),
 `TESTING-CHECKLIST.md` Section C.
 
@@ -245,7 +245,7 @@ cycling, error capsule, topTrailing ✕. Additions to the Up Next card:
   context-menu Move Up/Down actions.
 
 Lyrics pane, history-on-swipe-down, output picker: v2 or never (scope fence).
-v2 flourish (judge-endorsed, server-side, no client shaders): backdrop tint
+v2 flourish (server-side, no client shaders): backdrop tint
 via `/photo/:/transcode` `blur`/`blendColor` params.
 
 ### 4.3 MusicPlayerController — the ONLY controller surgery (additive)

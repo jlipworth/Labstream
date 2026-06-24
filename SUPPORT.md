@@ -31,6 +31,10 @@ VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server 
 
 ## Reporting a problem
 
+The fastest path is the [bug report form](https://github.com/jlipworth/VisionPlay/issues/new?template=bug_report.yml);
+see [docs/REPORTING-BUGS.md](docs/REPORTING-BUGS.md) for the full step-by-step guide
+(including what the diagnostic report does and does not include).
+
 Open an issue with steps to reproduce, your visionOS version, and the app
 version (Settings):
 
@@ -52,5 +56,5 @@ library paths, filenames, and media titles.
 
 ## Privacy
 
-See [PRIVACY.md](PRIVACY.md). VisionPlay collects no data and sends nothing to
+See [PRIVACY.md](https://github.com/jlipworth/VisionPlay/blob/main/PRIVACY.md). VisionPlay collects no data and sends nothing to
 the developer.
