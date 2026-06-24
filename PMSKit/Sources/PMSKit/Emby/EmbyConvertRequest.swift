@@ -80,9 +80,10 @@ public enum EmbyConvertRequest {
     /// Picker-preset → Emby convert (`quality`, `profile`, `bitrate`) mapping.
     ///
     /// The `originalmediafolder` target rejects the literal `quality:"original"` token (HTTP 500),
-    /// so "Original video quality" maps to the highest offered bitrate tier (8 Mbps) with
+    /// so "Original video quality" maps to a high keep-quality bitrate (`keepQualityBitrate`) with
     /// `profile:"tv"` — NOT `"original"`. Bitrate presets map to `quality:"custom"` +
-    /// `bitrate:<bps>` + `profile:"tv"`. An unrecognized label falls back to the 8 Mbps tier.
+    /// `bitrate:<bps>` + `profile:"tv"`. Live-verified (Emby 4.9.3): the target honors arbitrary
+    /// custom bitrates (40 Mbps accepted + actively transcoding), so there is NO 8 Mbps cap.
     public struct ConvertQuality: Sendable, Equatable {
         public let quality: String
         public let profile: String
@@ -95,36 +96,38 @@ public enum EmbyConvertRequest {
         }
     }
 
-    /// Highest bitrate tier offered by `originalmediafolder` (8 Mbps). Used both for the explicit
-    /// 1080p-8Mbps preset and as the keep-quality stand-in for "Original video quality".
-    public static let maxConvertBitrate = 8_000_000
+    /// Keep-quality stand-in bitrate for "Original video quality". The `originalmediafolder` target
+    /// rejects the literal `quality:"original"` token (HTTP 500), so we send a high custom bitrate
+    /// that preserves quality instead. Live-verified that arbitrary high bitrates are honored.
+    public static let keepQualityBitrate = 80_000_000
 
     /// Map a download-picker preset label to an Emby convert `(quality, profile, bitrate)`.
     ///
-    /// - "Original video quality" → highest bitrate (`maxConvertBitrate`) + `profile:"tv"`
+    /// - "Original video quality" → `keepQualityBitrate` (80 Mbps) + `profile:"tv"`
     ///   (the literal `"original"` token 500s on `originalmediafolder`).
-    /// - A bitrate preset (e.g. "1080p · 8 Mbps", "720p · 4 Mbps", "480p · 1.5 Mbps") →
-    ///   `quality:"custom"`, `bitrate:<bps>`, `profile:"tv"`.
-    /// - Unrecognized label → falls back to `maxConvertBitrate` (custom/tv).
+    /// - A bitrate preset (e.g. "4K 40 Mbps", "1080p 8 Mbps", "480p 1.5 Mbps") →
+    ///   `quality:"custom"`, `bitrate:<its true bps>`, `profile:"tv"` (no cap — Emby honors it).
+    /// - Unrecognized label → falls back to `keepQualityBitrate` (custom/tv).
     public static func convertQuality(forPresetLabel label: String) -> ConvertQuality {
         let normalized = label.lowercased()
 
         // "Original video quality" — never the literal "original" token (500s on this target).
         if normalized.contains("original") {
-            return ConvertQuality(quality: "custom", profile: "tv", bitrate: maxConvertBitrate)
+            return ConvertQuality(quality: "custom", profile: "tv", bitrate: keepQualityBitrate)
         }
 
         if let bps = bitrate(forPresetLabel: normalized) {
             return ConvertQuality(quality: "custom", profile: "tv", bitrate: bps)
         }
 
-        // Unknown preset → safest highest offered tier.
-        return ConvertQuality(quality: "custom", profile: "tv", bitrate: maxConvertBitrate)
+        // Unknown preset → keep-quality fallback.
+        return ConvertQuality(quality: "custom", profile: "tv", bitrate: keepQualityBitrate)
     }
 
-    /// Extract a bits-per-second value from a picker preset label (e.g. "1080p · 8 Mbps" → 8_000_000,
-    /// "480p · 1.5 Mbps" → 1_500_000). Caps at `maxConvertBitrate` (the target's 8 Mbps ceiling).
-    /// Returns nil when no "<n> Mbps" token is present.
+    /// Extract a bits-per-second value from a picker preset label (e.g. "4K · 40 Mbps" → 40_000_000,
+    /// "1080p · 8 Mbps" → 8_000_000, "480p · 1.5 Mbps" → 1_500_000). NOT capped: the
+    /// `originalmediafolder` target honors arbitrary custom bitrates (live-verified). Returns nil
+    /// when no "<n> Mbps" token is present.
     static func bitrate(forPresetLabel normalizedLabel: String) -> Int? {
         // Find a "<number> mbps" token; the number may be fractional (e.g. 1.5).
         guard let mbpsRange = normalizedLabel.range(of: "mbps") else { return nil }
@@ -144,8 +147,7 @@ public enum EmbyConvertRequest {
         if !current.isEmpty { lastNumber = Double(current) ?? lastNumber }
 
         guard let mbps = lastNumber, mbps > 0 else { return nil }
-        let bps = Int((mbps * 1_000_000).rounded())
-        return min(bps, maxConvertBitrate)
+        return Int((mbps * 1_000_000).rounded())
     }
 
     /// `POST {server}/Sync/Jobs` — create an Emby "Convert Media" job for `itemId` targeting

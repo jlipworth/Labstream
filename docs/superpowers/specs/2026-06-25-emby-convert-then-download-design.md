@@ -49,9 +49,11 @@ are placeholders):
   ```
   - `targetId:"originalmediafolder"` = "next to original files" (persistent, non-device).
     (`originalmediafolderreplace` is destructive — never use.)
-  - `quality` must be a **bitrate string** (`"8000000"`/`"4000000"`/`"1500000"`).
-    `"original"` returns HTTP 500 for this target — next-to-original conversions are
-    bitrate-capped at the offered tiers (max 8 Mbps).
+  - `quality:"custom"` + `profile:"tv"` + `bitrate:<int>` is accepted (live-verified: job
+    created + Converting). Arbitrary custom bitrates are honored — `bitrate:40000000` was
+    accepted and actively transcoding, so there is **NO 8 Mbps cap**. The literal
+    `quality:"original"` returns HTTP 500 for this target — never send it (map
+    "Original video quality" to a high keep-quality custom bitrate instead).
   - `profile:"mobile"` yields an **h264 / mp4** file (broadly direct-play-able on
     visionOS). `tv` / `custom` also exist.
 - **Poll:** `GET /Sync/Jobs/{id}` → `Status` (`Queued` → `Converting`/`Transferring` →
@@ -178,10 +180,14 @@ if needed).
 3. **Cancel:** reuse the existing delete-the-row gesture; for Emby it also issues
    `DELETE /Sync/Jobs/{id}` via the persisted job id. No new UI.
 
-## Remaining implementation-time unknown
+## Resolved (implementation-time, live-verified)
 
-- The exact Emby request for a **keep-original-quality / resolution-capped custom
-  profile** (the picker's non-bitrate presets). Verified: literal `quality:"original"`
-  500s; bitrate tiers + `profile:"mobile"` work. The custom-profile mapping is captured
-  live (web UI rip) as the first implementation step if the documented `quality:"custom"` +
-  `bitrate` + profile-resolution fields don't validate directly.
+- **Custom profile + arbitrary bitrate works.** `POST /Sync/Jobs` with `quality:"custom"` +
+  `profile:"tv"` + `bitrate:<int>` is accepted (job created + Converting). Bitrate is **NOT
+  capped at 8 Mbps** — `bitrate:40000000` was accepted and actively transcoding, so each
+  picker preset now maps to its TRUE bitrate ("4K 40 Mbps" → 40 Mbps, … "480p 1.5 Mbps" →
+  1.5 Mbps), and "Original video quality" maps to a high keep-quality bitrate (80 Mbps).
+- The literal `quality:"original"` returns HTTP 500 on the `originalmediafolder` target —
+  never sent.
+- **Resolution** is governed by the `profile`, not a per-job field — that remains a
+  documented Emby constraint; there is no resolution field to add.
