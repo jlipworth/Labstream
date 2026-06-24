@@ -1,6 +1,6 @@
 # Emby convert-then-download (server-side prepare → resumable download)
 
-Status: design, awaiting review
+Status: implemented + headless-verified on fix/emby-existing-versions-126 (device test pending)
 Date: 2026-06-25
 Issue: extends #126 (Emby existing-version reuse); companion to Plex #112/optimize lane
 
@@ -31,8 +31,9 @@ trigger an Emby Convert Media job → poll until the converted file exists → d
 the existing resumable `.original` static lane. **Keep** the converted file (reusable, so
 #126's reuse lane serves the next download/resume for free).
 
-Non-goals: changing direct-play / compatible-remux behavior (those stay); a quality-tier
-picker UI (default a sane quality; picker can come later); replacing Plex's lane.
+Non-goals: changing direct-play / compatible-remux behavior (those stay); a new quality
+picker (the convert lane honors the EXISTING download picker for Plex parity); replacing
+Plex's lane.
 
 ## Verified server facts (live, Emby 4.9.3)
 
@@ -125,17 +126,21 @@ hence resumable.
 
 `DownloadOptionsSheet` already offers a full quality picker (Original video quality, 4K
 40 Mbps, 1080p 20/12/10/8 Mbps, 720p 4/3/2 Mbps, 480p 1.5 Mbps) that drives the Plex
-optimize targets. The convert lane honors the **same** picker for parity: each preset maps
-to an Emby convert `quality` (bitrate) + `profile`/resolution cap. h264/mp4 output
-(direct-play on visionOS) is the constant.
+optimize targets. The convert lane honors the **same** picker for parity: each preset's
+**bitrate** maps to an Emby convert job. h264/mp4 output (direct-play on visionOS) is the
+constant.
 
-Mapping detail (one live-verified gotcha): the `originalmediafolder` target **rejects the
-literal `quality:"original"`** (HTTP 500). So the picker's "Original video quality" maps to
-a **custom profile** at the source bitrate/resolution (keep-quality), not the `"original"`
-token. Bitrate presets map directly (`"8000000"` etc.); resolution caps (4K/1080p/720p/
-480p) map via the profile's max width/height. The exact custom-profile mapping for
-keep-original is confirmed during implementation (rip the web UI's custom-profile request
-if needed).
+Mapping (all live-verified, Emby 4.9.3): every preset → `quality:"custom"` +
+`profile:"tv"` + `bitrate:<preset bps>`. Arbitrary bitrates are honored (40 Mbps accepted +
+transcoding), so there is **no 8 Mbps cap**. "Original video quality" → a high keep-quality
+bitrate (`keepQualityBitrate`, 80 Mbps) because the literal `quality:"original"` token
+returns HTTP 500 on `originalmediafolder`.
+
+**Known fidelity limit:** Emby's convert-job API has **no per-job resolution field** —
+output resolution is governed by the `profile` (we use `tv`), not by the preset's
+resolution label. So the picker's resolution tiers (4K/1080p/720p/480p) differ only by
+bitrate in the converted output, not by an enforced height. This is an Emby API
+constraint, not a bug.
 
 ## State & UI
 
