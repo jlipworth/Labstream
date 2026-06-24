@@ -13,7 +13,7 @@ private let id = ClientIdentity(clientIdentifier: "CID",
                                    ratingKey: "101", title: "Blade Runner",
                                    targetTagID: .tv1080p8Mbps)
     #expect(r.url.path.contains("optimize"))
-    #expect(r.method == "PUT" || r.method == "POST")   // pinned to PUT per python-plexapi
+    #expect(r.method == "PUT")   // pinned to PUT per python-plexapi (Plex optimize/sync requires PUT)
     func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
     #expect(v("title") == "Blade Runner")
 }

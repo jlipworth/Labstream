@@ -23,9 +23,9 @@ struct JellyfinServerURLTests {
     }
 
     @Test func preservesExplicitHTTPForLocalTesting() throws {
-        let url = try JellyfinServerURL.normalized("http://192.0.2.10:8096")
+        let url = try JellyfinServerURL.normalized("http://192.0.2.50:8096")
 
-        #expect(url == URL(string: "http://192.0.2.10:8096"))
+        #expect(url == URL(string: "http://192.0.2.50:8096"))
     }
 
     @Test func rejectsEmptyInput() {

@@ -87,19 +87,22 @@ struct EmbyDownloadTests {
 
     // MARK: - Download device profile
 
-    @Test func downloadDeviceProfileAdvertisesStaticMp4NotHls() {
+    @Test func downloadDeviceProfileAdvertisesStaticMp4NotHls() throws {
         let profile = EmbyPlayback.visionOSDownloadDeviceProfile(maxStaticBitrate: 200_000_000)
         #expect(profile["Name"] as? String == "VisionPlay-Download")
         #expect(profile["MaxStaticBitrate"] as? Int == 200_000_000)
-        let transcoding = try? #require(profile["TranscodingProfiles"] as? [[String: Any]])
-        let first = try? #require(transcoding?.first)
-        #expect(first?["Container"] as? String == "mp4")
+        // `try #require` (not `try?`): a missing/renamed TranscodingProfiles is a real structural
+        // regression and must fail here, not silently nil out and surface as a confusing
+        // downstream assertion.
+        let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
+        let first = try #require(transcoding.first)
+        #expect(first["Container"] as? String == "mp4")
         // CRUX: http/Static, NOT hls — otherwise the TranscodingUrl is a non-downloadable playlist.
-        #expect(first?["Protocol"] as? String == "http")
-        #expect(first?["Context"] as? String == "Static")
+        #expect(first["Protocol"] as? String == "http")
+        #expect(first["Context"] as? String == "Static")
         // Direct-play profile only advertises locally playable containers.
-        let direct = try? #require(profile["DirectPlayProfiles"] as? [[String: Any]])
-        #expect(direct?.contains { ($0["Container"] as? String) == "mp4,m4v,mov" } == true)
+        let direct = try #require(profile["DirectPlayProfiles"] as? [[String: Any]])
+        #expect(direct.contains { ($0["Container"] as? String) == "mp4,m4v,mov" } == true)
     }
 
     @Test func downloadPlaybackInfoRequestPostsDownloadProfile() throws {

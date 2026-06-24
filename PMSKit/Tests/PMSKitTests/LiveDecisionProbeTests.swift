@@ -31,33 +31,29 @@ import FoundationNetworking
 struct LiveDecisionProbeTests {
 
     /// Required + optional env inputs. Returns nil (→ test is a no-op) when creds are absent.
+    /// Server/token/identity come from the shared `LiveProbeConfig`; only the probe-specific fields
+    /// are parsed here.
     private struct LiveConfig {
-        let server: URL
-        let token: String
+        let base: LiveProbeConfig
         let metadataKey: String
         let maxVideoBitrateKbps: Int
         let mediaIndex: Int
         let partIndex: Int
-        let identity: ClientIdentity
+        var server: URL { base.server }
+        var token: String { base.token }
+        var identity: ClientIdentity { base.identity }
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
-                  let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty,
+            guard let base = LiveProbeConfig(env),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
-            self.server = server
-            self.token = token
+            self.base = base
             self.metadataKey = metadataKey
             // Original quality → effectively-uncapped ceiling, matching PlaybackController's 200 Mbps.
             self.maxVideoBitrateKbps = env["PLEX_LIVE_MAX_KBPS"].flatMap(Int.init) ?? 200_000
             self.mediaIndex = env["PLEX_LIVE_MEDIA_INDEX"].flatMap(Int.init) ?? 0
             self.partIndex = env["PLEX_LIVE_PART_INDEX"].flatMap(Int.init) ?? 0
-            self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-                product: "VisionPlay",
-                version: "0.1.0",
-                deviceName: "VisionPlay Live Probe")
         }
     }
 
@@ -69,24 +65,31 @@ struct LiveDecisionProbeTests {
                          mediaIndex: cfg.mediaIndex, partIndex: cfg.partIndex)
     }
 
-    /// Send a built PlexRequest exactly as the app does and dump status + raw body.
-    private func dump(_ label: String, _ req: PlexRequest) async throws {
+    /// Send a built PlexRequest exactly as the app does and dump status + raw body. The raw body
+    /// carries real media titles/paths, so it is scrubbed through `LiveProbeConfig.redact` before
+    /// logging (the repo is public). Asserts a 200 so a 401/500 fails the probe instead of passing.
+    private func dump(_ label: String, _ req: PlexRequest, _ cfg: LiveConfig) async throws {
         let (data, response) = try await URLSession.shared.data(for: req.urlRequest())
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        let body = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-utf8>"
+        #expect(status == 200, "live [\(label)] expected HTTP 200, got \(status)")
+        let rawBody = String(data: data, encoding: .utf8) ?? "<\(data.count) bytes, non-utf8>"
+        let body = LiveProbeConfig.redact(rawBody, token: cfg.token, server: cfg.server)
         print("""
         >>> LIVE [\(label)] HTTP \(status), \(data.count) bytes
         >>> LIVE [\(label)] body:
         \(body)
         >>> LIVE [\(label)] end body
         """)
-        // Try the current decoder and report what savesVideoEncode currently sees.
+        // Try the current decoder and report what savesVideoEncode currently sees. The decision
+        // text fields can echo a title, so redact them too.
         if status == 200, let decoded = try? JSONDecoder().decode(DecisionResponse.self, from: data) {
+            let generalText = decoded.generalDecisionText.map { LiveProbeConfig.redact($0, token: cfg.token, server: cfg.server) } ?? "nil"
+            let mde = decoded.mdeDecisionText.map { LiveProbeConfig.redact($0, token: cfg.token, server: cfg.server) } ?? "nil"
             print("""
             >>> LIVE [\(label)] parsed: general=\(decoded.generalDecisionCode.map(String.init) ?? "nil") \
-            generalText=\(decoded.generalDecisionText ?? "nil") \
+            generalText=\(generalText) \
             video=\(decoded.videoDecision ?? "nil") audio=\(decoded.audioDecision ?? "nil") \
-            mde=\(decoded.mdeDecisionText ?? "nil") savesVideoEncode=\(decoded.savesVideoEncode)
+            mde=\(mde) savesVideoEncode=\(decoded.savesVideoEncode)
             """)
         }
     }
@@ -98,7 +101,7 @@ struct LiveDecisionProbeTests {
         }
         let req = makeRequest(cfg)
         // Production decision (directPlay=0) and the #7 direct-play probe (directPlay=1).
-        try await dump("decision", req.decisionRequest())
-        try await dump("directPlayProbe", req.directPlayProbeRequest())
+        try await dump("decision", req.decisionRequest(), cfg)
+        try await dump("directPlayProbe", req.directPlayProbeRequest(), cfg)
     }
 }

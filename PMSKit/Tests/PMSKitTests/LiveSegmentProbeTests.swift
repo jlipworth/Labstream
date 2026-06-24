@@ -35,24 +35,23 @@ import Foundation
 struct LiveSegmentProbeTests {
 
     private struct Config {
-        let server: URL
-        let token: String
+        let base: LiveProbeConfig
         let metadataKey: String
         let maxVideoBitrateKbps: Int
         let offsetSeconds: Int
         let segmentCount: Int
         let mediaIndex: Int
         let partIndex: Int
-        let identity: ClientIdentity
+        var server: URL { base.server }
+        var token: String { base.token }
+        var identity: ClientIdentity { base.identity }
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
-                  let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty,
+            guard let base = LiveProbeConfig(env),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
-            self.server = server
-            self.token = token
+            self.base = base
             self.metadataKey = metadataKey
             // Default 3000 kbps + offset 3300s reproduces the live failure (3 Mbps/720p, deep seek).
             self.maxVideoBitrateKbps = env["PLEX_LIVE_MAX_KBPS"].flatMap(Int.init) ?? 3000
@@ -60,11 +59,6 @@ struct LiveSegmentProbeTests {
             self.segmentCount = env["PLEX_LIVE_SEGMENTS"].flatMap(Int.init) ?? 3
             self.mediaIndex = env["PLEX_LIVE_MEDIA_INDEX"].flatMap(Int.init) ?? 0
             self.partIndex = env["PLEX_LIVE_PART_INDEX"].flatMap(Int.init) ?? 0
-            self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-                product: "VisionPlay",
-                version: "0.1.0",
-                deviceName: "VisionPlay Live Probe")
         }
     }
 
@@ -158,9 +152,13 @@ struct LiveSegmentProbeTests {
         // 1) Ask MDE for the production decision first. The app does this before handing
         //    start.m3u8 to AVFoundation, and PMS may reject a start URL for "lacking decision"
         //    if the media-plane request arrives before this control-plane authorization.
-        if let decisionData = await fetch(session, "decision", transcode.decisionURL(),
-                                          headers: PlexHeaders.standard(identity: cfg.identity, token: cfg.token)),
-           let decision = try? JSONDecoder().decode(DecisionResponse.self, from: decisionData) {
+        let decisionData = await fetch(session, "decision", transcode.decisionURL(),
+                                       headers: PlexHeaders.standard(identity: cfg.identity, token: cfg.token))
+        // Control-plane sanity: a deep-seek diagnosis is meaningless if the decision request itself
+        // 401s or is unreachable. Fail here rather than printing a media-plane VERDICT off a dead
+        // session — otherwise the probe reports green against a server it never reached.
+        #expect(decisionData != nil, "SEG decision request should return 2xx (server reachable + authorized)")
+        if let decisionData, let decision = try? JSONDecoder().decode(DecisionResponse.self, from: decisionData) {
             print(">>> SEG decision: video=\(decision.videoDecision ?? "nil") audio=\(decision.audioDecision ?? "nil") savesVideoEncode=\(decision.savesVideoEncode)")
         }
 

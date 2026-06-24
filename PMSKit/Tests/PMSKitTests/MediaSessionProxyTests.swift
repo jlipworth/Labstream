@@ -5,6 +5,17 @@ import XCTest
 import Network
 @testable import PMSKit
 
+/// Ephemeral session with explicit short timeouts so a wedged loopback accept fails fast (a clear
+/// per-request timeout) instead of blocking until the suite-level timeout if these socket tests
+/// ever run under heavy parallel execution. Loopback is sub-millisecond normally, so 10s is ample.
+private func loopbackTestSession() -> URLSession {
+    let cfg = URLSessionConfiguration.ephemeral
+    cfg.timeoutIntervalForRequest = 10
+    cfg.timeoutIntervalForResource = 15
+    cfg.waitsForConnectivity = false
+    return URLSession(configuration: cfg)
+}
+
 final class MediaSessionProxyTests: XCTestCase {
     func testForwardsPlaylistRequestThroughLoopback() async throws {
         let origin = try await StubOrigin.start { _ in
@@ -19,7 +30,7 @@ final class MediaSessionProxyTests: XCTestCase {
         XCTAssertEqual(handle.localURL.host, "127.0.0.1")
         XCTAssertTrue(handle.localURL.path.hasSuffix("/start.m3u8"))
 
-        let (data, resp) = try await URLSession(configuration: .ephemeral).data(from: handle.localURL)
+        let (data, resp) = try await loopbackTestSession().data(from: handle.localURL)
         XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertTrue(String(decoding: data, as: UTF8.self).hasPrefix("#EXTM3U"))
         await proxy.stop(generation: handle.generation)
@@ -42,7 +53,7 @@ final class MediaSessionProxyTests: XCTestCase {
         let proxy = MediaSessionProxy(upstreamFetch: wedgingFetch)
         let handle = try await proxy.standUpLoopback(
             forStream: URL(string: "http://127.0.0.1:\(origin.port)/start.m3u8")!)
-        let (_, resp) = try await URLSession(configuration: .ephemeral).data(from: handle.localURL)
+        let (_, resp) = try await loopbackTestSession().data(from: handle.localURL)
         XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
         let status = await proxy.status()
         XCTAssertEqual(status.rotateCount, 1)
@@ -159,7 +170,7 @@ final class StubOrigin: @unchecked Sendable {
     /// A fetcher the proxy can use as its upstream: a plain URLSession hitting this origin.
     func fetcher() -> @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse) {
         { req in
-            let (data, resp) = try await URLSession(configuration: .ephemeral).data(for: req)
+            let (data, resp) = try await loopbackTestSession().data(for: req)
             return (data, resp as! HTTPURLResponse)
         }
     }

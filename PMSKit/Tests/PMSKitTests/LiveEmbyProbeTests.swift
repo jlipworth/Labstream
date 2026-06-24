@@ -60,28 +60,8 @@ struct LiveEmbyProbeTests {
         }
     }
 
-    /// Strip any token / api_key value AND the live server scheme+host from a string before
-    /// logging it. The repo will be public — we log the URL *shape* (path + query keys), never
-    /// the real hostname or any credential.
-    private func redact(_ string: String, token: String, server: URL) -> String {
-        var out = string
-        if !token.isEmpty {
-            out = out.replacingOccurrences(of: token, with: "<redacted-token>")
-        }
-        // Replace the live scheme://host[:port] prefix with a placeholder.
-        if let scheme = server.scheme, let host = server.host {
-            let port = server.port.map { ":\($0)" } ?? ""
-            out = out.replacingOccurrences(of: "\(scheme)://\(host)\(port)", with: "<server>")
-            // Also catch a bare host occurrence (defensive).
-            out = out.replacingOccurrences(of: host, with: "<host>")
-        }
-        // Belt-and-braces: scrub any api_key=… query value even if the token differs.
-        out = out.replacingOccurrences(
-            of: #"(?i)(api_key=)[^&\s"]+"#,
-            with: "$1<redacted>",
-            options: .regularExpression)
-        return out
-    }
+    // Scrubbing is centralized in `LiveProbeConfig.redact` (shared by every Plex + Emby probe);
+    // its default credential-key set already covers `api_key`.
 
     private func send(_ request: URLRequest) async throws -> (Data, Int) {
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -163,7 +143,7 @@ struct LiveEmbyProbeTests {
                 userId: cfg.userId,
                 itemId: cfg.itemId)
             // Redact api_key / token before printing the resolved URL.
-            let safeURL = redact(resolved.url.absoluteString, token: cfg.token, server: cfg.server)
+            let safeURL = LiveProbeConfig.redact(resolved.url.absoluteString, token: cfg.token, server: cfg.server)
             print(">>> LIVE [resolveStream] playMethod=\(resolved.playMethod) usesServerEncoding=\(resolved.usesServerEncoding) headerKeys=\(resolved.requiredHTTPHeaders.keys.sorted()) url=\(safeURL)")
             print(">>> LIVE [resolveStream] sourceMeta: container=\(resolved.sourceMetadata.container ?? "nil") \(resolved.sourceMetadata.width.map(String.init) ?? "?")x\(resolved.sourceMetadata.height.map(String.init) ?? "?") bitrateKbps=\(resolved.sourceMetadata.bitrate.map(String.init) ?? "nil") video=\(resolved.sourceMetadata.videoCodec ?? "nil") audio=\(resolved.sourceMetadata.audioCodec ?? "nil")")
             #expect(resolved.url.scheme != nil, "resolved stream URL should be absolute")

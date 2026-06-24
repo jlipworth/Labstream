@@ -14,35 +14,29 @@ import FoundationNetworking
 struct LiveDownloadStatusProbeTests {
 
     private struct LiveConfig {
-        let server: URL
-        let token: String
+        let base: LiveProbeConfig
         let metadataKey: String
         let ratingKey: String
         let mediaIndex: Int
         let partIndex: Int
         let polls: Int
         let intervalSeconds: Double
-        let identity: ClientIdentity
+        var server: URL { base.server }
+        var token: String { base.token }
+        var identity: ClientIdentity { base.identity }
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
-                  let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty,
+            guard let base = LiveProbeConfig(env, deviceName: "VisionPlay Live Status Probe"),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
-            self.server = server
-            self.token = token
+            self.base = base
             self.metadataKey = metadataKey
             self.ratingKey = (metadataKey as NSString).lastPathComponent
             self.mediaIndex = env["PLEX_LIVE_MEDIA_INDEX"].flatMap(Int.init) ?? 0
             self.partIndex = env["PLEX_LIVE_PART_INDEX"].flatMap(Int.init) ?? 0
             self.polls = max(1, env["PLEX_LIVE_POLLS"].flatMap(Int.init) ?? 1)
             self.intervalSeconds = max(0.5, env["PLEX_LIVE_POLL_INTERVAL_SECONDS"].flatMap(Double.init) ?? 5)
-            self.identity = ClientIdentity(
-                clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-                product: "VisionPlay",
-                version: "0.1.0",
-                deviceName: "VisionPlay Live Status Probe")
         }
     }
 
@@ -65,13 +59,17 @@ struct LiveDownloadStatusProbeTests {
 
     enum ProbeError: Error { case http(Int) }
 
-    private func printMetadata(_ cfg: LiveConfig) async {
+    /// Returns true when the metadata endpoint was reachable + authorized (HTTP 2xx). `send`
+    /// throws on non-2xx, so a thrown error here means the server is unreachable or the token is
+    /// bad — the caller asserts on this so the probe fails loudly instead of printing and passing.
+    @discardableResult
+    private func printMetadata(_ cfg: LiveConfig) async -> Bool {
         do {
             let data = try await send(request(cfg, path: cfg.metadataKey))
             let response = try JSONDecoder().decode(MetadataResponse.self, from: data)
             guard let item = response.mediaContainer.metadata.first else {
                 print(">>> DLSTAT metadata missing")
-                return
+                return true
             }
             let media = item.media.flatMap { $0.indices.contains(cfg.mediaIndex) ? $0[cfg.mediaIndex] : nil }
             let part = media.flatMap { $0.part.indices.contains(cfg.partIndex) ? $0.part[cfg.partIndex] : nil }
@@ -84,8 +82,10 @@ struct LiveDownloadStatusProbeTests {
             selected_container=\(OfflineDownloadDecision.containerLabel(part: part)) \
             selected_size=\(part?.size.map(String.init) ?? "nil") part_ids=\(partIDs)
             """)
+            return true
         } catch {
             print(">>> DLSTAT metadata error=\(error)")
+            return false
         }
     }
 
@@ -179,7 +179,12 @@ struct LiveDownloadStatusProbeTests {
 
         for i in 0..<cfg.polls {
             print(">>> DLSTAT poll=\(i + 1)/\(cfg.polls) ratingKey=\(cfg.ratingKey)")
-            await printMetadata(cfg)
+            let metadataOK = await printMetadata(cfg)
+            // Fail loudly if the server is unreachable / the token is bad, instead of printing
+            // per-section errors and reporting the whole probe green.
+            if i == 0 {
+                #expect(metadataOK, "DLSTAT first metadata fetch should succeed (server reachable + authorized)")
+            }
             await printConversionQueue(cfg)
             await printBackgroundJobs(cfg)
             await printActivities(cfg)
