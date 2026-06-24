@@ -8,5 +8,6 @@ steps:
   - name: repo-hygiene
     image: alpine:3.24
     commands:
-      - apk add --no-cache bash git ripgrep
+      - apk add --no-cache bash git ripgrep python3 py3-pip
+      - pip install --break-system-packages uv
       - ./scripts/ci-hygiene.sh

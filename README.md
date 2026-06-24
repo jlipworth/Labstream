@@ -119,15 +119,15 @@ container, so a re-login is required after a fresh install.
 
 ## Docs
 
-Current architecture and operating guidance lives in the top-level files under [`docs/`](docs/). Active research for not-yet-implemented work lives in [`docs/research/`](docs/research/); promote only proven behavior from research into the current docs. Historical design research, completed implementation plans, and superseded review snapshots live in [`docs/archive/`](docs/archive/). Archived files are context only; they are not the current source of truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
+Current architecture and operating guidance lives in the top-level files under [`docs/`](docs/). Active research for not-yet-implemented work lives in [`docs/research/`](https://github.com/jlipworth/VisionPlay/tree/main/docs/research); promote only proven behavior from research into the current docs. Historical design research, completed implementation plans, and superseded review snapshots live in [`docs/archive/`](https://github.com/jlipworth/VisionPlay/tree/main/docs/archive). Archived files are context only; they are not the current source of truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the
+This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](https://github.com/jlipworth/VisionPlay/blob/main/LICENSE) for the
 full text.
 
 For distribution through the Apple App Store / TestFlight, a GPLv3 **section 7 additional permission**
-applies — see [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md). It resolves the well-known
+applies — see [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/VisionPlay/blob/main/APP-STORE-EXCEPTION.md). It resolves the well-known
 GPL-vs-App-Store conflict while keeping copyleft fully intact: the source stays GPL and any fork must
 remain open.
 

@@ -14,4 +14,4 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 
 ## Active notes
 
-- [18 — Offline chapters, trickplay, and subtitles](18-offline-chapters-trickplay-subtitles.md)
+_No active research notes right now. Add new not-yet-implemented planning notes here; once a topic ships and is proven, promote the durable parts into the focused current docs and move the note into `docs/archive/research/`._
