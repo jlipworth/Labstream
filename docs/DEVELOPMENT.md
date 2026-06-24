@@ -245,6 +245,24 @@ metadata, and review-specific release automation can be handled in a later publi
   system volume. The bar's 3-pt progress hairline is likewise **passive** — a 3-pt drag target
   violates the 60-pt gaze rule; scrubbing lives in the Now Playing sheet (a hover-growing thin
   scrubber is a possible v2 trial).
+- **Emby "existing versions" / Convert Media (#126), verified live against Emby 4.9.3:** Emby's
+  parity for Plex's pre-rendered "Version" download (#112) is **Convert Media** — a *Sync job* to
+  the target `originalmediafolder` ("Original media folder, next to original files"). It adds the
+  converted copy as a **second `File` MediaSource on the same item** with its own distinct
+  `Id` (e.g. `mediasource_<n>`), enumerated by `PlaybackInfo` alongside the original. Hard-won
+  facts that gate the implementation:
+  - **PlaybackInfo FILTERS by `MediaSourceId`.** Supply an id (query or body) → the response
+    contains ONLY that source; omit it → ALL sources. So existing-version enumeration MUST use a
+    dedicated PlaybackInfo call with NO `MediaSourceId` — the normal probe (which passes one, since
+    the Emby `Media.part.key` is `emby://item/{id}/media/{sourceId}` and `selectedMediaSourceID`
+    extracts it) can never see the alternates.
+  - The converted source reports `Protocol:File`, `SupportsDirectPlay:true`, real `Size`, and is
+    byte-for-byte downloadable via `/Videos/{itemId}/stream.{ext}?static=true&MediaSourceId=…`
+    (HTTP 206, total == `Size`, no remux) — exactly `EmbyLibrary.downloadOriginalRequest`. The
+    download lane reuses the existing `.original` Emby path via `downloadEmby(mediaSourceIDOverride:)`.
+  - `originalmediafolderreplace` is the DESTRUCTIVE convert target (replaces the original) — never
+    use it. The device-target sync jobs (iPad/iPhone/Android) are a different feature.
+  - Jellyfin core has no persistent server-side conversion, so this lane is Emby-only.
 
 ## Conventions
 
