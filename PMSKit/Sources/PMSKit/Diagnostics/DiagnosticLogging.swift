@@ -125,10 +125,11 @@ public enum DiagnosticRedactor {
         guard !input.isEmpty else { return input }
         var output = input
 
-        // Header/query-style secrets and client identifiers.
+        // Header/query-style secrets and client identifiers. Accept both `key=value`
+        // and the `key: value` header form (the separator is preserved via $2).
         output = replace(output,
-                         pattern: #"(?i)\b(X-Plex-Token|token|access[_-]?token|api[_-]?key|apikey|password|client[_-]?identifier|X-Plex-Client-Identifier)=([^\s&;,)]+)"#,
-                         template: "$1=[redacted]")
+                         pattern: #"(?i)\b(X-Plex-Token|token|access[_-]?token|api[_-]?key|apikey|password|client[_-]?identifier|X-Plex-Client-Identifier)(\s*[=:]\s*)([^\s&;,)]+)"#,
+                         template: "$1$2[redacted]")
         output = replace(output,
                          pattern: #"(?i)\b(Authorization:\s*)(Bearer\s+)?[^\s,;)]+"#,
                          template: "$1[redacted]")
@@ -156,6 +157,12 @@ public enum DiagnosticRedactor {
         output = replace(output,
                          pattern: #"\[[0-9A-Fa-f:]{3,}\]"#,
                          template: "[ip]")
+        // Emails before the hostname rule, otherwise the domain is peeled into [host]
+        // and the local-part survives (alice@example.com -> alice@[host]).
+        output = replace(output,
+                         pattern: #"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+                         options: [.caseInsensitive],
+                         template: "[email]")
         output = replace(output,
                          pattern: #"\b(?:[A-Za-z0-9-]+\.)+(?:local|lan|home|internal|plex\.direct|com|net|org|io|tv|me|dev|app)\b"#,
                          template: "[host]")
@@ -165,10 +172,6 @@ public enum DiagnosticRedactor {
         output = replace(output,
                          pattern: #"\b[A-Za-z0-9_=-]{24,}\b"#,
                          template: "[token]")
-        output = replace(output,
-                         pattern: #"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
-                         options: [.caseInsensitive],
-                         template: "[email]")
 
         return output
     }

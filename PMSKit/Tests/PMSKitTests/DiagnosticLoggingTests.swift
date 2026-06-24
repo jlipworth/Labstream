@@ -145,8 +145,8 @@ final class DiagnosticLoggingTests: XCTestCase {
     // assertion documents it (the live preview + privacy footer/checkbox are the mitigation).
 
     /// 1. Odd-separator tokens: `=`-style secrets with comma/semicolon/newline separators are
-    /// scrubbed. The colon header form (`X-Plex-Token` followed by a colon) is a documented
-    /// residual — the redactor's secret rules key off `=`, so a value after a colon survives.
+    /// scrubbed, and the colon header form (`X-Plex-Token` followed by a colon) is now scrubbed
+    /// too — the secret rule accepts both `=` and `:` separators.
     func testFeedbackNoteRedactsOddSeparatorTokens() {
         let note = "config token=tok99abc,then client_identifier=DEADBEEF;password=hunter2\nX-Plex-Token=lineSecret"
         let redacted = DiagnosticRedactor.redact(note)
@@ -157,12 +157,13 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertFalse(redacted.contains("lineSecret"), "newline-terminated token value must be gone")
         XCTAssertTrue(redacted.contains("token=[redacted]"))
 
-        // Documented residual: the colon header form is NOT covered by the `=`-based rules.
+        // The colon header form is now covered (the secret rule accepts `=` and `:`).
         // (The marker is split here so the repo's ci-hygiene forbidden-string scan doesn't
         // flag this test's input; the redacted string is identical at runtime.)
         let colon = DiagnosticRedactor.redact("X-Plex-Token" + ": secretColonValue")
-        XCTAssertTrue(colon.contains("secretColonValue"),
-                      "colon-form header secret is a known residual; preview + privacy ack are the mitigation")
+        XCTAssertFalse(colon.contains("secretColonValue"),
+                       "colon-form header secret must now be redacted")
+        XCTAssertTrue(colon.contains("[redacted]"))
     }
 
     /// 2. Prose URLs / bare hosts / IPs embedded in free text → [url:…] / [host] / [ip].
@@ -215,20 +216,19 @@ final class DiagnosticLoggingTests: XCTestCase {
                       "bracket-less IPv6 is a known residual")
     }
 
-    /// 6. Email + credentials in prose: the email's DOMAIN is host-redacted and `password=` is
-    /// scrubbed. Documented residuals: the host rule fires before the email rule so the local
-    /// part survives (`alice@[host]`, not `[email]`), and `pw=`/`pass=` are not header-pattern keys.
-    func testFeedbackNoteRedactsEmailDomainAndPasswordCredential() {
+    /// 6. Email + credentials in prose: the whole email collapses to `[email]` (the email rule
+    /// now runs before the host rule, so the local part no longer survives) and `password=` is
+    /// scrubbed. Documented residual: `pw=`/`pass=` are not header-pattern keys.
+    func testFeedbackNoteRedactsEmailAndPasswordCredential() {
         let redacted = DiagnosticRedactor.redact("email me at alice@example.com password=hunter2 or pw=foo")
 
-        XCTAssertFalse(redacted.contains("example.com"), "the email domain must be host-redacted")
+        XCTAssertFalse(redacted.contains("example.com"), "the email domain must be redacted")
+        XCTAssertFalse(redacted.contains("alice@"), "the email local part must no longer survive")
+        XCTAssertTrue(redacted.contains("[email]"), "the full email collapses to [email]")
         XCTAssertFalse(redacted.contains("hunter2"), "password= value must be redacted")
         XCTAssertTrue(redacted.contains("password=[redacted]"))
 
-        // Documented residuals: local-part survives (host rule pre-empts the email rule), and
-        // non-standard credential keys (`pw=`/`pass=`) are not in the header pattern.
-        XCTAssertTrue(redacted.contains("alice@[host]"),
-                      "host rule pre-empts the email rule, leaving the local part — documented residual")
+        // Documented residual: non-standard credential keys (`pw=`/`pass=`) are not header keys.
         XCTAssertTrue(redacted.contains("pw=foo"),
                       "pw=/pass= are not header-pattern keys; documented residual")
     }
