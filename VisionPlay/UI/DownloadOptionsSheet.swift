@@ -45,6 +45,10 @@ struct DownloadOptionsSheet: View {
         let label: String
         let detail: String?
         let sizeBytes: Int?
+        /// #125: whether this alternate's container/codec can play back offline as a standalone
+        /// local file. Incompatible versions are shown DISABLED rather than hidden so the user
+        /// understands why they can't pick them.
+        let playableOffline: Bool
         var id: Int { mediaIndex }
     }
 
@@ -438,12 +442,21 @@ struct DownloadOptionsSheet: View {
             guard index != mediaIndex else { return nil }
             // A version is only downloadable if it exposes a part with a streamable key.
             guard let part = m.part.first, !part.key.isEmpty else { return nil }
+            // #125: this lane has NO offline-compatibility preflight, so gate here on Media-level
+            // container/codec (reliably present for every alternate). Fall back to media.container
+            // like versionDetail so an empty part container doesn't fail open. Incompatible
+            // versions stay visible but disabled (see existingVersionsSection).
+            let playableOffline = OfflineDownloadDecision.existingVersionPlayableOffline(
+                container: part.container ?? m.container,
+                videoCodec: m.videoCodec)
             return ExistingVersionOption(mediaIndex: index,
                                          label: Self.versionLabel(m),
                                          detail: Self.versionDetail(media: m, part: part),
-                                         sizeBytes: part.size)
+                                         sizeBytes: part.size,
+                                         playableOffline: playableOffline)
         }
-        downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(media.count, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
+        let blocked = result.filter { !$0.playableOffline }.count
+        downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(media.count, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) blockedOffline=\(blocked, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
         return result
     }
 
@@ -651,23 +664,30 @@ struct DownloadOptionsSheet: View {
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "rectangle.stack.badge.play")
-                            .foregroundStyle(.tint)
+                            .foregroundStyle(version.playableOffline ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(version.label).foregroundStyle(.primary)
+                            Text(version.label)
+                                .foregroundStyle(version.playableOffline ? .primary : .secondary)
                             if let detail = version.detail {
                                 Text(detail)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                            if !version.playableOffline {
+                                Text("Won't play offline on this device")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
-                        if selectedChoice == .existingVersion(version.mediaIndex) {
+                        if version.playableOffline, selectedChoice == .existingVersion(version.mediaIndex) {
                             Image(systemName: "checkmark").foregroundStyle(.tint)
                         }
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!version.playableOffline)
             }
         } header: {
             Text("Existing server versions")
