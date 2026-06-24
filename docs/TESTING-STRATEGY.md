@@ -1,5 +1,12 @@
 # Testing strategy
 
+> **Companion docs (issue #75):** [`TESTING-LIVE-MATRIX.md`](TESTING-LIVE-MATRIX.md) is the
+> row-by-row coverage map (screens, menus, playback, downloads, profiles, subtitles) showing where
+> each flow is exercised across the mocked-unit / live-probe / device layers;
+> [`TESTING-LIVE-REQUIREMENTS.md`](TESTING-LIVE-REQUIREMENTS.md) documents the live-server fixtures,
+> the env-var/secret gate, cleanup expectations, and CI enablement. This doc remains the high-level
+> strategy (what may/may not become a required CI assertion; device-only gates).
+
 ## CI / portable checks
 
 Portable CI should run:
