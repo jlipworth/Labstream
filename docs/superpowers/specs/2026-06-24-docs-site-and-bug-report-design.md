@@ -222,6 +222,41 @@ is written to a file (not interpolated into a command) to keep it out of logs.
    (after the first successful deploy creates the branch).
 5. GitHub → **Settings → General → Features → enable Discussions**.
 
+### A7. Woodpecker repo registration (woodpecker01 / ~/proxmox-project)
+
+Sequenced **after** Track A code merges (depends on `.woodpecker/docs.yml` on `main`
+and the deploy key existing). A dedicated agent:
+- Investigates `~/proxmox-project` to learn how the woodpecker01 instance is deployed
+  and whether repo enablement + secrets are managed declaratively (as code) or only
+  via the Woodpecker web UI.
+- Ensures the VisionPlay repo is **enabled/active** in Woodpecker (so it picks up the
+  three `.woodpecker/*.yml` pipelines) and provisions the `github_deploy_key` secret
+  (push events only) — via proxmox-project config if that's the pattern, otherwise
+  via the Woodpecker web UI with the Claude Chrome plugin.
+- Surfaces any infra/secret change for owner review before applying anything
+  irreversible. The private deploy key is never committed anywhere in-repo.
+
+### A8. Docs archival / de-clutter (audit complete)
+
+Audit done. **No deletions** (nothing met the bar). Concrete actions, all
+non-destructive `git mv` + a README trim:
+- `git mv docs/research/17-emby-backend-support.md docs/archive/research/` — Emby
+  backend shipped & promoted into BACKENDS/PERSISTENCE/PLAYBACK; it's the original
+  planning map → archive lane. (Borderline: owner may keep visible until Emby
+  downloads/offline ships; default = archive.)
+- `git mv docs/research/18-offline-chapters-trickplay-subtitles.md docs/archive/research/`
+  — shipped; its "not yet implemented" header is now misleading.
+- Trim the "Active notes" list in `docs/research/README.md` so it doesn't dangle a
+  link to the moved #18. Keep the empty `research/` lane + README (still valid for
+  future notes).
+- Both destinations are already under `exclude_docs` (`archive/`), so `--strict`
+  stays green.
+- **Content fix (separate, found in audit):** `docs/DOWNLOADS-OFFLINE.md` (published)
+  omits the now-shipped offline **chapter images**, **Jellyfin trickplay
+  playlist/tile**, **side-asset bytes**, and **offline text subtitle** persistence
+  (all in `PMSKit/Sources/PMSKit/Downloads/OfflineDownloadModels.swift`). Update the
+  "Offline playback metadata" section to match reality before publishing.
+
 ---
 
 ## Track B — Bug-report path (#85 in-app + web)
@@ -350,15 +385,22 @@ Small, self-contained.
 
 ## Decomposition for implementation (fan-out)
 
-- **A** — docs site: `requirements.txt`, `mkdocs.yml`, 4 stub pages, `.gitignore`,
-  content fixes (A4), `.woodpecker/docs.yml`. Verify `mkdocs build --strict`.
-- **B** — bug-report: `SettingsView.swift` edit + `FeedbackSheet.swift` + 6 tests;
-  `.github/ISSUE_TEMPLATE/*`; `docs/REPORTING-BUGS.md`; `SUPPORT.md` wiring. Verify
-  `swift test` + app smoke test.
-- **C** — `.woodpecker/hygiene.yml` uv fix.
+- **A (+C)** — all docs/CI: `requirements.txt`, `mkdocs.yml`, 4 stub pages,
+  `.gitignore`, content fixes (A4), the `DOWNLOADS-OFFLINE.md` update + docs-archival
+  (A8), **`docs/REPORTING-BUGS.md` (full content — it's a docs-site file)**,
+  `SUPPORT.md` wiring, `.woodpecker/docs.yml`, and the Track C `hygiene.yml` uv fix
+  (own commit). Verify `mkdocs build --strict` (in a venv). No sim → tear the
+  worktree sim down immediately. Woodpecker registration (A7) is a follow-up after
+  merge.
+- **B** — app + GitHub config only: `SettingsView.swift` edit + `FeedbackSheet.swift`
+  + 6 tests; `.github/ISSUE_TEMPLATE/{bug_report,feature_request,config}.yml`. Verify
+  `swift test` + app smoke test on the worktree `$SIMID`.
 
-A and C touch CI/docs only; B touches app + tests + GitHub config. C is fully
-independent. **A and B share one coupling:** A's nav lists `REPORTING-BUGS.md`, which
+**Zero file overlap** between A and B — A owns every `docs/`/root/`.woodpecker` file
+(incl. `REPORTING-BUGS.md`); B owns `VisionPlay/` + tests + `.github/`. The only
+shared value is the issue-form URL (`…/issues/new?template=bug_report.yml`),
+referenced independently in both (no conflict). Both branches merge to `main`
+independently. A7 is web-UI only (no proxmox-project edit). **A and B share one coupling:** A's nav lists `REPORTING-BUGS.md`, which
 B creates, so `mkdocs build --strict` fails if A merges first. Resolve by either (i)
 having A create a one-line `docs/REPORTING-BUGS.md` stub that B fleshes out, or (ii)
 merging B's `REPORTING-BUGS.md` before/with A. Recommend (i): A owns the nav + a stub,
