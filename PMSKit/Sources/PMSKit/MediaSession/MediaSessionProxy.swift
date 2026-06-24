@@ -1,3 +1,6 @@
+// Apple-only: depends on LoopbackOrigin (Network framework). Gated so PMSKit builds on Linux
+// for CI. The app (Apple-only) always has canImport(Network) == true. See LoopbackOrigin / #115.
+#if canImport(Network)
 import Foundation
 
 /// Player-agnostic loopback media forwarder (#33 experiment). It can interpose an app-owned
@@ -282,3 +285,4 @@ private final class RewriterBox: @unchecked Sendable {
     func set(_ r: PlaylistRewriter) { lock.lock(); rewriter = r; lock.unlock() }
     var value: PlaylistRewriter? { lock.lock(); defer { lock.unlock() }; return rewriter }
 }
+#endif

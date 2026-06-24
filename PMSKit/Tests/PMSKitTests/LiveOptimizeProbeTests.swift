@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PMSKit
 
 /// Phase 0 — LIVE optimize/background-processing DISCOVERY probe (offline-download

@@ -1,3 +1,6 @@
+// Integration tests for the Apple-only loopback proxy (#33). Gated with the subsystem so the
+// Linux CI fleet skips them and still runs the Foundation-only suites (incl. redaction).
+#if canImport(Network)
 import XCTest
 import Network
 @testable import PMSKit
@@ -211,3 +214,4 @@ final class ControlRecorder: @unchecked Sendable {
     }
     var urls: [URL] { lock.lock(); defer { lock.unlock() }; return sent }
 }
+#endif

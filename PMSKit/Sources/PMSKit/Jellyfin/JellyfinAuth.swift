@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public struct JellyfinClientIdentity: Sendable, Equatable {
     public let client: String

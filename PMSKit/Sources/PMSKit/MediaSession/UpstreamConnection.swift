@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// App-owned upstream transport for the proxy (#33). The one thing app code *can* do that
 /// AVFoundation's own media-plane pool will not: guarantee a fresh socket. On a wedge-class

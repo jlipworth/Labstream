@@ -1,3 +1,7 @@
+// The loopback media proxy (#33 experiment) is an Apple-only path: it relies on the Network
+// framework's NWListener/NWConnection. Gating it here keeps PMSKit compiling on Linux so the
+// Woodpecker fleet can run `swift test` (incl. the DiagnosticRedactor privacy tests). See #115.
+#if canImport(Network)
 import Foundation
 import Network
 
@@ -104,3 +108,4 @@ private final class ResumeOnce: @unchecked Sendable {
         return true
     }
 }
+#endif

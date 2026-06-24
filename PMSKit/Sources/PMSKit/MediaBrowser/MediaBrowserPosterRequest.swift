@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Parsed components of a synthetic MediaBrowser image ref of the form
 /// `<scheme>://item/<id>/<Type>?tag=<tag>` (the value stored in a `MediaItem`'s

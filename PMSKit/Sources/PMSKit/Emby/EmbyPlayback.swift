@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public enum EmbyPlayMethod: String, Sendable, Equatable {
     case directPlay

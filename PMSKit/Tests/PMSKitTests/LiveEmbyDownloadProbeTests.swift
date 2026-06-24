@@ -1,3 +1,7 @@
+// Apple-only live developer probe: uses URLSession.bytes, which is unavailable in
+// swift-corelibs-foundation. Compiled out on the Linux CI fleet (which has no live server
+// anyway); runs on macOS only when its EMBY_LIVE_* env vars are set.
+#if !canImport(FoundationNetworking)
 import Testing
 import Foundation
 @testable import PMSKit
@@ -154,3 +158,4 @@ struct LiveEmbyDownloadProbeTests {
         }
     }
 }
+#endif

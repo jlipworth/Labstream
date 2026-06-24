@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public enum EmbyLibrary {
     /// `GET /Users/{UserId}/Views` — the user's libraries/views.

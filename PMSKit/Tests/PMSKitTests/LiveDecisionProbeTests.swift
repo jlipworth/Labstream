@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PMSKit
 
 /// Headless integration probe against a REAL Plex Media Server (issue #7 / #29 closing the

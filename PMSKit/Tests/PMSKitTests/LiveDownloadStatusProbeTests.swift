@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PMSKit
 
 /// Read-only live Plex download/optimizer status probe. OPT-IN via PLEX_LIVE_* env vars.

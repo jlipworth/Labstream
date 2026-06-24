@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 extension PlexRequest {
     /// Compose the final `URLRequest` from this descriptor: merge `queryItems`
