@@ -71,3 +71,39 @@ On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-fl
 ## Offline playback metadata
 
 Offline playback uses the stored metadata snapshot for title, artwork, text chapters, resume, duration, episode hierarchy, and selected source identifiers. Server metadata may be stale while offline; refresh on later online browse/download actions rather than blocking local playback.
+
+### Cached side assets
+
+Beyond the metadata snapshot, a download persists several binary side assets so the
+offline experience matches online playback without any server access. Each is stored
+as a path **relative to the Downloads base directory** (the sandbox container path is
+not stable across installs/devices) and re-resolved to an absolute URL when the record
+is hydrated:
+
+- **Poster / backdrop.** The cached poster (`posterRelativePath`) feeds the offline
+  library rows; the original `thumb`/`art` keys are kept so the image can be re-fetched
+  if the local cache is missing and the server is reachable again.
+- **Chapter images.** Per-chapter thumbnails (`chapterImageRelativePaths`) are fetched
+  at download time from each backend's chapter-image endpoint and keyed by chapter index
+  (not a flat array — chapter indices are not always contiguous). They power the offline
+  Chapters menu rail with real thumbnails and give the Emby offline scrubber a coarse
+  chapter-granularity preview source. Empty when no chapter carried an image. The text
+  chapter markers themselves (`chapters`) are stored separately so the Chapters tab works
+  even when no images were captured.
+- **Plex trick-play index.** For Plex parts that advertise a standard-definition BIF, the
+  index (`plexBIFRelativePath`) is cached for offline scrubbing.
+- **Jellyfin trick-play.** The Jellyfin trickplay playlist (`jellyfinTrickPlayPlaylistRelativePath`)
+  and its tile sheets (`jellyfinTrickPlayTileRelativePaths`) are cached. The cached playlist
+  is **sanitized**: tile lines are rewritten to local filenames and never contain
+  token-bearing server URLs.
+- **Offline text subtitles.** External text subtitle tracks (`offlineTextSubtitles`) are
+  downloaded for offline selection. Embedded subtitles remain discoverable through
+  AVFoundation directly; image/burned-in/unavailable tracks are intentionally not
+  represented here.
+
+### Side-asset disk accounting
+
+A record tracks the bytes occupied by its sidecar assets (poster, trickplay, subtitles)
+separately from the media file in `sideAssetBytes`. This value is computed by the app store
+when records are hydrated (it is not persisted in the media row itself) so the Offline tab
+can account for the full on-disk footprint of a download, not just the video file.

@@ -63,5 +63,8 @@ __pycache__/
 *.py[cod]
 scripts/emby-live.env
 
+# MkDocs local build output (deployed via CI; never commit)
+site/
+
 # Per-worktree simulator UDID (worktree-sim.sh)
 .simid

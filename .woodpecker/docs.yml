@@ -1,0 +1,28 @@
+# .woodpecker/docs.yml
+# Build the MkDocs site (strict) and deploy to GitHub Pages via the gh-pages branch.
+# Runs only on push to main, only when docs sources change.
+when:
+  - event: push
+    branch: main
+    path:
+      include: [docs/**, mkdocs.yml, requirements.txt, .woodpecker/docs.yml]
+
+steps:
+  - name: build-and-deploy
+    image: python:3.12-slim
+    environment:
+      DEPLOY_KEY: { from_secret: github_deploy_key }
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends git openssh-client
+      - rm -rf /var/lib/apt/lists/*
+      - pip install --no-cache-dir -r requirements.txt
+      - mkdocs build --strict
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+      - printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+      - chmod 600 ~/.ssh/id_ed25519
+      - ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+      - git config --global user.name  "woodpecker-ci"
+      - git config --global user.email "ci@visionplay.local"
+      - git remote set-url origin git@github.com:jlipworth/VisionPlay.git
+      - export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes"
+      - mkdocs gh-deploy --force --remote-name origin
