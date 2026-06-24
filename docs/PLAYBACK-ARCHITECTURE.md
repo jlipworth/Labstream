@@ -55,6 +55,6 @@ Silent auto-retry was removed. A failing stream should surface failure instead o
 
 ## Server cleanup invariant
 
-Plex HLS gives PMS no reliable end-of-playback signal. Always call the stop endpoint for active Plex transcode sessions, including before same-session restarts. This prevents stacked FFmpeg jobs and the OOM pattern documented in [`PLEX_AVP_TRANSCODE_OOM_REPORT.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md).
+Plex HLS gives PMS no reliable end-of-playback signal. Always call the stop endpoint for active Plex transcode sessions, including before same-session restarts. This prevents stacked FFmpeg jobs and the server-side OOM pattern that arises when Plex is repeatedly forced into software HEVC transcodes for the same item within a short window.
 
 The same class of invariant applies to Emby: `POST /Sessions/Playing/Stopped` reports session/progress state but does **not** stop a server-side encoder. For any Emby source that used server-side encoding (`usesServerEncoding`), the encoder must be stopped explicitly with `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=` on teardown. Do not collapse `Stopped` and active-encoding cleanup into one call.
