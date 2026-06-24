@@ -62,6 +62,7 @@ enum AppDiagnostics {
     static func report(context: DiagnosticReportContext) -> String {
         DiagnosticReportRenderer.render(context: context,
                                         events: store.snapshot(),
+                                        metricKitSummaries: MetricKitDiagnostics.shared.storedSummaries(),
                                         maxEvents: maxReportEvents)
     }
 

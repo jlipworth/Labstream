@@ -26,6 +26,11 @@ struct VisionPlay: App {
         // dynamic media parameters again after browse data loads.
         VisionPlayShortcuts.updateAppShortcutParameters()
 
+        // Adopt MetricKit as the passive crash/hang channel (#116). Registering this early lets
+        // the OS deliver any diagnostics queued from a previous (crashed) run; they surface only
+        // through the existing user-initiated, redacted feedback report.
+        MetricKitDiagnostics.shared.register()
+
         // Build a stable identity from the persisted client identifier. Version comes from the
         // bundle (#26) so the X-Plex-Version header can't silently drift from the marketing version.
         let keychain = KeychainStore()
