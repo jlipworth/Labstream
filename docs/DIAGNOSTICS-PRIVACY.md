@@ -38,4 +38,4 @@ It must not include the user’s Plex server name, Jellyfin server URL, raw host
 
 ## Profiling
 
-Committed profiling baselines should be small, manually reviewed, and privacy-safe. Use backend/scenario names without titles or server names. See [`PROFILING.md`](PROFILING.md) and [`profiling/baselines/README.md`](profiling/baselines/README.md).
+Committed profiling baselines should be small, manually reviewed, and privacy-safe. Use backend/scenario names without titles or server names. See [`PROFILING.md`](PROFILING.md) and [`profiling/baselines/README.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/profiling/baselines/README.md).
