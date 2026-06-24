@@ -668,7 +668,7 @@ struct SettingsView: View {
     }
 
     private var aboutSection: some View {
-        SwiftUI.Section("About") {
+        SwiftUI.Section {
             LabeledContent("Version", value: Self.appVersion)
             LabeledContent("Build", value: Self.appBuild)
             if let slug = Self.buildSlug {
@@ -682,6 +682,17 @@ struct SettingsView: View {
             // Product/device name exactly as sent to Plex. NEVER the client identifier —
             // it's treated as a secret in this repo.
             LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")
+        } header: {
+            Text("About")
+        } footer: {
+            // Trademark/branding sign-off (#92): nominative-use disclaimer covering all three
+            // backends. Emby staff explicitly approved this "independent third-party / not
+            // affiliated" wording for REST-API clients; Plex/Jellyfin permit descriptive use only.
+            // Keep this in sync with the App Store description's disclaimer.
+            Text("VisionPlay is an unofficial, independent third-party app. It is not affiliated "
+                 + "with, endorsed by, sponsored by, or officially supported by Plex, Inc., the "
+                 + "Jellyfin project, or Emby Media. “Plex”, “Jellyfin”, and “Emby” are trademarks "
+                 + "of their respective owners and are used here only to indicate compatibility.")
         }
     }
 
