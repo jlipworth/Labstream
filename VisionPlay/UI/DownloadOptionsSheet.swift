@@ -33,7 +33,19 @@ struct DownloadOptionsSheet: View {
         case checking
         case ready(original: OriginalOption?, compatibleRemux: CompatibleRemuxOption?,
                    presets: [String], probeFailed: Bool,
-                   originalStreamableButOfflineUnsupported: Bool)
+                   originalStreamableButOfflineUnsupported: Bool,
+                   existingVersions: [ExistingVersionOption])
+    }
+
+    /// #112: an existing server-generated Plex Version offered as an explicit, separate download
+    /// choice. Carries the `Media` array index it lives at (so the download addresses that exact
+    /// version/part) plus a human label built from its resolution/codec/bitrate/container.
+    private struct ExistingVersionOption: Equatable, Identifiable {
+        let mediaIndex: Int
+        let label: String
+        let detail: String?
+        let sizeBytes: Int?
+        var id: Int { mediaIndex }
     }
 
     private enum DownloadSelection: Equatable {
@@ -41,6 +53,8 @@ struct DownloadOptionsSheet: View {
         case plexOriginalQuality(String)
         case optimizeCompatible
         case optimize(String)
+        /// #112: download an existing server version exactly as-is (by `Media` index).
+        case existingVersion(Int)
     }
 
     @State private var probeState: ProbeState = .checking
@@ -60,7 +74,7 @@ struct DownloadOptionsSheet: View {
                     switch probeState {
                     case .checking:
                         SwiftUI.Section { Label("Checking compatibility…", systemImage: "wifi") }
-                    case let .ready(original, compatibleRemux, presets, probeFailed, unsupportedOriginal):
+                    case let .ready(original, compatibleRemux, presets, probeFailed, unsupportedOriginal, existingVersions):
                         if let original {
                             directSection(option: original)
                         }
@@ -77,6 +91,10 @@ struct DownloadOptionsSheet: View {
                                         allPresets: presets,
                                         probeFailed: probeFailed,
                                         originalAvailable: original != nil)
+                        // #112: existing server versions go BELOW the quality presets as a distinct section.
+                        if !existingVersions.isEmpty {
+                            existingVersionsSection(existingVersions)
+                        }
                         storageLimitSection
                         infoSection
                     }
@@ -115,7 +133,8 @@ struct DownloadOptionsSheet: View {
             let presets = defaultPresets
             selectedChoice = .optimize(presets[0])
             probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
-                                originalStreamableButOfflineUnsupported: false)
+                                originalStreamableButOfflineUnsupported: false,
+                                existingVersions: plexExistingVersions())
             return
         }
 
@@ -136,10 +155,13 @@ struct DownloadOptionsSheet: View {
         let unsupportedOriginal = probe.direct && original == nil
 
         // Plex uses its optimized-version model (no client-side remux lane); never offer it here.
+        // Source-quality defaulting is PRESERVED: existing server versions are an explicit extra,
+        // never the default — `preferredSelection` is unchanged and ignores them.
         selectedChoice = preferredSelection(originalAvailable: original != nil,
                                             compatibleRemuxAvailable: false, presets: presets)
         probeState = .ready(original: original, compatibleRemux: nil, presets: presets, probeFailed: false,
-                            originalStreamableButOfflineUnsupported: unsupportedOriginal)
+                            originalStreamableButOfflineUnsupported: unsupportedOriginal,
+                            existingVersions: plexExistingVersions())
     }
 
     private func runJellyfinProbe() async {
@@ -173,7 +195,8 @@ struct DownloadOptionsSheet: View {
                                     compatibleRemux: nil,
                                     presets: presets,
                                     probeFailed: true,
-                                    originalStreamableButOfflineUnsupported: original == nil)
+                                    originalStreamableButOfflineUnsupported: original == nil,
+                                    existingVersions: [])
                 return
             }
             var didRetryCancellation = false
@@ -227,7 +250,8 @@ struct DownloadOptionsSheet: View {
                             compatibleRemux: compatibleRemux,
                             presets: presets,
                             probeFailed: probeFailed,
-                            originalStreamableButOfflineUnsupported: original == nil && compatibleRemux == nil)
+                            originalStreamableButOfflineUnsupported: original == nil && compatibleRemux == nil,
+                            existingVersions: [])
     }
 
     private func isCancellation(_ error: Error) -> Bool {
@@ -252,7 +276,8 @@ struct DownloadOptionsSheet: View {
               let userId = appModel.embyUserID else {
             selectedChoice = .optimize(presets[0])
             probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
-                                originalStreamableButOfflineUnsupported: false)
+                                originalStreamableButOfflineUnsupported: false,
+                                existingVersions: [])
             return
         }
 
@@ -331,7 +356,8 @@ struct DownloadOptionsSheet: View {
                             compatibleRemux: compatibleRemux,
                             presets: presets,
                             probeFailed: probeFailed,
-                            originalStreamableButOfflineUnsupported: unsupportedOriginal)
+                            originalStreamableButOfflineUnsupported: unsupportedOriginal,
+                            existingVersions: [])
     }
 
     private var defaultPresets: [String] {
@@ -391,6 +417,57 @@ struct DownloadOptionsSheet: View {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 .localizedCaseInsensitiveCompare("Original video quality") != .orderedSame
         }
+    }
+
+    // MARK: - Existing server versions (#112)
+
+    /// Existing server-generated Plex Versions to offer as explicit download choices, derived from
+    /// the item's `Media` array SEPARATELY from the source media at `mediaIndex`. Every other
+    /// `Media` entry that carries a downloadable part is surfaced — these are the redundant/
+    /// pre-rendered versions Plex already keeps on the server. Plex-only (Jellyfin/Emby model the
+    /// alternate versions differently and use the compatible-remux lane), and never offered when
+    /// the item has a single version.
+    private func plexExistingVersions() -> [ExistingVersionOption] {
+        guard appModel.activeBackend == .plex, let media = item.media, media.count > 1 else {
+            downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(item.media?.count ?? 0, privacy: .public) offered=0")
+            return []
+        }
+        let result: [ExistingVersionOption] = media.enumerated().compactMap { index, m -> ExistingVersionOption? in
+            // The selected source version is offered through the normal quality options above, not
+            // as an "existing version" — skip it.
+            guard index != mediaIndex else { return nil }
+            // A version is only downloadable if it exposes a part with a streamable key.
+            guard let part = m.part.first, !part.key.isEmpty else { return nil }
+            return ExistingVersionOption(mediaIndex: index,
+                                         label: Self.versionLabel(m),
+                                         detail: Self.versionDetail(media: m, part: part),
+                                         sizeBytes: part.size)
+        }
+        downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(media.count, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
+        return result
+    }
+
+    /// Primary label for an existing-version row: resolution · codec · bitrate, e.g. "1080p · H264 · 8.0 Mbps".
+    private static func versionLabel(_ media: Media) -> String {
+        var parts: [String] = []
+        if let res = DownloadManager.resolutionLabel(for: media) { parts.append(res) }
+        if let codec = media.videoCodec?.uppercased(), !codec.isEmpty { parts.append(codec) }
+        if let bitrate = media.bitrate, bitrate > 0 {
+            parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1000))
+        }
+        return parts.isEmpty ? "Server version" : parts.joined(separator: " · ")
+    }
+
+    /// Secondary caption for an existing-version row: container + file size where available.
+    private static func versionDetail(media: Media, part: Part) -> String? {
+        var parts: [String] = []
+        if let container = (part.container ?? media.container)?.uppercased(), !container.isEmpty {
+            parts.append(container)
+        }
+        if let size = part.size, size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     // MARK: - Sections
@@ -555,11 +632,47 @@ struct DownloadOptionsSheet: View {
             // them intact.
             if selectedChoice == .optimizeCompatible { return }
             if case .plexOriginalQuality = selectedChoice { return }
+            // #112: an explicit existing-version pick is self-contained; never clobber it.
+            if case .existingVersion = selectedChoice { return }
             if case .optimize(let selected)? = selectedChoice, allPresets.contains(selected) {
                 return
             }
             selectedChoice = preferredSelection(originalAvailable: originalAvailable,
                                                 compatibleRemuxAvailable: false, presets: allPresets)
+        }
+    }
+
+    @ViewBuilder
+    private func existingVersionsSection(_ versions: [ExistingVersionOption]) -> some View {
+        SwiftUI.Section {
+            ForEach(versions) { version in
+                Button {
+                    selectedChoice = .existingVersion(version.mediaIndex)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "rectangle.stack.badge.play")
+                            .foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(version.label).foregroundStyle(.primary)
+                            if let detail = version.detail {
+                                Text(detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if selectedChoice == .existingVersion(version.mediaIndex) {
+                            Image(systemName: "checkmark").foregroundStyle(.tint)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text("Existing server versions")
+        } footer: {
+            Text("Downloads a version your server already has, exactly as-is — no new conversion is started and the server's existing copy is left in place.")
         }
     }
 
@@ -593,7 +706,23 @@ struct DownloadOptionsSheet: View {
         guard let selectedChoice else { return nil }
         return downloadManager.storageLimitMessage(adding: downloadManager.estimatedBytes(
             for: item, choice: managerChoice(for: selectedChoice),
-            mediaIndex: mediaIndex, partIndex: partIndex))
+            mediaIndex: mediaIndex(for: selectedChoice),
+            partIndex: partIndex(for: selectedChoice)))
+    }
+
+    /// The `Media` array index a selection downloads from. An existing-version pick (#112) targets
+    /// that version's own index; every other choice uses the sheet's selected source `mediaIndex`.
+    private func mediaIndex(for selection: DownloadSelection) -> Int {
+        if case .existingVersion(let index) = selection { return index }
+        return mediaIndex
+    }
+
+    /// The `Part` index a selection downloads from. An existing server version is addressed by its
+    /// first (only) rendered part — the version label/size are derived from `part.first` — so it
+    /// always uses part 0, independent of the source's selected `partIndex`.
+    private func partIndex(for selection: DownloadSelection) -> Int {
+        if case .existingVersion = selection { return 0 }
+        return partIndex
     }
 
     private func preferredSelection(originalAvailable: Bool,
@@ -622,6 +751,7 @@ struct DownloadOptionsSheet: View {
         case .plexOriginalQuality(let preset): return .optimize(targetName: preset)
         case .optimizeCompatible: return .optimizeCompatible
         case .optimize(let preset): return .optimize(targetName: preset)
+        case .existingVersion: return .existingVersion
         }
     }
 
@@ -706,20 +836,24 @@ struct DownloadOptionsSheet: View {
     private func startDownload() {
         guard let selectedChoice else { return }
         let choice = managerChoice(for: selectedChoice)
+        // #112: an existing-version pick downloads from THAT version's `Media` index (part 0), not
+        // the selected source index. Every other choice resolves to the sheet's media/part index.
+        let downloadMediaIndex = mediaIndex(for: selectedChoice)
+        let downloadPartIndex = partIndex(for: selectedChoice)
         // Exhaustive over the backend so a new lane is a compile error here, not a silent
         // fall-through into the Plex download path (which fails quietly on nil Plex creds).
         switch appModel.activeBackend {
         case .plex:
             Task { await downloadManager.download(item, choice: choice,
-                                                  mediaIndex: mediaIndex, partIndex: partIndex) }
+                                                  mediaIndex: downloadMediaIndex, partIndex: downloadPartIndex) }
         case .jellyfin:
             Task { await downloadManager.downloadJellyfin(item, choice: choice,
-                                                          mediaIndex: mediaIndex,
-                                                          partIndex: partIndex) }
+                                                          mediaIndex: downloadMediaIndex,
+                                                          partIndex: downloadPartIndex) }
         case .emby:
             Task { await downloadManager.downloadEmby(item, choice: choice,
-                                                      mediaIndex: mediaIndex,
-                                                      partIndex: partIndex) }
+                                                      mediaIndex: downloadMediaIndex,
+                                                      partIndex: downloadPartIndex) }
         }
         dismiss()
     }
