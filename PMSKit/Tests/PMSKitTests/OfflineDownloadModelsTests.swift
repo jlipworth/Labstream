@@ -387,6 +387,31 @@ struct OfflineDownloadModelsTests {
         #expect(legacy.resumeDataRelativePath == nil)
     }
 
+    @Test("a .preparing convert row survives relaunch and keeps polling (never a dead transfer)")
+    func preparingRowSurvivesRelaunch() {
+        // The convert job runs server-side and survives app death, so a `.preparing` row stays
+        // `.preparing` regardless of disk/task state — the app re-drives polling on relaunch.
+        for fileExists in [true, false] {
+            for hasLiveTask in [true, false] {
+                #expect(DownloadStatus.reconciledStatus(
+                    current: .preparing, fileExists: fileExists, hasLiveTask: hasLiveTask) == .preparing)
+            }
+        }
+    }
+
+    @Test("OfflineMetadata carries embyConvertJobID through encode/decode")
+    func metadataCarriesConvertJobID() throws {
+        let meta = OfflineMetadata(ratingKey: "emby:42", title: "Movie", type: "movie",
+                                   embyConvertJobID: 7)
+        let round = try JSONDecoder().decode(OfflineMetadata.self,
+                                             from: try JSONEncoder().encode(meta))
+        #expect(round.embyConvertJobID == 7)
+        // Legacy metadata without the field decodes to nil (no silent failure).
+        let legacy = try decode(OfflineMetadata.self,
+                                from: #"{"ratingKey":"x","title":"T","type":"movie"}"#)
+        #expect(legacy.embyConvertJobID == nil)
+    }
+
     @Test("validation policy shortens required playback for short clips")
     func validationPolicyShortClipRequiredPlayback() {
         let short = OfflinePlaybackValidationPolicy.make(durationMs: 2_000)

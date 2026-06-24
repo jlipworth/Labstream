@@ -441,8 +441,12 @@ public struct OfflineLibraryView: View {
             // download time is not yet estimable because no bytes are flowing, so we never
             // fabricate a combined total). `optimizeETA` is single-source: it carries the
             // server-`speed`-based estimate when available, else the progress-rate EMA.
+            // Emby convert-then-download renders a persistent file server-side before any byte
+            // download. Phrase it as "Preparing on server… N%" (distinct from the Plex optimize
+            // "Transcoding N%"); both share the same `optimizeProgress`/`optimizeETA` plumbing.
+            let prepHead = record.status == .preparing ? "Preparing on server…" : "Transcoding"
             if let p = manager.optimizeProgress[record.ratingKey] {
-                var caption = "Transcoding \(Int(p * 100))%"
+                var caption = "\(prepHead) \(Int(p * 100))%"
                 if let eta = manager.optimizeETA[record.ratingKey], eta > 0,
                    let left = timeLeftString(eta) {
                     caption += " • ~\(left) left"
@@ -450,7 +454,7 @@ public struct OfflineLibraryView: View {
                 return caption
             }
             if manager.optimizeState[record.ratingKey] == "queued" {
-                return "Queued on server"
+                return record.status == .preparing ? "Preparing on server…" : "Queued on server"
             }
             // #84: a server-prep row whose backend lane is signed out isn't really "preparing" —
             // say so honestly. It stays queued and resumes automatically once the lane returns.
