@@ -30,6 +30,7 @@ struct SettingsView: View {
     @State private var copiedDiagnosticsResetID: UUID?
     @State private var exportingDiagnostics = false
     @State private var diagnosticExportDocument = DiagnosticReportDocument()
+    @State private var presentingFeedback = false
     @State private var switchingBackend: MediaBackendKind?
 
     @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
@@ -86,7 +87,13 @@ struct SettingsView: View {
                 ])
             }
         }
+        .sheet(isPresented: $presentingFeedback) {
+            FeedbackSheet(reportText: diagnosticReportText, githubIssuesURL: Self.feedbackIssuesURL)
+        }
     }
+
+    /// Single source of truth for the web bug-report link (template-prefilled new-issue URL).
+    static let feedbackIssuesURL = URL(string: "https://github.com/jlipworth/VisionPlay/issues/new?template=bug_report.yml")!
 
     // MARK: Playback
 
@@ -660,10 +667,20 @@ struct SettingsView: View {
             } label: {
                 Label("Export diagnostic report file", systemImage: "square.and.arrow.up")
             }
+
+            Button {
+                AppDiagnostics.record(.settingsUI, "diagnostics.feedback_opened", fields: [
+                    "events_in_buffer": .int(AppDiagnostics.events().count),
+                    "logging_enabled": .bool(diagnosticLoggingEnabled),
+                ])
+                presentingFeedback = true
+            } label: {
+                Label("Send feedback to developer", systemImage: "envelope")
+            }
         } header: {
             Text("Diagnostics")
         } footer: {
-            Text("Logging is off by default. When enabled, VisionPlay keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted.")
+            Text("Logging is off by default. When enabled, VisionPlay keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted. Send feedback to developer opens a redacted report you can preview, share, or attach to a GitHub bug form.")
         }
     }
 
