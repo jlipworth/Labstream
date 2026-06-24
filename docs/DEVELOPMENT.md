@@ -1,7 +1,7 @@
 # Development notes
 
 Durable, easy-to-forget facts about building and working on this app. Task/bug tracking lives in
-[GitHub Issues](https://github.com/jlipworth/VisionPlay/issues); see the [README](../README.md)
+[GitHub Issues](https://github.com/jlipworth/VisionPlay/issues); see the [README](https://github.com/jlipworth/VisionPlay/blob/main/README.md)
 for the basic build/run.
 
 ## Build, test, run
@@ -27,7 +27,7 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay
 ```
 
 - App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5).
-- Docs map: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](TESTING-STRATEGY.md). Active-but-not-implemented research lives under [`research/`](research/); historical research lives under [`archive/research/`](archive/research/).
+- Docs map: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](TESTING-STRATEGY.md). Active-but-not-implemented research lives under [`research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/); historical research lives under [`archive/research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/).
 - Profiling workflow: see [`docs/PROFILING.md`](PROFILING.md) for Instruments baseline targets, simulator/device caveats, and finding templates.
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
   `PMSKit/Sources`, `PMSKit/Tests`) — no `project.pbxproj` edits needed.
