@@ -6,6 +6,9 @@ when:
     branch: main
     path:
       include: [docs/**, mkdocs.yml, requirements.txt, .woodpecker/docs.yml]
+  # Allow an on-demand rebuild from the Woodpecker UI (no path filter on manual runs).
+  - event: manual
+    branch: main
 
 steps:
   - name: build-and-deploy
