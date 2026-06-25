@@ -1653,6 +1653,14 @@ public final class DownloadManager {
             // resume() refused the blob — fall through to a clean restart below.
             store.setStatus(ratingKey: ratingKey, .failed)
         }
+        if record.status == .paused,
+           !Self.isJellyfinRecordKey(ratingKey),
+           !Self.isEmbyRecordKey(ratingKey),
+           let targetName = record.metadata?.optimizeTargetName,
+           !targetName.isEmpty {
+            retryPausedPlexOptimize(record: record, targetName: targetName)
+            return
+        }
         if Self.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record)
             return
@@ -1720,6 +1728,36 @@ public final class DownloadManager {
             self.releaseInFlight(ratingKey: ratingKey)
             self.store.remove(ratingKey: ratingKey)
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
+            self.refreshRecords()
+        }
+    }
+
+    private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
+        let metadata = record.metadata
+        let item = metadata?.makeMediaItem()
+            ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
+        let mediaIndex = metadata?.mediaIndex ?? 0
+        let partIndex = metadata?.partIndex ?? 0
+        Task { [weak self] in
+            guard let self else { return }
+            guard let backendSession = self.appModel.backendSession(for: .plex) else {
+                self.lastError[record.ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: record.ratingKey, .paused)
+                self.refreshRecords()
+                return
+            }
+            let currentItem = await self.fetchCurrentMediaItem(ratingKey: record.ratingKey,
+                                                               server: backendSession.baseURL,
+                                                               token: backendSession.token,
+                                                               identity: self.appModel.identity) ?? item
+            self.recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
+                "download_id": .identifier(record.ratingKey),
+                "target": .label(targetName),
+            ])
+            self.releaseInFlight(ratingKey: record.ratingKey)
+            self.store.remove(ratingKey: record.ratingKey)
+            await self.download(currentItem, choice: .optimize(targetName: targetName),
+                                mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
         }
     }
