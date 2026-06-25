@@ -540,7 +540,8 @@ public final class DownloadManager {
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: optimizeTargetName,
                                             session: backendSession,
-                                            downloadLane: Self.downloadLane(for: choice))
+                                            downloadLane: Self.downloadLane(for: choice),
+                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -872,7 +873,8 @@ public final class DownloadManager {
                                             }(),
                                             session: backendSession,
                                             mediaSourceID: jellyfinMediaSourceID,
-                                            downloadLane: Self.downloadLane(for: choice))
+                                            downloadLane: Self.downloadLane(for: choice),
+                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -1250,7 +1252,8 @@ public final class DownloadManager {
                                             }(),
                                             session: backendSession,
                                             mediaSourceID: embyMediaSourceHint,
-                                            downloadLane: Self.downloadLane(for: choice))
+                                            downloadLane: Self.downloadLane(for: choice),
+                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -2172,6 +2175,17 @@ public final class DownloadManager {
         }
     }
 
+    /// Display-only discriminator persisted alongside the lane: true when the chosen download is a
+    /// SERVER-PREPARED (transcoded) version rather than the user's true source. `.existingVersion`
+    /// covers all three: the Emby convert-then-download handoff, the Emby #126 reuse of an existing
+    /// converted version, and the Plex #112 existing-version download. They all ride the `.original`
+    /// static lane (resumable), so this flag — not the lane — is what lets the UI badge them
+    /// "Transcode" instead of "Original". See `OfflineMetadata.serverPreparedVersion`.
+    private static func isServerPreparedVersion(for choice: DownloadChoice) -> Bool {
+        if case .existingVersion = choice { return true }
+        return false
+    }
+
     private func refreshRecords() {
         let now = Date()
         let fresh = store.records
@@ -2383,7 +2397,8 @@ public final class DownloadManager {
                                         optimizeQueueTitle: String? = nil,
                                         session: BackendSession,
                                         mediaSourceID: String? = nil,
-                                        downloadLane: DownloadLane? = nil) -> OfflineMetadata {
+                                        downloadLane: DownloadLane? = nil,
+                                        serverPreparedVersion: Bool = false) -> OfflineMetadata {
         let sourcePartID = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id
         return OfflineMetadata(ratingKey: item.ratingKey,
                                key: item.key,
@@ -2425,7 +2440,8 @@ public final class DownloadManager {
                                backendUserID: session.userID,
                                mediaSourceID: mediaSourceID,
                                playSessionID: nil,
-                               downloadLane: downloadLane)
+                               downloadLane: downloadLane,
+                               serverPreparedVersion: serverPreparedVersion ? true : nil)
     }
 
     /// Human-readable resolution label for the chosen media version, for the offline-library
