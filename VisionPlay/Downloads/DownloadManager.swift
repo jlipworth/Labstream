@@ -865,7 +865,7 @@ public final class DownloadManager {
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
         let jellyfinMediaSourceID = mediaSourceIDOverride ?? Self.jellyfinMediaSourceID(media: media, part: part)
         var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
-        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
+        var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }
@@ -992,7 +992,11 @@ public final class DownloadManager {
                         playSessionId: decision.playSessionId)
                 } else {
                     // Stale UI/retry fallback: keep the download safe and playable when the
-                    // source video cannot be copied into the compatible MP4 lane.
+                    // source video cannot be copied into the compatible MP4 lane. Persist the
+                    // ACTUAL transfer route as `.optimize` so the offline UI says Transcode (not
+                    // Remux) and retry follows the same non-resumable transcode lane.
+                    metadata.downloadLane = .optimize
+                    metadata.optimizeTargetName = Self.jellyfinDefaultDownloadPreset
                     let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
                     expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
                                                                  videoBitrateBps: profile.videoBitrateBps)
@@ -1387,7 +1391,22 @@ public final class DownloadManager {
                 refreshRecords()
                 return
             case .original:
-                break
+                // A user/source `.original` row is only range-resumable when PlaybackInfo still
+                // negotiates a static direct download. Do not silently fall into the live encoder
+                // path while leaving the row stamped `.original`, or URLSession resume blobs can
+                // later be accepted for a forward-only stream. The user can delete/re-download via
+                // an optimize/convert choice if the server no longer exposes a direct file route.
+                recordDownloadDiagnostic("downloads.start_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Emby"),
+                    "phase": .label("original_not_directly_downloadable"),
+                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+                ])
+                lastError[ratingKey] = .transferFailed("Original source no longer directly downloadable.")
+                store.setStatus(ratingKey: ratingKey, .failed)
+                releaseInFlight(ratingKey: ratingKey)
+                refreshRecords()
+                return
             }
         }
 
