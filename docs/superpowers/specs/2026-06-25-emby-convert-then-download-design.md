@@ -148,8 +148,10 @@ real 4K item). So:
 - This only affects content that actually needs transcoding. 4K HEVC/H.264 that the device
   can **direct-play stays 4K** via the `.original` lane (the convert lane never triggers
   for it). The 1080p cap is the fallback only for genuinely incompatible sources.
-- True 4K conversions would require a server-side **custom** sync profile configured for
-  2160p, addressable via `profile:"custom"` — not built today (open decision).
+- True 4K conversions would require `profile:"custom"` with explicit per-job target
+  criteria (max resolution 2160 + codec) — verified that `custom` submitted *without* those
+  fields yields an empty, stuck-`Queued` job. **Decision: ship `tv`/1080p now; 4K tracked as
+  follow-up #128** (capture the custom-dialog criteria + add a `profile:"custom"` path).
 
 ## State & UI
 
