@@ -20,12 +20,16 @@ enum DebugPlexDownloadProbe {
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
 
-        let ratingKey = value(after: "--vp-probe-rating-key", in: arguments)
+        let requestedRatingKey = value(after: "--vp-probe-rating-key", in: arguments)
             ?? ProcessInfo.processInfo.environment["VISIONPLAY_PROBE_RATING_KEY"]
-            ?? "17183"
+        let query = value(after: "--vp-probe-query", in: arguments)
+            ?? ProcessInfo.processInfo.environment["VISIONPLAY_PROBE_QUERY"]
+        let ratingKey = requestedRatingKey ?? "17183"
         let mediaIndex = intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
         let partIndex = intValue(after: "--vp-probe-part-index", in: arguments) ?? 0
         let startDownload = arguments.contains("--vp-probe-start-download")
+        let deleteExisting = arguments.contains("--vp-probe-delete-existing")
+        let deleteAfterObserve = arguments.contains("--vp-probe-delete-after-observe")
         let preset = value(after: "--vp-probe-download-preset", in: arguments)
             ?? PlaybackPreferences.defaultDownloadQuality
         let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? (startDownload ? 90 : 5)
@@ -49,8 +53,18 @@ enum DebugPlexDownloadProbe {
         }
 
         do {
-            let item = try await fetchItem(ratingKey: ratingKey, appModel: appModel,
-                                           server: server, token: token)
+            let item = try await resolveItem(ratingKey: requestedRatingKey, query: query, appModel: appModel,
+                                             server: server, token: token)
+            let ratingKey = item.ratingKey
+            if deleteExisting {
+                downloadManager.delete(ratingKey: ratingKey)
+                log.notice("probe.deleted ratingKey=\(ratingKey, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.plex_download.deleted", fields: [
+                    "download_id": .identifier(ratingKey),
+                ])
+                return
+            }
+
             let probe = await downloadManager.directPlayProbe(for: item, server: server, token: token,
                                                               mediaIndex: mediaIndex, partIndex: partIndex)
             let part = probe.part ?? item.media?[safe: mediaIndex]?.part[safe: partIndex]
@@ -82,6 +96,13 @@ enum DebugPlexDownloadProbe {
 
             await downloadManager.download(item, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
             await observe(ratingKey: ratingKey, manager: downloadManager, seconds: observeSeconds)
+            if deleteAfterObserve {
+                downloadManager.delete(ratingKey: ratingKey)
+                log.notice("probe.deleted_after_observe ratingKey=\(ratingKey, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.plex_download.deleted", fields: [
+                    "download_id": .identifier(ratingKey),
+                ])
+            }
         } catch {
             log.error("probe.fail error=\(String(describing: error), privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.plex_download.fail", fields: [
@@ -89,6 +110,23 @@ enum DebugPlexDownloadProbe {
                 "error": .error(error),
             ])
         }
+    }
+
+    private static func resolveItem(ratingKey: String?, query: String?, appModel: AppModel,
+                                    server: URL, token: String) async throws -> MediaItem {
+        if let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let req = BrowseAPI.search(server: server, token: token, identity: appModel.identity, query: query)
+            let response = try await appModel.client.send(req, as: HubsResponse.self)
+            let matches = response.mediaContainer.hub.flatMap(\.metadata).filter { !$0.isContainer && !$0.isMusic }
+            let skinny = matches.first { $0.title.localizedCaseInsensitiveCompare(query) == .orderedSame }
+                ?? matches.first { $0.title.localizedCaseInsensitiveContains(query) }
+                ?? matches.first
+            if let skinny {
+                return try await fetchItem(ratingKey: skinny.ratingKey, appModel: appModel, server: server, token: token)
+            }
+            throw ProbeError.itemNotFound(query)
+        }
+        return try await fetchItem(ratingKey: ratingKey ?? "17183", appModel: appModel, server: server, token: token)
     }
 
     private static func fetchItem(ratingKey: String, appModel: AppModel,
