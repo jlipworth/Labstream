@@ -28,16 +28,27 @@ enum DebugPlexDownloadProbe {
         let mediaIndex = intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
         let partIndex = intValue(after: "--vp-probe-part-index", in: arguments) ?? 0
         let startDownload = arguments.contains("--vp-probe-start-download")
+        let useExistingVersion = arguments.contains("--vp-probe-existing-version")
+        let listVersions = arguments.contains("--vp-probe-list-versions")
+        let rangeCheck = arguments.contains("--vp-probe-range-check")
+        let dumpSearch = arguments.contains("--vp-probe-dump-search")
+        let pauseResume = arguments.contains("--vp-probe-pause-resume")
+        let observeOnly = arguments.contains("--vp-probe-observe-record")
         let deleteExisting = arguments.contains("--vp-probe-delete-existing")
         let deleteAfterObserve = arguments.contains("--vp-probe-delete-after-observe")
         let preset = value(after: "--vp-probe-download-preset", in: arguments)
             ?? PlaybackPreferences.defaultDownloadQuality
+        let pauseAfterSeconds = intValue(after: "--vp-probe-pause-after-seconds", in: arguments) ?? 8
         let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? (startDownload ? 90 : 5)
 
-        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) ratingKey=\(ratingKey, privacy: .public) start=\(startDownload, privacy: .public)")
+        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) ratingKey=\(ratingKey, privacy: .public) start=\(startDownload, privacy: .public) existing=\(useExistingVersion, privacy: .public) pauseResume=\(pauseResume, privacy: .public) observeOnly=\(observeOnly, privacy: .public)")
         AppDiagnostics.record(.downloads, "probe.plex_download.start", fields: [
             "download_id": .identifier(ratingKey),
             "start": .bool(startDownload),
+            "existing_version": .bool(useExistingVersion),
+            "dump_search": .bool(dumpSearch),
+            "pause_resume": .bool(pauseResume),
+            "observe_only": .bool(observeOnly),
         ])
 
         guard appModel.activeBackend == .plex,
@@ -54,7 +65,7 @@ enum DebugPlexDownloadProbe {
 
         do {
             let item = try await resolveItem(ratingKey: requestedRatingKey, query: query, appModel: appModel,
-                                             server: server, token: token)
+                                             server: server, token: token, dumpSearch: dumpSearch)
             let ratingKey = item.ratingKey
             if deleteExisting {
                 downloadManager.delete(ratingKey: ratingKey)
@@ -65,25 +76,66 @@ enum DebugPlexDownloadProbe {
                 return
             }
 
+            if listVersions {
+                logVersions(item: item)
+                if !startDownload && !observeOnly && !rangeCheck { return }
+            }
+
+            if observeOnly {
+                _ = await observe(ratingKey: ratingKey, manager: downloadManager,
+                                  seconds: observeSeconds, label: "observe_only")
+                if deleteAfterObserve {
+                    downloadManager.delete(ratingKey: ratingKey)
+                    log.notice("probe.deleted_after_observe ratingKey=\(ratingKey, privacy: .public)")
+                    AppDiagnostics.record(.downloads, "probe.plex_download.deleted", fields: [
+                        "download_id": .identifier(ratingKey),
+                    ])
+                }
+                return
+            }
+
             let probe = await downloadManager.directPlayProbe(for: item, server: server, token: token,
                                                               mediaIndex: mediaIndex, partIndex: partIndex)
-            let part = probe.part ?? item.media?[safe: mediaIndex]?.part[safe: partIndex]
+            let selectedMediaIndex = useExistingVersion
+                ? (explicitInt(after: "--vp-probe-media-index", in: arguments)
+                   ?? firstExistingVersionMediaIndex(item: item)
+                   ?? mediaIndex)
+                : mediaIndex
+            let part = item.media?[safe: selectedMediaIndex]?.part[safe: partIndex]
+                ?? probe.part
+                ?? item.media?[safe: mediaIndex]?.part[safe: partIndex]
             let originalEligible = probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
-            let choice: DownloadManager.DownloadChoice = originalEligible ? .original : .optimize(targetName: preset)
-            let route = originalEligible ? "original" : "optimize"
+            let choice: DownloadManager.DownloadChoice
+            let route: String
+            if useExistingVersion {
+                choice = .existingVersion
+                route = "existing_version"
+            } else {
+                choice = originalEligible ? .original : .optimize(targetName: preset)
+                route = originalEligible ? "original" : "optimize"
+            }
             let reason = originalEligible ? "direct_local_playable" : optimizeReason(direct: probe.direct, part: part)
 
-            let targetLabel = originalEligible ? "raw_original" : preset
-            log.notice("probe.route route=\(route, privacy: .public) reason=\(reason, privacy: .public) container=\(OfflineDownloadDecision.containerLabel(part: part), privacy: .public) target=\(targetLabel, privacy: .public) direct=\(probe.direct, privacy: .public)")
+            let targetLabel = useExistingVersion ? "existing_media_\(selectedMediaIndex)" : (originalEligible ? "raw_original" : preset)
+            let partSize = part?.size ?? 0
+            log.notice("probe.route route=\(route, privacy: .public) reason=\(reason, privacy: .public) mediaIndex=\(selectedMediaIndex, privacy: .public) container=\(OfflineDownloadDecision.containerLabel(part: part), privacy: .public) target=\(targetLabel, privacy: .public) direct=\(probe.direct, privacy: .public) size=\(partSize, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.plex_download.route", fields: [
                 "download_id": .identifier(ratingKey),
                 "route": .label(route),
                 "reason": .label(reason),
+                "media_index": .int(selectedMediaIndex),
                 "container": .label(OfflineDownloadDecision.containerLabel(part: part)),
                 "target": .label(targetLabel),
                 "direct": .bool(probe.direct),
+                "size_bytes": .int(partSize),
                 "start": .bool(startDownload),
             ])
+
+            if rangeCheck, let partKey = part?.key {
+                await probeRange(server: server, token: token, identity: appModel.identity,
+                                 partKey: partKey, ratingKey: ratingKey)
+                if !startDownload { return }
+            }
 
             guard startDownload else {
                 log.notice("probe.pass dry_run=true")
@@ -94,8 +146,37 @@ enum DebugPlexDownloadProbe {
                 return
             }
 
-            await downloadManager.download(item, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
-            await observe(ratingKey: ratingKey, manager: downloadManager, seconds: observeSeconds)
+            await downloadManager.download(item, choice: choice, mediaIndex: selectedMediaIndex, partIndex: partIndex)
+            if pauseResume {
+                let beforePause = await observe(ratingKey: ratingKey, manager: downloadManager,
+                                                seconds: pauseAfterSeconds, label: "pre_pause")
+                downloadManager.pause(ratingKey: ratingKey)
+                let paused = await waitForStatus(ratingKey: ratingKey, manager: downloadManager,
+                                                 statusText: "paused", seconds: 15)
+                let pausedProgress = currentProgress(ratingKey: ratingKey, manager: downloadManager)
+                log.notice("probe.paused reached=\(paused, privacy: .public) before=\(beforePause.progress, privacy: .public) pausedProgress=\(pausedProgress.progress, privacy: .public) bytes=\(pausedProgress.bytes, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.plex_download.paused", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reached": .bool(paused),
+                    "progress_pct": .int(Int((pausedProgress.progress * 100).rounded())),
+                    "bytes": .int(pausedProgress.bytes),
+                ])
+                downloadManager.retry(ratingKey: ratingKey)
+                let afterResume = await observe(ratingKey: ratingKey, manager: downloadManager,
+                                                seconds: observeSeconds, label: "post_resume")
+                let keptProgress = afterResume.progress >= max(0, pausedProgress.progress * 0.95)
+                log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) paused=\(pausedProgress.progress, privacy: .public) after=\(afterResume.progress, privacy: .public) bytes=\(afterResume.bytes, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.plex_download.resume_check", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "kept_progress": .bool(keptProgress),
+                    "paused_pct": .int(Int((pausedProgress.progress * 100).rounded())),
+                    "after_pct": .int(Int((afterResume.progress * 100).rounded())),
+                    "bytes": .int(afterResume.bytes),
+                ])
+            } else {
+                _ = await observe(ratingKey: ratingKey, manager: downloadManager,
+                                  seconds: observeSeconds, label: "started")
+            }
             if deleteAfterObserve {
                 downloadManager.delete(ratingKey: ratingKey)
                 log.notice("probe.deleted_after_observe ratingKey=\(ratingKey, privacy: .public)")
@@ -113,11 +194,28 @@ enum DebugPlexDownloadProbe {
     }
 
     private static func resolveItem(ratingKey: String?, query: String?, appModel: AppModel,
-                                    server: URL, token: String) async throws -> MediaItem {
+                                    server: URL, token: String, dumpSearch: Bool = false) async throws -> MediaItem {
         if let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let req = BrowseAPI.search(server: server, token: token, identity: appModel.identity, query: query)
+            let episodeTarget = parseEpisodeTarget(query)
+            let searchQuery = episodeTarget?.show ?? query
+            let req = BrowseAPI.search(server: server, token: token, identity: appModel.identity, query: searchQuery)
             let response = try await appModel.client.send(req, as: HubsResponse.self)
             let matches = response.mediaContainer.hub.flatMap(\.metadata).filter { !$0.isContainer && !$0.isMusic }
+            if dumpSearch {
+                log.notice("probe.search count=\(matches.count, privacy: .public)")
+                for match in matches.prefix(40) {
+                    log.notice("probe.search_result ratingKey=\(match.ratingKey, privacy: .public) type=\(match.type, privacy: .public) show=\(match.grandparentTitle ?? "nil", privacy: .public) season=\(match.parentIndex ?? 0, privacy: .public) episode=\(match.index ?? 0, privacy: .public) title=\(match.title, privacy: .public)")
+                }
+            }
+            if let target = episodeTarget,
+               let episode = matches.first(where: {
+                   $0.type == "episode"
+                   && ($0.grandparentTitle ?? "").localizedCaseInsensitiveCompare(target.show) == .orderedSame
+                   && $0.parentIndex == target.season
+                   && $0.index == target.episode
+               }) {
+                return try await fetchItem(ratingKey: episode.ratingKey, appModel: appModel, server: server, token: token)
+            }
             let skinny = matches.first { $0.title.localizedCaseInsensitiveCompare(query) == .orderedSame }
                 ?? matches.first { $0.title.localizedCaseInsensitiveContains(query) }
                 ?? matches.first
@@ -127,6 +225,86 @@ enum DebugPlexDownloadProbe {
             throw ProbeError.itemNotFound(query)
         }
         return try await fetchItem(ratingKey: ratingKey ?? "17183", appModel: appModel, server: server, token: token)
+    }
+
+    private static func parseEpisodeTarget(_ raw: String) -> (show: String, season: Int, episode: Int)? {
+        let pattern = #"(?i)^\s*(.*?)\s+s(\d+)e(\d+)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+              match.numberOfRanges == 4,
+              let showRange = Range(match.range(at: 1), in: raw),
+              let seasonRange = Range(match.range(at: 2), in: raw),
+              let episodeRange = Range(match.range(at: 3), in: raw),
+              let season = Int(raw[seasonRange]),
+              let episode = Int(raw[episodeRange]) else { return nil }
+        let show = String(raw[showRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !show.isEmpty else { return nil }
+        return (show, season, episode)
+    }
+
+    private static func logVersions(item: MediaItem) {
+        let media = item.media ?? []
+        log.notice("probe.versions count=\(media.count, privacy: .public)")
+        AppDiagnostics.record(.downloads, "probe.plex_download.versions", fields: [
+            "download_id": .identifier(item.ratingKey),
+            "count": .int(media.count),
+        ])
+        for (idx, media) in media.enumerated() {
+            let part = media.part.first
+            let playable = OfflineDownloadDecision.existingVersionPlayableOffline(
+                container: media.container ?? part?.container,
+                videoCodec: media.videoCodec ?? part?.videoStreams.first?.codec)
+            log.notice("probe.version index=\(idx, privacy: .public) playable=\(playable, privacy: .public) container=\((media.container ?? part?.container ?? "nil"), privacy: .public) width=\(media.width ?? 0, privacy: .public) height=\(media.height ?? 0, privacy: .public) bitrate=\(media.bitrate ?? 0, privacy: .public) size=\(part?.size ?? 0, privacy: .public)")
+            AppDiagnostics.record(.downloads, "probe.plex_download.version", fields: [
+                "download_id": .identifier(item.ratingKey),
+                "index": .int(idx),
+                "playable": .bool(playable),
+                "container": .label(media.container ?? part?.container ?? "nil"),
+                "width": .int(media.width ?? 0),
+                "height": .int(media.height ?? 0),
+                "bitrate": .int(media.bitrate ?? 0),
+                "size_bytes": .int(part?.size ?? 0),
+            ])
+        }
+    }
+
+    private static func firstExistingVersionMediaIndex(item: MediaItem) -> Int? {
+        for (idx, media) in (item.media ?? []).enumerated() where idx != 0 {
+            let part = media.part.first
+            if OfflineDownloadDecision.existingVersionPlayableOffline(
+                container: media.container ?? part?.container,
+                videoCodec: media.videoCodec ?? part?.videoStreams.first?.codec) {
+                return idx
+            }
+        }
+        return item.media?.indices.dropFirst().first
+    }
+
+    private static func probeRange(server: URL, token: String, identity: ClientIdentity,
+                                   partKey: String, ratingKey: String) async {
+        var req = URLRequest(url: OptimizeRequest.downloadURL(server: server, token: token, partKey: partKey))
+        req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse else { return }
+            let acceptRanges = http.value(forHTTPHeaderField: "Accept-Ranges") ?? "nil"
+            let contentRange = http.value(forHTTPHeaderField: "Content-Range") ?? "nil"
+            let contentLength = http.value(forHTTPHeaderField: "Content-Length") ?? "nil"
+            log.notice("probe.range status=\(http.statusCode, privacy: .public) acceptRanges=\(acceptRanges, privacy: .public) contentRange=\(contentRange, privacy: .public) contentLength=\(contentLength, privacy: .public)")
+            AppDiagnostics.record(.downloads, "probe.plex_download.range", fields: [
+                "download_id": .identifier(ratingKey),
+                "status_code": .int(http.statusCode),
+                "accept_ranges": .label(acceptRanges),
+                "has_content_range": .bool(contentRange != "nil"),
+                "content_length": .label(contentLength),
+            ])
+        } catch {
+            log.error("probe.range_fail error=\(String(describing: error), privacy: .public)")
+            AppDiagnostics.record(.downloads, "probe.plex_download.range_fail", fields: [
+                "download_id": .identifier(ratingKey),
+                "error": .error(error),
+            ])
+        }
     }
 
     private static func fetchItem(ratingKey: String, appModel: AppModel,
@@ -145,24 +323,56 @@ enum DebugPlexDownloadProbe {
         return direct ? "not_original_eligible" : "needs_transcode"
     }
 
-    private static func observe(ratingKey: String, manager: DownloadManager, seconds: Int) async {
+    private struct Observation {
+        let progress: Double
+        let bytes: Int
+        let status: String
+    }
+
+    private static func observe(ratingKey: String, manager: DownloadManager,
+                                seconds: Int, label: String) async -> Observation {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        var latest = currentProgress(ratingKey: ratingKey, manager: manager)
         while ContinuousClock.now < deadline {
             let record = manager.records.first { $0.ratingKey == ratingKey }
             let status = record.map { String(describing: $0.status) } ?? "missing"
             let progress = record?.progress ?? 0
-            log.notice("probe.observe status=\(status, privacy: .public) progress=\(progress, privacy: .public)")
+            let bytes = record?.bytes ?? 0
+            latest = Observation(progress: progress, bytes: bytes, status: status)
+            log.notice("probe.observe label=\(label, privacy: .public) status=\(status, privacy: .public) progress=\(progress, privacy: .public) bytes=\(bytes, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.plex_download.observe", fields: [
                 "download_id": .identifier(ratingKey),
+                "label": .label(label),
                 "status": .label(status),
                 "progress_pct": .int(Int((progress * 100).rounded())),
+                "bytes": .int(bytes),
             ])
             if record?.isComplete == true || record?.status == .failed { break }
             try? await Task.sleep(for: .seconds(5))
         }
         AppDiagnostics.record(.downloads, "probe.plex_download.done", fields: [
             "download_id": .identifier(ratingKey),
+            "label": .label(label),
         ])
+        return latest
+    }
+
+    private static func currentProgress(ratingKey: String, manager: DownloadManager) -> Observation {
+        let record = manager.records.first { $0.ratingKey == ratingKey }
+        return Observation(progress: record?.progress ?? 0,
+                           bytes: record?.bytes ?? 0,
+                           status: record.map { String(describing: $0.status) } ?? "missing")
+    }
+
+    private static func waitForStatus(ratingKey: String, manager: DownloadManager,
+                                      statusText: String, seconds: Int) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        while ContinuousClock.now < deadline {
+            let status = currentProgress(ratingKey: ratingKey, manager: manager).status
+            if status == statusText { return true }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        return currentProgress(ratingKey: ratingKey, manager: manager).status == statusText
     }
 
     private static func value(after flag: String, in arguments: [String]) -> String? {
@@ -172,6 +382,11 @@ enum DebugPlexDownloadProbe {
 
     private static func intValue(after flag: String, in arguments: [String]) -> Int? {
         value(after: flag, in: arguments).flatMap(Int.init)
+    }
+
+    private static func explicitInt(after flag: String, in arguments: [String]) -> Int? {
+        guard arguments.contains(flag) else { return nil }
+        return intValue(after: flag, in: arguments)
     }
 
     enum ProbeError: Error, CustomStringConvertible {
