@@ -4003,12 +4003,39 @@ public final class DownloadManager {
         convertMetadata.optimizeTargetName = targetName
         convertMetadata.downloadLane = .optimize
 
-        // Snapshot the existing File MediaSource ids so we can identify the freshly-converted one
-        // once the job completes (a second `File` source appears on the same item). Persist the FULL
-        // set (not just the original source) so a relaunch-resume still excludes any PRIOR converted
-        // version that already existed — otherwise that stale version could be mistaken for the new one.
-        let snapshotIds = await embyFileSourceIds(server: server, token: token, identity: identity,
-                                                   userId: userId, itemId: itemId)
+        // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
+        // instead of re-converting, and (b) identify the freshly-converted source once a new job
+        // completes (a second `File` source appears on the same item).
+        let fileSources = await embyFileSources(server: server, token: token, identity: identity,
+                                                userId: userId, itemId: itemId)
+        let snapshotIds = Set(fileSources.compactMap { $0.id })
+
+        // REUSE PREFLIGHT (#126 on the auto-convert path): if a server-prepared converted version that
+        // satisfies this preset's output resolution ALREADY exists, download THAT via the resumable
+        // `.existingVersion` lane instead of creating another Sync convert job. Without this, every
+        // repeat download of the same item piles up duplicate `- tv (N)` conversions in the library —
+        // and, worse, Emby's per-item Sync job can then transcode a DERIVED source (a duplicate whose
+        // file was since removed surfaces as ffmpeg "No such file" → the job Fails → the row shows
+        // "Server conversion failed"). Reusing the kept converted file avoids both.
+        let requestedHeight = Self.convertPresetOutputHeight(forLabel: targetName)
+        if let reuse = Self.reusableConvertedSource(fileSources, requestedHeight: requestedHeight,
+                                                    primaryMediaSourceId: metadata.mediaSourceID),
+           let reuseId = reuse.id {
+            recordDownloadDiagnostic("downloads.convert_reuse", fields: [
+                "download_id": .identifier(ratingKey),
+                "target": .label(targetName),
+                "source_count": .int(fileSources.count),
+            ])
+            // We hold the in-flight slot from `downloadEmby`; release it so the `.existingVersion`
+            // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). No
+            // `.preparing` row was seeded yet, so there is nothing to remove.
+            releaseInFlight(ratingKey: ratingKey)
+            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
+            return
+        }
+
+        // Persist the FULL pre-conversion id set (not just the original) so a relaunch-resume still
+        // excludes any PRIOR converted version — otherwise a stale version could be mistaken for the new one.
         convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
 
         // NOTE: Emby IGNORES the submitted job `name` and stores the item's own title instead
@@ -4344,12 +4371,13 @@ public final class DownloadManager {
         await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId)
     }
 
-    /// Enumerate the current `File` MediaSource ids for an Emby item (unfiltered PlaybackInfo), used
-    /// to snapshot the pre-conversion sources so the freshly-converted one can be identified later.
-    /// Best-effort: returns an empty set on any error (the converted-source diff then relies on the
-    /// h264/mp4 fallback).
-    private func embyFileSourceIds(server: URL, token: String, identity: EmbyClientIdentity,
-                                   userId: String, itemId: String) async -> Set<String> {
+    /// Enumerate the current `File` MediaSources for an Emby item (unfiltered PlaybackInfo). Used to
+    /// snapshot the pre-conversion sources so the freshly-converted one can be identified later, AND
+    /// for the convert-lane reuse preflight (an already-converted version is reused instead of
+    /// re-converting). Only on-disk (`Protocol == File`, or absent on older servers) sources with a
+    /// non-empty id are returned. Best-effort: empty array on any error.
+    private func embyFileSources(server: URL, token: String, identity: EmbyClientIdentity,
+                                 userId: String, itemId: String) async -> [EmbyMediaSourceInfo] {
         do {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
@@ -4359,16 +4387,64 @@ public final class DownloadManager {
                 return []
             }
             let sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
-            return Set(sources.compactMap { source -> String? in
-                guard let id = source.id, !id.isEmpty else { return nil }
+            return sources.filter { source in
+                guard let id = source.id, !id.isEmpty else { return false }
                 if let proto = source.mediaProtocol, proto.caseInsensitiveCompare("File") != .orderedSame {
-                    return nil
+                    return false
                 }
-                return id
-            })
+                return true
+            }
         } catch {
             return []
         }
+    }
+
+    /// The video height a convert preset is expected to OUTPUT, after the `tv`-profile 1080p cap
+    /// (live-verified: 4 Mbps → 720p, 20 Mbps → 1080p, and "4K 40 Mbps" clamps to 1080p). Parsed from
+    /// the preset label's leading resolution token. Used by the reuse preflight to decide whether an
+    /// already-existing converted version satisfies the request. nil → unknown label (don't reuse;
+    /// convert fresh).
+    static func convertPresetOutputHeight(forLabel label: String) -> Int? {
+        let token = label.split(separator: " ").first.map { $0.lowercased() } ?? ""
+        let raw: Int?
+        switch token {
+        case "4k", "2160p": raw = 2160
+        case "1080p":       raw = 1080
+        case "720p":        raw = 720
+        case "480p":        raw = 480
+        default:
+            // "Original video quality" keeps source quality but the `tv` profile still caps at 1080p.
+            raw = label.lowercased().hasPrefix("original") ? 1080 : nil
+        }
+        return raw.map { min($0, 1080) }
+    }
+
+    /// Pick an already-existing server-prepared (converted) `File` source to REUSE for a convert
+    /// request, or nil if none satisfies it. A reusable candidate is a non-primary h264/mp4 File
+    /// source (the convert profile's output — never the HEVC/MKV original) whose resolution tier
+    /// matches the requested preset's output height. The most recently added match wins (Emby ids are
+    /// numeric strings; the newest converted source has the highest id), so a stale lower-quality
+    /// version is never reused over a fresher matching one.
+    static func reusableConvertedSource(_ sources: [EmbyMediaSourceInfo],
+                                        requestedHeight: Int?,
+                                        primaryMediaSourceId: String?) -> EmbyMediaSourceInfo? {
+        guard let requestedHeight,
+              let wantedTier = resolutionLabel(forHeight: requestedHeight) else { return nil }
+        func height(_ s: EmbyMediaSourceInfo) -> Int? {
+            s.height ?? s.mediaStreams.first { $0.type == "Video" }?.height
+        }
+        // mp4 container AND h264: exactly the convert profile's output. Requiring BOTH (not either)
+        // guards against treating an h264-in-mkv original as a converted version.
+        func looksConverted(_ s: EmbyMediaSourceInfo) -> Bool {
+            let isH264 = s.videoCodec?.caseInsensitiveCompare("h264") == .orderedSame
+            let isMP4 = (s.container ?? "").lowercased().contains("mp4")
+            return isH264 && isMP4
+        }
+        func recency(_ s: EmbyMediaSourceInfo) -> Int { Int(s.id ?? "") ?? -1 }
+        return sources
+            .filter { $0.id != primaryMediaSourceId && looksConverted($0)
+                && resolutionLabel(forHeight: height($0)) == wantedTier }
+            .max { recency($0) < recency($1) }
     }
 
     // MARK: - Server conversion queue probe
