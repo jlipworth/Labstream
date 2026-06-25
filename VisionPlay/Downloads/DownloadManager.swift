@@ -1674,7 +1674,8 @@ public final class DownloadManager {
            !Self.isJellyfinRecordKey(ratingKey),
            !Self.isEmbyRecordKey(ratingKey),
            let targetName = record.metadata?.optimizeTargetName,
-           !targetName.isEmpty {
+           !targetName.isEmpty,
+           !Self.hasIncompleteStaticPartial(record) {
             retryPausedPlexOptimize(record: record, targetName: targetName)
             return
         }
@@ -1719,6 +1720,23 @@ public final class DownloadManager {
                                                                server: server,
                                                                token: token,
                                                                identity: self.appModel.identity) ?? item
+            guard self.retryRowStillPresent(ratingKey: ratingKey) else { return }
+
+            // #131: if this row already has an app-managed static partial, never delete/reseed it
+            // before restarting. Route back to the same static object and let
+            // BackgroundDownloadSession add `Range: bytes=<partial-size>-`.
+            if Self.hasIncompleteStaticPartial(record) {
+                let resolved = self.resolveStaticRetryTarget(record: record,
+                                                            fallbackMediaIndex: mediaIndex,
+                                                            fallbackPartIndex: partIndex,
+                                                            in: currentItem)
+                self.releaseInFlight(ratingKey: ratingKey)
+                await self.download(currentItem, choice: resolved.choice,
+                                    mediaIndex: resolved.mediaIndex, partIndex: resolved.partIndex)
+                self.refreshRecords()
+                return
+            }
+
             // #112: a row that downloaded an EXISTING server version (a non-source `Media` index on
             // the `.original` static lane) retries by re-downloading that exact version as-is — NOT
             // by re-probing into an optimize/render. Honour it only while that version still exists
@@ -1747,8 +1765,11 @@ public final class DownloadManager {
                 : .optimize(targetName: Self.originalFallbackOptimizeTarget())
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
+            guard self.retryRowStillPresent(ratingKey: ratingKey) else { return }
             self.releaseInFlight(ratingKey: ratingKey)
-            self.store.remove(ratingKey: ratingKey)
+            if !Self.hasIncompleteStaticPartial(record) {
+                self.store.remove(ratingKey: ratingKey)
+            }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
         }
@@ -1759,6 +1780,27 @@ public final class DownloadManager {
             && record.bytes > 0
             && record.progress < 0.999
             && FileManager.default.fileExists(atPath: record.localURL.path)
+    }
+
+    private func retryRowStillPresent(ratingKey: String) -> Bool {
+        store.records.contains { $0.ratingKey == ratingKey }
+    }
+
+    private func resolveStaticRetryTarget(record: DownloadRecord,
+                                          fallbackMediaIndex: Int,
+                                          fallbackPartIndex: Int,
+                                          in item: MediaItem) -> (choice: DownloadChoice, mediaIndex: Int, partIndex: Int) {
+        if let partID = record.metadata?.sourcePartID {
+            for (mediaIndex, media) in (item.media ?? []).enumerated() {
+                if let partIndex = media.part.firstIndex(where: { $0.id == partID }) {
+                    let isPrimaryOriginal = mediaIndex == 0 && record.metadata?.isServerPreparedVersion != true
+                    return (isPrimaryOriginal ? .original : .existingVersion, mediaIndex, partIndex)
+                }
+            }
+        }
+        let isPrepared = record.metadata?.isServerPreparedVersion == true
+            || (record.metadata?.mediaIndex ?? 0) > 0
+        return (isPrepared ? .existingVersion : .original, fallbackMediaIndex, fallbackPartIndex)
     }
 
     private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
@@ -1779,12 +1821,15 @@ public final class DownloadManager {
                                                                server: backendSession.baseURL,
                                                                token: backendSession.token,
                                                                identity: self.appModel.identity) ?? item
+            guard self.retryRowStillPresent(ratingKey: record.ratingKey) else { return }
             self.recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
                 "download_id": .identifier(record.ratingKey),
                 "target": .label(targetName),
             ])
             self.releaseInFlight(ratingKey: record.ratingKey)
-            self.store.remove(ratingKey: record.ratingKey)
+            if !Self.hasIncompleteStaticPartial(record) {
+                self.store.remove(ratingKey: record.ratingKey)
+            }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
                                 mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
@@ -1845,6 +1890,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
+            guard self.retryRowStillPresent(ratingKey: record.ratingKey) else { return }
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
             // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
             // mark this existing row `.failed` instead of making the retry affordance disappear.
@@ -1905,6 +1951,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
+            guard self.retryRowStillPresent(ratingKey: record.ratingKey) else { return }
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
             // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
             // existing row `.failed` instead of making the retry affordance disappear.
@@ -3253,6 +3300,12 @@ public final class DownloadManager {
                                          metadata: metadata,
                                          targetName: targetName)
         var downloadMetadata = metadata
+        // Once server prep has handed off to a concrete static Plex Part, retry/relaunch should
+        // resume the file bytes with Range rather than restart the optimize workflow. Persist the
+        // final Part id as the static retry target.
+        downloadMetadata.sourcePartID = part.id
+        downloadMetadata.resumeMode = .staticByteRange
+        downloadMetadata.serverPreparedVersion = true
         // If the #88 chapter-image cache landed while the Plex optimize job was rendering, preserve
         // it across this final "start the rendered Part" upsert instead of racing it back to nil.
         if downloadMetadata.chapterImageRelativePaths == nil {

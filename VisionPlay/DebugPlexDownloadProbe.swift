@@ -89,15 +89,23 @@ enum DebugPlexDownloadProbe {
                                            label: "observe_only")
                 if resumeObserved {
                     downloadManager.retry(ratingKey: ratingKey)
+                    try? await Task.sleep(for: .milliseconds(500))
+                    let resumeStart = currentProgress(ratingKey: ratingKey, manager: downloadManager)
                     let after = await observe(ratingKey: ratingKey, manager: downloadManager,
                                               seconds: observeSeconds, label: "resume_observed")
-                    let keptProgress = after.progress >= max(0, before.progress * 0.95)
-                    log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) paused=\(before.progress, privacy: .public) after=\(after.progress, privacy: .public) bytes=\(after.bytes, privacy: .public)")
+                    let resumedAtCheckpoint = before.bytes > 0 && resumeStart.bytes >= before.bytes
+                    let keptProgress = resumedAtCheckpoint
+                        && after.bytes >= before.bytes
+                        && after.progress >= max(0, before.progress * 0.95)
+                    log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) resumedAtCheckpoint=\(resumedAtCheckpoint, privacy: .public) paused=\(before.progress, privacy: .public) after=\(after.progress, privacy: .public) bytes=\(after.bytes, privacy: .public)")
                     AppDiagnostics.record(.downloads, "probe.plex_download.resume_check", fields: [
                         "download_id": .identifier(ratingKey),
                         "kept_progress": .bool(keptProgress),
+                        "resumed_at_checkpoint": .bool(resumedAtCheckpoint),
                         "paused_pct": .int(Int((before.progress * 100).rounded())),
                         "after_pct": .int(Int((after.progress * 100).rounded())),
+                        "paused_bytes": .int(before.bytes),
+                        "resume_start_bytes": .int(resumeStart.bytes),
                         "bytes": .int(after.bytes),
                     ])
                 }
@@ -180,15 +188,23 @@ enum DebugPlexDownloadProbe {
                 ])
                 if pauseOnly { return }
                 downloadManager.retry(ratingKey: ratingKey)
+                try? await Task.sleep(for: .milliseconds(500))
+                let resumeStart = currentProgress(ratingKey: ratingKey, manager: downloadManager)
                 let afterResume = await observe(ratingKey: ratingKey, manager: downloadManager,
                                                 seconds: observeSeconds, label: "post_resume")
-                let keptProgress = afterResume.progress >= max(0, pausedProgress.progress * 0.95)
-                log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) paused=\(pausedProgress.progress, privacy: .public) after=\(afterResume.progress, privacy: .public) bytes=\(afterResume.bytes, privacy: .public)")
+                let resumedAtCheckpoint = pausedProgress.bytes > 0 && resumeStart.bytes >= pausedProgress.bytes
+                let keptProgress = resumedAtCheckpoint
+                    && afterResume.bytes >= pausedProgress.bytes
+                    && afterResume.progress >= max(0, pausedProgress.progress * 0.95)
+                log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) resumedAtCheckpoint=\(resumedAtCheckpoint, privacy: .public) paused=\(pausedProgress.progress, privacy: .public) after=\(afterResume.progress, privacy: .public) bytes=\(afterResume.bytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "probe.plex_download.resume_check", fields: [
                     "download_id": .identifier(ratingKey),
                     "kept_progress": .bool(keptProgress),
+                    "resumed_at_checkpoint": .bool(resumedAtCheckpoint),
                     "paused_pct": .int(Int((pausedProgress.progress * 100).rounded())),
                     "after_pct": .int(Int((afterResume.progress * 100).rounded())),
+                    "paused_bytes": .int(pausedProgress.bytes),
+                    "resume_start_bytes": .int(resumeStart.bytes),
                     "bytes": .int(afterResume.bytes),
                 ])
             } else {
@@ -222,7 +238,7 @@ enum DebugPlexDownloadProbe {
             if dumpSearch {
                 log.notice("probe.search count=\(matches.count, privacy: .public)")
                 for match in matches.prefix(40) {
-                    log.notice("probe.search_result ratingKey=\(match.ratingKey, privacy: .public) type=\(match.type, privacy: .public) show=\(match.grandparentTitle ?? "nil", privacy: .public) season=\(match.parentIndex ?? 0, privacy: .public) episode=\(match.index ?? 0, privacy: .public) title=\(match.title, privacy: .public)")
+                    log.notice("probe.search_result ratingKey=\(match.ratingKey, privacy: .public) type=\(match.type, privacy: .public) show=\(match.grandparentTitle ?? "nil", privacy: .private) season=\(match.parentIndex ?? 0, privacy: .public) episode=\(match.index ?? 0, privacy: .public) title=\(match.title, privacy: .private)")
                 }
             }
             if let target = episodeTarget,

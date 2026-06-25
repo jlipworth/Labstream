@@ -48,9 +48,8 @@ enum DebugEmbyDownloadProbe {
         let preset = value(after: "--vp-probe-download-preset", in: arguments) ?? "1080p 8 Mbps"
         let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? 30
 
-        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .public) start=\(startDownload, privacy: .public) startOptimize=\(startOptimize, privacy: .public) refreshExisting=\(refreshExisting, privacy: .public)")
+        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .private) start=\(startDownload, privacy: .public) startOptimize=\(startOptimize, privacy: .public) refreshExisting=\(refreshExisting, privacy: .public)")
         AppDiagnostics.record(.downloads, "probe.emby_download.start", fields: [
-            "query": .text(query),
             "start": .bool(startDownload),
             "start_optimize": .bool(startOptimize),
             "refresh_existing": .bool(refreshExisting),

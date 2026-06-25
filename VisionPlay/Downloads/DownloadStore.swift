@@ -498,7 +498,7 @@ final class DownloadStore: @unchecked Sendable {
                     || row.metadata?.embyConvertJobID != nil)
             let hasAppRangeCheckpoint = resumeMode == .staticByteRange
                 && (row.status == .paused || row.status == .queued
-                    || row.status == .downloading || row.status == .failed)
+                    || row.status == .downloading)
                 && fileExists
                 && row.bytes > 0
                 && row.progress < 0.999
