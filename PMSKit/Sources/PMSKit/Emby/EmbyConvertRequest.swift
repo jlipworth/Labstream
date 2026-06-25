@@ -215,8 +215,33 @@ public enum EmbyConvertRequest {
         return req
     }
 
-    /// Decode a `GET /Sync/Jobs/{id}` (or create) response body into an `EmbyConvertJob`.
+    /// Decode a `GET /Sync/Jobs/{id}` (single-job poll) response body into an `EmbyConvertJob`.
+    ///
+    /// The single-job GET returns the job at the TOP LEVEL (`{ "Id", "Status", "Progress", … }`),
+    /// so `EmbyConvertJob` decodes it directly. The `POST /Sync/Jobs` CREATE response is a different
+    /// shape — use `decodeCreatedJob(from:)` for that.
     public static func decodeJob(from data: Data) throws -> EmbyConvertJob {
         try JSONDecoder().decode(EmbyConvertJob.self, from: data)
+    }
+
+    /// Decode a `POST /Sync/Jobs` (create) response body into the created `EmbyConvertJob`.
+    ///
+    /// Verified live (Emby 4.9.3): unlike the single-job GET, the create response is a
+    /// `SyncJobCreationResult` envelope that NESTS the job under `"Job"`:
+    /// `{ "Job": { "Id", "Status", "Progress", … }, "JobItems": [] }`. Decoding it as a bare
+    /// `EmbyConvertJob` throws `keyNotFound("Id")` because `"Id"` is not at the top level — that
+    /// was the create-phase crash. This unwraps `"Job"` and returns it.
+    public static func decodeCreatedJob(from data: Data) throws -> EmbyConvertJob {
+        try JSONDecoder().decode(EmbyConvertJobCreationResult.self, from: data).job
+    }
+}
+
+/// The `POST /Sync/Jobs` create-response envelope (`SyncJobCreationResult`): the created job is
+/// nested under `"Job"` (verified live, Emby 4.9.3), distinct from the top-level shape the
+/// single-job `GET /Sync/Jobs/{id}` returns. `JobItems` is intentionally ignored.
+private struct EmbyConvertJobCreationResult: Decodable {
+    let job: EmbyConvertJob
+    enum CodingKeys: String, CodingKey {
+        case job = "Job"
     }
 }
