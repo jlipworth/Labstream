@@ -100,6 +100,11 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
     public let requiresOpening: Bool?
     public let requiresClosing: Bool?
     public let liveStreamID: String?
+    /// `Protocol` of the source — `File` for an on-disk media file (the original AND any
+    /// server-side converted copy), vs `Http`/remote for a live/remote source. #126 enumerates
+    /// only `File` sources as downloadable existing versions (a remote/live source can't be a
+    /// byte-for-byte static download). Absent on older servers → treated as a local file.
+    public let mediaProtocol: String?
     /// Total byte size of the original source file. `Part.size` is always nil on Emby
     /// (see `EmbyItemMediaSourceDto`), so this is the only storage-preflight / expected-bytes
     /// signal for a downloadable original. Absent on some sources.
@@ -132,6 +137,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         case requiresOpening = "RequiresOpening"
         case requiresClosing = "RequiresClosing"
         case liveStreamID = "LiveStreamId"
+        case mediaProtocol = "Protocol"
         case size = "Size"
         case transcodeReasons = "TranscodeReasons"
         case bitrate = "Bitrate"
@@ -160,6 +166,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         requiresOpening = try c.decodeIfPresent(Bool.self, forKey: .requiresOpening)
         requiresClosing = try c.decodeIfPresent(Bool.self, forKey: .requiresClosing)
         liveStreamID = try c.decodeIfPresent(String.self, forKey: .liveStreamID)
+        mediaProtocol = try c.decodeIfPresent(String.self, forKey: .mediaProtocol)
         size = try c.decodeIfPresent(Int.self, forKey: .size)
         transcodeReasons = try c.decodeIfPresent([String].self, forKey: .transcodeReasons) ?? []
         bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
@@ -360,6 +367,10 @@ public enum EmbyPlayback {
         public let size: Int?
         public let container: String?
         public let bitrate: Int?
+        /// Negotiated source's real pixel height (e.g. 720 for a 720p converted copy). Lets the UI
+        /// label the ACTUAL downloaded resolution — important for a server-prepared/existing version,
+        /// whose height differs from the item's primary source (a 4K original → a 720p converted copy).
+        public let height: Int?
         /// #83: source video/audio codec tokens (first video/audio stream), for the compatible-remux
         /// eligibility decision (`OfflineDownloadDecision.compatibleRemuxEligibility`).
         public let videoCodec: String?
@@ -392,9 +403,81 @@ public enum EmbyPlayback {
             size: source.size,
             container: source.container?.split(separator: ",").first.map(String.init),
             bitrate: source.bitrate,
+            height: source.height ?? videoStream?.height,
             videoCodec: source.videoCodec ?? videoStream?.codec,
             audioCodec: source.audioCodec ?? audioStream?.codec,
             transcodeReasons: source.transcodeReasons)
+    }
+
+    /// #126: an alternate, already-on-disk Emby MediaSource offered as a byte-for-byte download —
+    /// the parity of Plex's "existing server version" lane (#112). Produced by Emby's "Convert
+    /// Media" (a Sync job to the "next to original files" target), which adds the converted copy as
+    /// a second `File` MediaSource on the SAME item with its own distinct `Id`. Downloaded statically
+    /// via `EmbyLibrary.downloadOriginalRequest(mediaSourceId:)` — NO new conversion is triggered and
+    /// the server's copy is left in place.
+    public struct EmbyExistingVersion: Sendable, Equatable, Identifiable {
+        public let mediaSourceId: String
+        public let name: String?
+        public let container: String?
+        public let videoCodec: String?
+        public let audioCodec: String?
+        public let size: Int?
+        public let width: Int?
+        public let height: Int?
+        public let bitrate: Int?
+        public let supportsDirectPlay: Bool
+        public var id: String { mediaSourceId }
+
+        public init(mediaSourceId: String, name: String?, container: String?, videoCodec: String?,
+                    audioCodec: String?, size: Int?, width: Int?, height: Int?, bitrate: Int?,
+                    supportsDirectPlay: Bool) {
+            self.mediaSourceId = mediaSourceId
+            self.name = name
+            self.container = container
+            self.videoCodec = videoCodec
+            self.audioCodec = audioCodec
+            self.size = size
+            self.width = width
+            self.height = height
+            self.bitrate = bitrate
+            self.supportsDirectPlay = supportsDirectPlay
+        }
+    }
+
+    /// #126: enumerate the downloadable EXISTING versions of an item from a PlaybackInfo response —
+    /// every on-disk (`Protocol == File`) MediaSource OTHER than the primary one the caller already
+    /// offers through its normal Original/Remux/Optimize options (`primaryMediaSourceId`). The
+    /// offline-playability gate (`OfflineDownloadDecision.existingVersionPlayableOffline`) is applied
+    /// by the caller (UI), mirroring the Plex lane: incompatible alternates are shown DISABLED, not
+    /// hidden, so the user understands why they can't pick them. Order is preserved from the response.
+    public static func existingDownloadableVersions(
+        response: EmbyPlaybackInfoResponse,
+        primaryMediaSourceId: String?) -> [EmbyExistingVersion] {
+        response.mediaSources.compactMap { source in
+            guard let id = source.id, !id.isEmpty else { return nil }
+            // The primary source is already offered above as Original/Remux/Optimize — never as a
+            // duplicate "existing version".
+            guard id != primaryMediaSourceId else { return nil }
+            // Only on-disk files are byte-for-byte downloadable. Treat an ABSENT Protocol as File
+            // (older servers omit it for local sources); exclude only an explicit non-File protocol
+            // (a remote/live source can't be a static download).
+            if let proto = source.mediaProtocol, proto.caseInsensitiveCompare("File") != .orderedSame {
+                return nil
+            }
+            let video = source.mediaStreams.first { $0.type == "Video" }
+            let audio = source.mediaStreams.first { $0.type == "Audio" }
+            return EmbyExistingVersion(
+                mediaSourceId: id,
+                name: source.name,
+                container: source.container?.split(separator: ",").first.map(String.init) ?? source.container,
+                videoCodec: source.videoCodec ?? video?.codec,
+                audioCodec: source.audioCodec ?? audio?.codec,
+                size: source.size,
+                width: source.width ?? video?.width,
+                height: source.height ?? video?.height,
+                bitrate: source.bitrate,
+                supportsDirectPlay: source.supportsDirectPlay)
+        }
     }
 
     /// Resolve a playable URL from a PlaybackInfo response.

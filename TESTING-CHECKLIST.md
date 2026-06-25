@@ -94,6 +94,22 @@ required**.
 - [x] **Backend switch does not bounce to Home (GH #84)** ✅ verified live — switching the active
       backend to Plex stays on the current screen (e.g. Settings) just like a Jellyfin↔Emby switch,
       instead of tearing down to the Home screen during Plex server re-discovery.
+- [x] **Emby convert-then-download lane (#126)** ✅ sim-verified (2026-06-25) — downloading a
+      non-direct Emby item triggers a server-side Sync convert job from the ORIGINAL source, shows the
+      indeterminate "Preparing on server…" (no misleading 0% — Emby pins Progress at 0), polls the job
+      to Completed, polls PlaybackInfo until the converted source is indexed (Emby reports Completed
+      ~3 min before the file is downloadable), then downloads it via the resumable `.original` static
+      lane badged "Transcode"/correct resolution. A SECOND download of the same item REUSES the kept
+      converted file (no new Sync job, no `- tv (N)` duplicate); a different preset converts fresh.
+      Verified against the live Emby server (job/source/library-folder state).
+- [ ] **Convert-then-download resume — DEVICE-ONLY** — the sim cannot validate this: a hard
+      `simctl terminate` produces no `NSURLSessionDownloadTaskResumeData` and the sim doesn't keep a
+      background `URLSession` alive across a kill, so kill→relaunch dead-ends in a failed row. On the
+      headset: start a convert/download, take the headset off (or let it sleep) for a few minutes,
+      put it back on → confirm the transfer CONTINUES/RESUMES from its offset rather than failing or
+      restarting from 0. (Resume today relies on iOS background continuation + resume-data blobs; the
+      app does NOT yet self-resume via HTTP `Range` from the on-disk partial — see #128-adjacent
+      follow-up if device testing shows hard-kill/OOM restarts from 0.)
 
 ## B. Player features
 
