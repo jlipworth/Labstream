@@ -322,26 +322,18 @@ struct DownloadOptionsSheet: View {
             probeFailed = true
         }
 
-        // #126: enumerate existing converted versions from an UNFILTERED PlaybackInfo. Emby filters
-        // the response to a single source when a MediaSourceId is supplied (the primary probe above
-        // passes one, so it can NEVER see the alternates), so this dedicated call passes nil to get
-        // every source. Best-effort: a failure here just means no existing-version rows, never a
-        // failed sheet. The primary (offered above via Original/Remux/Optimize) is `mediaSourceId`.
+        // #126/#133: enumerate existing converted versions from an UNFILTERED PlaybackInfo. Emby
+        // filters the response to a single source when a MediaSourceId is supplied (the primary
+        // probe above passes one, so it can NEVER see the alternates), so this dedicated call passes
+        // nil to get every source. If nothing is visible, ask Emby to refresh just this item and poll
+        // briefly: live testing showed completed Sync/Convert MP4 files can exist on disk while
+        // PlaybackInfo remains stale. Best-effort: a failure here just means no existing-version rows,
+        // never a failed sheet. The primary (offered above via Original/Remux/Optimize) is
+        // `mediaSourceId`.
         do {
-            let allReq = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity,
-                userId: userId, itemId: item.ratingKey,
-                mediaSourceId: nil,
-                maxStaticBitrate: 200_000_000)
-            let (data, response) = try await URLSession.shared.data(for: allReq)
-            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                let info = try EmbyPlaybackInfoResponse.decode(from: data)
-                // Exclude the source the main options already cover. Prefer the selected source id;
-                // fall back to the unfiltered decision's chosen primary when none was resolved.
-                let primaryId = mediaSourceId ?? (try? EmbyPlayback.downloadDecision(response: info))?.mediaSourceId
-                existingVersions = Self.embyExistingVersionOptions(
-                    response: info, primaryMediaSourceId: primaryId)
-            }
+            existingVersions = try await embyExistingVersionsWithRefresh(
+                server: server, token: token, identity: identity, userId: userId,
+                itemId: item.ratingKey, selectedMediaSourceId: mediaSourceId)
         } catch {
             // Leave existingVersions empty; the sheet still offers the normal lanes.
         }
@@ -420,6 +412,48 @@ struct DownloadOptionsSheet: View {
                 selection: .embyExistingVersion(mediaSourceId: version.mediaSourceId,
                                                 sizeBytes: version.size))
         }
+    }
+
+    private func embyExistingVersionsWithRefresh(server: URL,
+                                                 token: String,
+                                                 identity: EmbyClientIdentity,
+                                                 userId: String,
+                                                 itemId: String,
+                                                 selectedMediaSourceId: String?) async throws -> [ExistingVersionOption] {
+        func fetch() async throws -> [ExistingVersionOption] {
+            let allReq = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity,
+                userId: userId, itemId: itemId,
+                mediaSourceId: nil,
+                maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: allReq)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw URLError(.badServerResponse)
+            }
+            let info = try EmbyPlaybackInfoResponse.decode(from: data)
+            // Exclude the source the main options already cover. Prefer the selected source id; fall
+            // back to the unfiltered decision's chosen primary when none was resolved.
+            let primaryId = selectedMediaSourceId
+                ?? (try? EmbyPlayback.downloadDecision(response: info))?.mediaSourceId
+            return Self.embyExistingVersionOptions(response: info, primaryMediaSourceId: primaryId)
+        }
+
+        let initial = try await fetch()
+        if !initial.isEmpty { return initial }
+
+        let refresh = try EmbyConvertRequest.itemRefreshRequest(server: server, token: token,
+                                                                identity: identity, userId: userId,
+                                                                itemId: itemId)
+        let (_, refreshResponse) = try await URLSession.shared.data(for: refresh)
+        if let http = refreshResponse as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            return []
+        }
+        for attempt in 0..<2 {
+            let refreshed = try await fetch()
+            if !refreshed.isEmpty { return refreshed }
+            if attempt < 1 { try? await Task.sleep(for: .seconds(5)) }
+        }
+        return []
     }
 
     /// Primary label for an Emby existing-version row: resolution · codec · bitrate (Emby `Bitrate`

@@ -200,6 +200,24 @@ struct EmbyConvertJobTests {
         #expect(req.value(forHTTPHeaderField: "X-Emby-Token") == token)
     }
 
+    @Test("itemRefreshRequest is a POST to /Items/{id}/Refresh with safe defaults")
+    func itemRefreshRequestShape() throws {
+        let req = try EmbyConvertRequest.itemRefreshRequest(
+            server: server, token: token, identity: identity, userId: userId,
+            itemId: "item-placeholder")
+        #expect(req.httpMethod == "POST")
+        #expect(req.url?.path == "/Items/item-placeholder/Refresh")
+        let query = Dictionary(uniqueKeysWithValues: URLComponents(url: try #require(req.url), resolvingAgainstBaseURL: false)!
+            .queryItems!
+            .map { ($0.name, $0.value ?? "") })
+        #expect(query["Recursive"] == "true")
+        #expect(query["MetadataRefreshMode"] == "Default")
+        #expect(query["ImageRefreshMode"] == "Default")
+        #expect(query["ReplaceAllMetadata"] == "false")
+        #expect(query["ReplaceAllImages"] == "false")
+        #expect(req.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Emby ") == true)
+    }
+
     // MARK: - Quality mapping
 
     @Test("Original video quality maps to keep-quality bitrate + tv profile, never the original token")
