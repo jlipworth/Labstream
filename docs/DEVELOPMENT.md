@@ -293,6 +293,18 @@ metadata, and review-specific release automation can be handled in a later publi
     #128). Consequence for the UI: a server-prepared download must be labelled by the CONVERTED
     source's height (carried on `EmbyDownloadPlaybackDecision.height`), not the item's primary 4K
     source — else a 720p convert reads "4K". A genuine `.original` download keeps its source label.
+  - **A `POST /Sync/Jobs` has NO per-source selector — Emby picks which MediaSource of the item to
+    convert.** This bites on REPEAT downloads: the kept converted file lands in the library folder as a
+    `<title> - tv [(N)].mp4` sibling and Emby indexes it as a SECOND `File` source on the same item. A
+    fresh convert job for that item can then transcode the DERIVED `- tv` source (a convert-of-a-
+    convert), and a job whose derived input has since been removed fails in ffmpeg with `No such file or
+    directory` → the Sync job goes `Failed` (surfaced client-side as "Server conversion failed").
+    **Fix: never re-convert when a usable converted version already exists.** `triggerConvertAndDownload`
+    runs a REUSE PREFLIGHT (`reusableConvertedSource`): enumerate the item's `File` sources and, if a
+    non-primary h264-AND-mp4 source whose resolution tier matches the requested preset's capped-1080p
+    output height (`convertPresetOutputHeight`) already exists, hand off to the resumable
+    `.existingVersion` lane (#126) instead of creating a new job. This is what stops duplicate `- tv (N)`
+    pile-up and keeps Emby from ever having a derived source to mis-convert.
 
 ## Conventions
 
