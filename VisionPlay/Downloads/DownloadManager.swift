@@ -1701,7 +1701,14 @@ public final class DownloadManager {
         // pass `.original` unless the row explicitly recorded an optimize preset, in which case we
         // honour the user's downscale request via the explicit ladder.
         let choice: DownloadChoice
-        if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
+        if metadata?.isServerPreparedVersion == true, let sourceID = metadata?.mediaSourceID, !sourceID.isEmpty {
+            // A server-prepared version (Emby convert-then-download output / #126 reuse) downloads a
+            // specific converted MediaSource byte-for-byte. Retry MUST re-address that source via
+            // `.existingVersion` (the override below carries its id) — NOT a plain `.original`, which
+            // would drop the server-prepared intent and re-badge the row "Original" instead of
+            // "Transcode". `.existingVersion` re-stamps `serverPreparedVersion` on the reseeded row.
+            choice = .existingVersion
+        } else if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
             choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
         } else if metadata?.resolvedDownloadLane() == .compatibleRemux {
             // #83: preserve the compatible-remux intent (downloadEmby re-probes PlaybackInfo and
