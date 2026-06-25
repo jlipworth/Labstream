@@ -136,11 +136,20 @@ transcoding), so there is **no 8 Mbps cap**. "Original video quality" → a high
 bitrate (`keepQualityBitrate`, 80 Mbps) because the literal `quality:"original"` token
 returns HTTP 500 on `originalmediafolder`.
 
-**Known fidelity limit:** Emby's convert-job API has **no per-job resolution field** —
-output resolution is governed by the `profile` (we use `tv`), not by the preset's
-resolution label. So the picker's resolution tiers (4K/1080p/720p/480p) differ only by
-bitrate in the converted output, not by an enforced height. This is an Emby API
-constraint, not a bug.
+**Known fidelity limit — the lane caps at 1080p (live-verified).** Emby's convert-job API
+has **no per-job resolution field** — output resolution is governed by the `profile`. The
+built-in `tv` profile (the highest non-custom) **downscales to 1080p**: a 3840×2160 HEVC
+source converted with `profile:"tv"` at 20 Mbps produced **1920×1080** h264 (verified on a
+real 4K item). So:
+
+- The picker's resolution tiers (4K/1080p/720p/480p) differ only by **bitrate** in the
+  converted output, not by an enforced height; "4K 40 Mbps" yields 1080p @ ~40 Mbps, not
+  4K.
+- This only affects content that actually needs transcoding. 4K HEVC/H.264 that the device
+  can **direct-play stays 4K** via the `.original` lane (the convert lane never triggers
+  for it). The 1080p cap is the fallback only for genuinely incompatible sources.
+- True 4K conversions would require a server-side **custom** sync profile configured for
+  2160p, addressable via `profile:"custom"` — not built today (open decision).
 
 ## State & UI
 
