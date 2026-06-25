@@ -70,6 +70,14 @@ struct ContentView: View {
             downloadManager.resumePendingServerPrepDownloads()
             downloadManager.teardownOrphanedEncodersOnLaunch()
 #if DEBUG
+            let debugArgs = ProcessInfo.processInfo.arguments
+            if let idx = debugArgs.firstIndex(of: "--vp-probe-backend"),
+               debugArgs.indices.contains(idx + 1),
+               let backend = MediaBackendKind(rawValue: debugArgs[idx + 1]),
+               backend != appModel.activeBackend {
+                await authManager.switchBackend(backend)
+            }
+
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugPlexDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)

@@ -426,7 +426,9 @@ struct DownloadOptionsSheet: View {
     /// is bits/sec). Falls back to the source name, then a generic label.
     private static func embyVersionLabel(_ version: EmbyPlayback.EmbyExistingVersion) -> String {
         var parts: [String] = []
-        if let height = version.height, height > 0 { parts.append("\(height)p") }
+        if let resolution = DownloadResolutionLabel.label(width: version.width, height: version.height) {
+            parts.append(resolution)
+        }
         if let codec = version.videoCodec?.uppercased(), !codec.isEmpty { parts.append(codec) }
         if let bitrate = version.bitrate, bitrate > 0 {
             parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1_000_000))

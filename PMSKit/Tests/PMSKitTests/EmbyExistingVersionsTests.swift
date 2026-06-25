@@ -118,4 +118,24 @@ struct EmbyExistingVersionsTests {
         let v = try EmbyPlayback.existingDownloadableVersions(response: response(json), primaryMediaSourceId: "only")
         #expect(v.isEmpty)
     }
+
+    @Test("Completed filesystem conversions are not reusable until PlaybackInfo exposes a File MediaSource")
+    func completedFileNotVisibleInPlaybackInfoIsNotAdvertised() throws {
+        // Regression for #133: a live Emby conversion can copy "Title - tv.mp4" into the media
+        // folder while unfiltered PlaybackInfo still exposes only the original source. The app has
+        // no safe MediaSourceId to download in that state, so it must not advertise/reuse an
+        // existing version from filename knowledge alone.
+        let playbackInfoStillOriginalOnly = """
+        { "PlaySessionId": "s", "MediaSources": [
+          {"Id":"source_original","Name":"Converted Fixture","Container":"mkv",
+           "Protocol":"File","SupportsDirectPlay":true,"VideoCodec":"hevc",
+           "MediaStreams":[{"Type":"Video","Codec":"hevc","Width":3840,"Height":1600}]}
+        ] }
+        """
+        let versions = try EmbyPlayback.existingDownloadableVersions(
+            response: response(playbackInfoStillOriginalOnly),
+            primaryMediaSourceId: "source_original")
+        #expect(versions.isEmpty)
+    }
+
 }

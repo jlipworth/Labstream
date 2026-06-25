@@ -367,9 +367,10 @@ public enum EmbyPlayback {
         public let size: Int?
         public let container: String?
         public let bitrate: Int?
-        /// Negotiated source's real pixel height (e.g. 720 for a 720p converted copy). Lets the UI
-        /// label the ACTUAL downloaded resolution — important for a server-prepared/existing version,
-        /// whose height differs from the item's primary source (a 4K original → a 720p converted copy).
+        /// Negotiated source's real pixel dimensions. Lets the UI label the ACTUAL downloaded
+        /// resolution — important for wide-aspect server-prepared/existing versions where width
+        /// reaches a tier (e.g. 1920) but scope height is below the nominal rung (e.g. 800).
+        public let width: Int?
         public let height: Int?
         /// #83: source video/audio codec tokens (first video/audio stream), for the compatible-remux
         /// eligibility decision (`OfflineDownloadDecision.compatibleRemuxEligibility`).
@@ -403,6 +404,7 @@ public enum EmbyPlayback {
             size: source.size,
             container: source.container?.split(separator: ",").first.map(String.init),
             bitrate: source.bitrate,
+            width: source.width ?? videoStream?.width,
             height: source.height ?? videoStream?.height,
             videoCodec: source.videoCodec ?? videoStream?.codec,
             audioCodec: source.audioCodec ?? audioStream?.codec,

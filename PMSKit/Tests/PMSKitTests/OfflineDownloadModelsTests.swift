@@ -393,6 +393,32 @@ struct OfflineDownloadModelsTests {
             current: .paused, fileExists: true, hasLiveTask: false) == .failed)
     }
 
+
+    @Test("resume mode persists and legacy rows derive safe checkpoint semantics")
+    func resumeModePersistsAndDerives() throws {
+        let explicit = OfflineMetadata(ratingKey: "jellyfin:42", title: "Movie", type: "movie",
+                                       backendKind: .jellyfin, downloadLane: .optimize,
+                                       resumeMode: .liveForwardOnly)
+        let round = try JSONDecoder().decode(OfflineMetadata.self,
+                                             from: try JSONEncoder().encode(explicit))
+        #expect(round.resumeMode == .liveForwardOnly)
+        #expect(round.resolvedResumeMode(ratingKey: "jellyfin:42") == .liveForwardOnly)
+
+        let legacyPlexOptimize = try decode(OfflineMetadata.self,
+                                            from: #"{"ratingKey":"123","title":"t","optimizeTargetName":"1080p 10 Mbps"}"#)
+        #expect(legacyPlexOptimize.resumeMode == nil)
+        #expect(legacyPlexOptimize.resolvedResumeMode(ratingKey: "123") == .serverPrepThenStatic)
+
+        let legacyJellyfinRemux = try decode(OfflineMetadata.self,
+                                             from: #"{"ratingKey":"jellyfin:123","title":"t","backendKind":"jellyfin","downloadLane":"compatibleRemux"}"#)
+        #expect(legacyJellyfinRemux.resolvedResumeMode(ratingKey: "jellyfin:123") == .liveForwardOnly)
+
+        let embyConvert = OfflineMetadata(ratingKey: "emby:42", title: "Movie", type: "movie",
+                                          backendKind: .emby, downloadLane: .optimize,
+                                          embyConvertJobID: 36)
+        #expect(embyConvert.resolvedResumeMode(ratingKey: "emby:42") == .serverPrepThenStatic)
+    }
+
     @Test("OfflineMetadata carries resumeDataRelativePath through encode/decode")
     func metadataCarriesResumeDataPath() throws {
         let meta = OfflineMetadata(ratingKey: "jellyfin:42", title: "Movie", type: "movie",

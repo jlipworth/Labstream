@@ -1641,6 +1641,15 @@ public final class DownloadManager {
         // below. If the resume task is later rejected by the server (200 full-restart / 416), the
         // normal failure path makes the row retryable again from scratch.
         if record.status == .paused,
+           record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .serverPrepThenStatic,
+           Self.isEmbyRecordKey(ratingKey),
+           record.metadata?.embyConvertJobID != nil {
+            store.setStatus(ratingKey: ratingKey, .preparing)
+            resumePendingEmbyConvertDownloads()
+            refreshRecords()
+            return
+        }
+        if record.status == .paused,
            store.supportsPersistedResumeData(ratingKey: ratingKey),
            let resumeData = store.resumeData(ratingKey: ratingKey) {
             store.clearResumeData(ratingKey: ratingKey)
@@ -2578,6 +2587,10 @@ public final class DownloadManager {
                                         downloadLane: DownloadLane? = nil,
                                         serverPreparedVersion: Bool = false) -> OfflineMetadata {
         let sourcePartID = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id
+        let lane = downloadLane ?? ((optimizeTargetName?.isEmpty == false) ? .optimize : .original)
+        let resumeMode = DownloadResumeMode.resolved(backend: session.kind,
+                                                     lane: lane,
+                                                     optimizeTargetName: optimizeTargetName)
         return OfflineMetadata(ratingKey: item.ratingKey,
                                key: item.key,
                                title: item.title,
@@ -2619,6 +2632,7 @@ public final class DownloadManager {
                                mediaSourceID: mediaSourceID,
                                playSessionID: nil,
                                downloadLane: downloadLane,
+                               resumeMode: resumeMode,
                                serverPreparedVersion: serverPreparedVersion ? true : nil)
     }
 
@@ -2627,14 +2641,7 @@ public final class DownloadManager {
     /// height with the common consumer-resolution buckets; falls back to "W×H" then nil.
     static func resolutionLabel(for media: Media?) -> String? {
         guard let media else { return nil }
-        switch (media.width, media.height) {
-        case let (_, h?) where h >= 2160: return "4K"
-        case let (_, h?) where h >= 1080: return "1080p"
-        case let (_, h?) where h >= 720:  return "720p"
-        case let (_, h?) where h >= 480:  return "480p"
-        case let (w?, h?):                return "\(w)×\(h)"
-        default:                          return nil
-        }
+        return DownloadResolutionLabel.label(width: media.width, height: media.height)
     }
 
     /// Resolution label to STORE/DISPLAY on the offline row.
@@ -2662,29 +2669,14 @@ public final class DownloadManager {
     /// the lowercase `x` separator the MediaSettings strings use. Returns nil for an unparseable
     /// value so the caller can fall back to the source label.
     static func resolutionLabel(forVideoResolution raw: String) -> String? {
-        let parts = raw.lowercased().split(separator: "x")
-        guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) else { return nil }
-        switch (w, h) {
-        case let (_, h) where h >= 2160: return "4K"
-        case let (_, h) where h >= 1080: return "1080p"
-        case let (_, h) where h >= 720:  return "720p"
-        case let (_, h) where h >= 480:  return "480p"
-        default:                         return "\(w)×\(h)"
-        }
+        DownloadResolutionLabel.label(forVideoResolution: raw)
     }
 
     /// Bucket a raw pixel height into the same human label as `resolutionLabel(for:)`. Used to label
     /// a server-prepared/existing-version download by the CONVERTED source's real height (e.g. a 720p
     /// copy of a 4K original) rather than the item's primary-source height. Returns nil for nil input.
     static func resolutionLabel(forHeight height: Int?) -> String? {
-        guard let h = height else { return nil }
-        switch h {
-        case let h where h >= 2160: return "4K"
-        case let h where h >= 1080: return "1080p"
-        case let h where h >= 720:  return "720p"
-        case let h where h >= 480:  return "480p"
-        default:                    return "\(h)p"
-        }
+        DownloadResolutionLabel.label(forHeight: height)
     }
 
     /// Whether the original source part is a good local-file download target. PMS may be able
@@ -4180,6 +4172,7 @@ public final class DownloadManager {
         var convertMetadata = metadata
         convertMetadata.optimizeTargetName = targetName
         convertMetadata.downloadLane = .optimize
+        convertMetadata.resumeMode = .serverPrepThenStatic
 
         // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
         // instead of re-converting, and (b) identify the freshly-converted source once a new job

@@ -393,8 +393,9 @@ final class DownloadStore: @unchecked Sendable {
         guard let row else { return false }
         let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
             ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
-        guard backend == .jellyfin || backend == .emby else { return true }
-        return (row.metadata?.resolvedDownloadLane() ?? .original) == .original
+        let mode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+            ?? DownloadResumeMode.resolved(backend: backend, lane: .original)
+        return mode != .liveForwardOnly
     }
 
     /// #95: drop a row's persisted resume blob + its recorded path once it's consumed (a resume
@@ -486,6 +487,15 @@ final class DownloadStore: @unchecked Sendable {
             let hasResumeData = (resumeRelative?.isEmpty == false)
                 && fileManager.fileExists(
                     atPath: baseDirectory.appendingPathComponent(resumeRelative!).path)
+            let resumeMode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+                ?? DownloadResumeMode.resolved(
+                    backend: row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
+                        ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey),
+                    lane: row.metadata?.resolvedDownloadLane() ?? .original)
+            let hasServerPrepCheckpoint = resumeMode == .serverPrepThenStatic
+                && row.status == .paused
+                && (row.metadata?.optimizeTargetName?.isEmpty == false
+                    || row.metadata?.embyConvertJobID != nil)
             // Only Plex has a server-side "prepare then static download" optimize queue that can
             // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
             // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
@@ -498,9 +508,9 @@ final class DownloadStore: @unchecked Sendable {
                 && !row.ratingKey.hasPrefix("emby:")
             let newStatus = isPlexServerPrepOptimizedJob
                 ? .queued
-                : DownloadStatus.reconciledStatus(
+                : (hasServerPrepCheckpoint ? .paused : DownloadStatus.reconciledStatus(
                     current: row.status, fileExists: fileExists,
-                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData)
+                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData))
             let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
                 && (row.bytes != 0 || row.progress != 0)
             guard newStatus != row.status || shouldResetOptimizedProgress else { continue }

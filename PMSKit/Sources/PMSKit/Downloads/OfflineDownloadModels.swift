@@ -223,6 +223,33 @@ public enum DownloadLane: String, Codable, Sendable, Equatable {
     case compatibleRemux
 }
 
+/// Durable checkpoint/resume class for a download row (#131). This is deliberately
+/// separate from `DownloadLane`: a row can be display-lane "optimize" while its
+/// next resumable checkpoint is either server-prep polling (Plex/Emby convert) or
+/// a forward-only live encoder stream (Jellyfin/Emby remux/transcode).
+public enum DownloadResumeMode: String, Codable, Sendable, Equatable {
+    /// A stable static object where byte-range / URLSession resume data may be trusted.
+    case staticByteRange
+    /// A durable server-side render/convert phase must be resumed before a static download.
+    case serverPrepThenStatic
+    /// A live encoder stream; byte-offset resume is unsafe/misleading.
+    case liveForwardOnly
+
+    public static func resolved(backend: DownloadBackendKind,
+                                lane: DownloadLane,
+                                optimizeTargetName: String? = nil,
+                                embyConvertJobID: Int? = nil) -> DownloadResumeMode {
+        if backend == .emby, embyConvertJobID != nil { return .serverPrepThenStatic }
+        if backend == .plex, lane == .optimize, optimizeTargetName?.isEmpty == false {
+            return .serverPrepThenStatic
+        }
+        if (backend == .jellyfin || backend == .emby), lane != .original {
+            return .liveForwardOnly
+        }
+        return .staticByteRange
+    }
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -320,6 +347,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// preserves the user's intent — original (no target) vs compatible-remux (no target) are
     /// otherwise indistinguishable. Absent on pre-#83 rows (see `resolvedDownloadLane`).
     public var downloadLane: DownloadLane?
+    /// #131: durable checkpoint/resume class for this row. New rows persist this so retry/relaunch
+    /// does not have to infer whether a row is byte-range resumable, server-prep resumable, or a
+    /// live forward-only stream. Legacy rows derive the same value from backend/lane markers.
+    public var resumeMode: DownloadResumeMode?
     /// #95: path (relative to the Downloads base dir) of the persisted URLSession resume blob
     /// for a `.paused` (recoverably-interrupted) download. Stored as a sibling file because the
     /// blob can be large. `nil` when the row isn't paused / has no resume data. Lets a manual
@@ -393,6 +424,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 mediaSourceID: String? = nil,
                 playSessionID: String? = nil,
                 downloadLane: DownloadLane? = nil,
+                resumeMode: DownloadResumeMode? = nil,
                 resumeDataRelativePath: String? = nil,
                 embyConvertJobID: Int? = nil,
                 embyConvertSnapshotIDs: [String]? = nil,
@@ -442,6 +474,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.mediaSourceID = mediaSourceID
         self.playSessionID = playSessionID
         self.downloadLane = downloadLane
+        self.resumeMode = resumeMode
         self.resumeDataRelativePath = resumeDataRelativePath
         self.embyConvertJobID = embyConvertJobID
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
@@ -495,6 +528,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         mediaSourceID = try c.decodeIfPresent(String.self, forKey: .mediaSourceID)
         playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
+        resumeMode = try c.decodeIfPresent(DownloadResumeMode.self, forKey: .resumeMode)
         resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
         embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
@@ -512,6 +546,16 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public func resolvedDownloadLane() -> DownloadLane {
         if let downloadLane { return downloadLane }
         return (optimizeTargetName?.isEmpty == false) ? .optimize : .original
+    }
+
+    /// #131: resolve the checkpoint/resume class. New rows persist `resumeMode`; legacy rows derive
+    /// from backend/lane/job markers so old offline libraries keep safe restart semantics.
+    public func resolvedResumeMode(ratingKey: String) -> DownloadResumeMode {
+        if let resumeMode { return resumeMode }
+        return DownloadResumeMode.resolved(backend: resolvedBackendKind(ratingKey: ratingKey),
+                                          lane: resolvedDownloadLane(),
+                                          optimizeTargetName: optimizeTargetName,
+                                          embyConvertJobID: embyConvertJobID)
     }
 
     /// Backend for this row. New rows store `backendKind`; pre-#84 rows fall back to
