@@ -100,8 +100,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         let config = URLSessionConfiguration.default
         config.allowsCellularAccess = true
         config.waitsForConnectivity = true
+        #if DEBUG
+        if let dropAfter = Self.debugRangeDropAfterBytesArgument() {
+            DebugRangeDropURLProtocol.configure(dropAfterBytes: dropAfter)
+            config.protocolClasses = [DebugRangeDropURLProtocol.self] + (config.protocolClasses ?? [])
+            downloadLog.info("using DEBUG range-drop URLProtocol after bytes=\(dropAfter, privacy: .public)")
+        }
+        #endif
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
+
+    #if DEBUG
+    private static func debugRangeDropAfterBytesArgument() -> Int? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let idx = args.firstIndex(of: "--vp-probe-range-drop-after-bytes"),
+              args.indices.contains(idx + 1),
+              let bytes = Int(args[idx + 1]),
+              bytes > 0 else { return nil }
+        return bytes
+    }
+    #endif
 
     init(store: DownloadStore) {
         self.store = store
@@ -1056,3 +1074,113 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         }
     }
 }
+
+
+#if DEBUG
+/// Test-only URLProtocol used by the download probe to simulate a real mid-body network loss
+/// without mutating host networking. It proxies the original request with a URLSession whose
+/// protocol list excludes this class, streams bytes through to the client, then fails once with
+/// `NSURLErrorNetworkConnectionLost` after the configured threshold.
+private final class DebugRangeDropURLProtocol: URLProtocol, URLSessionDataDelegate, @unchecked Sendable {
+    private static let handledKey = "VisionPlayDebugRangeDropHandled"
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var configuredDropAfterBytes: Int = 0
+    nonisolated(unsafe) private static var didDrop = false
+
+    private var upstreamTask: URLSessionDataTask?
+    private var session: URLSession?
+    private var delivered = 0
+
+    static func configure(dropAfterBytes: Int) {
+        lock.lock()
+        configuredDropAfterBytes = dropAfterBytes
+        didDrop = false
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        guard URLProtocol.property(forKey: handledKey, in: request) == nil,
+              request.url?.scheme == "http" || request.url?.scheme == "https" else { return false }
+        lock.lock()
+        let enabled = configuredDropAfterBytes > 0 && !didDrop
+        lock.unlock()
+        return enabled
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let mutable = (request as NSURLRequest).mutableCopy() as! NSMutableURLRequest
+        URLProtocol.setProperty(true, forKey: Self.handledKey, in: mutable)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = []
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        self.session = session
+        let task = session.dataTask(with: mutable as URLRequest)
+        self.upstreamTask = task
+        task.resume()
+    }
+
+    override func stopLoading() {
+        upstreamTask?.cancel()
+        upstreamTask = nil
+        session?.invalidateAndCancel()
+        session = nil
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        Self.lock.lock()
+        let threshold = Self.configuredDropAfterBytes
+        let shouldDropAlready = Self.didDrop
+        Self.lock.unlock()
+
+        guard threshold > 0, !shouldDropAlready else {
+            client?.urlProtocol(self, didLoad: data)
+            return
+        }
+
+        let remaining = threshold - delivered
+        if remaining <= 0 {
+            failOnce(dataTask)
+            return
+        }
+
+        let emitCount = min(remaining, data.count)
+        if emitCount > 0 {
+            client?.urlProtocol(self, didLoad: data.prefix(emitCount))
+            delivered += emitCount
+        }
+        if delivered >= threshold {
+            failOnce(dataTask)
+        }
+    }
+
+    private func failOnce(_ dataTask: URLSessionDataTask) {
+        Self.lock.lock()
+        let alreadyDropped = Self.didDrop
+        if !alreadyDropped { Self.didDrop = true }
+        Self.lock.unlock()
+        guard !alreadyDropped else { return }
+        dataTask.cancel()
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost, userInfo: nil)
+        client?.urlProtocol(self, didFailWithError: error)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            let ns = error as NSError
+            if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorCancelled { return }
+            client?.urlProtocol(self, didFailWithError: error)
+        } else {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+}
+#endif
