@@ -55,17 +55,16 @@ enum DebugEmbyDownloadProbe {
             "refresh_existing": .bool(refreshExisting),
         ])
 
-        guard appModel.activeBackend == .emby,
-              appModel.isBrowseReady,
-              let server = appModel.embyServerBaseURL,
-              let token = appModel.embyAccessToken,
-              let userId = appModel.embyUserID else {
-            log.error("probe.fail reason=not_emby_or_not_ready")
+        guard let backendSession = appModel.backendSession(for: .emby),
+              let userId = backendSession.userID else {
+            log.error("probe.fail reason=not_emby_configured")
             AppDiagnostics.record(.downloads, "probe.emby_download.fail", fields: [
-                "reason": .label("not_emby_or_not_ready"),
+                "reason": .label("not_emby_configured"),
             ])
             return
         }
+        let server = backendSession.baseURL
+        let token = backendSession.token
 
         let service = EmbyBrowseService(appModel: appModel)
         do {
