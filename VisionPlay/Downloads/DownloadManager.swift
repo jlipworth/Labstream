@@ -3808,12 +3808,24 @@ public final class DownloadManager {
             return false
         }
         if let targetResolution = settings.videoResolution,
-           let targetHeight = resolutionHeight(targetResolution),
-           let actualHeight = media.height {
-            // Encoders round the rendered height up to a macroblock multiple, so a 1080 target can
-            // legitimately come back as 1088. Allow a small tolerance — the next ladder rung down
-            // (e.g. 720) is hundreds of px away, so this never blurs adjacent resolution steps.
-            if abs(actualHeight - targetHeight) > 16 { return false }
+           let targetDimensions = resolutionDimensions(targetResolution) {
+            // Treat Plex target resolution as a bounding box, not an exact output height. Wide
+            // CinemaScope-ish sources rendered by a 1080p Universal TV profile can legitimately
+            // come back as e.g. 1920x802: width hits the 1080p target while height preserves
+            // aspect ratio. Reject only outputs that exceed the box or do not land near either
+            // target edge (so an old 720p version is not reused for a 1080p request).
+            let actualWidth = media.width
+            let actualHeight = media.height
+            if let actualWidth, actualWidth > targetDimensions.width + 16 { return false }
+            if let actualHeight, actualHeight > targetDimensions.height + 16 { return false }
+            if let actualWidth, let actualHeight {
+                let nearWidth = abs(actualWidth - targetDimensions.width) <= 16
+                let nearHeight = abs(actualHeight - targetDimensions.height) <= 16
+                if !nearWidth && !nearHeight { return false }
+            } else if let actualHeight {
+                // Legacy metadata may omit width; keep the old height-only behavior in that case.
+                if abs(actualHeight - targetDimensions.height) > 16 { return false }
+            }
         }
         if let targetKbps = settings.maxVideoBitrateKbps,
            let actualKbps = media.bitrate {
@@ -3829,7 +3841,13 @@ public final class DownloadManager {
     }
 
     private static func resolutionHeight(_ value: String) -> Int? {
-        value.split(separator: "x").last.flatMap { Int($0) }
+        resolutionDimensions(value)?.height
+    }
+
+    private static func resolutionDimensions(_ value: String) -> (width: Int, height: Int)? {
+        let parts = value.split(separator: "x").compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        return (width: parts[0], height: parts[1])
     }
 
     private static func isServerOptimizedPart(_ part: Part) -> Bool {
