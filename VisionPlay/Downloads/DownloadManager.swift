@@ -1248,7 +1248,7 @@ public final class DownloadManager {
         // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
         // onto the row after the decision is known (see below).
         let embyMediaSourceHint = mediaSourceIDOverride ?? Self.embyMediaSourceID(media: media, part: part)
-        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
+        var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }
@@ -1307,6 +1307,16 @@ public final class DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return
+        }
+
+        // The resolution label built above came from the item's PRIMARY media — wrong for a
+        // server-prepared version, which downloads the CONVERTED source (e.g. a 720p copy of a 4K
+        // original). Re-label from the negotiated source's real height so the caption shows the
+        // ACTUAL downloaded resolution, not the original's. Only for server-prepared/existing
+        // versions; a genuine original keeps its primary-media label.
+        if Self.isServerPreparedVersion(for: choice),
+           let correctedResolution = Self.resolutionLabel(forHeight: decision.height) {
+            metadata.resolutionLabel = correctedResolution
         }
 
         // Three-way route detection against the AUTHORITATIVE negotiated verdict:
@@ -2518,6 +2528,20 @@ public final class DownloadManager {
         case let (_, h) where h >= 720:  return "720p"
         case let (_, h) where h >= 480:  return "480p"
         default:                         return "\(w)×\(h)"
+        }
+    }
+
+    /// Bucket a raw pixel height into the same human label as `resolutionLabel(for:)`. Used to label
+    /// a server-prepared/existing-version download by the CONVERTED source's real height (e.g. a 720p
+    /// copy of a 4K original) rather than the item's primary-source height. Returns nil for nil input.
+    static func resolutionLabel(forHeight height: Int?) -> String? {
+        guard let h = height else { return nil }
+        switch h {
+        case let h where h >= 2160: return "4K"
+        case let h where h >= 1080: return "1080p"
+        case let h where h >= 720:  return "720p"
+        case let h where h >= 480:  return "480p"
+        default:                    return "\(h)p"
         }
     }
 
