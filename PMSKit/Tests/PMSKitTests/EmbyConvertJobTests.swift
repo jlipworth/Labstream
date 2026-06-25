@@ -50,6 +50,41 @@ struct EmbyConvertJobTests {
         #expect(job.id == 7)
     }
 
+    // MARK: - create-response (SyncJobCreationResult) decoding
+
+    /// The exact `POST /Sync/Jobs` response shape verified live (Emby 4.9.3): the created job is
+    /// nested under `"Job"`, alongside a `"JobItems"` array. Decoding this as a BARE job (the
+    /// single-job-GET shape) threw `keyNotFound("Id")` — the create-phase "Download failed" crash.
+    private let createResponseJSON = """
+    {"Job":{"Id":314,"TargetId":"originalmediafolder","Quality":"custom","Bitrate":4000000,
+            "Profile":"tv","Progress":0,"Name":"Some Title","Status":"Queued","ItemId":50459},
+     "JobItems":[]}
+    """
+
+    @Test("decodeCreatedJob unwraps the nested \"Job\" envelope (regression: create-phase keyNotFound)")
+    func decodeCreatedJobUnwrapsEnvelope() throws {
+        let job = try EmbyConvertRequest.decodeCreatedJob(from: Data(createResponseJSON.utf8))
+        #expect(job.id == 314)
+        #expect(job.status == .queued)
+        #expect(job.progress == 0)
+    }
+
+    @Test("Decoding the create envelope as a BARE job fails — the original bug, now guarded")
+    func bareDecodeOfCreateEnvelopeThrows() {
+        #expect(throws: (any Error).self) {
+            _ = try EmbyConvertRequest.decodeJob(from: Data(createResponseJSON.utf8))
+        }
+    }
+
+    @Test("decodeCreatedJob tolerates a created job whose Progress is absent (null until converting)")
+    func decodeCreatedJobAbsentProgress() throws {
+        let json = "{\"Job\":{\"Id\":7,\"Status\":\"Queued\"},\"JobItems\":[]}"
+        let job = try EmbyConvertRequest.decodeCreatedJob(from: Data(json.utf8))
+        #expect(job.id == 7)
+        #expect(job.status == .queued)
+        #expect(job.progress == nil)
+    }
+
     // MARK: - isTerminal / didSucceed
 
     @Test("isTerminal is true only for Completed/Failed/Cancelled")

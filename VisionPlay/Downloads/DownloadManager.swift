@@ -3915,8 +3915,12 @@ public final class DownloadManager {
                                                    userId: userId, itemId: itemId)
         convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
 
-        // VisionPlay marker discipline (parity with the Plex `[VisionPlay …]` queue title): any
-        // future job cleanup only ever touches OUR own jobs.
+        // NOTE: Emby IGNORES the submitted job `name` and stores the item's own title instead
+        // (verified live, Emby 4.9.3 — a "<title> [VisionPlay <hex>]" submission comes back stored
+        // as just "<title>"). So unlike Plex's `[VisionPlay …]` queue-title marker discipline, an
+        // Emby convert job CANNOT be tagged/identified by name. We instead identify and cancel our
+        // jobs by the persisted `embyConvertJobID` (set immediately after create, below). The name
+        // is still sent (harmless, matches the Emby web client) but is purely cosmetic.
         let jobName = "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
         let quality = EmbyConvertRequest.convertQuality(forPresetLabel: targetName)
 
@@ -3945,7 +3949,9 @@ public final class DownloadManager {
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
             }
-            job = try EmbyConvertRequest.decodeJob(from: data)
+            // The CREATE response nests the job under "Job" (SyncJobCreationResult) — decode the
+            // envelope, NOT the bare top-level shape the single-job poll GET returns.
+            job = try EmbyConvertRequest.decodeCreatedJob(from: data)
         } catch {
             recordDownloadDiagnostic("downloads.convert_failed", fields: [
                 "download_id": .identifier(ratingKey),
