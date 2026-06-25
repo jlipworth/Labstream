@@ -1952,9 +1952,19 @@ public final class DownloadManager {
                     "download_id": .identifier(ratingKey),
                     "target": .label(targetName),
                 ])
-                try await triggerOptimize(item: currentItem, targetName: targetName,
-                                          queueTitle: queueTitle,
-                                          server: server, token: token, identity: identity)
+                do {
+                    try await triggerOptimize(item: currentItem, targetName: targetName,
+                                              queueTitle: queueTitle,
+                                              server: server, token: token, identity: identity)
+                } catch {
+                    // Same policy as fresh optimize starts: a recreate failure should not briefly
+                    // turn a queued/preparing row red if the optimized Part can still be discovered.
+                    recordDownloadDiagnostic("downloads.optimize_create_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "target": .label(targetName),
+                        "error": .error(error),
+                    ])
+                }
                 try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                                  metadata: metadata,
                                                  targetName: targetName)
@@ -2014,18 +2024,32 @@ public final class DownloadManager {
     }
 
     private static func resumeOriginalPartIDs(metadata: OfflineMetadata, item: MediaItem) -> Set<Int> {
-        if let baseline = metadata.optimizeBaselinePartIDs, !baseline.isEmpty {
-            return Set(baseline)
-        }
+        // Prefer the selected/source part over legacy persisted baselines. Older builds wrote ALL
+        // current part ids here, which included already-rendered Plex Versions and prevented a
+        // queued optimize row from ever discovering that matching server-prepared file.
         if let sourcePartID = metadata.sourcePartID { return [sourcePartID] }
         if let mediaIndex = metadata.mediaIndex,
            let partIndex = metadata.partIndex,
            let id = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id {
             return [id]
         }
+        if let baseline = metadata.optimizeBaselinePartIDs, !baseline.isEmpty {
+            return Set(baseline)
+        }
         return Set((item.media ?? []).flatMap { media in
-            media.part.filter { isLocallyPlayableOriginal(part: $0) == false }.map(\.id)
+            media.part.filter { !isServerOptimizedPart($0) }.map(\.id)
         })
+    }
+
+    private static func optimizeSourcePartIDs(item: MediaItem,
+                                              fallbackItem: MediaItem,
+                                              mediaIndex: Int,
+                                              partIndex: Int) -> [Int] {
+        let media = item.media?[safe: mediaIndex] ?? fallbackItem.media?[safe: mediaIndex]
+        if let selected = media?.part[safe: partIndex]?.id { return [selected] }
+        if let ids = media?.part.map(\.id), !ids.isEmpty { return ids }
+        return (item.media ?? fallbackItem.media ?? [])
+            .flatMap { media in media.part.filter { !isServerOptimizedPart($0) }.map(\.id) }
     }
 
     public var totalDownloadedBytes: Int {
@@ -3008,8 +3032,12 @@ public final class DownloadManager {
             // #88: carry forward already-cached chapter images so an optimize re-fetch doesn't drop
             // the offline Chapters rail thumbnails.
             optimizeMetadata.chapterImageRelativePaths = existingMetadata?.chapterImageRelativePaths
-            optimizeMetadata.optimizeBaselinePartIDs = (sourceItem.media ?? item.media ?? [])
-                .flatMap { $0.part.map(\.id) }
+            optimizeMetadata.optimizeBaselinePartIDs = Self.optimizeSourcePartIDs(
+                item: sourceItem,
+                fallbackItem: item,
+                mediaIndex: sourceMediaIndex,
+                partIndex: sourcePartIndex
+            )
             store.upsert(DownloadRecord(ratingKey: ratingKey, title: sourceItem.title,
                                         localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                         bytes: 0, progress: 0, metadata: optimizeMetadata))
@@ -3031,9 +3059,25 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
-            try await triggerOptimize(item: sourceItem, targetName: targetName,
-                                      queueTitle: queueTitle,
-                                      server: server, token: token, identity: identity)
+            let backgroundProcessingKey = await bgKeyForPolling(server: server,
+                                                                       token: token,
+                                                                       identity: identity)
+            do {
+                try await triggerOptimize(item: sourceItem, targetName: targetName,
+                                          queueTitle: queueTitle,
+                                          server: server, token: token, identity: identity)
+            } catch {
+                // Do not flash a terminal failed row here. Plex may reject duplicate/odd optimize
+                // creates (HTTP 400) while an already-rendered Plex Version is still discoverable
+                // from metadata. Keep the visible row in server-prep state and let the metadata/
+                // queue polling path decide whether a downloadable Part appears or the server job
+                // truly failed.
+                recordDownloadDiagnostic("downloads.optimize_create_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                    "error": .error(error),
+                ])
+            }
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
@@ -3042,9 +3086,7 @@ public final class DownloadManager {
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
                                                       sourceHeight: sourceHeight,
-                                                      backgroundProcessingKey: await bgKeyForPolling(server: server,
-                                                                                               token: token,
-                                                                                               identity: identity),
+                                                      backgroundProcessingKey: backgroundProcessingKey,
                                                       queueTitle: queueTitle,
                                                       mediaTitle: item.title,
                                                       server: server, token: token,
@@ -3238,7 +3280,7 @@ public final class DownloadManager {
             backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
             sourceURI: source?.uri, locationID: source?.locationID ?? -1,
             title: queueTitle, targetTagID: targetTagID,
-            targetName: custom == nil ? "" : "Custom: \(custom!.deviceProfile)",
+            targetName: custom == nil ? serverTargetName : "Custom: \(custom!.deviceProfile)",
             deviceProfile: custom?.deviceProfile, mediaSettings: settings)
         do {
             try await appModel.client.send(create)

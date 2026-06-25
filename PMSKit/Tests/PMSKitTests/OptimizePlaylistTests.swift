@@ -37,6 +37,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
     #expect(v("Item[type]") == "42")
     #expect(v("Item[title]") == "Blade Runner")
+    #expect(v("Item[target]") == "")
     // targetTagID is the SERVER-RESOLVED id passed in — NOT a hardcoded enum default.
     #expect(v("Item[targetTagID]") == "7")
     #expect(v("Item[MediaSettings][maxVideoBitrate]") == "8000")
@@ -45,6 +46,18 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     #expect(v("Item[Policy][scope]") == "all")
     #expect(v("Item[Location][uri]")?.contains("/library/metadata/101") == true)
     #expect(r.headers["X-Plex-Token"] == "tok")
+}
+
+@Test func createOnPlaylistCanCarryBuiltInTargetName() {
+    let r = OptimizeRequest.createOnPlaylist(
+        server: server, token: "tok", identity: id,
+        backgroundProcessingKey: "/playlists/9/items",
+        ratingKey: "101", title: "T", targetTagID: 3,
+        targetName: "Original Quality",
+        mediaSettings: .init(videoQuality: 100, maxVideoBitrateKbps: nil, videoResolution: nil))
+    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
+    #expect(v("Item[target]") == "Original Quality")
+    #expect(v("Item[targetTagID]") == "3")
 }
 
 @Test func createOnPlaylistSupportsCustomDeviceProfileQuality() {
