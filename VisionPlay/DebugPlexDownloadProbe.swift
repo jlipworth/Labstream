@@ -33,7 +33,9 @@ enum DebugPlexDownloadProbe {
         let rangeCheck = arguments.contains("--vp-probe-range-check")
         let dumpSearch = arguments.contains("--vp-probe-dump-search")
         let pauseResume = arguments.contains("--vp-probe-pause-resume")
+        let pauseOnly = arguments.contains("--vp-probe-pause-only")
         let observeOnly = arguments.contains("--vp-probe-observe-record")
+        let resumeObserved = arguments.contains("--vp-probe-resume-observed")
         let deleteExisting = arguments.contains("--vp-probe-delete-existing")
         let deleteAfterObserve = arguments.contains("--vp-probe-delete-after-observe")
         let preset = value(after: "--vp-probe-download-preset", in: arguments)
@@ -82,8 +84,23 @@ enum DebugPlexDownloadProbe {
             }
 
             if observeOnly {
-                _ = await observe(ratingKey: ratingKey, manager: downloadManager,
-                                  seconds: observeSeconds, label: "observe_only")
+                let before = await observe(ratingKey: ratingKey, manager: downloadManager,
+                                           seconds: resumeObserved ? 1 : observeSeconds,
+                                           label: "observe_only")
+                if resumeObserved {
+                    downloadManager.retry(ratingKey: ratingKey)
+                    let after = await observe(ratingKey: ratingKey, manager: downloadManager,
+                                              seconds: observeSeconds, label: "resume_observed")
+                    let keptProgress = after.progress >= max(0, before.progress * 0.95)
+                    log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) paused=\(before.progress, privacy: .public) after=\(after.progress, privacy: .public) bytes=\(after.bytes, privacy: .public)")
+                    AppDiagnostics.record(.downloads, "probe.plex_download.resume_check", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "kept_progress": .bool(keptProgress),
+                        "paused_pct": .int(Int((before.progress * 100).rounded())),
+                        "after_pct": .int(Int((after.progress * 100).rounded())),
+                        "bytes": .int(after.bytes),
+                    ])
+                }
                 if deleteAfterObserve {
                     downloadManager.delete(ratingKey: ratingKey)
                     log.notice("probe.deleted_after_observe ratingKey=\(ratingKey, privacy: .public)")
@@ -147,7 +164,7 @@ enum DebugPlexDownloadProbe {
             }
 
             await downloadManager.download(item, choice: choice, mediaIndex: selectedMediaIndex, partIndex: partIndex)
-            if pauseResume {
+            if pauseResume || pauseOnly {
                 let beforePause = await observe(ratingKey: ratingKey, manager: downloadManager,
                                                 seconds: pauseAfterSeconds, label: "pre_pause")
                 downloadManager.pause(ratingKey: ratingKey)
@@ -161,6 +178,7 @@ enum DebugPlexDownloadProbe {
                     "progress_pct": .int(Int((pausedProgress.progress * 100).rounded())),
                     "bytes": .int(pausedProgress.bytes),
                 ])
+                if pauseOnly { return }
                 downloadManager.retry(ratingKey: ratingKey)
                 let afterResume = await observe(ratingKey: ratingKey, manager: downloadManager,
                                                 seconds: observeSeconds, label: "post_resume")
