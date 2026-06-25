@@ -19,6 +19,12 @@ import PMSKit
 /// Modes:
 ///   • default — DRY RUN: negotiate the download profile and log the route (original vs transcode)
 ///     without transferring anything. Safe and fast.
+///   • `--vp-probe-refresh-existing` — safe #133 probe: request an item refresh and poll
+///     unfiltered PlaybackInfo for API-visible MP4/File alternate sources without starting a
+///     download or conversion.
+///   • `--vp-probe-start-optimize [--vp-probe-download-preset "1080p 8 Mbps"]` — start the
+///     server-prep lane briefly. If a reusable converted source is API-visible, this should hand off
+///     to the static `.existingVersion` path rather than creating a duplicate convert job.
 ///   • `--vp-probe-start-download` — actually start `downloadEmby`, observe the record for
 ///     `--vp-probe-observe-seconds` (default 30), then DELETE it (the item-1200 transcode is ~GBs
 ///     and non-resumable, so the probe never lets it run to completion). Deleting also exercises
@@ -37,12 +43,17 @@ enum DebugEmbyDownloadProbe {
 
         let query = value(after: "--vp-probe-query", in: arguments) ?? "12 Years a Slave"
         let startDownload = arguments.contains("--vp-probe-start-download")
+        let startOptimize = arguments.contains("--vp-probe-start-optimize")
+        let refreshExisting = arguments.contains("--vp-probe-refresh-existing")
+        let preset = value(after: "--vp-probe-download-preset", in: arguments) ?? "1080p 8 Mbps"
         let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? 30
 
-        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .public) start=\(startDownload, privacy: .public)")
+        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .public) start=\(startDownload, privacy: .public) startOptimize=\(startOptimize, privacy: .public) refreshExisting=\(refreshExisting, privacy: .public)")
         AppDiagnostics.record(.downloads, "probe.emby_download.start", fields: [
             "query": .text(query),
             "start": .bool(startDownload),
+            "start_optimize": .bool(startOptimize),
+            "refresh_existing": .bool(refreshExisting),
         ])
 
         guard appModel.activeBackend == .emby,
@@ -95,7 +106,20 @@ enum DebugEmbyDownloadProbe {
                 "has_transcode_url": .bool(decision.transcodingURL != nil),
             ])
 
-            guard startDownload else {
+            if refreshExisting {
+                let sawConvertedFile = try await refreshAndPollExistingVersions(
+                    server: server, token: token, identity: appModel.identity.emby,
+                    userId: userId, itemId: item.ratingKey)
+                log.notice("probe.pass dry_run=true route=\(route, privacy: .public) refreshed_existing=\(sawConvertedFile, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.emby_download.pass", fields: [
+                    "dry_run": .bool(true),
+                    "route": .label(route),
+                    "refreshed_existing": .bool(sawConvertedFile),
+                ])
+                return
+            }
+
+            guard startDownload || startOptimize else {
                 log.notice("probe.pass dry_run=true route=\(route, privacy: .public)")
                 AppDiagnostics.record(.downloads, "probe.emby_download.pass", fields: [
                     "dry_run": .bool(true),
@@ -106,16 +130,17 @@ enum DebugEmbyDownloadProbe {
 
             // The record key is the documented Emby lane format.
             let recordKey = "emby:\(item.ratingKey)"
-            await downloadManager.downloadEmby(item, choice: .original)
+            await downloadManager.downloadEmby(item, choice: startOptimize ? .optimize(targetName: preset) : .original)
             let progressed = await observe(recordKey: recordKey, manager: downloadManager, seconds: observeSeconds)
             // Never let the (large, non-resumable) transcode run to completion on the sim. Deleting
             // also exercises encoder teardown for a transcode-sourced download.
             downloadManager.delete(ratingKey: recordKey)
 
-            log.notice("probe.pass dry_run=false route=\(route, privacy: .public) progressed=\(progressed, privacy: .public)")
+            log.notice("probe.pass dry_run=false route=\(route, privacy: .public) optimize=\(startOptimize, privacy: .public) progressed=\(progressed, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.emby_download.pass", fields: [
                 "dry_run": .bool(false),
                 "route": .label(route),
+                "optimize": .bool(startOptimize),
                 "progressed": .bool(progressed),
             ])
         } catch {
@@ -163,6 +188,54 @@ enum DebugEmbyDownloadProbe {
             try? await Task.sleep(for: .seconds(5))
         }
         return progressed
+    }
+
+    /// Safe #133 live probe: trigger the same item-refresh request used by the convert reuse path,
+    /// then poll unfiltered PlaybackInfo for API-visible converted File sources. Logs only counts
+    /// and generic source shape, not tokens or file paths.
+    private static func refreshAndPollExistingVersions(server: URL, token: String,
+                                                       identity: EmbyClientIdentity,
+                                                       userId: String, itemId: String) async throws -> Bool {
+        let refresh = try EmbyConvertRequest.itemRefreshRequest(server: server, token: token,
+                                                                identity: identity, userId: userId,
+                                                                itemId: itemId)
+        let (_, response) = try await URLSession.shared.data(for: refresh)
+        let refreshStatus = (response as? HTTPURLResponse)?.statusCode ?? -1
+        log.notice("probe.refresh status=\(refreshStatus, privacy: .public)")
+        AppDiagnostics.record(.downloads, "probe.emby_download.refresh", fields: [
+            "status_code": .int(refreshStatus),
+        ])
+
+        var sawConvertedFile = false
+        for attempt in 1...6 {
+            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity,
+                userId: userId, itemId: itemId, mediaSourceId: nil,
+                maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let info = try EmbyPlaybackInfoResponse.decode(from: data)
+            let fileSources = info.mediaSources.filter { source in
+                guard source.id?.isEmpty == false else { return false }
+                if let proto = source.mediaProtocol, proto.caseInsensitiveCompare("File") != .orderedSame {
+                    return false
+                }
+                return true
+            }
+            let converted = fileSources.filter { ($0.container ?? "").lowercased().contains("mp4") }
+            sawConvertedFile = sawConvertedFile || !converted.isEmpty
+            log.notice("probe.existing_sources attempt=\(attempt, privacy: .public) http=\(status, privacy: .public) sources=\(info.mediaSources.count, privacy: .public) files=\(fileSources.count, privacy: .public) converted=\(converted.count, privacy: .public)")
+            AppDiagnostics.record(.downloads, "probe.emby_download.existing_sources", fields: [
+                "attempt": .int(attempt),
+                "status_code": .int(status),
+                "source_count": .int(info.mediaSources.count),
+                "file_count": .int(fileSources.count),
+                "converted_count": .int(converted.count),
+            ])
+            if sawConvertedFile { return true }
+            if attempt < 6 { try? await Task.sleep(for: .seconds(5)) }
+        }
+        return false
     }
 
     private static func value(after flag: String, in arguments: [String]) -> String? {

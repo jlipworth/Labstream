@@ -215,6 +215,32 @@ public enum EmbyConvertRequest {
         return req
     }
 
+    /// `POST {server}/Items/{itemId}/Refresh` — ask Emby to rescan/re-index one item after a
+    /// convert job copied a persistent file next to the original. Emby can finish the Sync job and
+    /// place the MP4 on disk before PlaybackInfo exposes it as a second `File` MediaSource; a
+    /// targeted refresh is the same shape the web client uses and returns HTTP 204 on success.
+    public static func itemRefreshRequest(server: URL,
+                                          token: String,
+                                          identity: EmbyClientIdentity,
+                                          userId: String,
+                                          itemId: String) throws -> URLRequest {
+        var comps = URLComponents(url: try EmbyPlayback.embyURL(server: server, path: "/Items/\(itemId)/Refresh"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "MetadataRefreshMode", value: "Default"),
+            URLQueryItem(name: "ImageRefreshMode", value: "Default"),
+            URLQueryItem(name: "ReplaceAllMetadata", value: "false"),
+            URLQueryItem(name: "ReplaceAllImages", value: "false"),
+        ]
+        guard let url = comps.url else { throw EmbyPlaybackError.invalidURL }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
+        return req
+    }
+
     /// Decode a `GET /Sync/Jobs/{id}` (single-job poll) response body into an `EmbyConvertJob`.
     ///
     /// The single-job GET returns the job at the TOP LEVEL (`{ "Id", "Status", "Progress", … }`),

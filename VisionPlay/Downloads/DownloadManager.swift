@@ -4205,6 +4205,27 @@ public final class DownloadManager {
             return
         }
 
+        // #133 intent: if a prior Emby Sync convert already copied an MP4 next to the original but
+        // PlaybackInfo has not exposed it yet, make a bounded, targeted library refresh before
+        // starting a duplicate conversion. This is safe/read-only with respect to media bytes: it
+        // only asks Emby to re-index this one item, then polls for an existing reusable File source.
+        if let refreshedReuse = await refreshAndPollReusableEmbyConvertedSource(
+            server: server, token: token, identity: identity, userId: userId, itemId: itemId,
+            ratingKey: ratingKey, requestedHeight: requestedHeight,
+            primaryMediaSourceId: metadata.mediaSourceID,
+            initialSourceCount: fileSources.count,
+            phase: "pre_create"),
+           let reuseId = refreshedReuse.id {
+            recordDownloadDiagnostic("downloads.convert_reuse", fields: [
+                "download_id": .identifier(ratingKey),
+                "target": .label(targetName),
+                "phase": .label("post_refresh"),
+            ])
+            releaseInFlight(ratingKey: ratingKey)
+            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
+            return
+        }
+
         // Persist the FULL pre-conversion id set (not just the original) so a relaunch-resume still
         // excludes any PRIOR converted version — otherwise a stale version could be mistaken for the new one.
         convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
@@ -4467,6 +4488,8 @@ public final class DownloadManager {
         let maxAttempts = 72   // ~6 min at the 5s optimizePollInterval — comfortably past the index lag.
         var fileSources: [EmbyMediaSourceInfo] = []
         var newSource: EmbyMediaSourceInfo?
+        await requestEmbyItemRefresh(server: server, token: token, identity: identity, userId: userId,
+                                     itemId: itemId, ratingKey: ratingKey, phase: "post_completed")
         for attempt in 0..<maxAttempts {
             // Cancel race: the user may delete the row during the wait (delete() also fires the
             // server-side DELETE /Sync/Jobs and releases the slot).
@@ -4574,6 +4597,76 @@ public final class DownloadManager {
         }
     }
 
+    /// Ask Emby to re-index one item after a convert job copied a persistent file next to the
+    /// original. Best-effort by design: a refresh failure should not fail the download path because
+    /// Emby's background library monitor may still discover the file during normal polling.
+    private func requestEmbyItemRefresh(server: URL, token: String, identity: EmbyClientIdentity,
+                                        userId: String, itemId: String,
+                                        ratingKey: String, phase: String) async {
+        do {
+            let req = try EmbyConvertRequest.itemRefreshRequest(server: server, token: token,
+                                                                identity: identity, userId: userId,
+                                                                itemId: itemId)
+            let (_, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                recordDownloadDiagnostic("downloads.convert_refresh_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "phase": .label(phase),
+                    "status_code": .int(http.statusCode),
+                ])
+                return
+            }
+            recordDownloadDiagnostic("downloads.convert_refresh", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label(phase),
+            ])
+        } catch {
+            recordDownloadDiagnostic("downloads.convert_refresh_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label(phase),
+                "error": .error(error),
+            ])
+        }
+    }
+
+    /// Bounded #133 reuse probe: refresh one Emby item and poll briefly for an already-optimized
+    /// copy before creating a new conversion. This catches the common case where the MP4 exists on
+    /// disk but PlaybackInfo is stale; it also makes a resumed server-prep row able to transition to
+    /// the static byte-range lane once Emby exposes the copied file.
+    private func refreshAndPollReusableEmbyConvertedSource(server: URL, token: String,
+                                                           identity: EmbyClientIdentity,
+                                                           userId: String, itemId: String,
+                                                           ratingKey: String,
+                                                           requestedHeight: Int?,
+                                                           primaryMediaSourceId: String?,
+                                                           initialSourceCount: Int,
+                                                           phase: String) async -> EmbyMediaSourceInfo? {
+        await requestEmbyItemRefresh(server: server, token: token, identity: identity, userId: userId,
+                                     itemId: itemId, ratingKey: ratingKey, phase: phase)
+
+        let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
+        for attempt in 0..<maxAttempts {
+            guard activeJobs.contains(ratingKey) else { return nil }
+            let sources = await embyFileSources(server: server, token: token, identity: identity,
+                                                userId: userId, itemId: itemId)
+            if let reuse = Self.reusableConvertedSource(sources, requestedHeight: requestedHeight,
+                                                        primaryMediaSourceId: primaryMediaSourceId) {
+                recordDownloadDiagnostic("downloads.convert_reuse_refresh", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "phase": .label(phase),
+                    "attempt": .int(attempt + 1),
+                    "initial_source_count": .int(initialSourceCount),
+                    "source_count": .int(sources.count),
+                ])
+                return reuse
+            }
+            if attempt < maxAttempts - 1 {
+                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+            }
+        }
+        return nil
+    }
+
     /// The video height a convert preset is expected to OUTPUT, after the `tv`-profile 1080p cap
     /// (live-verified: 4 Mbps → 720p, 20 Mbps → 1080p, and "4K 40 Mbps" clamps to 1080p). Parsed from
     /// the preset label's leading resolution token. Used by the reuse preflight to decide whether an
@@ -4596,17 +4689,21 @@ public final class DownloadManager {
 
     /// Pick an already-existing server-prepared (converted) `File` source to REUSE for a convert
     /// request, or nil if none satisfies it. A reusable candidate is a non-primary h264/mp4 File
-    /// source (the convert profile's output — never the HEVC/MKV original) whose resolution tier
-    /// matches the requested preset's output height. The most recently added match wins (Emby ids are
-    /// numeric strings; the newest converted source has the highest id), so a stale lower-quality
-    /// version is never reused over a fresher matching one.
+    /// source (the convert profile's output — never the HEVC/MKV original). Prefer a converted
+    /// source whose resolution tier matches the requested preset, but fall back to the most-recent
+    /// converted source when Emby's `tv` profile produces a non-ladder size (live #133 example:
+    /// a "1080p 8 Mbps" Sync copy exposed as 720×404). Reusing an API-visible converted file is
+    /// better than starting a duplicate server conversion; users can still choose specific visible
+    /// versions from the picker.
     static func reusableConvertedSource(_ sources: [EmbyMediaSourceInfo],
                                         requestedHeight: Int?,
                                         primaryMediaSourceId: String?) -> EmbyMediaSourceInfo? {
         guard let requestedHeight,
               let wantedTier = resolutionLabel(forHeight: requestedHeight) else { return nil }
-        func height(_ s: EmbyMediaSourceInfo) -> Int? {
-            s.height ?? s.mediaStreams.first { $0.type == "Video" }?.height
+        func resolution(_ s: EmbyMediaSourceInfo) -> String? {
+            let video = s.mediaStreams.first { $0.type == "Video" }
+            return DownloadResolutionLabel.label(width: s.width ?? video?.width,
+                                                 height: s.height ?? video?.height)
         }
         // mp4 container = the convert profile's output (`-f mp4`). The pre-conversion original in the
         // convert lane is always HEVC/MKV (an mp4/h264 original would direct-play and never reach this
@@ -4618,10 +4715,11 @@ public final class DownloadManager {
             (s.container ?? "").lowercased().contains("mp4")
         }
         func recency(_ s: EmbyMediaSourceInfo) -> Int { Int(s.id ?? "") ?? -1 }
-        return sources
-            .filter { $0.id != primaryMediaSourceId && looksConverted($0)
-                && resolutionLabel(forHeight: height($0)) == wantedTier }
+        let converted = sources.filter { $0.id != primaryMediaSourceId && looksConverted($0) }
+        return converted
+            .filter { resolution($0) == wantedTier }
             .max { recency($0) < recency($1) }
+            ?? converted.max { recency($0) < recency($1) }
     }
 
     // MARK: - Server conversion queue probe
