@@ -408,8 +408,9 @@ struct DownloadOptionsSheet: View {
         EmbyPlayback.existingDownloadableVersions(
             response: response, primaryMediaSourceId: primaryMediaSourceId
         ).enumerated().map { index, version in
-            let playableOffline = OfflineDownloadDecision.existingVersionPlayableOffline(
-                container: version.container, videoCodec: version.videoCodec)
+            let playableOffline = version.supportsDirectPlay
+                && OfflineDownloadDecision.existingVersionPlayableOffline(
+                    container: version.container, videoCodec: version.videoCodec)
             return ExistingVersionOption(
                 id: index,
                 label: embyVersionLabel(version),

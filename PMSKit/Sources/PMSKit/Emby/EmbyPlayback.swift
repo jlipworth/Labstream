@@ -420,10 +420,12 @@ public enum EmbyPlayback {
         public let width: Int?
         public let height: Int?
         public let bitrate: Int?
+        public let supportsDirectPlay: Bool
         public var id: String { mediaSourceId }
 
         public init(mediaSourceId: String, name: String?, container: String?, videoCodec: String?,
-                    audioCodec: String?, size: Int?, width: Int?, height: Int?, bitrate: Int?) {
+                    audioCodec: String?, size: Int?, width: Int?, height: Int?, bitrate: Int?,
+                    supportsDirectPlay: Bool) {
             self.mediaSourceId = mediaSourceId
             self.name = name
             self.container = container
@@ -433,6 +435,7 @@ public enum EmbyPlayback {
             self.width = width
             self.height = height
             self.bitrate = bitrate
+            self.supportsDirectPlay = supportsDirectPlay
         }
     }
 
@@ -467,7 +470,8 @@ public enum EmbyPlayback {
                 size: source.size,
                 width: source.width ?? video?.width,
                 height: source.height ?? video?.height,
-                bitrate: source.bitrate)
+                bitrate: source.bitrate,
+                supportsDirectPlay: source.supportsDirectPlay)
         }
     }
 

@@ -382,20 +382,19 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// #95: URLSession resume blobs are only safe for byte-range-resumable sources. Jellyfin/Emby
-    /// optimized downloads are live `static=false` transcode streams with no stable validator, so
-    /// even a resume blob can 200-full-restart or 416. Surface those interruptions as a clean
-    /// restart-required failure instead of a misleading "Paused — tap to resume" row.
+    /// encoder-served lanes (`.optimize` and `.compatibleRemux`) are forward-only streams with no
+    /// stable validator, so even a resume blob can 200-full-restart or 416. Surface those
+    /// interruptions as a clean restart-required failure instead of a misleading "Paused — tap to
+    /// resume" row. Static original/existing-version downloads remain resumable.
     func supportsPersistedResumeData(ratingKey: String) -> Bool {
         lock.lock()
         let row = rows[ratingKey]
         lock.unlock()
         guard let row else { return false }
-        let optimized = row.metadata?.optimizeTargetName?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty == false
-        let nonResumableBackend = row.ratingKey.hasPrefix("jellyfin:")
-            || row.ratingKey.hasPrefix("emby:")
-        return !(optimized && nonResumableBackend)
+        let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
+        guard backend == .jellyfin || backend == .emby else { return true }
+        return (row.metadata?.resolvedDownloadLane() ?? .original) == .original
     }
 
     /// #95: drop a row's persisted resume blob + its recorded path once it's consumed (a resume

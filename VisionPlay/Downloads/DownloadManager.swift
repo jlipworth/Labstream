@@ -343,15 +343,25 @@ public final class DownloadManager {
     /// the old in-memory `transcodeSourcedDownloads` set + 500 KB/s heuristic did not, and a resumed
     /// transcoded row would then show its output rate as MB/s unconditionally. Lanes:
     /// - `.original` (incl. existing-version): static, range-resumable → genuine wire speed → false.
-    /// - `.optimize`: served as the server renders → transcoder-gated → true.
+    /// - `.optimize`: Plex phase-2 downloads a rendered static Part; Jellyfin/Emby optimize is live.
     /// - `.compatibleRemux`: a live remux stream with NO Content-Length is transcoder-gated → true;
     ///   but once the server reports a size (`progress > 0`) the transfer is effectively static and
     ///   network-bound, so show the real rate → false.
     static func isLiveTranscoderSourced(_ record: DownloadRecord) -> Bool {
-        switch record.metadata?.resolvedDownloadLane() ?? .original {
-        case .original: return false
-        case .optimize: return true
-        case .compatibleRemux: return record.progress <= 0
+        let lane = record.metadata?.resolvedDownloadLane() ?? .original
+        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+        switch lane {
+        case .original:
+            return false
+        case .optimize:
+            // Plex optimize has a separate server-side render phase; once the optimized Part exists,
+            // the app downloads that rendered static file with a real Content-Length/range support.
+            // Jellyfin/Emby optimize lanes are live encoder streams, so their byte cadence remains
+            // transcoder-gated for the whole transfer.
+            return backend == .plex ? record.progress <= 0 : true
+        case .compatibleRemux:
+            return record.progress <= 0
         }
     }
 
@@ -1727,14 +1737,34 @@ public final class DownloadManager {
     /// polled (`activeJobs`) is skipped. Best-effort — a row whose Emby lane is signed out stays
     /// `.preparing` and resumes automatically on the next call once the lane returns.
     private func resumePendingEmbyConvertDownloads() {
-        let candidates = records.filter { record in
-            record.status == .preparing
-                && record.metadata?.embyConvertJobID != nil
+        let embyPreparing = records.filter { record in
+            let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+                ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+            return record.status == .preparing
+                && backend == .emby
+                && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
         }
-        guard !candidates.isEmpty else { return }
+        for record in embyPreparing where record.metadata?.embyConvertJobID == nil {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(record.ratingKey),
+                "phase": .label("resume_missing_job_id"),
+            ])
+            lastError[record.ratingKey] = .transferFailed("Server conversion did not finish starting; retry to create a new conversion.")
+            store.setStatus(ratingKey: record.ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: record.ratingKey)
+            releaseInFlight(ratingKey: record.ratingKey)
+        }
+        let candidates = embyPreparing.filter { $0.metadata?.embyConvertJobID != nil }
+        guard !candidates.isEmpty else {
+            refreshRecords()
+            return
+        }
         guard let session = appModel.backendSession(for: .emby),
-              let userId = session.userID else { return }
+              let userId = session.userID else {
+            refreshRecords()
+            return
+        }
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
@@ -3967,7 +3997,22 @@ public final class DownloadManager {
         }
 
         // Persist the job id so a relaunch resumes polling (not restarts) and a row delete can
-        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`).
+        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted/cancelled the
+        // row while `POST /Sync/Jobs` was in flight, do NOT upsert it back into existence; cancel the
+        // server job best-effort and leave the row gone.
+        guard activeJobs.contains(ratingKey),
+              store.records.first(where: { $0.ratingKey == ratingKey })?.status == .preparing else {
+            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(job.id),
+                "phase": .label("post_create"),
+            ])
+            cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
+                                 server: server, token: token, identity: identity)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
         convertMetadata.embyConvertJobID = job.id
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
@@ -4007,6 +4052,20 @@ public final class DownloadManager {
                                                                   identity: identity, jobId: jobId)
                 let (data, response) = try await URLSession.shared.data(for: req)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    if Self.isTerminalEmbyConvertPollStatus(http.statusCode) {
+                        recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "job_id": .int(jobId),
+                            "phase": .label("poll_http"),
+                            "status_code": .int(http.statusCode),
+                        ])
+                        lastError[ratingKey] = .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode)).")
+                        store.setStatus(ratingKey: ratingKey, .failed)
+                        clearOptimizeProgress(ratingKey: ratingKey)
+                        releaseInFlight(ratingKey: ratingKey)
+                        refreshRecords()
+                        return
+                    }
                     throw DownloadError.transferFailed("Convert poll HTTP \(http.statusCode)")
                 }
                 job = try EmbyConvertRequest.decodeJob(from: data)
@@ -4072,6 +4131,31 @@ public final class DownloadManager {
             }
 
             try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+        }
+    }
+
+
+    private static func isTerminalEmbyConvertPollStatus(_ statusCode: Int) -> Bool {
+        switch statusCode {
+        case 401, 403, 404, 410:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func cancelEmbyConvertJob(jobId: Int, ratingKey: String,
+                                      server: URL, token: String,
+                                      identity: EmbyClientIdentity) {
+        recordDownloadDiagnostic("downloads.convert_cancel", fields: [
+            "download_id": .identifier(ratingKey),
+            "job_id": .int(jobId),
+        ])
+        Task {
+            if let req = try? EmbyConvertRequest.deleteJobRequest(
+                server: server, token: token, identity: identity, jobId: jobId) {
+                _ = try? await URLSession.shared.data(for: req)
+            }
         }
     }
 
