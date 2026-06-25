@@ -503,14 +503,7 @@ public final class DownloadManager {
         }
         let token = backendSession.token
         let server = backendSession.baseURL
-        guard !activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
-                "download_id": .identifier(ratingKey),
-                "reason": .label("already_active"),
-            ])
-            return
-        }
-        activeJobs.insert(ratingKey)
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Plex") else { return }
         lastError[ratingKey] = nil
         // NOTE: no `defer { activeJobs.remove }` here — that fired when this function returned,
         // which (for both choices) is right after `session.start` merely KICKS OFF the transfer,
@@ -837,15 +830,7 @@ public final class DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
-        guard !activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "reason": .label("already_active"),
-            ])
-            return
-        }
-        activeJobs.insert(ratingKey)
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Jellyfin") else { return }
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime fix as the Plex path:
         // `session.start` only kicks off the transfer, so protection is released terminally
@@ -1219,15 +1204,7 @@ public final class DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
-        guard !activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "reason": .label("already_active"),
-            ])
-            return
-        }
-        activeJobs.insert(ratingKey)
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Emby") else { return }
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
         // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
@@ -1568,6 +1545,34 @@ public final class DownloadManager {
         records.contains { $0.ratingKey == ratingKey }
     }
 
+
+    /// Acquire the per-ratingKey in-flight slot before starting a new download.
+    ///
+    /// A retry can remove the only visible row while the previous terminal callback is still
+    /// unwinding. If that leaves `activeJobs` set but no store row, future starts would be
+    /// ignored as "already active" and the item would never appear in Downloads. Treat that
+    /// combination as stale bookkeeping and clear it before accepting the new start.
+    private func acquireInFlightSlotForStart(ratingKey: String, backend: String) -> Bool {
+        if activeJobs.contains(ratingKey) {
+            if store.records.contains(where: { $0.ratingKey == ratingKey }) {
+                recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label(backend),
+                    "reason": .label("already_active"),
+                ])
+                return false
+            }
+            recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend),
+                "reason": .label("active_without_row"),
+            ])
+            releaseInFlight(ratingKey: ratingKey)
+        }
+        activeJobs.insert(ratingKey)
+        return true
+    }
+
     /// Retry a previously `.failed` download (D3/D5). We rebuild the source `MediaItem`
     /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
@@ -1626,7 +1631,14 @@ public final class DownloadManager {
             }
             let server = backendSession.baseURL
             let token = backendSession.token
-            guard !self.activeJobs.contains(ratingKey) else { return }
+            if self.activeJobs.contains(ratingKey) {
+                self.recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Plex"),
+                    "reason": .label("retry_failed_row"),
+                ])
+                self.releaseInFlight(ratingKey: ratingKey)
+            }
             let currentItem = await self.fetchCurrentMediaItem(ratingKey: ratingKey,
                                                                server: server,
                                                                token: token,
@@ -1638,6 +1650,7 @@ public final class DownloadManager {
             if mediaIndex > 0,
                metadata?.resolvedDownloadLane() == .original,
                currentItem.media?.indices.contains(mediaIndex) == true {
+                self.releaseInFlight(ratingKey: ratingKey)
                 self.store.remove(ratingKey: ratingKey)
                 await self.download(currentItem, choice: .existingVersion,
                                     mediaIndex: mediaIndex, partIndex: partIndex)
@@ -1653,6 +1666,7 @@ public final class DownloadManager {
                 : .optimize(targetName: Self.originalFallbackOptimizeTarget())
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
+            self.releaseInFlight(ratingKey: ratingKey)
             self.store.remove(ratingKey: ratingKey)
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
@@ -1705,7 +1719,14 @@ public final class DownloadManager {
                 self.refreshRecords()
                 return
             }
-            guard !self.activeJobs.contains(record.ratingKey) else { return }
+            if self.activeJobs.contains(record.ratingKey) {
+                self.recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "backend": .label("Jellyfin"),
+                    "reason": .label("retry_failed_row"),
+                ])
+                self.releaseInFlight(ratingKey: record.ratingKey)
+            }
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
             // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
             // mark this existing row `.failed` instead of making the retry affordance disappear.
@@ -1758,7 +1779,14 @@ public final class DownloadManager {
                 self.refreshRecords()
                 return
             }
-            guard !self.activeJobs.contains(record.ratingKey) else { return }
+            if self.activeJobs.contains(record.ratingKey) {
+                self.recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "backend": .label("Emby"),
+                    "reason": .label("retry_failed_row"),
+                ])
+                self.releaseInFlight(ratingKey: record.ratingKey)
+            }
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
             // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
             // existing row `.failed` instead of making the retry affordance disappear.
