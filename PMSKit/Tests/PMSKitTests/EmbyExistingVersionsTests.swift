@@ -40,6 +40,7 @@ struct EmbyExistingVersionsTests {
         #expect(v.size == 1288179275)
         #expect(v.width == 640)
         #expect(v.bitrate == 2146124)
+        #expect(v.supportsDirectPlay)
     }
 
     @Test("Whichever source is named primary is the one excluded")
@@ -91,6 +92,20 @@ struct EmbyExistingVersionsTests {
         """
         let v = try EmbyPlayback.existingDownloadableVersions(response: response(json), primaryMediaSourceId: "a")
         #expect(v.isEmpty)
+    }
+
+    @Test("Direct-play support is carried so UI can disable non-downloadable alternates")
+    func carriesDirectPlaySupport() throws {
+        let json = """
+        { "PlaySessionId": "s", "MediaSources": [
+          {"Id":"a","Container":"mkv","Protocol":"File","SupportsDirectPlay":true},
+          {"Id":"b","Container":"mp4","Protocol":"File","SupportsDirectPlay":false,"VideoCodec":"h264"}
+        ] }
+        """
+        let v = try #require(EmbyPlayback.existingDownloadableVersions(
+            response: response(json), primaryMediaSourceId: "a").first)
+        #expect(v.mediaSourceId == "b")
+        #expect(v.supportsDirectPlay == false)
     }
 
     @Test("A single-source item yields no existing versions")
