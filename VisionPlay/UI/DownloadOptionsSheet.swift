@@ -41,7 +41,9 @@ struct DownloadOptionsSheet: View {
     /// choice. Carries the `Media` array index it lives at (so the download addresses that exact
     /// version/part) plus a human label built from its resolution/codec/bitrate/container.
     private struct ExistingVersionOption: Equatable, Identifiable {
-        let mediaIndex: Int
+        /// Stable row identity within the sheet (Plex: the `Media` array index; Emby: enumeration
+        /// order). A sheet is single-backend, so these never collide.
+        let id: Int
         let label: String
         let detail: String?
         let sizeBytes: Int?
@@ -49,7 +51,9 @@ struct DownloadOptionsSheet: View {
         /// local file. Incompatible versions are shown DISABLED rather than hidden so the user
         /// understands why they can't pick them.
         let playableOffline: Bool
-        var id: Int { mediaIndex }
+        /// What picking this row selects. Plex addresses a `Media` index (#112); Emby addresses a
+        /// PlaybackInfo MediaSource id (#126) — different models, same row UI.
+        let selection: DownloadSelection
     }
 
     private enum DownloadSelection: Equatable {
@@ -57,8 +61,12 @@ struct DownloadOptionsSheet: View {
         case plexOriginalQuality(String)
         case optimizeCompatible
         case optimize(String)
-        /// #112: download an existing server version exactly as-is (by `Media` index).
+        /// #112: download an existing Plex server version exactly as-is (by `Media` index).
         case existingVersion(Int)
+        /// #126: download an existing Emby server version (a "Convert Media" copy) byte-for-byte,
+        /// addressed by its PlaybackInfo MediaSource id. `sizeBytes` is the converted source's own
+        /// size for the storage-limit pre-check (the source `Media` index can't supply it).
+        case embyExistingVersion(mediaSourceId: String, sizeBytes: Int?)
     }
 
     @State private var probeState: ProbeState = .checking
@@ -291,6 +299,9 @@ struct DownloadOptionsSheet: View {
         var negotiatedVideoCodec: String?
         var negotiatedAudioCodec: String?
         var probeFailed = false
+        // #126: existing server-side converted versions ("Convert Media" copies) surfaced from the
+        // SAME PlaybackInfo call that probes the primary source — no extra round trip.
+        var existingVersions: [ExistingVersionOption] = []
         do {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity,
@@ -309,6 +320,30 @@ struct DownloadOptionsSheet: View {
             negotiatedAudioCodec = decision.audioCodec
         } catch {
             probeFailed = true
+        }
+
+        // #126: enumerate existing converted versions from an UNFILTERED PlaybackInfo. Emby filters
+        // the response to a single source when a MediaSourceId is supplied (the primary probe above
+        // passes one, so it can NEVER see the alternates), so this dedicated call passes nil to get
+        // every source. Best-effort: a failure here just means no existing-version rows, never a
+        // failed sheet. The primary (offered above via Original/Remux/Optimize) is `mediaSourceId`.
+        do {
+            let allReq = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity,
+                userId: userId, itemId: item.ratingKey,
+                mediaSourceId: nil,
+                maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: allReq)
+            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                let info = try EmbyPlaybackInfoResponse.decode(from: data)
+                // Exclude the source the main options already cover. Prefer the selected source id;
+                // fall back to the unfiltered decision's chosen primary when none was resolved.
+                let primaryId = mediaSourceId ?? (try? EmbyPlayback.downloadDecision(response: info))?.mediaSourceId
+                existingVersions = Self.embyExistingVersionOptions(
+                    response: info, primaryMediaSourceId: primaryId)
+            }
+        } catch {
+            // Leave existingVersions empty; the sheet still offers the normal lanes.
         }
 
         let containerPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
@@ -361,7 +396,52 @@ struct DownloadOptionsSheet: View {
                             presets: presets,
                             probeFailed: probeFailed,
                             originalStreamableButOfflineUnsupported: unsupportedOriginal,
-                            existingVersions: [])
+                            existingVersions: existingVersions)
+    }
+
+    /// #126: map Emby PlaybackInfo alternate sources to existing-version download rows, applying the
+    /// same offline-compatibility gate as the Plex lane (#125) so an incompatible alternate is shown
+    /// disabled rather than hidden.
+    private static func embyExistingVersionOptions(
+        response: EmbyPlaybackInfoResponse,
+        primaryMediaSourceId: String?) -> [ExistingVersionOption] {
+        EmbyPlayback.existingDownloadableVersions(
+            response: response, primaryMediaSourceId: primaryMediaSourceId
+        ).enumerated().map { index, version in
+            let playableOffline = OfflineDownloadDecision.existingVersionPlayableOffline(
+                container: version.container, videoCodec: version.videoCodec)
+            return ExistingVersionOption(
+                id: index,
+                label: embyVersionLabel(version),
+                detail: embyVersionDetail(version),
+                sizeBytes: version.size,
+                playableOffline: playableOffline,
+                selection: .embyExistingVersion(mediaSourceId: version.mediaSourceId,
+                                                sizeBytes: version.size))
+        }
+    }
+
+    /// Primary label for an Emby existing-version row: resolution · codec · bitrate (Emby `Bitrate`
+    /// is bits/sec). Falls back to the source name, then a generic label.
+    private static func embyVersionLabel(_ version: EmbyPlayback.EmbyExistingVersion) -> String {
+        var parts: [String] = []
+        if let height = version.height, height > 0 { parts.append("\(height)p") }
+        if let codec = version.videoCodec?.uppercased(), !codec.isEmpty { parts.append(codec) }
+        if let bitrate = version.bitrate, bitrate > 0 {
+            parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1_000_000))
+        }
+        if parts.isEmpty, let name = version.name, !name.isEmpty { return name }
+        return parts.isEmpty ? "Server version" : parts.joined(separator: " · ")
+    }
+
+    /// Secondary caption for an Emby existing-version row: container + file size where available.
+    private static func embyVersionDetail(_ version: EmbyPlayback.EmbyExistingVersion) -> String? {
+        var parts: [String] = []
+        if let container = version.container?.uppercased(), !container.isEmpty { parts.append(container) }
+        if let size = version.size, size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private var defaultPresets: [String] {
@@ -449,11 +529,12 @@ struct DownloadOptionsSheet: View {
             let playableOffline = OfflineDownloadDecision.existingVersionPlayableOffline(
                 container: part.container ?? m.container,
                 videoCodec: m.videoCodec)
-            return ExistingVersionOption(mediaIndex: index,
+            return ExistingVersionOption(id: index,
                                          label: Self.versionLabel(m),
                                          detail: Self.versionDetail(media: m, part: part),
                                          sizeBytes: part.size,
-                                         playableOffline: playableOffline)
+                                         playableOffline: playableOffline,
+                                         selection: .existingVersion(index))
         }
         let blocked = result.filter { !$0.playableOffline }.count
         downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(media.count, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) blockedOffline=\(blocked, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
@@ -645,8 +726,9 @@ struct DownloadOptionsSheet: View {
             // them intact.
             if selectedChoice == .optimizeCompatible { return }
             if case .plexOriginalQuality = selectedChoice { return }
-            // #112: an explicit existing-version pick is self-contained; never clobber it.
+            // #112/#126: an explicit existing-version pick is self-contained; never clobber it.
             if case .existingVersion = selectedChoice { return }
+            if case .embyExistingVersion = selectedChoice { return }
             if case .optimize(let selected)? = selectedChoice, allPresets.contains(selected) {
                 return
             }
@@ -660,7 +742,7 @@ struct DownloadOptionsSheet: View {
         SwiftUI.Section {
             ForEach(versions) { version in
                 Button {
-                    selectedChoice = .existingVersion(version.mediaIndex)
+                    selectedChoice = version.selection
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "rectangle.stack.badge.play")
@@ -680,7 +762,7 @@ struct DownloadOptionsSheet: View {
                             }
                         }
                         Spacer()
-                        if version.playableOffline, selectedChoice == .existingVersion(version.mediaIndex) {
+                        if version.playableOffline, selectedChoice == version.selection {
                             Image(systemName: "checkmark").foregroundStyle(.tint)
                         }
                     }
@@ -724,10 +806,18 @@ struct DownloadOptionsSheet: View {
 
     private var selectedStorageLimitMessage: String? {
         guard let selectedChoice else { return nil }
-        return downloadManager.storageLimitMessage(adding: downloadManager.estimatedBytes(
-            for: item, choice: managerChoice(for: selectedChoice),
-            mediaIndex: mediaIndex(for: selectedChoice),
-            partIndex: partIndex(for: selectedChoice)))
+        // #126: an Emby existing version is addressed by MediaSource id, not a `Media` index, so the
+        // estimator can't size it — use the converted source's own reported size for the pre-check.
+        let addedBytes: Int?
+        if case .embyExistingVersion(_, let sizeBytes) = selectedChoice {
+            addedBytes = sizeBytes
+        } else {
+            addedBytes = downloadManager.estimatedBytes(
+                for: item, choice: managerChoice(for: selectedChoice),
+                mediaIndex: mediaIndex(for: selectedChoice),
+                partIndex: partIndex(for: selectedChoice))
+        }
+        return downloadManager.storageLimitMessage(adding: addedBytes)
     }
 
     /// The `Media` array index a selection downloads from. An existing-version pick (#112) targets
@@ -772,6 +862,7 @@ struct DownloadOptionsSheet: View {
         case .optimizeCompatible: return .optimizeCompatible
         case .optimize(let preset): return .optimize(targetName: preset)
         case .existingVersion: return .existingVersion
+        case .embyExistingVersion: return .existingVersion
         }
     }
 
@@ -792,6 +883,7 @@ struct DownloadOptionsSheet: View {
         let isComplete = record.isComplete
         let isFailed = record.status == .failed
         let isPaused = record.status == .paused
+        let isPreparing = record.status == .preparing
         SwiftUI.Section {
             if isComplete {
                 if record.isUnverified {
@@ -821,6 +913,18 @@ struct DownloadOptionsSheet: View {
                     retryDownload()
                     dismiss()
                 } label: { Label("Resume Download", systemImage: "play.circle") }
+            } else if isPreparing {
+                // Emby convert-then-download: the server is rendering the file before any byte
+                // download begins. Surface it as an indeterminate "Preparing on server…" with the
+                // live convert percentage when known (same plumbing as the offline-list row).
+                Label("Preparing on server…", systemImage: "gearshape.arrow.triangle.2.circlepath")
+                if let p = downloadManager.optimizeProgress[record.ratingKey] {
+                    ProgressView(value: p)
+                    Text("\(Int(p * 100))%")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                }
             } else {
                 Label("Downloading…", systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)
@@ -871,9 +975,18 @@ struct DownloadOptionsSheet: View {
                                                           mediaIndex: downloadMediaIndex,
                                                           partIndex: downloadPartIndex) }
         case .emby:
-            Task { await downloadManager.downloadEmby(item, choice: choice,
-                                                      mediaIndex: downloadMediaIndex,
-                                                      partIndex: downloadPartIndex) }
+            // #126: an existing-version pick addresses a specific converted MediaSource by id; pass
+            // it as the override so the lane downloads THAT copy byte-for-byte (no new conversion).
+            if case .embyExistingVersion(let mediaSourceId, _) = selectedChoice {
+                Task { await downloadManager.downloadEmby(item, choice: choice,
+                                                          mediaIndex: downloadMediaIndex,
+                                                          partIndex: downloadPartIndex,
+                                                          mediaSourceIDOverride: mediaSourceId) }
+            } else {
+                Task { await downloadManager.downloadEmby(item, choice: choice,
+                                                          mediaIndex: downloadMediaIndex,
+                                                          partIndex: downloadPartIndex) }
+            }
         }
         dismiss()
     }

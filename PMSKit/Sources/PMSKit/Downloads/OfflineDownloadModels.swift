@@ -9,6 +9,13 @@ import FoundationNetworking
 /// progress just freezes) from one that genuinely finished — see D2 in research/14.
 public enum DownloadStatus: String, Codable, Sendable, Equatable {
     case queued        // seeded, transfer not yet started / no live task yet
+    // Emby convert-then-download: the server is rendering a persistent converted file (an Emby
+    // "Convert Media" Sync job) before any byte download begins. Distinct from `.downloading`
+    // (no URLSession task yet) and from `.queued` (a `.preparing` row carries a server-side
+    // `embyConvertJobID` and resumes polling — not a dead transfer — across relaunch). The
+    // conversion runs server-side and survives app death, so a `.preparing` row is never a stale
+    // transfer; launch reconciliation keeps it `.preparing` and the app re-drives polling.
+    case preparing     // server-side convert job rendering the file; no byte download yet
     case downloading   // a background task is actively writing bytes
     case complete      // validated file is on disk and playable
     // #98: the byte transfer completed, but the local AVPlayer startup probe did not confirm
@@ -53,6 +60,12 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
                                         hasLiveTask: Bool,
                                         hasResumeData: Bool = false) -> DownloadStatus {
         switch current {
+        case .preparing:
+            // The convert job runs server-side and survives app death, so a `.preparing` row is
+            // never a dead transfer: keep it `.preparing` so the app resumes polling the Sync job
+            // (which fails the row itself if the job is gone). No local file exists yet, so the
+            // disk check is irrelevant here.
+            return .preparing
         case .complete:
             // A completed row is only usable if its validated file still exists.
             return fileExists ? .complete : .failed
@@ -313,6 +326,18 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Resume after relaunch continue from the byte offset via `downloadTask(withResumeData:)`
     /// instead of restarting at 0. Only range-resumable sources (static originals) ever set it.
     public var resumeDataRelativePath: String?
+    /// Emby convert-then-download: the server-side "Convert Media" Sync job id for a `.preparing`
+    /// row. Persisted so an app relaunch re-hydrates the row and RESUMES polling that job (rather
+    /// than restarting the conversion), and so deleting a `.preparing` row can also cancel the
+    /// server-side job via `DELETE /Sync/Jobs/{id}`. `nil` for every non-Emby-convert row.
+    public var embyConvertJobID: Int?
+    /// Emby convert-then-download: the FULL set of pre-existing `File` MediaSource ids on the item
+    /// captured at convert-trigger time. Persisted so a relaunch-resume identifies the freshly
+    /// converted source as "the one NOT in this set" — including when the item already had a PRIOR
+    /// converted version (which `mediaSourceID` alone, the original source, would miss). `nil` for
+    /// every non-Emby-convert row; empty when the snapshot couldn't be enumerated (the h264/mp4
+    /// recency heuristic then disambiguates).
+    public var embyConvertSnapshotIDs: [String]?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -359,7 +384,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 mediaSourceID: String? = nil,
                 playSessionID: String? = nil,
                 downloadLane: DownloadLane? = nil,
-                resumeDataRelativePath: String? = nil) {
+                resumeDataRelativePath: String? = nil,
+                embyConvertJobID: Int? = nil,
+                embyConvertSnapshotIDs: [String]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -406,6 +433,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.playSessionID = playSessionID
         self.downloadLane = downloadLane
         self.resumeDataRelativePath = resumeDataRelativePath
+        self.embyConvertJobID = embyConvertJobID
+        self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
     }
 
     public init(from decoder: Decoder) throws {
@@ -456,6 +485,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
         resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
+        embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
+        embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
     }
 
     /// #83: resolve this row's lane. New rows persist `downloadLane`; pre-#83 rows fall back to the

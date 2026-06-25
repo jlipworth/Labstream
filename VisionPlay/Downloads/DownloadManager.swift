@@ -1306,8 +1306,12 @@ public final class DownloadManager {
         let route: EmbyDownloadRoute
         switch choice {
         case .original, .existingVersion:
-            // #112: `.existingVersion` is Plex-only; never produced for Emby, but the switch must be
-            // exhaustive — treat it as a plain original negotiation here.
+            // #126: `.existingVersion` IS produced for Emby now — the UI passes the chosen converted
+            // MediaSource id as `mediaSourceIDOverride`, so `embyMediaSourceHint`/PlaybackInfo already
+            // resolved `decision` to THAT source. Both lanes then negotiate identically: a directly
+            // playable file in a local container downloads byte-for-byte (.original) via
+            // `downloadOriginalRequest`; anything else falls to transcode. (For an existing version the
+            // override-selected converted source is mp4/h264 → .original, the intended byte-for-byte path.)
             route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
         case .optimizeCompatible:
             // Honour the compatible lane when the source video is stream-copy eligible. The
@@ -1326,6 +1330,53 @@ public final class DownloadManager {
             "route": .label(route == .original ? "original" : route == .compatibleRemux ? "compatible_remux" : "transcode"),
             "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
         ])
+
+        // Emby convert-then-download (default for non-direct downloads): ANY choice that negotiated
+        // `.transcode` would otherwise be a LIVE streaming transcode — ephemeral, no stable byte
+        // range, so a dropped connection restarts from scratch (multi-GB never finishes). Instead,
+        // redirect to the server-side "Convert Media" job: render a persistent file, then download it
+        // via the resumable `.original` static lane (and KEEP it, so #126's reuse serves the next
+        // download for free). This covers BOTH `.optimize` AND `.optimizeCompatible`: the compatible
+        // lane only stays a remux when the source video is stream-copy eligible (route == .original/
+        // .compatibleRemux); when it falls through to `route == .transcode` (video not copyable) it
+        // is exactly the non-resumable live transcode this feature removes. Direct-play (.original),
+        // compatible-remux (route == .compatibleRemux), and #126 reuse (the `.existingVersion`/
+        // override handoff, which negotiates `.original`) are untouched — `.existingVersion` is
+        // intentionally excluded here so the convert handoff never re-triggers this reroute (no
+        // recursion). A would-be transcode of an `.existingVersion` source is failed, not rerouted,
+        // by the eligibility guard below.
+        if route == .transcode {
+            switch choice {
+            case .optimize(let targetName):
+                await triggerConvertAndDownload(item: item, targetName: targetName,
+                                                metadata: metadata, session: backendSession)
+                return
+            case .optimizeCompatible:
+                // No explicit preset for the compatible lane — derive one from the user's stored
+                // default download quality so the converted bitrate matches their intent.
+                let targetName = Self.jellyfinDefaultDownloadPreset
+                await triggerConvertAndDownload(item: item, targetName: targetName,
+                                                metadata: metadata, session: backendSession)
+                return
+            case .existingVersion:
+                // The convert handoff (.existingVersion + override) must land on the resumable
+                // `.original` lane; if the converted source still negotiates a transcode (e.g. an
+                // audio codec the device profile re-encodes), silently streaming it would be a
+                // non-resumable live transcode of the just-converted file. Fail loudly instead.
+                recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "phase": .label("converted_not_directly_downloadable"),
+                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+                ])
+                lastError[ratingKey] = .transferFailed("Converted source not directly downloadable.")
+                store.setStatus(ratingKey: ratingKey, .failed)
+                releaseInFlight(ratingKey: ratingKey)
+                refreshRecords()
+                return
+            case .original:
+                break
+            }
+        }
 
         var request: URLRequest
         var destination: URL
@@ -1670,12 +1721,59 @@ public final class DownloadManager {
         }
     }
 
+    /// Re-hydrate `.preparing` Emby convert rows after an app relaunch and RESUME polling their
+    /// server-side Sync job (rather than restarting the conversion — it runs server-side and
+    /// survives app death, which is the whole point of this lane). Idempotent: a row already being
+    /// polled (`activeJobs`) is skipped. Best-effort — a row whose Emby lane is signed out stays
+    /// `.preparing` and resumes automatically on the next call once the lane returns.
+    private func resumePendingEmbyConvertDownloads() {
+        let candidates = records.filter { record in
+            record.status == .preparing
+                && record.metadata?.embyConvertJobID != nil
+                && !activeJobs.contains(record.ratingKey)
+        }
+        guard !candidates.isEmpty else { return }
+        guard let session = appModel.backendSession(for: .emby),
+              let userId = session.userID else { return }
+        let server = session.baseURL
+        let token = session.token
+        let identity = appModel.identity.emby
+        for record in candidates {
+            guard let metadata = record.metadata,
+                  let jobId = metadata.embyConvertJobID,
+                  metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby else { continue }
+            let ratingKey = record.ratingKey
+            let targetName = metadata.optimizeTargetName ?? ""
+            activeJobs.insert(ratingKey)
+            recordDownloadDiagnostic("downloads.convert_resume", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+            ])
+            // Use the FULL pre-conversion File-source snapshot persisted at trigger time so the
+            // freshly converted source is identified as "not in the snapshot" even when a PRIOR
+            // converted version already existed. Fall back to the original source id alone for rows
+            // written before the snapshot was persisted; the h264/mp4 recency heuristic in
+            // `finishEmbyConvert` covers any residual ambiguity. `makeMediaItem` rebuilds the item.
+            let item = metadata.makeMediaItem()
+            let resumeSnapshot: Set<String> = metadata.embyConvertSnapshotIDs.map { Set($0) }
+                ?? (metadata.mediaSourceID.map { [$0] } ?? [])
+            Task { [weak self] in
+                await self?.pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey,
+                                                          jobId: jobId, snapshotIds: resumeSnapshot,
+                                                          targetName: targetName, server: server,
+                                                          token: token, identity: identity,
+                                                          userId: userId)
+            }
+        }
+    }
+
     /// Resume server-side Plex optimize rows that were persisted while Plex was still rendering.
     ///
     /// During "Preparing on server…" there is intentionally no URLSession task yet, so a relaunch
     /// must not reconcile the row as a dead transfer. Once auth is restored, this method resumes
     /// polling Plex for the optimized Part and starts the static file download when it appears.
     public func resumePendingServerPrepDownloads() {
+        resumePendingEmbyConvertDownloads()
         // #84: no longer gated on `activeBackend == .plex`. Each candidate is resolved against its
         // OWN backend lane, so a Plex optimize-prep row resumes on relaunch even when the app
         // launched into Jellyfin/Emby — as long as the Plex lane is still configured.
@@ -1948,6 +2046,28 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
+        // Emby convert parity (#126 + Plex): deleting a `.preparing` row must ALSO cancel the
+        // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
+        // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
+        // already-converted file, so this only ever cancels an in-flight conversion).
+        if let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+           row.status == .preparing,
+           let jobId = row.metadata?.embyConvertJobID,
+           let session = appModel.backendSession(for: .emby) {
+            let server = session.baseURL
+            let token = session.token
+            let identity = appModel.identity.emby
+            recordDownloadDiagnostic("downloads.convert_cancel", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+            ])
+            Task {
+                if let req = try? EmbyConvertRequest.deleteJobRequest(
+                    server: server, token: token, identity: identity, jobId: jobId) {
+                    _ = try? await URLSession.shared.data(for: req)
+                }
+            }
+        }
         session.cancel(ratingKey: ratingKey)
         store.remove(ratingKey: ratingKey)
         lastError[ratingKey] = nil
@@ -3745,6 +3865,354 @@ public final class DownloadManager {
         optimizeState[ratingKey] = nil
         optimizeProgressSamples[ratingKey] = nil
         optimizeRate[ratingKey] = nil
+    }
+
+    // MARK: - Emby convert-then-download (server-side prepare → resumable download)
+
+    /// Emby parity with the Plex optimize lane: create a server-side "Convert Media" Sync job that
+    /// renders a PERSISTENT converted file (next-to-original, `targetId:"originalmediafolder"`),
+    /// poll it to completion surfacing "Preparing on server… N%", then hand the freshly-converted
+    /// MediaSource off to the resumable `.original` static lane via `downloadEmby(…override:)`.
+    ///
+    /// Why this exists: a live streaming transcode is ephemeral (no stable byte range), so a dropped
+    /// connection restarts a multi-GB download from zero. The converted file IS range-resumable, and
+    /// we KEEP it (deleting the Sync job never deletes the file) so #126's existing-version reuse
+    /// serves the next download/resume for free.
+    ///
+    /// Mirrors `triggerOptimizeAndDownload`: the whole chain runs off the captured `session`
+    /// (server/token/userId/identity), seeds a 0% `.preparing` row, and surfaces progress through the
+    /// SAME `optimizeProgress`/`optimizeState` plumbing the UI already reads. The caller
+    /// (`downloadEmby`) already holds the `activeJobs` slot; the relaunch resume path inserts it
+    /// before calling. Failures are retry-only (NO streaming fallback — that would silently
+    /// reintroduce the non-resumable behavior this feature removes).
+    private func triggerConvertAndDownload(item: MediaItem, targetName: String,
+                                           metadata: OfflineMetadata,
+                                           session: BackendSession) async {
+        let itemId = item.ratingKey
+        let ratingKey = Self.embyRecordKey(itemId)
+        let server = session.baseURL
+        let token = session.token
+        let identity = appModel.identity.emby
+        guard let userId = session.userID else {
+            lastError[ratingKey] = .notAuthenticated
+            store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
+        // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
+        // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
+        var convertMetadata = metadata
+        convertMetadata.optimizeTargetName = targetName
+        convertMetadata.downloadLane = .optimize
+
+        // Snapshot the existing File MediaSource ids so we can identify the freshly-converted one
+        // once the job completes (a second `File` source appears on the same item). Persist the FULL
+        // set (not just the original source) so a relaunch-resume still excludes any PRIOR converted
+        // version that already existed — otherwise that stale version could be mistaken for the new one.
+        let snapshotIds = await embyFileSourceIds(server: server, token: token, identity: identity,
+                                                   userId: userId, itemId: itemId)
+        convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
+
+        // VisionPlay marker discipline (parity with the Plex `[VisionPlay …]` queue title): any
+        // future job cleanup only ever touches OUR own jobs.
+        let jobName = "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
+        let quality = EmbyConvertRequest.convertQuality(forPresetLabel: targetName)
+
+        recordDownloadDiagnostic("downloads.convert_start", fields: [
+            "download_id": .identifier(ratingKey),
+            "target": .label(targetName),
+            "bitrate": .int(quality.bitrate ?? 0),
+            "snapshot_count": .int(snapshotIds.count),
+        ])
+
+        // Seed the 0% `.preparing` row immediately so the UI shows the job while we create it.
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+        optimizeState[ratingKey] = "queued"
+        refreshRecords()
+
+        // 1. Create the convert job.
+        let job: EmbyConvertJob
+        do {
+            let req = try EmbyConvertRequest.createJobRequest(
+                server: server, token: token, identity: identity, userId: userId, itemId: itemId,
+                quality: quality.quality, profile: quality.profile, bitrate: quality.bitrate,
+                name: jobName)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
+            }
+            job = try EmbyConvertRequest.decodeJob(from: data)
+        } catch {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label("create"),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
+        // Persist the job id so a relaunch resumes polling (not restarts) and a row delete can
+        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`).
+        convertMetadata.embyConvertJobID = job.id
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+        refreshRecords()
+
+        await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
+                                            snapshotIds: snapshotIds, targetName: targetName,
+                                            server: server, token: token, identity: identity,
+                                            userId: userId)
+    }
+
+    /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
+    /// plumbing ("Preparing on server… N%"), then hand the converted source to the resumable
+    /// `.original` lane. Shared by the initial trigger and the relaunch-resume path.
+    private func pollAndDownloadEmbyConvertJob(item: MediaItem, ratingKey: String, jobId: Int,
+                                               snapshotIds: Set<String>, targetName: String,
+                                               server: URL, token: String,
+                                               identity: EmbyClientIdentity, userId: String) async {
+        // 2. Poll (reuse `optimizePollInterval`; no wall-clock timeout — the conversion is
+        //    server-side and may legitimately take a long time for large media).
+        while true {
+            // Bail if the row was deleted/cancelled out from under us (delete() also fires the
+            // server-side DELETE /Sync/Jobs).
+            guard activeJobs.contains(ratingKey),
+                  store.records.first(where: { $0.ratingKey == ratingKey })?.status == .preparing else {
+                recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "job_id": .int(jobId),
+                ])
+                return
+            }
+
+            let job: EmbyConvertJob
+            do {
+                let req = try EmbyConvertRequest.jobStatusRequest(server: server, token: token,
+                                                                  identity: identity, jobId: jobId)
+                let (data, response) = try await URLSession.shared.data(for: req)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw DownloadError.transferFailed("Convert poll HTTP \(http.statusCode)")
+                }
+                job = try EmbyConvertRequest.decodeJob(from: data)
+            } catch {
+                // A transient poll error shouldn't fail the whole job; keep polling. (The job runs
+                // server-side regardless of our connectivity.)
+                recordDownloadDiagnostic("downloads.convert_poll_error", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "job_id": .int(jobId),
+                    "error": .error(error),
+                ])
+                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+                continue
+            }
+
+            // Surface progress through the shared optimize plumbing the UI already renders.
+            if let pct = job.progress, pct >= 0 {
+                let p = min(1.0, pct / 100.0)
+                optimizeProgress[ratingKey] = p
+                optimizeState[ratingKey] = "transcoding"
+                updateOptimizeETA(ratingKey: ratingKey, progress: p)
+            } else {
+                optimizeState[ratingKey] = "queued"
+            }
+            refreshRecords()
+
+            if job.status.isTerminal {
+                if job.status.didSucceed {
+                    // Cancel race: the user may have deleted the row during the status `await` above.
+                    // delete() removes the row and releases the in-flight slot; if it did, do NOT
+                    // proceed to finishEmbyConvert (which re-seeds a download row and re-inserts the
+                    // activeJobs slot, resurrecting a cancelled download). All these methods are
+                    // @MainActor, so a plain guard is sufficient — no TOCTOU between this check and
+                    // finishEmbyConvert's own top-of-method guard.
+                    guard activeJobs.contains(ratingKey) else {
+                        recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "job_id": .int(jobId),
+                            "phase": .label("post_status_completed"),
+                        ])
+                        return
+                    }
+                    await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
+                                            snapshotIds: snapshotIds, targetName: targetName,
+                                            server: server, token: token, identity: identity,
+                                            userId: userId)
+                } else {
+                    // Server-side Failed/Cancelled → fail the row (retry-only; keep the marker job
+                    // for diagnostics — deleting it wouldn't delete a partial file anyway).
+                    recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "job_id": .int(jobId),
+                        "phase": .label("server"),
+                        "status": .label(job.status.rawValue),
+                    ])
+                    lastError[ratingKey] = .transferFailed("Server conversion \(job.status.rawValue.lowercased()).")
+                    store.setStatus(ratingKey: ratingKey, .failed)
+                    clearOptimizeProgress(ratingKey: ratingKey)
+                    releaseInFlight(ratingKey: ratingKey)
+                    refreshRecords()
+                }
+                return
+            }
+
+            try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+        }
+    }
+
+    /// On a Completed convert job: fetch UNFILTERED PlaybackInfo (`mediaSourceId:nil`), pick the
+    /// `File` source NOT in the pre-conversion snapshot (fallback: an h264/mp4 non-primary source),
+    /// then hand off to the resumable `.original` static lane via `downloadEmby(…override:)`. The
+    /// converted file is KEPT (no Sync-job cleanup) so #126's reuse serves the next download.
+    private func finishEmbyConvert(item: MediaItem, ratingKey: String, jobId: Int,
+                                   snapshotIds: Set<String>, targetName: String,
+                                   server: URL, token: String,
+                                   identity: EmbyClientIdentity, userId: String) async {
+        // Cancel race (entry guard): bail if the row was deleted/cancelled before we got here.
+        guard activeJobs.contains(ratingKey) else {
+            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+                "phase": .label("finish_entry"),
+            ])
+            return
+        }
+        let itemId = item.ratingKey
+        let sources: [EmbyMediaSourceInfo]
+        do {
+            // Unfiltered: supplying a MediaSourceId returns only that source, so enumerate without
+            // one (exactly as #126 does) to see the freshly-converted second `File` source.
+            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity, userId: userId, itemId: itemId,
+                mediaSourceId: nil, maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
+            }
+            sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
+        } catch {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+                "phase": .label("discover"),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
+        // Only on-disk files are byte-for-byte downloadable; an absent Protocol means File (older
+        // servers omit it for local sources).
+        func isFile(_ s: EmbyMediaSourceInfo) -> Bool {
+            guard let proto = s.mediaProtocol else { return true }
+            return proto.caseInsensitiveCompare("File") == .orderedSame
+        }
+        let fileSources = sources.filter { isFile($0) && ($0.id?.isEmpty == false) }
+        let notInSnapshot = fileSources.filter { !snapshotIds.contains($0.id ?? "") }
+        func looksConverted(_ source: EmbyMediaSourceInfo) -> Bool {
+            source.videoCodec?.caseInsensitiveCompare("h264") == .orderedSame
+                || (source.container ?? "").lowercased().contains("mp4")
+        }
+        // When several candidates qualify, prefer the most-recently-added so a stale converted
+        // version is never chosen over the fresh one. Emby mediasource ids are numeric (string-typed);
+        // the freshly converted source gets the highest id. Non-numeric ids sort to the back (-1).
+        func recency(_ source: EmbyMediaSourceInfo) -> Int { Int(source.id ?? "") ?? -1 }
+        func mostRecent(_ sources: [EmbyMediaSourceInfo]) -> EmbyMediaSourceInfo? {
+            sources.max(by: { recency($0) < recency($1) })
+        }
+        // Prefer the most-recent NEW (post-snapshot) h264/mp4 File source — that's exactly the
+        // convert profile's output. Fall back to the most-recent new File source, then (snapshot
+        // empty/ambiguous) to the most-recent h264/mp4 File source. The convert profile always
+        // yields h264/mp4, so this never grabs the original HEVC/MKV source when a converted one
+        // exists, and the recency tie-break never grabs a stale converted version over the fresh one.
+        let newSource = mostRecent(notInSnapshot.filter(looksConverted))
+            ?? mostRecent(notInSnapshot)
+            ?? mostRecent(fileSources.filter(looksConverted))
+
+        guard let newSourceId = newSource?.id, !newSourceId.isEmpty else {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+                "phase": .label("no_converted_source"),
+                "source_count": .int(sources.count),
+            ])
+            lastError[ratingKey] = .transferFailed("Converted source not found after completion.")
+            store.setStatus(ratingKey: ratingKey, .failed)
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
+        // Cancel race (final guard): the unfiltered PlaybackInfo fetch above is an `await`, so the
+        // user could have deleted the row during it. If they did (slot released, row gone), do NOT
+        // re-seed a download via the handoff below — that would resurrect a cancelled download.
+        guard activeJobs.contains(ratingKey) else {
+            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+                "phase": .label("finish_pre_handoff"),
+            ])
+            return
+        }
+
+        recordDownloadDiagnostic("downloads.convert_completed", fields: [
+            "download_id": .identifier(ratingKey),
+            "job_id": .int(jobId),
+            "target": .label(targetName),
+        ])
+        // Clear the prep progress + release THIS lane's bookkeeping so the handoff `downloadEmby`
+        // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
+        clearOptimizeProgress(ratingKey: ratingKey)
+        releaseInFlight(ratingKey: ratingKey)
+        // Remove the seeded `.preparing` row so the handoff re-seeds a fresh download row at the
+        // converted source (its own size, route, container).
+        store.remove(ratingKey: ratingKey)
+        // Hand off to the existing resumable `.original` static lane. `.existingVersion` addresses a
+        // specific converted MediaSource id (the #126 byte-for-byte reuse path) — it negotiates the
+        // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
+        // `.optimize` reroutes). The KEPT converted file is what reuse serves next time.
+        await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId)
+    }
+
+    /// Enumerate the current `File` MediaSource ids for an Emby item (unfiltered PlaybackInfo), used
+    /// to snapshot the pre-conversion sources so the freshly-converted one can be identified later.
+    /// Best-effort: returns an empty set on any error (the converted-source diff then relies on the
+    /// h264/mp4 fallback).
+    private func embyFileSourceIds(server: URL, token: String, identity: EmbyClientIdentity,
+                                   userId: String, itemId: String) async -> Set<String> {
+        do {
+            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
+                server: server, token: token, identity: identity, userId: userId, itemId: itemId,
+                mediaSourceId: nil, maxStaticBitrate: 200_000_000)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                return []
+            }
+            let sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
+            return Set(sources.compactMap { source -> String? in
+                guard let id = source.id, !id.isEmpty else { return nil }
+                if let proto = source.mediaProtocol, proto.caseInsensitiveCompare("File") != .orderedSame {
+                    return nil
+                }
+                return id
+            })
+        } catch {
+            return []
+        }
     }
 
     // MARK: - Server conversion queue probe
