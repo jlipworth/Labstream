@@ -99,6 +99,25 @@ struct OfflineDownloadModelsTests {
         #expect(compatible.resolvedDownloadLane() == .compatibleRemux)
     }
 
+    @Test("serverPreparedVersion: defaults false, round-trips, and reads via isServerPreparedVersion")
+    func serverPreparedVersionFlag() throws {
+        // Absent (legacy / genuine original) → false.
+        let legacy = try decode(OfflineMetadata.self,
+                                from: #"{"ratingKey":"123","title":"t"}"#)
+        #expect(legacy.serverPreparedVersion == nil)
+        #expect(legacy.isServerPreparedVersion == false)
+
+        // A converted/existing-version row still rides the `.original` lane, but is flagged.
+        let prepared = OfflineMetadata(ratingKey: "emby:50459", title: "t", type: "movie",
+                                       downloadLane: .original, serverPreparedVersion: true)
+        #expect(prepared.resolvedDownloadLane() == .original)
+        #expect(prepared.isServerPreparedVersion)
+        let decoded = try decode(OfflineMetadata.self,
+                                 from: String(data: JSONEncoder().encode(prepared), encoding: .utf8)!)
+        #expect(decoded.isServerPreparedVersion)
+        #expect(decoded.resolvedDownloadLane() == .original)
+    }
+
     @Test("a record persisted before D5 (no metadata) decodes with nil metadata")
     func recordWithoutMetadataDecodes() throws {
         // DownloadRecord persists `localURL` as a URL; metadata + poster are optional.

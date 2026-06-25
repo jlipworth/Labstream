@@ -338,6 +338,15 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// every non-Emby-convert row; empty when the snapshot couldn't be enumerated (the h264/mp4
     /// recency heuristic then disambiguates).
     public var embyConvertSnapshotIDs: [String]?
+    /// Display-only marker: this row downloads a SERVER-PREPARED version (a transcoded copy the
+    /// server rendered), not the user's true source file — the Emby convert-then-download output,
+    /// the Emby #126 reuse of an existing converted version, and the Plex #112 existing-version
+    /// download. All of those ride the `.original` static lane for byte-for-byte resumable transfer,
+    /// so the lane alone can't distinguish them from a real original; this flag lets the UI badge
+    /// them "Transcode" (consistent with on-demand optimize) instead of mislabelling them "Original".
+    /// Purely cosmetic — it never affects the download/resume/rate mechanics, which stay lane-driven.
+    /// `nil`/false for a genuine original (and every pre-existing row).
+    public var serverPreparedVersion: Bool?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -386,7 +395,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 downloadLane: DownloadLane? = nil,
                 resumeDataRelativePath: String? = nil,
                 embyConvertJobID: Int? = nil,
-                embyConvertSnapshotIDs: [String]? = nil) {
+                embyConvertSnapshotIDs: [String]? = nil,
+                serverPreparedVersion: Bool? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -435,6 +445,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.resumeDataRelativePath = resumeDataRelativePath
         self.embyConvertJobID = embyConvertJobID
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
+        self.serverPreparedVersion = serverPreparedVersion
     }
 
     public init(from decoder: Decoder) throws {
@@ -487,7 +498,13 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
         embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
+        serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
     }
+
+    /// Display helper: true when this row downloads a server-prepared (transcoded) version rather
+    /// than the genuine source — see `serverPreparedVersion`. Used by the offline UI to badge it
+    /// "Transcode" even though it rides the `.original` static lane.
+    public var isServerPreparedVersion: Bool { serverPreparedVersion == true }
 
     /// #83: resolve this row's lane. New rows persist `downloadLane`; pre-#83 rows fall back to the
     /// legacy inference (optimize ⇔ a non-empty `optimizeTargetName`, else original) — correct for
