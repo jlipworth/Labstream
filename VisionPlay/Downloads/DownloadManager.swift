@@ -4275,41 +4275,6 @@ public final class DownloadManager {
             return
         }
         let itemId = item.ratingKey
-        let sources: [EmbyMediaSourceInfo]
-        do {
-            // Unfiltered: supplying a MediaSourceId returns only that source, so enumerate without
-            // one (exactly as #126 does) to see the freshly-converted second `File` source.
-            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity, userId: userId, itemId: itemId,
-                mediaSourceId: nil, maxStaticBitrate: 200_000_000)
-            let (data, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-            }
-            sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
-        } catch {
-            recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "phase": .label("discover"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        // Only on-disk files are byte-for-byte downloadable; an absent Protocol means File (older
-        // servers omit it for local sources).
-        func isFile(_ s: EmbyMediaSourceInfo) -> Bool {
-            guard let proto = s.mediaProtocol else { return true }
-            return proto.caseInsensitiveCompare("File") == .orderedSame
-        }
-        let fileSources = sources.filter { isFile($0) && ($0.id?.isEmpty == false) }
-        let notInSnapshot = fileSources.filter { !snapshotIds.contains($0.id ?? "") }
         func looksConverted(_ source: EmbyMediaSourceInfo) -> Bool {
             source.videoCodec?.caseInsensitiveCompare("h264") == .orderedSame
                 || (source.container ?? "").lowercased().contains("mp4")
@@ -4321,21 +4286,55 @@ public final class DownloadManager {
         func mostRecent(_ sources: [EmbyMediaSourceInfo]) -> EmbyMediaSourceInfo? {
             sources.max(by: { recency($0) < recency($1) })
         }
-        // Prefer the most-recent NEW (post-snapshot) h264/mp4 File source — that's exactly the
-        // convert profile's output. Fall back to the most-recent new File source, then (snapshot
-        // empty/ambiguous) to the most-recent h264/mp4 File source. The convert profile always
-        // yields h264/mp4, so this never grabs the original HEVC/MKV source when a converted one
-        // exists, and the recency tie-break never grabs a stale converted version over the fresh one.
-        let newSource = mostRecent(notInSnapshot.filter(looksConverted))
-            ?? mostRecent(notInSnapshot)
-            ?? mostRecent(fileSources.filter(looksConverted))
+
+        // POLL for the freshly-converted source. Emby reports the Sync job `Completed` BEFORE it has
+        // indexed the converted file as a downloadable MediaSource: the file is copied into the
+        // library folder, then a LibraryMonitor refresh + ffprobe must run before PlaybackInfo lists
+        // it (measured live: ~3 min lag). A single immediate fetch therefore misses it and the row
+        // would fail with "Converted source not found". Poll unfiltered PlaybackInfo (best-effort;
+        // transient errors just retry) until the NEW (post-snapshot) h264/mp4 `File` source appears.
+        let maxAttempts = 72   // ~6 min at the 5s optimizePollInterval — comfortably past the index lag.
+        var fileSources: [EmbyMediaSourceInfo] = []
+        var newSource: EmbyMediaSourceInfo?
+        for attempt in 0..<maxAttempts {
+            // Cancel race: the user may delete the row during the wait (delete() also fires the
+            // server-side DELETE /Sync/Jobs and releases the slot).
+            guard activeJobs.contains(ratingKey) else {
+                recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "job_id": .int(jobId),
+                    "phase": .label("finish_poll"),
+                ])
+                return
+            }
+            // `embyFileSources` returns only on-disk (`File`) sources with a non-empty id, unfiltered
+            // by MediaSourceId, and is best-effort (empty on any error → this attempt simply retries).
+            fileSources = await embyFileSources(server: server, token: token, identity: identity,
+                                                userId: userId, itemId: itemId)
+            let notInSnapshot = fileSources.filter { !snapshotIds.contains($0.id ?? "") }
+            // The convert profile always yields h264/mp4, so a NEW h264/mp4 File source is exactly the
+            // converted output — never the original HEVC/MKV source.
+            if let fresh = mostRecent(notInSnapshot.filter(looksConverted)) {
+                newSource = fresh
+                break
+            }
+            if attempt < maxAttempts - 1 {
+                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
+            }
+        }
+        // Final fallback for an empty/ambiguous snapshot (the strict NEW-h264/mp4 match never landed):
+        // most-recent new File source, then most-recent h264/mp4 File source.
+        if newSource == nil {
+            let notInSnapshot = fileSources.filter { !snapshotIds.contains($0.id ?? "") }
+            newSource = mostRecent(notInSnapshot) ?? mostRecent(fileSources.filter(looksConverted))
+        }
 
         guard let newSourceId = newSource?.id, !newSourceId.isEmpty else {
             recordDownloadDiagnostic("downloads.convert_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "job_id": .int(jobId),
                 "phase": .label("no_converted_source"),
-                "source_count": .int(sources.count),
+                "source_count": .int(fileSources.count),
             ])
             lastError[ratingKey] = .transferFailed("Converted source not found after completion.")
             store.setStatus(ratingKey: ratingKey, .failed)
@@ -4438,12 +4437,14 @@ public final class DownloadManager {
         func height(_ s: EmbyMediaSourceInfo) -> Int? {
             s.height ?? s.mediaStreams.first { $0.type == "Video" }?.height
         }
-        // mp4 container AND h264: exactly the convert profile's output. Requiring BOTH (not either)
-        // guards against treating an h264-in-mkv original as a converted version.
+        // mp4 container = the convert profile's output (`-f mp4`). The pre-conversion original in the
+        // convert lane is always HEVC/MKV (an mp4/h264 original would direct-play and never reach this
+        // lane), and even an mp4 original is excluded by `primaryMediaSourceId` below — so container
+        // alone is a reliable discriminator. We do NOT also require `videoCodec == h264`: PlaybackInfo
+        // reports VideoCodec as null at the source level (the codec is in MediaStreams), so an AND
+        // would never match a real converted source.
         func looksConverted(_ s: EmbyMediaSourceInfo) -> Bool {
-            let isH264 = s.videoCodec?.caseInsensitiveCompare("h264") == .orderedSame
-            let isMP4 = (s.container ?? "").lowercased().contains("mp4")
-            return isH264 && isMP4
+            (s.container ?? "").lowercased().contains("mp4")
         }
         func recency(_ s: EmbyMediaSourceInfo) -> Int { Int(s.id ?? "") ?? -1 }
         return sources
