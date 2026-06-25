@@ -246,6 +246,49 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return true
     }
 
+    /// Pause any in-flight transfer for a ratingKey. Prefer URLSession resume data for static
+    /// byte-range-safe lanes; for forward-only transcode/remux streams, this still becomes a safe
+    /// user pause (no auto-retry until Resume), but Resume restarts cleanly.
+    func pause(ratingKey: String) {
+        AppDiagnostics.record(.downloads, "downloads.pause_requested", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
+        urlSession.getAllTasks { tasks in
+            self.lock.lock()
+            let ids = Set(self.inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+            self.lock.unlock()
+
+            var matched = false
+            for task in tasks where ids.contains(task.taskIdentifier) {
+                matched = true
+                if let downloadTask = task as? URLSessionDownloadTask {
+                    downloadTask.cancel { resumeData in
+                        if let resumeData, !resumeData.isEmpty,
+                           self.store.supportsPersistedResumeData(ratingKey: ratingKey) {
+                            self.store.setResumeData(ratingKey: ratingKey, resumeData)
+                        }
+                        self.store.setStatus(ratingKey: ratingKey, .paused)
+                        self.onError?(ratingKey, .interruptedResumable)
+                        self.onChange?()
+                    }
+                } else {
+                    task.cancel()
+                    self.store.setStatus(ratingKey: ratingKey, .paused)
+                    self.onError?(ratingKey, .interruptedResumable)
+                    self.onChange?()
+                }
+            }
+
+            if !matched {
+                self.store.setStatus(ratingKey: ratingKey, .paused)
+                self.onChange?()
+            }
+        }
+        lock.lock()
+        inflight = inflight.filter { $0.value.ratingKey != ratingKey }
+        lock.unlock()
+    }
+
     /// Cancel any in-flight transfer for a ratingKey.
     func cancel(ratingKey: String) {
         AppDiagnostics.record(.downloads, "downloads.cancel_requested", fields: [
