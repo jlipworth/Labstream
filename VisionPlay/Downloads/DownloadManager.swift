@@ -4174,8 +4174,13 @@ public final class DownloadManager {
                 continue
             }
 
-            // Surface progress through the shared optimize plumbing the UI already renders.
-            if let pct = job.progress, pct >= 0 {
+            // Surface progress through the shared optimize plumbing the UI already renders. Emby does
+            // NOT report incremental convert progress — `Progress` stays pinned at 0 throughout
+            // Converting and only jumps to 100 at completion. So gate on `pct > 0` (NOT `>= 0`): a
+            // pinned-0 must leave `optimizeProgress` unset so the UI shows the indeterminate
+            // "Preparing on server…" rather than a misleading "Preparing on server… 0%" (and so we
+            // never compute a bogus ETA from a non-moving 0). Only a real >0 value drives the %/ETA.
+            if let pct = job.progress, pct > 0 {
                 let p = min(1.0, pct / 100.0)
                 optimizeProgress[ratingKey] = p
                 optimizeState[ratingKey] = "transcoding"
