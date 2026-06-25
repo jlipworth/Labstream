@@ -88,6 +88,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
+
+    /// In-process session used only for app-managed byte-range checkpoints.
+    ///
+    /// A Foundation background session is still used for opaque `URLSessionDownloadTask` lanes,
+    /// but these checkpointed static transfers write bytes directly into our partial file and
+    /// explicitly resume with an HTTP Range header after interruption/relaunch. Keep them on a
+    /// default session on both simulator and device; background sessions are for system-managed
+    /// upload/download tasks, not arbitrary delegate-managed data writes.
+    private lazy var rangeURLSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.allowsCellularAccess = true
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }()
+
     init(store: DownloadStore) {
         self.store = store
         super.init()
@@ -267,7 +282,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         if offset > 0 {
             ranged.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
         }
-        let task = urlSession.dataTask(with: ranged)
+        let task = rangeURLSession.dataTask(with: ranged)
         task.taskDescription = ratingKey
         lock.lock()
         retryCounts[ratingKey] = 0
@@ -414,19 +429,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         AppDiagnostics.record(.downloads, "downloads.cancel_requested", fields: [
             "download_id": .identifier(ratingKey),
         ])
-        urlSession.getAllTasks { tasks in
-            self.lock.lock()
-            let ids = self.inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key)
-            let rangeIds = self.rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key)
-            self.lock.unlock()
-            for task in tasks where ids.contains(task.taskIdentifier) || rangeIds.contains(task.taskIdentifier) {
-                task.cancel()
-            }
-        }
         lock.lock()
+        let ids = Set(inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+        let rangeIds = Set(rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+        let removedRanges = rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.value)
         inflight = inflight.filter { $0.value.ratingKey != ratingKey }
         rangeInflight = rangeInflight.filter { $0.value.ratingKey != ratingKey }
         lock.unlock()
+        for range in removedRanges { try? range.handle?.close() }
+
+        urlSession.getAllTasks { tasks in
+            for task in tasks where ids.contains(task.taskIdentifier) {
+                task.cancel()
+            }
+        }
+        rangeURLSession.getAllTasks { tasks in
+            for task in tasks where rangeIds.contains(task.taskIdentifier) {
+                task.cancel()
+            }
+        }
     }
 
     // MARK: URLSessionDownloadDelegate
