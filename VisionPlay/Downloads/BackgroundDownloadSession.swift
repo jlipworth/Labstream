@@ -43,6 +43,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private lazy var urlSession: URLSession = {
         let config: URLSessionConfiguration
         #if targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--vp-probe-background-download-session") {
+            config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
+            config.isDiscretionary = false
+            config.sessionSendsLaunchEvents = true
+            downloadLog.info("using BACKGROUND URLSession (simulator probe override) for downloads")
+        } else {
         // The background transfer daemon (`nsurlsessiond`) is unreliable in the visionOS
         // simulator: it intermittently refuses the XPC connection (NSCocoaError 4097), so
         // `downloadTask` creation fails and the task dies immediately with
@@ -50,8 +56,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // needs no daemon, so downloads work while developing in the sim. Real devices
         // always have the daemon, so they keep the background session below (which
         // survives app suspension/relaunch — the resume-after-kill path from D5/D8).
-        config = URLSessionConfiguration.default
-        downloadLog.info("using FOREGROUND URLSession (simulator) for downloads")
+            config = URLSessionConfiguration.default
+            downloadLog.info("using FOREGROUND URLSession (simulator) for downloads")
+        }
         #else
         config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
         config.isDiscretionary = false
@@ -263,8 +270,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 matched = true
                 if let downloadTask = task as? URLSessionDownloadTask {
                     downloadTask.cancel { resumeData in
-                        if let resumeData, !resumeData.isEmpty,
-                           self.store.supportsPersistedResumeData(ratingKey: ratingKey) {
+                        let resumeBytes = resumeData?.count ?? 0
+                        let supportsResume = self.store.supportsPersistedResumeData(ratingKey: ratingKey)
+                        AppDiagnostics.record(.downloads, "downloads.pause_resume_data", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "resume_data_present": .bool(resumeBytes > 0),
+                            "resume_blob_bytes": .bytes(resumeBytes),
+                            "supports_resume": .bool(supportsResume),
+                        ])
+                        if let resumeData, !resumeData.isEmpty, supportsResume {
                             self.store.setResumeData(ratingKey: ratingKey, resumeData)
                         }
                         self.store.setStatus(ratingKey: ratingKey, .paused)
