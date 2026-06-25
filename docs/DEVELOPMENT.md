@@ -286,6 +286,13 @@ metadata, and review-specific release automation can be handled in a later publi
     signal to surface — unlike Plex optimize, which reports a real moving %. The UI must therefore show
     an indeterminate "Preparing on server…" for `.preparing` rows (never "0%", which is misleading);
     `OfflineLibraryView` suppresses the percentage when the polled value is ≤ 0.
+  - **The `tv` profile scales output resolution to the chosen bitrate, capped at 1080p.** Live-verified
+    on a 3840×2160 HEVC source: `profile:"tv"` @ 20 Mbps → 1920×1080, @ 4 Mbps → 1280×720. So the
+    picker's resolution tiers are REAL (720p preset → 720p, 480p → 480p); only the top "4K 40 Mbps"
+    tier is clamped down to 1080p (the profile ceiling — true 4K needs `profile:"custom"`, tracked in
+    #128). Consequence for the UI: a server-prepared download must be labelled by the CONVERTED
+    source's height (carried on `EmbyDownloadPlaybackDecision.height`), not the item's primary 4K
+    source — else a 720p convert reads "4K". A genuine `.original` download keeps its source label.
 
 ## Conventions
 
