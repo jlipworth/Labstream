@@ -263,6 +263,29 @@ metadata, and review-specific release automation can be handled in a later publi
   - `originalmediafolderreplace` is the DESTRUCTIVE convert target (replaces the original) — never
     use it. The device-target sync jobs (iPad/iPhone/Android) are a different feature.
   - Jellyfin core has no persistent server-side conversion, so this lane is Emby-only.
+- **Emby convert-then-download (creating the Convert Media job on demand), verified live against
+  Emby 4.9.3.** The default lane for a non-direct-play Emby download triggers the Sync job itself
+  (`triggerConvertAndDownload`), then polls it to completion and downloads the rendered file via the
+  resumable `.original` lane. Three facts bite:
+  - **`POST /Sync/Jobs` returns a `SyncJobCreationResult` envelope, NOT a bare job.** The created job
+    is nested under `"Job"`: `{ "Job": { "Id", "Status", "Progress", … }, "JobItems": [] }`. Decode it
+    with `EmbyConvertRequest.decodeCreatedJob` (unwraps `"Job"`). The single-job poll
+    `GET /Sync/Jobs/{id}` is different — it returns the job at the TOP level (`"Id"` present), decoded
+    by `decodeJob`. Decoding the create response as a bare job throws `keyNotFound("Id")` (this was a
+    shipped crash: "Download failed: DecodingError.keyNotFound Key 'Id'").
+  - **Emby IGNORES the submitted job `name`** and stores the item's own title instead (a
+    `"<title> [VisionPlay <hex>]"` submission comes back stored as just `"<title>"`). So unlike Plex's
+    `[VisionPlay …]` queue-title marker discipline, an Emby convert job CANNOT be tagged/identified by
+    name — it is identified and cancelled solely by the **persisted `embyConvertJobID`** (a row delete
+    fires `DELETE /Sync/Jobs/{id}`). NOTE: a create whose response decode fails leaves the job orphaned
+    server-side (the id is never persisted, so nothing can cancel it) — another reason the decode above
+    must be correct.
+  - **Emby does NOT report transcode progress.** The Sync job's `Progress` stays pinned at `0`
+    throughout `Converting` (the job record's `DateLastModified` never advances mid-convert) and only
+    jumps to `100` at completion; `JobItems` carry no progress field at all. So there is no incremental
+    signal to surface — unlike Plex optimize, which reports a real moving %. The UI must therefore show
+    an indeterminate "Preparing on server…" for `.preparing` rows (never "0%", which is misleading);
+    `OfflineLibraryView` suppresses the percentage when the polled value is ≤ 0.
 
 ## Conventions
 
