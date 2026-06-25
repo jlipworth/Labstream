@@ -46,13 +46,31 @@ public struct OfflineLibraryView: View {
                                     }
                                 }
                             } footer: {
-                                Text("Background transfers pause while the headset is off "
-                                     + "and resume when it's worn again.")
+                                Text(manager.isQueuePaused
+                                     ? "Download queue paused. Resume when you're ready to continue transfers."
+                                     : "Background transfers pause while the headset is off "
+                                       + "and resume when it's worn again.")
                             }
                         }
                     }
                 }
                 .navigationTitle("Offline")
+                .toolbar {
+                    if hasPausableDownloads || hasPausedDownloads {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                if manager.isQueuePaused || hasPausedDownloads {
+                                    manager.resumeQueue()
+                                } else {
+                                    manager.pauseQueue()
+                                }
+                            } label: {
+                                Label(manager.isQueuePaused || hasPausedDownloads ? "Resume Queue" : "Pause Queue",
+                                      systemImage: manager.isQueuePaused || hasPausedDownloads ? "play.circle" : "pause.circle")
+                            }
+                        }
+                    }
+                }
                 .task(id: focusedRatingKey) {
                     await focusRequestedDownload(using: scrollProxy)
                 }
@@ -200,8 +218,14 @@ public struct OfflineLibraryView: View {
                     .offlineRowActionControl()
                     .accessibilityLabel("Resume download")
                 } else {
-                    ProgressView()
-                        .frame(width: Self.rowActionControlSize, height: Self.rowActionControlSize)
+                    Button {
+                        manager.pause(ratingKey: record.ratingKey)
+                    } label: {
+                        Image(systemName: "pause.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .offlineRowActionControl()
+                    .accessibilityLabel("Pause download")
                 }
 
                 // Explicit delete on every row (complete / failed / in-progress). The List's
@@ -275,6 +299,14 @@ public struct OfflineLibraryView: View {
     /// a single-backend library needs no badge (keeps the list visually quiet).
     private var hasMixedBackends: Bool {
         Set(manager.records.map { backendKind(for: $0) }).count > 1
+    }
+
+    private var hasPausableDownloads: Bool {
+        manager.records.contains { $0.status == .queued || $0.status == .preparing || $0.status == .downloading }
+    }
+
+    private var hasPausedDownloads: Bool {
+        manager.records.contains { $0.status == .paused }
     }
 
     private func tileGlyph(isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> String {
@@ -502,9 +534,10 @@ public struct OfflineLibraryView: View {
             case .original:
                 head = "Downloading original"
             case .compatibleRemux:
-                head = "Remuxing/download"
+                head = "Remuxing + downloading"
             case .optimize:
-                head = transcodeLimited ? "Downloading (server still transcoding)" : "Transcoding/download"
+                let backend = backendKind(for: record)
+                head = backend == .plex ? "Downloading transcode" : "Transcoding + downloading"
             }
             if let percentPiece { head += " • \(percentPiece)" }
             if let eta = manager.downloadETA[record.ratingKey], eta > 0,

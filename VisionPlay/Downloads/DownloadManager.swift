@@ -86,6 +86,12 @@ public final class DownloadManager {
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public private(set) var activeJobs: Set<String> = []
 
+    private static let queuePausedDefaultsKey = "downloads.queuePaused"
+
+    /// User-controlled queue pause. Persisted so a relaunch does not immediately restart
+    /// server-prep polling or paused transfers the user intentionally stopped before refreshing.
+    public private(set) var isQueuePaused: Bool = UserDefaults.standard.bool(forKey: queuePausedDefaultsKey)
+
     /// Full optimize-queue titles (`"<title> [VisionPlay <hex>]"`) of in-flight jobs. Used to
     /// protect them from `cleanStaleOptimizeJobs`, which only removes abandoned items.
     private var activeQueueTitles: Set<String> = []
@@ -211,7 +217,9 @@ public final class DownloadManager {
             store.reconcile(liveRatingKeys: liveKeys)
             Task { @MainActor in
                 self?.refreshRecords()
-                self?.resumePendingServerPrepDownloads()
+                if self?.isQueuePaused != true {
+                    self?.resumePendingServerPrepDownloads()
+                }
                 // #84: reclaim any server encoder leaked by a HARD app kill (the in-memory
                 // PlaySessionId maps are empty on a fresh launch; the persisted `playSessionID`
                 // on each row is the only handle left to DELETE the encoder).
@@ -1573,6 +1581,49 @@ public final class DownloadManager {
         return true
     }
 
+    /// Pause one visible download row. Active URLSession transfers are cancelled with resume data
+    /// when the backend lane supports it; server-prep rows are marked paused so relaunch/refresh
+    /// does not auto-poll/retry until the user resumes.
+    public func pause(ratingKey: String) {
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }),
+              record.status == .queued || record.status == .preparing || record.status == .downloading else { return }
+        recordDownloadDiagnostic("downloads.pause", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
+        lastError[ratingKey] = .interruptedResumable
+        switch record.status {
+        case .downloading:
+            session.pause(ratingKey: ratingKey)
+        case .queued, .preparing:
+            store.setStatus(ratingKey: ratingKey, .paused)
+        default:
+            break
+        }
+        clearOptimizeProgress(ratingKey: ratingKey)
+        releaseInFlight(ratingKey: ratingKey)
+        refreshRecords()
+    }
+
+    /// Pause all non-terminal work and persist the queue gate across relaunch.
+    public func pauseQueue() {
+        isQueuePaused = true
+        UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
+        for record in records where record.status == .queued || record.status == .preparing || record.status == .downloading {
+            pause(ratingKey: record.ratingKey)
+        }
+        refreshRecords()
+    }
+
+    /// Resume queue processing and restart each paused row through the normal resume/retry path.
+    public func resumeQueue() {
+        isQueuePaused = false
+        UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
+        let pausedKeys = records.filter { $0.status == .paused }.map(\.ratingKey)
+        for key in pausedKeys { retry(ratingKey: key) }
+        resumePendingServerPrepDownloads()
+        refreshRecords()
+    }
+
     /// Retry a previously `.failed` download (D3/D5). We rebuild the source `MediaItem`
     /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
@@ -1870,6 +1921,7 @@ public final class DownloadManager {
     /// must not reconcile the row as a dead transfer. Once auth is restored, this method resumes
     /// polling Plex for the optimized Part and starts the static file download when it appears.
     public func resumePendingServerPrepDownloads() {
+        guard !isQueuePaused else { return }
         resumePendingEmbyConvertDownloads()
         // #84: no longer gated on `activeBackend == .plex`. Each candidate is resolved against its
         // OWN backend lane, so a Plex optimize-prep row resumes on relaunch even when the app

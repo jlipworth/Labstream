@@ -927,10 +927,14 @@ struct DownloadOptionsSheet: View {
                     ProgressView()
                 }
             } else {
-                Label("Downloading…", systemImage: "arrow.down.circle")
+                Label(existingDownloadPhaseLabel(for: record), systemImage: "arrow.down.circle")
                 ProgressView(value: record.progress)
                 Text("\(Int(record.progress * 100))%")
                     .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    downloadManager.pause(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
+                    dismiss()
+                } label: { Label("Pause Download", systemImage: "pause.circle") }
             }
             Button(role: .destructive) {
                 downloadManager.delete(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
@@ -942,6 +946,22 @@ struct DownloadOptionsSheet: View {
     }
 
     // MARK: - Action
+
+    private func existingDownloadPhaseLabel(for record: DownloadRecord) -> String {
+        let lane = record.metadata?.resolvedDownloadLane() ?? .original
+        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+        switch lane {
+        case .original where record.metadata?.isServerPreparedVersion == true:
+            return "Downloading transcode…"
+        case .original:
+            return "Downloading…"
+        case .compatibleRemux:
+            return "Remuxing + downloading…"
+        case .optimize:
+            return backend == .plex ? "Downloading transcode…" : "Transcoding + downloading…"
+        }
+    }
 
     private func retryDownload() {
         // Exhaustive over the backend so a new lane is a compile error here, not a silent
