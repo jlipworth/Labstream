@@ -1730,7 +1730,7 @@ public final class DownloadManager {
                 // #131: a paused static existing-version row may have an app-managed partial file
                 // at `record.localURL`; keep it so the replacement `download` call can resume with
                 // `Range: bytes=<partial-size>-` instead of deleting the checkpoint and restarting.
-                if record.status != .paused {
+                if !Self.hasIncompleteStaticPartial(record) {
                     self.store.remove(ratingKey: ratingKey)
                 }
                 await self.download(currentItem, choice: .existingVersion,
@@ -1752,6 +1752,13 @@ public final class DownloadManager {
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
         }
+    }
+
+    private static func hasIncompleteStaticPartial(_ record: DownloadRecord) -> Bool {
+        record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange
+            && record.bytes > 0
+            && record.progress < 0.999
+            && FileManager.default.fileExists(atPath: record.localURL.path)
     }
 
     private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {

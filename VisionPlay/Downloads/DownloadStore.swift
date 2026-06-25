@@ -497,9 +497,11 @@ final class DownloadStore: @unchecked Sendable {
                 && (row.metadata?.optimizeTargetName?.isEmpty == false
                     || row.metadata?.embyConvertJobID != nil)
             let hasAppRangeCheckpoint = resumeMode == .staticByteRange
-                && row.status == .paused
+                && (row.status == .paused || row.status == .queued
+                    || row.status == .downloading || row.status == .failed)
                 && fileExists
                 && row.bytes > 0
+                && row.progress < 0.999
             // Only Plex has a server-side "prepare then static download" optimize queue that can
             // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
             // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
