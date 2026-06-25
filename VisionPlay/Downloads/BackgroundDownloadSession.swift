@@ -410,13 +410,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let destination = entry.destination
         let ratingKey = entry.ratingKey
 
-        // #83: HEVC tag fixup for the compatible-remux lane. A stream-copied HEVC MP4 from
-        // Jellyfin/Emby's progressive path can be `hev1`-tagged, which AVFoundation black-screens.
-        // Rewrite it losslessly to `hvc1` on the moved file BEFORE the playability probe (which is
-        // exactly what would otherwise fail on an `hev1` file and reject a perfectly good download).
-        // Only runs for the compatible-remux lane; other lanes are untouched.
-        if store.records.first(where: { $0.ratingKey == ratingKey })?
-            .metadata?.resolvedDownloadLane() == .compatibleRemux {
+        // #83/#127: HEVC tag fixup. A stream-copied HEVC MP4 can be `hev1`-tagged, which
+        // AVFoundation black-screens. Rewrite it losslessly to `hvc1` on the moved file BEFORE the
+        // playability probe (which is exactly what would otherwise fail on an `hev1` file and reject
+        // a perfectly good download). Originally this was gated to the compatible-remux lane (#83),
+        // but #127: a Plex `.original` / `.existingVersion` STATIC download of a server-original
+        // MP4/MOV can be `hev1`-tagged just as easily, and those lanes were skipping the fixup and
+        // black-screening on device. Gate on the CONTAINER instead of the lane — run for any
+        // mp4-family download. `rewriteFile` no-ops (returns 0) on non-HEVC / non-`hev1` files, so
+        // this is safe for every mp4/m4v/mov download; other containers (mkv, …) are skipped since
+        // the ISO-BMFF FourCC rewrite doesn't apply to them.
+        let mp4FamilyContainers: Set<String> = ["mp4", "m4v", "mov"]
+        if mp4FamilyContainers.contains(destination.pathExtension.lowercased()) {
             do {
                 let count = try HEVCTagFixup.rewriteFile(at: destination)
                 if count > 0 {

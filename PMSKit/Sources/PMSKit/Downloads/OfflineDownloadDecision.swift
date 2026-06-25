@@ -83,6 +83,29 @@ public enum OfflineDownloadDecision {
         return normalized.isEmpty ? "unknown" : normalized
     }
 
+    // MARK: - #125 Existing server-version offline gate
+
+    /// Whether a Plex "existing server version" alternate may be downloaded byte-for-byte and still
+    /// play back offline as a standalone AVFoundation asset.
+    ///
+    /// Unlike the byte-for-byte `.original` lane (which is backstopped by a direct-play preflight),
+    /// the existing-version lane has NO preflight, so this is the only gate. It therefore FAILS
+    /// CLOSED: an unknown/empty container is treated as not playable. Inputs are `Media`-level
+    /// container/codec tokens (reliably present for every alternate version, no probe needed).
+    ///
+    /// - Parameters:
+    ///   - container: `part.container ?? media.container` — the alternate's source container token.
+    ///   - videoCodec: `media.videoCodec` — the alternate's source video codec token.
+    /// - Returns: true only when the container is a locally-playable MP4 family *and* the video
+    ///   codec is one AVFoundation can decode (`h264`/`hevc`). Privacy-safe (tokens only).
+    public static func existingVersionPlayableOffline(container: String?, videoCodec: String?) -> Bool {
+        let containerToken = containerLabel(forContainer: container)
+        guard ["mp4", "m4v", "mov"].contains(containerToken) else { return false }
+        // Fail closed on an unknown codec too — this lane has no preflight safety net.
+        guard let codec = normalizedCodec(videoCodec) else { return false }
+        return mp4CopyableVideoCodecs.contains(codec)
+    }
+
     /// Evaluate whether the app may download the source bytes as "Original".
     public static func originalEligibility(decision: DecisionResponse, part: Part?) -> OriginalEligibility {
         OriginalEligibility(

@@ -245,6 +245,66 @@ metadata, and review-specific release automation can be handled in a later publi
   system volume. The bar's 3-pt progress hairline is likewise **passive** — a 3-pt drag target
   violates the 60-pt gaze rule; scrubbing lives in the Now Playing sheet (a hover-growing thin
   scrubber is a possible v2 trial).
+- **Emby "existing versions" / Convert Media (#126), verified live against Emby 4.9.3:** Emby's
+  parity for Plex's pre-rendered "Version" download (#112) is **Convert Media** — a *Sync job* to
+  the target `originalmediafolder` ("Original media folder, next to original files"). It adds the
+  converted copy as a **second `File` MediaSource on the same item** with its own distinct
+  `Id` (e.g. `mediasource_<n>`), enumerated by `PlaybackInfo` alongside the original. Hard-won
+  facts that gate the implementation:
+  - **PlaybackInfo FILTERS by `MediaSourceId`.** Supply an id (query or body) → the response
+    contains ONLY that source; omit it → ALL sources. So existing-version enumeration MUST use a
+    dedicated PlaybackInfo call with NO `MediaSourceId` — the normal probe (which passes one, since
+    the Emby `Media.part.key` is `emby://item/{id}/media/{sourceId}` and `selectedMediaSourceID`
+    extracts it) can never see the alternates.
+  - The converted source reports `Protocol:File`, `SupportsDirectPlay:true`, real `Size`, and is
+    byte-for-byte downloadable via `/Videos/{itemId}/stream.{ext}?static=true&MediaSourceId=…`
+    (HTTP 206, total == `Size`, no remux) — exactly `EmbyLibrary.downloadOriginalRequest`. The
+    download lane reuses the existing `.original` Emby path via `downloadEmby(mediaSourceIDOverride:)`.
+  - `originalmediafolderreplace` is the DESTRUCTIVE convert target (replaces the original) — never
+    use it. The device-target sync jobs (iPad/iPhone/Android) are a different feature.
+  - Jellyfin core has no persistent server-side conversion, so this lane is Emby-only.
+- **Emby convert-then-download (creating the Convert Media job on demand), verified live against
+  Emby 4.9.3.** The default lane for a non-direct-play Emby download triggers the Sync job itself
+  (`triggerConvertAndDownload`), then polls it to completion and downloads the rendered file via the
+  resumable `.original` lane. Three facts bite:
+  - **`POST /Sync/Jobs` returns a `SyncJobCreationResult` envelope, NOT a bare job.** The created job
+    is nested under `"Job"`: `{ "Job": { "Id", "Status", "Progress", … }, "JobItems": [] }`. Decode it
+    with `EmbyConvertRequest.decodeCreatedJob` (unwraps `"Job"`). The single-job poll
+    `GET /Sync/Jobs/{id}` is different — it returns the job at the TOP level (`"Id"` present), decoded
+    by `decodeJob`. Decoding the create response as a bare job throws `keyNotFound("Id")` (this was a
+    shipped crash: "Download failed: DecodingError.keyNotFound Key 'Id'").
+  - **Emby IGNORES the submitted job `name`** and stores the item's own title instead (a
+    `"<title> [VisionPlay <hex>]"` submission comes back stored as just `"<title>"`). So unlike Plex's
+    `[VisionPlay …]` queue-title marker discipline, an Emby convert job CANNOT be tagged/identified by
+    name — it is identified and cancelled solely by the **persisted `embyConvertJobID`** (a row delete
+    fires `DELETE /Sync/Jobs/{id}`). NOTE: a create whose response decode fails leaves the job orphaned
+    server-side (the id is never persisted, so nothing can cancel it) — another reason the decode above
+    must be correct.
+  - **Emby does NOT report transcode progress.** The Sync job's `Progress` stays pinned at `0`
+    throughout `Converting` (the job record's `DateLastModified` never advances mid-convert) and only
+    jumps to `100` at completion; `JobItems` carry no progress field at all. So there is no incremental
+    signal to surface — unlike Plex optimize, which reports a real moving %. The UI must therefore show
+    an indeterminate "Preparing on server…" for `.preparing` rows (never "0%", which is misleading);
+    `OfflineLibraryView` suppresses the percentage when the polled value is ≤ 0.
+  - **The `tv` profile scales output resolution to the chosen bitrate, capped at 1080p.** Live-verified
+    on a 3840×2160 HEVC source: `profile:"tv"` @ 20 Mbps → 1920×1080, @ 4 Mbps → 1280×720. So the
+    picker's resolution tiers are REAL (720p preset → 720p, 480p → 480p); only the top "4K 40 Mbps"
+    tier is clamped down to 1080p (the profile ceiling — true 4K needs `profile:"custom"`, tracked in
+    #128). Consequence for the UI: a server-prepared download must be labelled by the CONVERTED
+    source's height (carried on `EmbyDownloadPlaybackDecision.height`), not the item's primary 4K
+    source — else a 720p convert reads "4K". A genuine `.original` download keeps its source label.
+  - **A `POST /Sync/Jobs` has NO per-source selector — Emby picks which MediaSource of the item to
+    convert.** This bites on REPEAT downloads: the kept converted file lands in the library folder as a
+    `<title> - tv [(N)].mp4` sibling and Emby indexes it as a SECOND `File` source on the same item. A
+    fresh convert job for that item can then transcode the DERIVED `- tv` source (a convert-of-a-
+    convert), and a job whose derived input has since been removed fails in ffmpeg with `No such file or
+    directory` → the Sync job goes `Failed` (surfaced client-side as "Server conversion failed").
+    **Fix: never re-convert when a usable converted version already exists.** `triggerConvertAndDownload`
+    runs a REUSE PREFLIGHT (`reusableConvertedSource`): enumerate the item's `File` sources and, if a
+    non-primary h264-AND-mp4 source whose resolution tier matches the requested preset's capped-1080p
+    output height (`convertPresetOutputHeight`) already exists, hand off to the resumable
+    `.existingVersion` lane (#126) instead of creating a new job. This is what stops duplicate `- tv (N)`
+    pile-up and keeps Emby from ever having a derived source to mis-convert.
 
 ## Conventions
 
