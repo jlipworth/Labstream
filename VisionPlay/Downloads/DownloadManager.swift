@@ -662,7 +662,8 @@ public final class DownloadManager {
                 "expected_bytes": .bytes(part.size),
             ])
             try session.start(ratingKey: ratingKey, from: url, to: destination,
-                              expectedBytes: part.size)
+                              expectedBytes: part.size,
+                              byteRangeCheckpoint: true)
             refreshRecords()
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -1069,7 +1070,13 @@ public final class DownloadManager {
             try session.start(ratingKey: ratingKey,
                               with: request,
                               to: destination,
-                              expectedBytes: expectedBytes)
+                              expectedBytes: expectedBytes,
+                              byteRangeCheckpoint: {
+                                  switch choice {
+                                  case .original, .existingVersion: return true
+                                  case .optimize, .optimizeCompatible: return false
+                                  }
+                              }())
             refreshRecords()
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -1509,7 +1516,8 @@ public final class DownloadManager {
             try session.start(ratingKey: ratingKey,
                               with: request,
                               to: destination,
-                              expectedBytes: expectedBytes)
+                              expectedBytes: expectedBytes,
+                              byteRangeCheckpoint: route == .original)
             refreshRecords()
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
@@ -1719,7 +1727,12 @@ public final class DownloadManager {
                metadata?.resolvedDownloadLane() == .original,
                currentItem.media?.indices.contains(mediaIndex) == true {
                 self.releaseInFlight(ratingKey: ratingKey)
-                self.store.remove(ratingKey: ratingKey)
+                // #131: a paused static existing-version row may have an app-managed partial file
+                // at `record.localURL`; keep it so the replacement `download` call can resume with
+                // `Range: bytes=<partial-size>-` instead of deleting the checkpoint and restarting.
+                if record.status != .paused {
+                    self.store.remove(ratingKey: ratingKey)
+                }
                 await self.download(currentItem, choice: .existingVersion,
                                     mediaIndex: mediaIndex, partIndex: partIndex)
                 self.refreshRecords()
@@ -3265,7 +3278,8 @@ public final class DownloadManager {
         // let `isDownloadTranscodeLimited` decide from the live rate.
         transcodeSourcedDownloads.insert(ratingKey)
         try session.start(ratingKey: ratingKey, from: url, to: destination,
-                          expectedBytes: part.size)
+                          expectedBytes: part.size,
+                          byteRangeCheckpoint: true)
         refreshRecords()
     }
 

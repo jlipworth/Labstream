@@ -10,7 +10,7 @@ import PMSKit
 ///
 /// Delegate callbacks land off the main actor; we hop to `@MainActor` for record
 /// updates via `onChange`. The store itself is internally locked.
-final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URLSessionDataDelegate, @unchecked Sendable {
 
     /// The fixed background-session identifier. Shared with the app delegate so it can
     /// route `handleEventsForBackgroundURLSession` to THIS session's completion handler.
@@ -20,6 +20,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private let fileManager = FileManager.default
     /// taskIdentifier -> (ratingKey, destination)
     private var inflight: [Int: (ratingKey: String, destination: URL)] = [:]
+    /// taskIdentifier -> app-managed byte-range transfer state. Unlike `URLSessionDownloadTask`,
+    /// this writes bytes directly to the final partial file so a restart/network change can resume
+    /// with an explicit `Range: bytes=<current-size>-` request even when URLSession supplies no
+    /// opaque resume blob.
+    private var rangeInflight: [Int: RangeTransfer] = [:]
     /// taskIdentifiers whose expected-size has already been logged once (diagnostics).
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
@@ -31,6 +36,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private let maxTransientRetries = 3
     private let progressNotifyInterval: TimeInterval = 0.5
     private let lock = NSLock()
+
+    private struct RangeTransfer {
+        let ratingKey: String
+        let destination: URL
+        let expectedBytes: Int?
+        var responseStatus: Int?
+        var responseMIME: String?
+        var baseOffset: Int
+        var bytesThisTask: Int
+        var handle: FileHandle?
+
+        var totalBytes: Int { baseOffset + bytesThisTask }
+    }
 
     /// Called on any progress/completion so the manager can refresh records.
     var onChange: (() -> Void)?
@@ -162,11 +180,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// one (the optimized part's reported size, or the quality×runtime estimate).
     /// `nil` falls back to the bare 500 MB floor.
     func start(ratingKey: String, from url: URL, to destination: URL,
-               expectedBytes: Int? = nil) throws {
+               expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false) throws {
         try start(ratingKey: ratingKey,
                   with: URLRequest(url: url),
                   to: destination,
-                  expectedBytes: expectedBytes)
+                  expectedBytes: expectedBytes,
+                  byteRangeCheckpoint: byteRangeCheckpoint)
     }
 
     /// Begin (or resume) a background download with an explicit request.
@@ -174,7 +193,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Jellyfin downloads need auth headers; keep this overload so callers do not
     /// smuggle tokens into query strings just to satisfy `downloadTask(with: URL)`.
     func start(ratingKey: String, with request: URLRequest, to destination: URL,
-               expectedBytes: Int? = nil) throws {
+               expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false) throws {
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
         // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
@@ -192,6 +211,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             throw DownloadManager.DownloadError.storageFull
         }
+        if byteRangeCheckpoint {
+            try startRangeCheckpoint(ratingKey: ratingKey, with: request, to: destination,
+                                     expectedBytes: expectedBytes)
+            return
+        }
+
         let task = urlSession.downloadTask(with: request)
         task.taskDescription = ratingKey
         lock.lock()
@@ -206,6 +231,70 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "url_shape": .urlShape(request.url),
             "expected_bytes": .bytes(expectedBytes),
             "has_expected_bytes": .bool(expectedBytes != nil),
+        ])
+        task.resume()
+    }
+
+    /// Start an app-managed static transfer from the current durable byte checkpoint.
+    ///
+    /// The final destination itself is the partial file. On retry/relaunch, its current size is the
+    /// checkpoint and the new request carries `Range: bytes=<size>-`. If the server ignores Range
+    /// with HTTP 200, we truncate and restart honestly from 0; if it honors Range with 206, progress
+    /// never jumps backwards.
+    private func startRangeCheckpoint(ratingKey: String, with request: URLRequest, to destination: URL,
+                                      expectedBytes: Int?) throws {
+        try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
+                                        withIntermediateDirectories: true)
+        var offset = 0
+        if fileManager.fileExists(atPath: destination.path) {
+            let attrs = try? fileManager.attributesOfItem(atPath: destination.path)
+            offset = attrs?[.size] as? Int ?? 0
+            if let expectedBytes, offset > expectedBytes {
+                try? fileManager.removeItem(at: destination)
+                offset = 0
+            }
+        } else {
+            fileManager.createFile(atPath: destination.path, contents: nil)
+        }
+        if let expectedBytes, offset >= expectedBytes, expectedBytes > 0 {
+            store.updateProgress(ratingKey: ratingKey, bytes: expectedBytes, progress: 1)
+            store.setStatus(ratingKey: ratingKey, .complete)
+            onChange?()
+            return
+        }
+
+        var ranged = request
+        if offset > 0 {
+            ranged.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+        }
+        let task = urlSession.dataTask(with: ranged)
+        task.taskDescription = ratingKey
+        lock.lock()
+        retryCounts[ratingKey] = 0
+        lastProgressNotify[ratingKey] = nil
+        loggedProgressMilestones[task.taskIdentifier] = []
+        rangeInflight[task.taskIdentifier] = RangeTransfer(
+            ratingKey: ratingKey,
+            destination: destination,
+            expectedBytes: expectedBytes,
+            responseStatus: nil,
+            responseMIME: nil,
+            baseOffset: offset,
+            bytesThisTask: 0,
+            handle: nil)
+        lock.unlock()
+        if offset > 0, let expectedBytes, expectedBytes > 0 {
+            store.updateProgress(ratingKey: ratingKey,
+                                 bytes: offset,
+                                 progress: min(1, Double(offset) / Double(expectedBytes)))
+        }
+        downloadLog.info("range-start ratingKey=\(ratingKey, privacy: .public) offset=\(offset, privacy: .public) path=\(ranged.url?.path ?? "nil", privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.range_start", fields: [
+            "download_id": .identifier(ratingKey),
+            "offset_bytes": .bytes(offset),
+            "has_offset": .bool(offset > 0),
+            "expected_bytes": .bytes(expectedBytes),
+            "url_shape": .urlShape(ranged.url),
         ])
         task.resume()
     }
@@ -263,12 +352,29 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         urlSession.getAllTasks { tasks in
             self.lock.lock()
             let ids = Set(self.inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+            let rangeIds = Set(self.rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
             self.lock.unlock()
 
             var matched = false
-            for task in tasks where ids.contains(task.taskIdentifier) {
+            for task in tasks where ids.contains(task.taskIdentifier) || rangeIds.contains(task.taskIdentifier) {
                 matched = true
-                if let downloadTask = task as? URLSessionDownloadTask {
+                if rangeIds.contains(task.taskIdentifier) {
+                    self.lock.lock()
+                    let entry = self.rangeInflight.removeValue(forKey: task.taskIdentifier)
+                    self.lock.unlock()
+                    try? entry?.handle?.close()
+                    task.cancel()
+                    let bytes = (try? self.fileManager.attributesOfItem(atPath: entry?.destination.path ?? "")[.size] as? Int)
+                        ?? entry?.totalBytes
+                        ?? 0
+                    AppDiagnostics.record(.downloads, "downloads.range_checkpoint_paused", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "bytes": .bytes(bytes),
+                    ])
+                    self.store.setStatus(ratingKey: ratingKey, .paused)
+                    self.onError?(ratingKey, .interruptedResumable)
+                    self.onChange?()
+                } else if let downloadTask = task as? URLSessionDownloadTask {
                     downloadTask.cancel { resumeData in
                         let resumeBytes = resumeData?.count ?? 0
                         let supportsResume = self.store.supportsPersistedResumeData(ratingKey: ratingKey)
@@ -311,15 +417,93 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         urlSession.getAllTasks { tasks in
             self.lock.lock()
             let ids = self.inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key)
+            let rangeIds = self.rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key)
             self.lock.unlock()
-            for task in tasks where ids.contains(task.taskIdentifier) { task.cancel() }
+            for task in tasks where ids.contains(task.taskIdentifier) || rangeIds.contains(task.taskIdentifier) {
+                task.cancel()
+            }
         }
         lock.lock()
         inflight = inflight.filter { $0.value.ratingKey != ratingKey }
+        rangeInflight = rangeInflight.filter { $0.value.ratingKey != ratingKey }
         lock.unlock()
     }
 
     // MARK: URLSessionDownloadDelegate
+
+    func urlSession(_ session: URLSession,
+                    dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        let entry = rangeInflight[dataTask.taskIdentifier]
+        lock.unlock()
+        guard var entry else {
+            completionHandler(.allow)
+            return
+        }
+        let http = response as? HTTPURLResponse
+        entry.responseStatus = http?.statusCode
+        entry.responseMIME = http?.mimeType
+
+        if let status = http?.statusCode, entry.baseOffset > 0, status == 200 {
+            // Server ignored Range. Restart honestly from 0 rather than appending a duplicate body.
+            try? fileManager.removeItem(at: entry.destination)
+            fileManager.createFile(atPath: entry.destination.path, contents: nil)
+            entry.baseOffset = 0
+            entry.bytesThisTask = 0
+            store.updateProgress(ratingKey: entry.ratingKey, bytes: 0, progress: 0)
+            AppDiagnostics.record(.downloads, "downloads.range_restart", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "reason": .label("server_ignored_range"),
+            ])
+        }
+
+        guard let handle = try? FileHandle(forWritingTo: entry.destination) else {
+            completionHandler(.cancel)
+            return
+        }
+        _ = try? handle.seekToEnd()
+        entry.handle = handle
+        lock.lock()
+        rangeInflight[dataTask.taskIdentifier] = entry
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession,
+                    dataTask: URLSessionDataTask,
+                    didReceive data: Data) {
+        lock.lock()
+        let entry = rangeInflight[dataTask.taskIdentifier]
+        lock.unlock()
+        guard var entry else { return }
+
+        do {
+            if entry.handle == nil {
+                entry.handle = try FileHandle(forWritingTo: entry.destination)
+                try entry.handle?.seekToEnd()
+            }
+            try entry.handle?.write(contentsOf: data)
+        } catch {
+            dataTask.cancel()
+            store.setStatus(ratingKey: entry.ratingKey, .failed)
+            onError?(entry.ratingKey, .transferFailed(String(describing: error)))
+            onChange?()
+            return
+        }
+
+        entry.bytesThisTask += data.count
+        let total = entry.totalBytes
+        let progress = (entry.expectedBytes ?? 0) > 0
+            ? min(1, Double(total) / Double(entry.expectedBytes!))
+            : 0
+        lock.lock()
+        rangeInflight[dataTask.taskIdentifier] = entry
+        lock.unlock()
+        store.updateProgress(ratingKey: entry.ratingKey, bytes: total, progress: progress)
+        notifyProgressChangeIfNeeded(ratingKey: entry.ratingKey, progress: progress)
+    }
 
     func urlSession(_ session: URLSession,
                     downloadTask: URLSessionDownloadTask,
@@ -624,10 +808,90 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
         lock.lock()
+        let rangeEntry = rangeInflight.removeValue(forKey: task.taskIdentifier)
         let entry = inflight.removeValue(forKey: task.taskIdentifier)
         loggedExpectation.remove(task.taskIdentifier)
         loggedProgressMilestones.removeValue(forKey: task.taskIdentifier)
         lock.unlock()
+
+        if let rangeEntry {
+            try? rangeEntry.handle?.close()
+            if let error {
+                let nsError = error as NSError
+                if nsError.code == NSURLErrorCancelled {
+                    downloadLog.info("range-cancelled ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
+                    AppDiagnostics.record(.downloads, "downloads.range_cancelled", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "bytes": .bytes(rangeEntry.totalBytes),
+                    ])
+                } else {
+                    downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
+                    AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "error": .error(error),
+                        "bytes": .bytes(rangeEntry.totalBytes),
+                    ])
+                    store.setStatus(ratingKey: rangeEntry.ratingKey, .paused)
+                    onError?(rangeEntry.ratingKey, .interruptedResumable)
+                    onChange?()
+                }
+                return
+            }
+
+            let status = rangeEntry.responseStatus ?? -1
+            guard (200...299).contains(status) else {
+                AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "status_code": .int(status),
+                    "bytes": .bytes(rangeEntry.totalBytes),
+                ])
+                store.setStatus(ratingKey: rangeEntry.ratingKey, .failed)
+                onError?(rangeEntry.ratingKey, .transferFailed("Server returned HTTP \(status)."))
+                onChange?()
+                return
+            }
+
+            if let expected = rangeEntry.expectedBytes, expected > 0, rangeEntry.totalBytes < expected {
+                AppDiagnostics.record(.downloads, "downloads.range_incomplete", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "bytes": .bytes(rangeEntry.totalBytes),
+                    "expected_bytes": .bytes(expected),
+                ])
+                store.setStatus(ratingKey: rangeEntry.ratingKey, .paused)
+                onError?(rangeEntry.ratingKey, .interruptedResumable)
+                onChange?()
+                return
+            }
+
+            let bytes = (try? fileManager.attributesOfItem(atPath: rangeEntry.destination.path)[.size] as? Int)
+                ?? rangeEntry.totalBytes
+            Task {
+                let validation = await Self.validateLocalPlayback(rangeEntry.destination)
+                if validation.played {
+                    downloadLog.info("range-complete ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
+                    AppDiagnostics.record(.downloads, "downloads.complete", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "bytes": .bytes(bytes),
+                        "validation": .label("range_checkpoint"),
+                    ])
+                    self.clearRetryCount(ratingKey: rangeEntry.ratingKey)
+                    self.store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: bytes, progress: 1)
+                    self.store.setStatus(ratingKey: rangeEntry.ratingKey, .complete)
+                } else {
+                    AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "reason": .label(validation.reason),
+                        "detail": .label(validation.detail ?? "none"),
+                        "bytes": .bytes(bytes),
+                    ])
+                    self.store.setStatus(ratingKey: rangeEntry.ratingKey, .failed)
+                    self.onError?(rangeEntry.ratingKey, .invalidDownload(validation.reason))
+                }
+                self.onChange?()
+            }
+            return
+        }
+
         guard let entry, let error else { return }
         let nsError = error as NSError
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
