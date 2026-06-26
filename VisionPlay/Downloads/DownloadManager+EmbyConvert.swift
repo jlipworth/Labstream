@@ -42,10 +42,7 @@ extension DownloadManager {
         let token = session.token
         let identity = appModel.identity.emby
         guard let userId = session.userID else {
-            lastError[ratingKey] = .notAuthenticated
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
+            failEmbyConvert(ratingKey: ratingKey, .notAuthenticated)
             return
         }
 
@@ -156,11 +153,8 @@ extension DownloadManager {
                 "phase": .label("create"),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
+            failEmbyConvert(ratingKey: ratingKey,
+                            (error as? DownloadError) ?? .transferFailed(String(describing: error)))
             return
         }
 
@@ -227,11 +221,8 @@ extension DownloadManager {
                             "phase": .label("poll_http"),
                             "status_code": .int(http.statusCode),
                         ])
-                        lastError[ratingKey] = .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode)).")
-                        store.setStatus(ratingKey: ratingKey, .failed)
-                        clearOptimizeProgress(ratingKey: ratingKey)
-                        releaseInFlight(ratingKey: ratingKey)
-                        refreshRecords()
+                        failEmbyConvert(ratingKey: ratingKey,
+                                        .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode))."))
                         return
                     }
                     throw DownloadError.transferFailed("Convert poll HTTP \(http.statusCode)")
@@ -294,11 +285,8 @@ extension DownloadManager {
                         "phase": .label("server"),
                         "status": .label(job.status.rawValue),
                     ])
-                    lastError[ratingKey] = .transferFailed("Server conversion \(job.status.rawValue.lowercased()).")
-                    store.setStatus(ratingKey: ratingKey, .failed)
-                    clearOptimizeProgress(ratingKey: ratingKey)
-                    releaseInFlight(ratingKey: ratingKey)
-                    refreshRecords()
+                    failEmbyConvert(ratingKey: ratingKey,
+                                    .transferFailed("Server conversion \(job.status.rawValue.lowercased())."))
                 }
                 return
             }
@@ -307,6 +295,24 @@ extension DownloadManager {
         }
     }
 
+
+    /// Terminal failure for an Emby convert-lane row: record the error, mark the row `.failed`
+    /// (retryable), and tear down this lane's prep progress + in-flight slot. Centralizes the
+    /// finalization that every Emby convert failure site repeated verbatim (#135 Stage 4).
+    ///
+    /// This lane releases the in-flight slot EXPLICITLY here — deliberately UNLIKE the Plex optimize
+    /// lane, which leaves the release to `refreshRecords`'s terminal-row sweep. That asymmetry is
+    /// real (the two server-prep lanes have different cancel/teardown semantics) and is preserved by
+    /// keeping this helper Emby-local rather than folding both lanes into one shared finalizer.
+    /// `clearOptimizeProgress`/`setStatus` are no-ops when no row/progress exists yet, so the
+    /// pre-seed `notAuthenticated` site can use this too.
+    private func failEmbyConvert(ratingKey: String, _ error: DownloadError) {
+        lastError[ratingKey] = error
+        store.setStatus(ratingKey: ratingKey, .failed)
+        clearOptimizeProgress(ratingKey: ratingKey)
+        releaseInFlight(ratingKey: ratingKey)
+        refreshRecords()
+    }
 
     private static func isTerminalEmbyConvertPollStatus(_ statusCode: Int) -> Bool {
         switch statusCode {
@@ -413,11 +419,8 @@ extension DownloadManager {
                 "phase": .label("no_converted_source"),
                 "source_count": .int(fileSources.count),
             ])
-            lastError[ratingKey] = .transferFailed("Converted source not found after completion.")
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
+            failEmbyConvert(ratingKey: ratingKey,
+                            .transferFailed("Converted source not found after completion."))
             return
         }
 
