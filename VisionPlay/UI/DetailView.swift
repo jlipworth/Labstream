@@ -588,7 +588,7 @@ struct DetailView: View {
             return resolved
         }
         if let media = version.media?.first {
-            let label = Self.versionLabel(media)
+            let label = MediaVersionLabel.versionLabel(for: media)
             if label != "Version" { return label }
         }
         return "Version \(index + 1)"
@@ -644,7 +644,7 @@ struct DetailView: View {
             full = (try? await appModel.client.send(req, as: MetadataResponse.self))?.mediaContainer.metadata.first
         }
         guard let media = full?.media?.first else { return nil }
-        let label = Self.versionLabel(media)
+        let label = MediaVersionLabel.versionLabel(for: media)
         return label == "Version" ? nil : label
     }
 
@@ -661,14 +661,14 @@ struct DetailView: View {
                         selectedMediaIndex = index
                     } label: {
                         if index == selectedMediaIndex {
-                            Label(Self.versionLabel(m), systemImage: "checkmark")
+                            Label(MediaVersionLabel.versionLabel(for: m), systemImage: "checkmark")
                         } else {
-                            Text(Self.versionLabel(m))
+                            Text(MediaVersionLabel.versionLabel(for: m))
                         }
                     }
                 }
             } label: {
-                Label("Version: \(Self.versionLabel(media[safe: selectedMediaIndex] ?? media[0]))",
+                Label("Version: \(MediaVersionLabel.versionLabel(for: media[safe: selectedMediaIndex] ?? media[0]))",
                       systemImage: "rectangle.stack.badge.play")
                     .font(.callout)
             }
@@ -1102,40 +1102,7 @@ struct DetailView: View {
 
     /// Tech-spec badges (resolution · codec · bitrate · container) for a version.
     private func mediaSpecBadges(_ media: Media) -> [String] {
-        var specs: [String] = []
-        if let res = Self.resolutionLabel(media) { specs.append(res) }
-        if let codec = media.videoCodec?.uppercased() { specs.append(codec) }
-        if let audio = media.audioCodec?.uppercased() { specs.append(audio) }
-        if let bitrate = media.bitrate, bitrate > 0 {
-            specs.append(String(format: "%.1f Mbps", Double(bitrate) / 1000))
-        }
-        if let container = media.container?.uppercased() { specs.append(container) }
-        return specs
-    }
-
-    /// Compact label for a version in the picker, e.g. "4K · HEVC · 24.0 Mbps". Static/pure so
-    /// the concurrent #108 version-label resolver can reuse it without capturing `self`.
-    private static func versionLabel(_ media: Media) -> String {
-        var parts: [String] = []
-        if let res = resolutionLabel(media) { parts.append(res) }
-        if let codec = media.videoCodec?.uppercased() { parts.append(codec) }
-        if let bitrate = media.bitrate, bitrate > 0 {
-            parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1000))
-        }
-        return parts.isEmpty ? "Version" : parts.joined(separator: " · ")
-    }
-
-    /// Human resolution from a `Media`'s pixel dimensions (4K / 1080p / 720p / …).
-    private static func resolutionLabel(_ media: Media) -> String? {
-        guard let h = media.height, h > 0 else { return nil }
-        switch h {
-        case 2000...: return "4K"
-        case 1400..<2000: return "1440p"
-        case 1000..<1400: return "1080p"
-        case 700..<1000: return "720p"
-        case 400..<700: return "480p"
-        default: return "\(h)p"
-        }
+        MediaVersionLabel.specBadges(for: media)
     }
 
     private func refreshMetadata() async {
