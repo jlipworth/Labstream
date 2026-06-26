@@ -331,7 +331,7 @@ extension DownloadManager {
     }
 
     /// `/photo/:/transcode` URL for a Plex chapter `thumb` key, 16:9 landscape — the same shape the
-    /// online `PlaybackController.chapterThumbnailURL` builds for the Chapters rail.
+    /// online `PlaybackController.chapterThumbnailRequest` builds for the Chapters rail.
     private static func chapterImageTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
         guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
                                         resolvingAgainstBaseURL: false) else { return nil }

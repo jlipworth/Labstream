@@ -321,9 +321,8 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private struct Frame: Sendable {
         let timeMs: Int
-        let itemId: String
+        let syntheticRef: String
         let index: Int
-        let tag: String?
     }
 
     private let frames: [Frame]
@@ -345,11 +344,11 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
           session: URLSession = .shared) {
         guard let server, let token, !token.isEmpty else { return nil }
         let frames = (item.chapters ?? []).compactMap { chapter -> Frame? in
-            guard let thumb = chapter.thumb, let parsed = Self.parse(thumb) else { return nil }
+            guard let thumb = chapter.thumb,
+                  let parsed = MediaBrowserSyntheticChapterImageRef.parse(thumb, scheme: EmbyFlavor.syntheticScheme) else { return nil }
             return Frame(timeMs: max(0, chapter.startTimeOffset ?? 0),
-                         itemId: parsed.itemId,
-                         index: parsed.index,
-                         tag: parsed.tag)
+                         syntheticRef: thumb,
+                         index: parsed.index)
         }.sorted { $0.timeMs < $1.timeMs }
         // No chapters carry images (e.g. container-derived chapters without thumbnails) → nothing
         // to preview; let the player fall back to the timecode-only scrubber.
@@ -368,16 +367,13 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
             return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         }
         do {
-            let url = try EmbyLibrary.chapterImageURL(server: server,
-                                                      itemId: frame.itemId,
-                                                      chapterIndex: frame.index,
-                                                      tag: frame.tag,
-                                                      width: 480,
-                                                      height: 270)
-            var req = EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
-            req.httpMethod = "GET"
-            // Image endpoint, not JSON — override the helper's `Accept: application/json`.
-            req.setValue("*/*", forHTTPHeaderField: "Accept")
+            guard let req = try EmbyLibrary.chapterImageRequest(syntheticRef: frame.syntheticRef,
+                                                                server: server,
+                                                                token: token,
+                                                                identity: identity,
+                                                                userId: userId,
+                                                                width: 480,
+                                                                height: 270) else { return nil }
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
                 return nil
@@ -409,20 +405,6 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
         }
     }
 
-    /// Parses the synthetic `emby://item/{itemId}/Chapter/{index}?tag=` chapter-image key produced
-    /// by `EmbyChapterDto.toPlexChapter`. Mirrors `PlaybackController.parsedEmbyChapterImagePath`.
-    private static func parse(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
-        guard let url = URL(string: imagePath),
-              url.scheme == "emby",
-              url.host == "item" else { return nil }
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
-        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first { $0.name == "tag" }?
-            .value
-        return (parts[0], index, tag)
-    }
 }
 
 /// Local Emby chapter-image trick-play provider for offline downloads (#89).

@@ -57,6 +57,27 @@ struct MediaBrowserPosterRequestTests {
             "jellyfin://item/abc/Bogus?tag=t", scheme: "jellyfin") == nil)
     }
 
+    // MARK: - Synthetic chapter ref parsing
+
+    @Test func parsesSyntheticChapterRef() throws {
+        let parsed = try #require(MediaBrowserSyntheticChapterImageRef.parse(
+            "jellyfin://item/movie-1/Chapter/3?tag=chapter-tag", scheme: "jellyfin"))
+
+        #expect(parsed.itemId == "movie-1")
+        #expect(parsed.index == 3)
+        #expect(parsed.tag == "chapter-tag")
+    }
+
+    @Test func rejectsMalformedSyntheticChapterRefs() {
+        #expect(MediaBrowserSyntheticChapterImageRef.parse(nil, scheme: "jellyfin") == nil)
+        #expect(MediaBrowserSyntheticChapterImageRef.parse("", scheme: "jellyfin") == nil)
+        #expect(MediaBrowserSyntheticChapterImageRef.parse("emby://item/movie-1/Chapter/3", scheme: "jellyfin") == nil)
+        #expect(MediaBrowserSyntheticChapterImageRef.parse("jellyfin://item/movie-1/Primary?tag=t", scheme: "jellyfin") == nil)
+        #expect(MediaBrowserSyntheticChapterImageRef.parse("jellyfin://item/movie-1/Chapter/not-int", scheme: "jellyfin") == nil)
+        #expect(MediaBrowserSyntheticChapterImageRef.parse("jellyfin://item/movie-1/Chapter/-1", scheme: "jellyfin") == nil)
+        #expect(MediaBrowserSyntheticChapterImageRef.parse("/library/metadata/123/thumb/456", scheme: "jellyfin") == nil)
+    }
+
     // MARK: - Jellyfin poster request
 
     @Test func jellyfinPosterRequestBuildsAuthenticatedURL() throws {
@@ -86,6 +107,31 @@ struct MediaBrowserPosterRequestTests {
         #expect(try JellyfinLibrary.posterRequest(
             syntheticRef: nil,
             server: jellyfinServer, token: "t", identity: jellyfinIdentity) == nil)
+    }
+
+    @Test func jellyfinChapterImageRequestBuildsAuthenticatedURL() throws {
+        let req = try #require(try JellyfinLibrary.chapterImageRequest(
+            syntheticRef: "jellyfin://item/movie-1/Chapter/2?tag=chapter-tag",
+            server: jellyfinServer,
+            token: "token-abc",
+            identity: jellyfinIdentity))
+        let url = try #require(req.url)
+        #expect(url.path == "/jellyfin/Items/movie-1/Images/Chapter/2")
+        let q = try queryMap(req)
+        #expect(q["tag"] == "chapter-tag")
+        #expect(q["fillWidth"] == "480")
+        #expect(q["fillHeight"] == "270")
+        #expect(req.value(forHTTPHeaderField: "Accept") == "image/jpeg,*/*")
+        let auth = try assertAuthHeaderContainsTokenNotInURL(req, token: "token-abc")
+        #expect(auth.hasPrefix("MediaBrowser "))
+    }
+
+    @Test func jellyfinChapterImageRequestReturnsNilForEmbyRef() throws {
+        #expect(try JellyfinLibrary.chapterImageRequest(
+            syntheticRef: "emby://item/movie-1/Chapter/2?tag=t",
+            server: jellyfinServer,
+            token: "token-abc",
+            identity: jellyfinIdentity) == nil)
     }
 
     // MARK: - Emby poster request
@@ -120,5 +166,35 @@ struct MediaBrowserPosterRequestTests {
         #expect(try EmbyLibrary.posterRequest(
             syntheticRef: "jellyfin://item/item-1/Primary?tag=t",
             server: embyServer, token: "t", identity: embyIdentity, userId: "user-9") == nil)
+    }
+
+    @Test func embyChapterImageRequestBuildsAuthenticatedURLWithUserId() throws {
+        let req = try #require(try EmbyLibrary.chapterImageRequest(
+            syntheticRef: "emby://item/movie-1/Chapter/4?tag=chapter-tag",
+            server: embyServer,
+            token: "token-abc",
+            identity: embyIdentity,
+            userId: "user-9"))
+        let url = try #require(req.url)
+        #expect(url.path == "/emby/Items/movie-1/Images/Chapter/4")
+        let q = try queryMap(req)
+        #expect(q["tag"] == "chapter-tag")
+        #expect(q["fillWidth"] == "480")
+        #expect(q["fillHeight"] == "270")
+        #expect(req.value(forHTTPHeaderField: "Accept") == "image/jpeg,*/*")
+        #expect(req.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
+        let auth = try assertAuthHeaderContainsTokenNotInURL(req, token: "token-abc")
+        #expect(auth.hasPrefix("Emby "))
+        #expect(auth.contains("UserId=\"user-9\""))
+        #expect(!url.absoluteString.contains("user-9"))
+    }
+
+    @Test func embyChapterImageRequestReturnsNilForJellyfinRef() throws {
+        #expect(try EmbyLibrary.chapterImageRequest(
+            syntheticRef: "jellyfin://item/movie-1/Chapter/2?tag=t",
+            server: embyServer,
+            token: "token-abc",
+            identity: embyIdentity,
+            userId: "user-9") == nil)
     }
 }

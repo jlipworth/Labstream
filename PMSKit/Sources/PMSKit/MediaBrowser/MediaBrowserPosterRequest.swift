@@ -38,6 +38,39 @@ public struct MediaBrowserSyntheticImageRef: Sendable, Equatable {
     }
 }
 
+/// Parsed components of a synthetic MediaBrowser chapter-image ref of the form
+/// `<scheme>://item/<id>/Chapter/<index>?tag=<tag>`. Jellyfin and Emby both expose chapter
+/// images through authenticated `/Items/{id}/Images/Chapter/{index}` endpoints, so callers
+/// should parse once here and then build a header-authenticated request via the backend helpers.
+public struct MediaBrowserSyntheticChapterImageRef: Sendable, Equatable {
+    public let itemId: String
+    public let index: Int
+    public let tag: String?
+
+    public init(itemId: String, index: Int, tag: String?) {
+        self.itemId = itemId
+        self.index = index
+        self.tag = tag
+    }
+
+    public static func parse(_ ref: String?, scheme expectedScheme: String) -> MediaBrowserSyntheticChapterImageRef? {
+        guard let ref, !ref.isEmpty,
+              let url = URL(string: ref),
+              url.scheme == expectedScheme,
+              url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3,
+              parts[1] == "Chapter",
+              let index = Int(parts[2]),
+              index >= 0 else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first { $0.name == "tag" }?
+            .value
+        return MediaBrowserSyntheticChapterImageRef(itemId: parts[0], index: index, tag: tag)
+    }
+}
+
 public extension JellyfinLibrary {
     /// Build an authenticated poster-image request for a synthetic Jellyfin image ref
     /// (`jellyfin://item/<id>/<Type>?tag=`). Used by the offline download poster cache —
@@ -62,6 +95,47 @@ public extension JellyfinLibrary {
         var req = authenticatedRequest(url: url, token: token, identity: identity)
         req.setValue("image/jpeg,*/*", forHTTPHeaderField: "Accept")
         return req
+    }
+
+    /// Build an authenticated chapter-image request for a synthetic Jellyfin chapter ref
+    /// (`jellyfin://item/<id>/Chapter/<index>?tag=`). Returns nil for an unparseable or
+    /// non-Jellyfin ref. Auth rides in the header; tokens must not be embedded in the URL.
+    static func chapterImageRequest(syntheticRef ref: String?,
+                                    server: URL,
+                                    token: String,
+                                    identity: JellyfinClientIdentity,
+                                    width: Int = 480,
+                                    height: Int = 270) throws -> URLRequest? {
+        guard let parsed = MediaBrowserSyntheticChapterImageRef.parse(ref, scheme: JellyfinFlavor.syntheticScheme) else {
+            return nil
+        }
+        let url = try chapterImageURL(server: server,
+                                      itemId: parsed.itemId,
+                                      chapterIndex: parsed.index,
+                                      tag: parsed.tag,
+                                      width: width,
+                                      height: height)
+        var req = authenticatedRequest(url: url, token: token, identity: identity)
+        req.setValue("image/jpeg,*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
+    /// Resolve a synthetic Jellyfin chapter ref to the native chapter-image URL without
+    /// attaching auth. Prefer `chapterImageRequest` when identity/token are available; this
+    /// URL helper exists for app surfaces that already carry an authenticated header bag.
+    static func chapterImageRequestURL(syntheticRef ref: String?,
+                                       server: URL,
+                                       width: Int = 480,
+                                       height: Int = 270) throws -> URL? {
+        guard let parsed = MediaBrowserSyntheticChapterImageRef.parse(ref, scheme: JellyfinFlavor.syntheticScheme) else {
+            return nil
+        }
+        return try chapterImageURL(server: server,
+                                   itemId: parsed.itemId,
+                                   chapterIndex: parsed.index,
+                                   tag: parsed.tag,
+                                   width: width,
+                                   height: height)
     }
 }
 
@@ -89,5 +163,48 @@ public extension EmbyLibrary {
         var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
         req.setValue("image/jpeg,*/*", forHTTPHeaderField: "Accept")
         return req
+    }
+
+    /// Build an authenticated chapter-image request for a synthetic Emby chapter ref
+    /// (`emby://item/<id>/Chapter/<index>?tag=`). Returns nil for an unparseable or
+    /// non-Emby ref. Auth rides in the header/`X-Emby-Token`; tokens must not be embedded
+    /// in the URL.
+    static func chapterImageRequest(syntheticRef ref: String?,
+                                    server: URL,
+                                    token: String,
+                                    identity: EmbyClientIdentity,
+                                    userId: String?,
+                                    width: Int = 480,
+                                    height: Int = 270) throws -> URLRequest? {
+        guard let parsed = MediaBrowserSyntheticChapterImageRef.parse(ref, scheme: EmbyFlavor.syntheticScheme) else {
+            return nil
+        }
+        let url = try chapterImageURL(server: server,
+                                      itemId: parsed.itemId,
+                                      chapterIndex: parsed.index,
+                                      tag: parsed.tag,
+                                      width: width,
+                                      height: height)
+        var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
+        req.setValue("image/jpeg,*/*", forHTTPHeaderField: "Accept")
+        return req
+    }
+
+    /// Resolve a synthetic Emby chapter ref to the native chapter-image URL without
+    /// attaching auth. Prefer `chapterImageRequest` when identity/token are available; this
+    /// URL helper exists for app surfaces that already carry an authenticated header bag.
+    static func chapterImageRequestURL(syntheticRef ref: String?,
+                                       server: URL,
+                                       width: Int = 480,
+                                       height: Int = 270) throws -> URL? {
+        guard let parsed = MediaBrowserSyntheticChapterImageRef.parse(ref, scheme: EmbyFlavor.syntheticScheme) else {
+            return nil
+        }
+        return try chapterImageURL(server: server,
+                                   itemId: parsed.itemId,
+                                   chapterIndex: parsed.index,
+                                   tag: parsed.tag,
+                                   width: width,
+                                   height: height)
     }
 }
