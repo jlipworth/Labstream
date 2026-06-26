@@ -8,7 +8,13 @@ import PMSKit
 struct PlexMusicProvider: MusicProvider {
     let appModel: AppModel
 
-    private struct NotConnected: Error {}
+    /// `LocalizedError` so `friendlyMessage` surfaces "No server selected." rather than the raw
+    /// Foundation string. This replaces the per-view `guard let server, token` checks the music
+    /// detail views used to carry — the not-connected case now reads friendly from any provider
+    /// method that calls `session()` (load, playDiscography, …).
+    private struct NotConnected: LocalizedError {
+        var errorDescription: String? { "No server selected." }
+    }
 
     private func session() throws -> (server: URL, token: String, identity: ClientIdentity) {
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {

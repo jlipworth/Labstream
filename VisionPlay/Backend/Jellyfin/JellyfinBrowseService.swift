@@ -150,7 +150,7 @@ struct JellyfinBrowseService {
                                                      searchTerm: query,
                                                      sortBy: "SortName",
                                                      sortOrder: "Ascending",
-                                                     includeItemTypes: mediaBrowserSearchItemTypes(for: view))
+                                                     includeItemTypes: mediaBrowserSearchItemTypes(forCollectionType: view.collectionType))
                     let group = SearchResultGroup.mediaBrowserLibrary(backendID: "jellyfin",
                                                                       libraryID: view.id,
                                                                       title: view.title,
@@ -426,26 +426,6 @@ struct JellyfinBrowseService {
             throw ServiceError.http(http.statusCode)
         }
         return data
-    }
-}
-
-/// Search is format-normalized here, but match semantics stay native (#103):
-/// MediaBrowser `searchTerm` is not made fuzzy. Music libraries now facet too (#111):
-/// `toMediaItem()` maps MusicArtist/MusicAlbum/Audio onto PMS music kinds, and the
-/// detail/playback path is backend-aware, so SearchView's Artists/Albums/Songs rails
-/// resolve and play.
-private func mediaBrowserSearchItemTypes(for view: JellyfinLibraryLink) -> String {
-    switch view.collectionType?.lowercased() {
-    case "movies":
-        return "Movie"
-    case "tvshows":
-        return "Series,Season,Episode"
-    case "homevideos", "livetv":
-        return "Video"
-    case "music":
-        return "MusicArtist,MusicAlbum,Audio"
-    default:
-        return "Movie,Series,Season,Episode,Video"
     }
 }
 
