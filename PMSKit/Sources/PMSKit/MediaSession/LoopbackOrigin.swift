@@ -17,40 +17,52 @@ final class LoopbackOrigin: @unchecked Sendable {
 
     /// Start listening and resume with the bound port once ready.
     func start(handler: @escaping Handler) async throws -> Int {
-        // The listener's state callbacks are treated as concurrently-executing, so the
-        // resume-once guard must be a thread-safe reference rather than a captured `var`.
-        let resume = ResumeOnce()
-        return try await withCheckedThrowingContinuation { cont in
-            queue.async {
-                do {
-                    let params = NWParameters.tcp
-                    params.requiredInterfaceType = .loopback
-                    let listener = try NWListener(using: params, on: .any)
-                    self.listener = listener
-                    listener.newConnectionHandler = { [weak self] conn in
-                        self?.handle(conn, handler: handler)
-                    }
-                    listener.stateUpdateHandler = { state in
-                        switch state {
-                        case .ready:
-                            guard resume.claim() else { return }
-                            if let port = listener.port?.rawValue {
-                                cont.resume(returning: Int(port))
-                            } else {
-                                cont.resume(throwing: URLError(.cannotConnectToHost))
-                            }
-                        case .failed(let err):
-                            guard resume.claim() else { return }
-                            cont.resume(throwing: err)
-                        default:
-                            break
-                        }
-                    }
-                    listener.start(queue: self.queue)
-                } catch {
-                    guard resume.claim() else { return }
-                    cont.resume(throwing: error)
+        let state = ListenerStartState()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                if let completed = state.install(cont) {
+                    cont.resume(with: completed)
+                    return
                 }
+                queue.async {
+                    guard !state.isCompleted else { return }
+                    do {
+                        let params = NWParameters.tcp
+                        params.requiredInterfaceType = .loopback
+                        let listener = try NWListener(using: params, on: .any)
+                        guard !state.isCompleted else {
+                            listener.cancel()
+                            return
+                        }
+                        self.listener = listener
+                        listener.newConnectionHandler = { [weak self] conn in
+                            self?.handle(conn, handler: handler)
+                        }
+                        listener.stateUpdateHandler = { stateUpdate in
+                            switch stateUpdate {
+                            case .ready:
+                                if let port = listener.port?.rawValue {
+                                    state.complete(.success(Int(port)))
+                                } else {
+                                    state.complete(.failure(URLError(.cannotConnectToHost)))
+                                }
+                            case .failed(let err):
+                                state.complete(.failure(err))
+                            default:
+                                break
+                            }
+                        }
+                        listener.start(queue: self.queue)
+                    } catch {
+                        state.complete(.failure(error))
+                    }
+                }
+            }
+        } onCancel: {
+            state.complete(.failure(CancellationError()))
+            queue.async {
+                self.listener?.cancel()
+                self.listener = nil
             }
         }
     }
@@ -95,17 +107,46 @@ final class LoopbackOrigin: @unchecked Sendable {
     }
 }
 
-/// One-shot guard so a continuation resumes exactly once across the listener's state
-/// callbacks, which the compiler treats as concurrently-executing.
-private final class ResumeOnce: @unchecked Sendable {
+/// Thread-safe state for a listener-start continuation. Cancellation can happen before
+/// the continuation is installed, while the listener is being constructed on its queue, or
+/// after the listener has been assigned but before `.ready`; this stores the winning
+/// result and resumes exactly once in every ordering.
+private final class ListenerStartState: @unchecked Sendable {
     private let lock = NSLock()
-    private var done = false
-    /// Returns true exactly once; false on every subsequent call.
-    func claim() -> Bool {
+    private var continuation: CheckedContinuation<Int, Error>?
+    private var completedResult: Result<Int, Error>?
+
+    var isCompleted: Bool {
         lock.lock(); defer { lock.unlock() }
-        if done { return false }
-        done = true
-        return true
+        return completedResult != nil
+    }
+
+    /// Install the checked continuation. If cancellation/failure already won, return
+    /// that result so the caller can resume the just-created continuation immediately.
+    func install(_ continuation: CheckedContinuation<Int, Error>) -> Result<Int, Error>? {
+        lock.lock()
+        if let completedResult {
+            lock.unlock()
+            return completedResult
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return nil
+    }
+
+    /// Complete the start attempt exactly once. Later listener callbacks/cancellations no-op.
+    func complete(_ result: Result<Int, Error>) {
+        let continuation: CheckedContinuation<Int, Error>?
+        lock.lock()
+        if completedResult != nil {
+            lock.unlock()
+            return
+        }
+        completedResult = result
+        continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
     }
 }
 #endif

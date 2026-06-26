@@ -27,6 +27,8 @@ struct RootView: View {
     /// tab owns the list/row UI; RootView only foregrounds the tab and hands it the ratingKey to
     /// scroll/highlight after the window is recreated.
     @State private var offlineReturnRatingKey: String?
+    @State private var systemEntryTask: Task<Void, Never>?
+    @State private var systemEntryGeneration = 0
 
     enum AppTab: Hashable {
         case home, libraries, search, music, offline, settings
@@ -104,6 +106,7 @@ struct RootView: View {
         // prevents the fresh stacks from immediately re-appending old snapshots. Offline's path is
         // intentionally left alone — Downloads is cross-backend (#100).
         .onChange(of: appModel.activeBrowseSessionKey) { _, _ in
+            cancelSystemEntryTask()
             homePath = NavigationPath()
             librariesPath = NavigationPath()
             searchPath = NavigationPath()
@@ -163,13 +166,30 @@ struct RootView: View {
     private func handleSystemEntry(_ route: SystemEntryRouter.Route) {
         let router = SystemEntryRouter.shared
         router.pending = nil
+        systemEntryTask?.cancel()
+        systemEntryGeneration += 1
+        let generation = systemEntryGeneration
+        let browseSessionKey = appModel.activeBrowseSessionKey
         // Land on the originating browse tab when Cinema exit recorded one (#87); intents/Spotlight
         // and the legacy fallback carry no origin tab and keep landing on Home.
         let targetTab = route.originTab.flatMap(AppTab.init) ?? .home
         selection = targetTab
         // Pop the target tab to root first so repeated entries don't stack stale details.
         resetPath(for: targetTab)
-        Task { @MainActor in
+        systemEntryTask = Task { @MainActor in
+            defer {
+                if generation == systemEntryGeneration {
+                    systemEntryTask = nil
+                }
+            }
+            @MainActor
+            func isCurrentRoute() -> Bool {
+                if Task.isCancelled { return false }
+                if generation != systemEntryGeneration { return false }
+                return appModel.activeBrowseSessionKey == browseSessionKey
+            }
+
+            guard isCurrentRoute() else { return }
             let identity = appModel.identity
             let client = appModel.client
 
@@ -188,6 +208,7 @@ struct RootView: View {
                                              identity: identity, ratingKey: ratingKey)
                 item = (try? await client.send(req, as: MetadataResponse.self))?
                     .mediaContainer.metadata.first
+                guard isCurrentRoute() else { return }
             }
             // Unresolvable (deleted item, stale index from another server): the
             // route quietly degrades to just foregrounding Home.
@@ -199,6 +220,7 @@ struct RootView: View {
                       let token = appModel.serverToken else {
                     autoPlay = false
                     await Task.yield()
+                    guard isCurrentRoute() else { return }
                     appendPath(for: targetTab, item)
                     return
                 }
@@ -213,6 +235,7 @@ struct RootView: View {
                 }
                 let leaf = try? await EpisodeResolver.resolveLeaf(from: item,
                                                                   loadChildren: loadChildren)
+                guard isCurrentRoute() else { return }
                 if let leaf {
                     item = leaf
                 } else {
@@ -220,11 +243,6 @@ struct RootView: View {
                 }
             }
 
-            if autoPlay, item.isPlayableLeaf, !item.isMusic {
-                // Arm the handshake BEFORE pushing; DetailView consumes it in its
-                // `.task` and presents the player.
-                router.requestAutoPlay(forRatingKey: item.ratingKey)
-            }
             // Cinema exit calls `SystemEntryRouter.open(item:)` while the main window is being
             // recreated. Unlike Spotlight/intent rating-key routes, the `.item` case has no
             // network fetch delay, so appending in the same transaction as the `selection` /
@@ -232,8 +250,21 @@ struct RootView: View {
             // Yield one turn, matching the proven Music-tab navigation pattern above, so Exit
             // Cinema reliably lands on the item's detail page (preserved per #87).
             await Task.yield()
+            guard isCurrentRoute() else { return }
+            if autoPlay, item.isPlayableLeaf, !item.isMusic {
+                // Arm the handshake immediately before pushing; DetailView consumes it in its
+                // `.task` and presents the player. The generation/session guard above keeps
+                // stale system-entry tasks from arming autoplay for a route they won't append.
+                router.requestAutoPlay(forRatingKey: item.ratingKey)
+            }
             appendPath(for: targetTab, item)
         }
+    }
+
+    private func cancelSystemEntryTask() {
+        systemEntryTask?.cancel()
+        systemEntryTask = nil
+        systemEntryGeneration += 1
     }
 
     /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have

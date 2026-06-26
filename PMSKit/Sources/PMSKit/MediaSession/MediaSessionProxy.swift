@@ -150,12 +150,25 @@ public actor MediaSessionProxy {
         self.connection = conn
 
         let rewriterBox = RewriterBox()
-        let port = try await origin.start { [mapper, conn, rewriterBox] head in
-            await Self.serve(head, mapper: mapper, connection: conn, rewriter: rewriterBox.value)
+        let port: Int
+        do {
+            port = try await origin.start { [mapper, conn, rewriterBox] head in
+                await Self.serve(head, mapper: mapper, connection: conn, rewriter: rewriterBox.value)
+            }
+        } catch {
+            origin.stop()
+            connection = nil
+            current = nil
+            loopbackBase = nil
+            throw error
         }
 
         guard let loopbackBase = URL(string: "http://127.0.0.1:\(port)"),
               let localURL = Self.loopbackURL(forStream: streamURL, base: loopbackBase) else {
+            origin.stop()
+            connection = nil
+            current = nil
+            self.loopbackBase = nil
             throw URLError(.badURL)
         }
         self.loopbackBase = loopbackBase

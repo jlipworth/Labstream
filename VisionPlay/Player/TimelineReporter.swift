@@ -32,6 +32,26 @@ final class TimelineReporter {
     private var lastTimelineState: TimelineRequest.State?
     private var lastReportedSecond: Int = -1
     private var didScrobble = false
+    private var isSendInFlight = false
+    private var sendCoalescer = TimelineSendCoalescer<PendingSend>()
+
+    private struct PendingSend: Sendable {
+        enum Kind: Sendable {
+            case timeline(state: TimelineRequest.State, positionMs: Int, durationMs: Int)
+            case scrobble
+
+            var coalescerKind: TimelineSendCoalescer<PendingSend>.Kind {
+                switch self {
+                case .timeline(let state, _, _): .timeline(state)
+                case .scrobble: .scrobble
+                }
+            }
+        }
+
+        let request: PlexRequest
+        let client: PlexClient
+        let kind: Kind
+    }
 
     init(item: MediaItem,
          server: URL?,
@@ -92,19 +112,11 @@ final class TimelineReporter {
                                            state: state,
                                            timeMs: currentMs,
                                            durationMs: durationMs)
-        Task {
-            do { try await client.send(req) }
-            catch {
-                AppDiagnostics.record(.timeline, "timeline.send_failed", fields: [
-                    "state": .label(state.rawValue),
-                    "position": .millisecondsBucket(currentMs),
-                    "duration": .millisecondsBucket(durationMs),
-                    "error": .error(error),
-                ])
-                NSLog("TimelineReporter: timeline send failed (%@)",
-                      DiagnosticRedactor.safeErrorSummary(error))
-            }
-        }
+        enqueue(PendingSend(request: req,
+                            client: client,
+                            kind: .timeline(state: state,
+                                            positionMs: currentMs,
+                                            durationMs: durationMs)))
     }
 
     /// Mark the item watched on PMS, exactly once per session (`didScrobble`).
@@ -115,16 +127,7 @@ final class TimelineReporter {
                                            token: token,
                                            identity: identity,
                                            ratingKey: item.ratingKey)
-        Task {
-            do { try await client.send(req) }
-            catch {
-                AppDiagnostics.record(.timeline, "timeline.scrobble_failed", fields: [
-                    "error": .error(error),
-                ])
-                NSLog("TimelineReporter: scrobble send failed (%@)",
-                      DiagnosticRedactor.safeErrorSummary(error))
-            }
-        }
+        enqueue(PendingSend(request: req, client: client, kind: .scrobble))
     }
 
     /// Fire the scrobble once the playhead crosses ~90% of the duration (P9 #11):
@@ -139,6 +142,54 @@ final class TimelineReporter {
         guard curSecs.isFinite else { return }
         if curSecs / durSecs >= 0.90 {
             scrobble()
+        }
+    }
+
+    private func enqueue(_ send: PendingSend) {
+        guard sendCoalescer.enqueue(send, kind: send.kind.coalescerKind) else { return }
+        if !isSendInFlight {
+            sendNext()
+        }
+    }
+
+    private func sendNext() {
+        guard let next = sendCoalescer.popFirst() else {
+            isSendInFlight = false
+            return
+        }
+        isSendInFlight = true
+        let send = next.event
+        Task {
+            do {
+                try await send.client.send(send.request)
+            } catch {
+                await MainActor.run {
+                    self.recordSendFailure(send.kind, error: error)
+                }
+            }
+            await MainActor.run {
+                self.sendNext()
+            }
+        }
+    }
+
+    private func recordSendFailure(_ kind: PendingSend.Kind, error: Error) {
+        switch kind {
+        case .timeline(let state, let positionMs, let durationMs):
+            AppDiagnostics.record(.timeline, "timeline.send_failed", fields: [
+                "state": .label(state.rawValue),
+                "position": .millisecondsBucket(positionMs),
+                "duration": .millisecondsBucket(durationMs),
+                "error": .error(error),
+            ])
+            NSLog("TimelineReporter: timeline send failed (%@)",
+                  DiagnosticRedactor.safeErrorSummary(error))
+        case .scrobble:
+            AppDiagnostics.record(.timeline, "timeline.scrobble_failed", fields: [
+                "error": .error(error),
+            ])
+            NSLog("TimelineReporter: scrobble send failed (%@)",
+                  DiagnosticRedactor.safeErrorSummary(error))
         }
     }
 }
