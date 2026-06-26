@@ -123,6 +123,19 @@ struct EmbyBrowseService {
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
+    /// Ordered tracks of an audio playlist (#111) — see the Jellyfin twin. Playlist order
+    /// is preserved by `/Playlists/{id}/Items`, so the caller must not re-sort.
+    func playlistItems(playlistId: String) async throws -> [MediaItem] {
+        let context = try context()
+        let req = try EmbyLibrary.playlistItemsRequest(server: context.server,
+                                                       token: context.token,
+                                                       identity: embyIdentity,
+                                                       userId: context.userID,
+                                                       playlistId: playlistId)
+        let response = try await send(req, as: EmbyItemsResponse.self)
+        return response.items.compactMap { $0.toMediaItem() }
+    }
+
     func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
         _ = try context()
         let views = try await userViewLinks()

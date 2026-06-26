@@ -143,6 +143,9 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     public let albumArtist: String?
     /// Album primary-image tag (`AlbumPrimaryImageTag`), paired with `albumId` for a track's poster.
     public let albumPrimaryImageTag: String?
+    /// Child count (`ChildCount`) — e.g. the number of tracks in a playlist (#111). Present
+    /// only when the request asks for the `ChildCount` field.
+    public let childCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id = "Id"
@@ -184,6 +187,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case albumId = "AlbumId"
         case albumArtist = "AlbumArtist"
         case albumPrimaryImageTag = "AlbumPrimaryImageTag"
+        case childCount = "ChildCount"
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,6 +231,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         albumId = try c.decodeIfPresent(String.self, forKey: .albumId)
         albumArtist = try c.decodeIfPresent(String.self, forKey: .albumArtist)
         albumPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .albumPrimaryImageTag)
+        childCount = try c.decodeIfPresent(Int.self, forKey: .childCount)
     }
 
     public func toMediaItem() -> MediaItem? {
@@ -311,6 +316,9 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             parentThumb: parentThumbPath ?? albumPrimaryPath ?? seriesPrimaryPath,
             parentIndex: parentIndexNumber,
             index: indexNumber,
+            // A playlist's `ChildCount` is its track count, surfaced for the "N tracks"
+            // subtitle on the Playlists list (#111).
+            leafCount: childCount,
             primaryImageAspectRatio: primaryImageAspectRatio,
             providerIds: providerIds.isEmpty ? nil : providerIds)
     }

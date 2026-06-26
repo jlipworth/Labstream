@@ -75,6 +75,18 @@ struct ArtistShelf: Identifiable {
     let items: [MediaItem]
 }
 
+/// One horizontal rail on the MediaBrowser music Home (#111): Recently Added albums,
+/// Recently Played tracks, Favorite albums. `style` decides the tap behavior — an album
+/// rail navigates to the album detail, a track rail plays the rail starting at the tap.
+struct MusicHomeRail: Identifiable {
+    enum Style { case albums, tracks }
+
+    let id: String
+    let title: String
+    let items: [MediaItem]
+    let style: Style
+}
+
 extension AppModel {
     /// The music provider for the active backend.
     var musicProvider: MusicProvider {

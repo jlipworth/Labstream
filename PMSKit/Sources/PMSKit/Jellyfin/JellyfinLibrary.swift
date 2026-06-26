@@ -113,6 +113,31 @@ public enum JellyfinLibrary {
         return get(url: url, token: token, identity: identity)
     }
 
+    /// Ordered tracks of an audio playlist (#111), via `/Playlists/{playlistId}/Items`.
+    /// Unlike a `ParentId` items browse (which sorts by the requested key), this endpoint
+    /// returns the playlist's items in the user's own PLAYLIST ORDER — the order matters,
+    /// so callers must not re-sort. Same `{Items,TotalRecordCount}` envelope as `/Items`,
+    /// so it decodes as a normal items page.
+    public static func playlistItemsRequest(server: URL,
+                                            token: String,
+                                            identity: JellyfinClientIdentity,
+                                            userId: String,
+                                            playlistId: String,
+                                            startIndex: Int? = nil,
+                                            limit: Int? = nil,
+                                            fields: String = fullItemFields) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "userId", value: userId),
+            URLQueryItem(name: "fields", value: fields),
+            URLQueryItem(name: "enableUserData", value: "true"),
+            URLQueryItem(name: "enableImages", value: "true"),
+        ]
+        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
+        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        let url = try url(server: server, path: "/Playlists/\(playlistId)/Items", queryItems: query)
+        return get(url: url, token: token, identity: identity)
+    }
+
     public static func resumeItemsRequest(server: URL,
                                           token: String,
                                           identity: JellyfinClientIdentity,

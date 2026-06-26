@@ -71,6 +71,26 @@ struct EmbyLibraryTests {
         #expect(q["EnableImages"] == "true")
     }
 
+    @Test func playlistItemsRequestPreservesPlaylistOrder() throws {
+        let request = try EmbyLibrary.playlistItemsRequest(server: server,
+                                                           token: "token-abc",
+                                                           identity: identity,
+                                                           userId: "user-9",
+                                                           playlistId: "playlist-5",
+                                                           startIndex: 0,
+                                                           limit: 200)
+        let url = try #require(request.url)
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let q = try query(request)
+        #expect(comps.path == "/emby/Playlists/playlist-5/Items")
+        #expect(q["UserId"] == "user-9")
+        #expect(q["StartIndex"] == "0")
+        #expect(q["Limit"] == "200")
+        #expect(q["EnableImages"] == "true")
+        // No SortBy override — the endpoint returns the user's playlist order verbatim.
+        #expect(q["SortBy"] == nil)
+    }
+
     @Test func itemsRequestCarriesAlbumArtistAndArtistFilters() throws {
         let albums = try EmbyLibrary.itemsRequest(server: server, token: "t", identity: identity,
                                                   userId: "user-9", recursive: true,

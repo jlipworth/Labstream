@@ -88,6 +88,29 @@ public enum EmbyLibrary {
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
+    /// Ordered tracks of an audio playlist (#111) — see the Jellyfin twin for why this
+    /// uses `/Playlists/{playlistId}/Items` (preserves the user's playlist order) rather
+    /// than a `ParentId` items browse. `UserId` rides the query for per-user item data.
+    public static func playlistItemsRequest(server: URL,
+                                            token: String,
+                                            identity: EmbyClientIdentity,
+                                            userId: String,
+                                            playlistId: String,
+                                            startIndex: Int? = nil,
+                                            limit: Int? = nil,
+                                            fields: String = fullItemFields) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "Fields", value: fields),
+            URLQueryItem(name: "EnableUserData", value: "true"),
+            URLQueryItem(name: "EnableImages", value: "true"),
+        ]
+        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
+        if let limit { query.append(URLQueryItem(name: "Limit", value: String(limit))) }
+        let url = try url(server: server, path: "/Playlists/\(playlistId)/Items", queryItems: query)
+        return get(url: url, token: token, identity: identity, userId: userId)
+    }
+
     /// `GET /Users/{UserId}/Items/Resume` — continue-watching rail.
     public static func resumeItemsRequest(server: URL,
                                           token: String,
