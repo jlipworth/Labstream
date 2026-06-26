@@ -41,7 +41,7 @@ enum DebugEmbyDownloadProbe {
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
 
-        let query = value(after: "--vp-probe-query", in: arguments) ?? "12 Years a Slave"
+        let query = DebugDownloadProbeSupport.value(after: "--vp-probe-query", in: arguments) ?? "12 Years a Slave"
         let startDownload = arguments.contains("--vp-probe-start-download")
         let startOptimize = arguments.contains("--vp-probe-start-optimize")
         let refreshExisting = arguments.contains("--vp-probe-refresh-existing")
@@ -49,8 +49,8 @@ enum DebugEmbyDownloadProbe {
         let resumeObserved = arguments.contains("--vp-probe-resume-observed")
         let keepRecord = arguments.contains("--vp-probe-keep-record")
         let deleteExisting = arguments.contains("--vp-probe-delete-existing")
-        let preset = value(after: "--vp-probe-download-preset", in: arguments) ?? "1080p 8 Mbps"
-        let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? 30
+        let preset = DebugDownloadProbeSupport.value(after: "--vp-probe-download-preset", in: arguments) ?? "1080p 8 Mbps"
+        let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? 30
 
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .private) start=\(startDownload, privacy: .public) startOptimize=\(startOptimize, privacy: .public) refreshExisting=\(refreshExisting, privacy: .public)")
         AppDiagnostics.record(.downloads, "probe.emby_download.start", fields: [
@@ -91,7 +91,7 @@ enum DebugEmbyDownloadProbe {
                 if resumeObserved {
                     downloadManager.retry(ratingKey: recordKey)
                     try? await Task.sleep(for: .milliseconds(500))
-                    let resumeStart = currentProgress(recordKey: recordKey, manager: downloadManager)
+                    let resumeStart = DebugDownloadProbeSupport.observation(forRecordKey: recordKey, in: downloadManager)
                     let after = await observeDetailed(recordKey: recordKey, manager: downloadManager,
                                                       seconds: observeSeconds)
                     let resumedAtCheckpoint = before.bytes > 0 && resumeStart.bytes >= before.bytes
@@ -205,12 +205,6 @@ enum DebugEmbyDownloadProbe {
         throw ProbeError.itemNotFound(query)
     }
 
-    private struct Observation {
-        let progress: Double
-        let bytes: Int
-        let status: String
-    }
-
     /// Observe the download record until it makes progress, completes, or fails. Returns whether the
     /// transfer demonstrably moved (status reached `.downloading` or bytes advanced) — the on-device
     /// signal that the app glue actually kicked off the transfer.
@@ -219,11 +213,11 @@ enum DebugEmbyDownloadProbe {
         return result.status == "downloading" || result.bytes > 0 || result.progress > 0
     }
 
-    private static func observeDetailed(recordKey: String, manager: DownloadManager, seconds: Int) async -> Observation {
+    private static func observeDetailed(recordKey: String, manager: DownloadManager, seconds: Int) async -> DebugDownloadProbeSupport.Observation {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
-        var latest = currentProgress(recordKey: recordKey, manager: manager)
+        var latest = DebugDownloadProbeSupport.observation(forRecordKey: recordKey, in: manager)
         while ContinuousClock.now < deadline {
-            latest = currentProgress(recordKey: recordKey, manager: manager)
+            latest = DebugDownloadProbeSupport.observation(forRecordKey: recordKey, in: manager)
             log.notice("probe.observe status=\(latest.status, privacy: .public) progress=\(latest.progress, privacy: .public) bytes=\(latest.bytes, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.emby_download.observe", fields: [
                 "status": .label(latest.status),
@@ -235,13 +229,6 @@ enum DebugEmbyDownloadProbe {
             try? await Task.sleep(for: .seconds(5))
         }
         return latest
-    }
-
-    private static func currentProgress(recordKey: String, manager: DownloadManager) -> Observation {
-        let record = manager.records.first { $0.ratingKey == recordKey }
-        return Observation(progress: record?.progress ?? 0,
-                           bytes: record?.bytes ?? 0,
-                           status: record.map { String(describing: $0.status) } ?? "missing")
     }
 
     /// Safe #133 live probe: trigger the same item-refresh request used by the convert reuse path,
@@ -290,15 +277,6 @@ enum DebugEmbyDownloadProbe {
             if attempt < 6 { try? await Task.sleep(for: .seconds(5)) }
         }
         return false
-    }
-
-    private static func value(after flag: String, in arguments: [String]) -> String? {
-        guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
-        return arguments[index + 1]
-    }
-
-    private static func intValue(after flag: String, in arguments: [String]) -> Int? {
-        value(after: flag, in: arguments).flatMap(Int.init)
     }
 
     enum ProbeError: Error, CustomStringConvertible {

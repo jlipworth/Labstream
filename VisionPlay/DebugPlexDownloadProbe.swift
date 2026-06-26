@@ -20,13 +20,13 @@ enum DebugPlexDownloadProbe {
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
 
-        let requestedRatingKey = value(after: "--vp-probe-rating-key", in: arguments)
+        let requestedRatingKey = DebugDownloadProbeSupport.value(after: "--vp-probe-rating-key", in: arguments)
             ?? ProcessInfo.processInfo.environment["VISIONPLAY_PROBE_RATING_KEY"]
-        let query = value(after: "--vp-probe-query", in: arguments)
+        let query = DebugDownloadProbeSupport.value(after: "--vp-probe-query", in: arguments)
             ?? ProcessInfo.processInfo.environment["VISIONPLAY_PROBE_QUERY"]
         let ratingKey = requestedRatingKey ?? "17183"
-        let mediaIndex = intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
-        let partIndex = intValue(after: "--vp-probe-part-index", in: arguments) ?? 0
+        let mediaIndex = DebugDownloadProbeSupport.intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
+        let partIndex = DebugDownloadProbeSupport.intValue(after: "--vp-probe-part-index", in: arguments) ?? 0
         let startDownload = arguments.contains("--vp-probe-start-download")
         let useExistingVersion = arguments.contains("--vp-probe-existing-version")
         let listVersions = arguments.contains("--vp-probe-list-versions")
@@ -38,10 +38,10 @@ enum DebugPlexDownloadProbe {
         let resumeObserved = arguments.contains("--vp-probe-resume-observed")
         let deleteExisting = arguments.contains("--vp-probe-delete-existing")
         let deleteAfterObserve = arguments.contains("--vp-probe-delete-after-observe")
-        let preset = value(after: "--vp-probe-download-preset", in: arguments)
+        let preset = DebugDownloadProbeSupport.value(after: "--vp-probe-download-preset", in: arguments)
             ?? PlaybackPreferences.defaultDownloadQuality
-        let pauseAfterSeconds = intValue(after: "--vp-probe-pause-after-seconds", in: arguments) ?? 8
-        let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? (startDownload ? 90 : 5)
+        let pauseAfterSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-pause-after-seconds", in: arguments) ?? 8
+        let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? (startDownload ? 90 : 5)
 
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) ratingKey=\(ratingKey, privacy: .public) start=\(startDownload, privacy: .public) existing=\(useExistingVersion, privacy: .public) pauseResume=\(pauseResume, privacy: .public) observeOnly=\(observeOnly, privacy: .public)")
         AppDiagnostics.record(.downloads, "probe.plex_download.start", fields: [
@@ -90,7 +90,7 @@ enum DebugPlexDownloadProbe {
                 if resumeObserved {
                     downloadManager.retry(ratingKey: ratingKey)
                     try? await Task.sleep(for: .milliseconds(500))
-                    let resumeStart = currentProgress(ratingKey: ratingKey, manager: downloadManager)
+                    let resumeStart = DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: downloadManager)
                     let after = await observe(ratingKey: ratingKey, manager: downloadManager,
                                               seconds: observeSeconds, label: "resume_observed")
                     let resumedAtCheckpoint = before.bytes > 0 && resumeStart.bytes >= before.bytes
@@ -178,7 +178,7 @@ enum DebugPlexDownloadProbe {
                 downloadManager.pause(ratingKey: ratingKey)
                 let paused = await waitForStatus(ratingKey: ratingKey, manager: downloadManager,
                                                  statusText: "paused", seconds: 15)
-                let pausedProgress = currentProgress(ratingKey: ratingKey, manager: downloadManager)
+                let pausedProgress = DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: downloadManager)
                 log.notice("probe.paused reached=\(paused, privacy: .public) before=\(beforePause.progress, privacy: .public) pausedProgress=\(pausedProgress.progress, privacy: .public) bytes=\(pausedProgress.bytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "probe.plex_download.paused", fields: [
                     "download_id": .identifier(ratingKey),
@@ -189,7 +189,7 @@ enum DebugPlexDownloadProbe {
                 if pauseOnly { return }
                 downloadManager.retry(ratingKey: ratingKey)
                 try? await Task.sleep(for: .milliseconds(500))
-                let resumeStart = currentProgress(ratingKey: ratingKey, manager: downloadManager)
+                let resumeStart = DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: downloadManager)
                 let afterResume = await observe(ratingKey: ratingKey, manager: downloadManager,
                                                 seconds: observeSeconds, label: "post_resume")
                 let resumedAtCheckpoint = pausedProgress.bytes > 0 && resumeStart.bytes >= pausedProgress.bytes
@@ -357,22 +357,16 @@ enum DebugPlexDownloadProbe {
         return direct ? "not_original_eligible" : "needs_transcode"
     }
 
-    private struct Observation {
-        let progress: Double
-        let bytes: Int
-        let status: String
-    }
-
     private static func observe(ratingKey: String, manager: DownloadManager,
-                                seconds: Int, label: String) async -> Observation {
+                                seconds: Int, label: String) async -> DebugDownloadProbeSupport.Observation {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
-        var latest = currentProgress(ratingKey: ratingKey, manager: manager)
+        var latest = DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: manager)
         while ContinuousClock.now < deadline {
             let record = manager.records.first { $0.ratingKey == ratingKey }
             let status = record.map { String(describing: $0.status) } ?? "missing"
             let progress = record?.progress ?? 0
             let bytes = record?.bytes ?? 0
-            latest = Observation(progress: progress, bytes: bytes, status: status)
+            latest = DebugDownloadProbeSupport.Observation(progress: progress, bytes: bytes, status: status)
             log.notice("probe.observe label=\(label, privacy: .public) status=\(status, privacy: .public) progress=\(progress, privacy: .public) bytes=\(bytes, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.plex_download.observe", fields: [
                 "download_id": .identifier(ratingKey),
@@ -391,36 +385,20 @@ enum DebugPlexDownloadProbe {
         return latest
     }
 
-    private static func currentProgress(ratingKey: String, manager: DownloadManager) -> Observation {
-        let record = manager.records.first { $0.ratingKey == ratingKey }
-        return Observation(progress: record?.progress ?? 0,
-                           bytes: record?.bytes ?? 0,
-                           status: record.map { String(describing: $0.status) } ?? "missing")
-    }
-
     private static func waitForStatus(ratingKey: String, manager: DownloadManager,
                                       statusText: String, seconds: Int) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
         while ContinuousClock.now < deadline {
-            let status = currentProgress(ratingKey: ratingKey, manager: manager).status
+            let status = DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: manager).status
             if status == statusText { return true }
             try? await Task.sleep(for: .seconds(1))
         }
-        return currentProgress(ratingKey: ratingKey, manager: manager).status == statusText
-    }
-
-    private static func value(after flag: String, in arguments: [String]) -> String? {
-        guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
-        return arguments[index + 1]
-    }
-
-    private static func intValue(after flag: String, in arguments: [String]) -> Int? {
-        value(after: flag, in: arguments).flatMap(Int.init)
+        return DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: manager).status == statusText
     }
 
     private static func explicitInt(after flag: String, in arguments: [String]) -> Int? {
         guard arguments.contains(flag) else { return nil }
-        return intValue(after: flag, in: arguments)
+        return DebugDownloadProbeSupport.intValue(after: flag, in: arguments)
     }
 
     enum ProbeError: Error, CustomStringConvertible {

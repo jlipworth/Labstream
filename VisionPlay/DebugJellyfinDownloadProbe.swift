@@ -33,13 +33,13 @@ enum DebugJellyfinDownloadProbe {
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(prior) }
 
-        let query = value(after: "--vp-probe-query", in: args) ?? ""
-        let ratingKey = value(after: "--vp-probe-rating-key", in: args)
+        let query = DebugDownloadProbeSupport.value(after: "--vp-probe-query", in: args) ?? ""
+        let ratingKey = DebugDownloadProbeSupport.value(after: "--vp-probe-rating-key", in: args)
         let startDownload = args.contains("--vp-probe-start-download")
         let optimize = args.contains("--vp-probe-start-optimize")
-        let preset = value(after: "--vp-probe-download-preset", in: args) ?? "1080p 8 Mbps"
+        let preset = DebugDownloadProbeSupport.value(after: "--vp-probe-download-preset", in: args) ?? "1080p 8 Mbps"
         let keepRecord = args.contains("--vp-probe-keep-record")
-        let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: args) ?? 60
+        let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: args) ?? 60
 
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .private) start=\(startDownload, privacy: .public) optimize=\(optimize, privacy: .public)")
 
@@ -111,13 +111,11 @@ enum DebugJellyfinDownloadProbe {
         throw ProbeError.itemNotFound(query)
     }
 
-    private struct Observation { let progress: Double; let bytes: Int; let status: String }
-
     private static func observe(recordKey: String, manager: DownloadManager, seconds: Int) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
-        var latest = current(recordKey: recordKey, manager: manager)
+        var latest = DebugDownloadProbeSupport.observation(forRecordKey: recordKey, in: manager)
         while ContinuousClock.now < deadline {
-            latest = current(recordKey: recordKey, manager: manager)
+            latest = DebugDownloadProbeSupport.observation(forRecordKey: recordKey, in: manager)
             log.notice("probe.observe status=\(latest.status, privacy: .public) progress=\(latest.progress, privacy: .public) bytes=\(latest.bytes, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.jellyfin_download.observe", fields: [
                 "status": .label(latest.status),
@@ -131,21 +129,6 @@ enum DebugJellyfinDownloadProbe {
         return latest.status == "downloading" || latest.bytes > 0 || latest.progress > 0
     }
 
-    private static func current(recordKey: String, manager: DownloadManager) -> Observation {
-        let r = manager.records.first { $0.ratingKey == recordKey }
-        return Observation(progress: r?.progress ?? 0, bytes: r?.bytes ?? 0,
-                           status: r.map { String(describing: $0.status) } ?? "missing")
-    }
-
     private enum ProbeError: Error { case itemNotFound(String) }
-
-    private static func value(after flag: String, in args: [String]) -> String? {
-        guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
-        return args[i + 1]
-    }
-
-    private static func intValue(after flag: String, in args: [String]) -> Int? {
-        value(after: flag, in: args).flatMap(Int.init)
-    }
 }
 #endif
