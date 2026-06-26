@@ -237,13 +237,7 @@ struct LoginView: View {
     @ViewBuilder
     private var jellyfinCredentialsForm: some View {
         VStack(spacing: DS.Space.md) {
-            TextField("https://jellyfin.example.com", text: $jellyfinServer)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.URL)
-                .keyboardType(.URL)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
+            BackendServerURLField(placeholder: "https://jellyfin.example.com", text: $jellyfinServer)
 
             switch jellyfinSignInMethod {
             case nil:
@@ -257,74 +251,39 @@ struct LoginView: View {
     }
 
     private var jellyfinMethodChooser: some View {
-        VStack(spacing: DS.Space.sm) {
-            Text("Choose how to sign in.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: DS.Space.sm) {
-                Button {
-                    jellyfinSignInMethod = .quickConnect
-                    Task { await startJellyfinQuickConnect() }
-                } label: {
-                    Label("Quick Connect", systemImage: "link.badge.plus")
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(working || !hasJellyfinServerInput)
-
-                Button {
-                    errorMessage = nil
-                    jellyfinSignInMethod = .credentials
-                } label: {
-                    Label("Username / Password", systemImage: "person.crop.circle.badge.checkmark")
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                }
-                .buttonStyle(.bordered)
-                .disabled(working || !hasJellyfinServerInput)
-            }
-            .frame(maxWidth: 340)
-
-            if !hasJellyfinServerInput {
-                Text("Enter your Jellyfin server URL first.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
+        BackendSignInMethodChooser(
+            primaryTitle: "Quick Connect",
+            primarySystemImage: "link.badge.plus",
+            secondaryTitle: "Username / Password",
+            secondarySystemImage: "person.crop.circle.badge.checkmark",
+            primaryDisabled: working || !hasJellyfinServerInput,
+            secondaryDisabled: working || !hasJellyfinServerInput,
+            disabledHint: hasJellyfinServerInput ? nil : "Enter your Jellyfin server URL first.",
+            onPrimary: {
+                jellyfinSignInMethod = .quickConnect
+                Task { await startJellyfinQuickConnect() }
+            },
+            onSecondary: {
+                errorMessage = nil
+                jellyfinSignInMethod = .credentials
+            })
     }
 
     private var jellyfinQuickConnectStart: some View {
-        VStack(spacing: DS.Space.sm) {
-            if working {
-                HStack(spacing: DS.Space.sm) {
-                    ProgressView()
-                    Text("Starting Quick Connect…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Button {
-                    Task { await startJellyfinQuickConnect() }
-                } label: {
-                    Label("Start Quick Connect", systemImage: "link.badge.plus")
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!hasJellyfinServerInput)
-            }
-
-            Button("Choose a different sign-in method") {
+        BackendAuthStartView(
+            isWorking: working,
+            workingTitle: "Starting Quick Connect…",
+            startTitle: "Start Quick Connect",
+            systemImage: "link.badge.plus",
+            isStartDisabled: !hasJellyfinServerInput,
+            chooseDifferentTitle: "Choose a different sign-in method",
+            onStart: { Task { await startJellyfinQuickConnect() } },
+            onChooseDifferent: {
                 errorMessage = nil
                 working = false
                 authManager.cancelCurrentAuthorization()
                 jellyfinSignInMethod = nil
-            }
-            .buttonStyle(.bordered)
-        }
+            })
     }
 
     private var jellyfinUsernamePasswordForm: some View {
@@ -415,73 +374,39 @@ struct LoginView: View {
     /// Emby Connect PIN is the headset-friendly primary path (needs no server address);
     /// the server-URL + username/password form is the secondary option.
     private var embyMethodChooser: some View {
-        VStack(spacing: DS.Space.sm) {
-            Text("Choose how to sign in.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: DS.Space.sm) {
-                Button {
-                    embySignInMethod = .connectPin
-                    Task { await startEmbyConnect() }
-                } label: {
-                    Label("Sign in with Emby Connect", systemImage: "link.badge.plus")
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(working)
-
-                Button {
-                    errorMessage = nil
-                    embySignInMethod = .credentials
-                } label: {
-                    Label("Sign in with server URL", systemImage: "server.rack")
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                }
-                .buttonStyle(.bordered)
-                .disabled(working)
-            }
-            .frame(maxWidth: 340)
-
-            Text("Emby Connect uses a code at emby.media/pin.html — no server address needed.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-        }
+        BackendSignInMethodChooser(
+            primaryTitle: "Sign in with Emby Connect",
+            primarySystemImage: "link.badge.plus",
+            secondaryTitle: "Sign in with server URL",
+            secondarySystemImage: "server.rack",
+            primaryDisabled: working,
+            secondaryDisabled: working,
+            footer: "Emby Connect uses a code at emby.media/pin.html — no server address needed.",
+            onPrimary: {
+                embySignInMethod = .connectPin
+                Task { await startEmbyConnect() }
+            },
+            onSecondary: {
+                errorMessage = nil
+                embySignInMethod = .credentials
+            })
     }
 
     private var embyConnectStart: some View {
-        VStack(spacing: DS.Space.sm) {
-            if working {
-                HStack(spacing: DS.Space.sm) {
-                    ProgressView()
-                    Text("Starting Emby Connect…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Button {
-                    Task { await startEmbyConnect() }
-                } label: {
-                    Label("Start Emby Connect", systemImage: "link.badge.plus")
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            Button("Choose a different sign-in method") {
+        BackendAuthStartView(
+            isWorking: working,
+            workingTitle: "Starting Emby Connect…",
+            startTitle: "Start Emby Connect",
+            systemImage: "link.badge.plus",
+            isStartDisabled: false,
+            chooseDifferentTitle: "Choose a different sign-in method",
+            onStart: { Task { await startEmbyConnect() } },
+            onChooseDifferent: {
                 errorMessage = nil
                 working = false
                 authManager.cancelCurrentAuthorization()
                 embySignInMethod = nil
-            }
-            .buttonStyle(.bordered)
-        }
+            })
     }
 
     private func embyConnectWaiting(code: String) -> some View {
@@ -572,13 +497,7 @@ struct LoginView: View {
 
     private var embyCredentialsForm: some View {
         VStack(spacing: DS.Space.md) {
-            TextField("https://emby.example.com", text: $embyServer)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.URL)
-                .keyboardType(.URL)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
+            BackendServerURLField(placeholder: "https://emby.example.com", text: $embyServer)
 
             TextField("Username", text: $embyUsername)
                 .textInputAutocapitalization(.never)
