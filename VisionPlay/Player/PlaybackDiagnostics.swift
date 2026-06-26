@@ -141,17 +141,7 @@ final class PlaybackDiagnostics {
                      server: URL?,
                      targetBitrateKbps: Int) {
         resetDynamicAccessLogFacts()
-        sourceBitrateKbps = 0
-        if let mediaItems = item.media,
-           let media = mediaItems.indices.contains(mediaIndex) ? mediaItems[mediaIndex] : mediaItems.first {
-            if let w = media.width, let h = media.height {
-                sourceResolution = "\(w)×\(h)"
-            }
-            sourceBitrateKbps = media.bitrate ?? 0
-            videoCodec = media.videoCodec ?? "—"
-            audioCodec = media.audioCodec ?? "—"
-            container = media.container ?? "—"
-        }
+        applySourceSummary(PlaybackSourceSummary.plex(item: item, mediaIndex: mediaIndex))
         if let decision {
             if decision.playsWholeFileDirectly {
                 isTranscoding = false
@@ -188,20 +178,8 @@ final class PlaybackDiagnostics {
     /// the browse/detail item did not carry enough `MediaSources` data for `applyStatic`.
     func applyMediaBrowserSource(_ source: MediaBrowserPlaybackSourceMetadata,
                                  playMethod: MediaBrowserPlayMethod) {
-        if let width = source.width, let height = source.height {
-            sourceResolution = "\(width)×\(height)"
-        }
-        if let videoCodec = source.videoCodec, !videoCodec.isEmpty {
-            self.videoCodec = videoCodec
-        }
-        if let audioCodec = source.audioCodec, !audioCodec.isEmpty {
-            self.audioCodec = audioCodec
-        }
-        if let container = source.container, !container.isEmpty {
-            self.container = container
-        }
-        if let bitrate = source.bitrate, bitrate > 0 {
-            sourceBitrateKbps = bitrate
+        if let summary = PlaybackSourceSummary.mediaBrowser(source) {
+            applySourceSummary(summary, overwriteOnlyKnownValues: true)
         }
         switch playMethod {
         case .directPlay:
@@ -216,6 +194,33 @@ final class PlaybackDiagnostics {
             isTranscoding = true
             modeText = "Transcoding"
             decisionText = "transcode"
+        }
+    }
+
+    private func applySourceSummary(_ summary: PlaybackSourceSummary,
+                                    overwriteOnlyKnownValues: Bool = false) {
+        if let resolution = summary.statsResolution {
+            sourceResolution = resolution
+        } else if !overwriteOnlyKnownValues {
+            sourceResolution = "—"
+        }
+        if let videoCodec = summary.videoCodec, !videoCodec.isEmpty {
+            self.videoCodec = videoCodec
+        } else if !overwriteOnlyKnownValues {
+            self.videoCodec = "—"
+        }
+        if let audioCodec = summary.audioCodec, !audioCodec.isEmpty {
+            self.audioCodec = audioCodec
+        } else if !overwriteOnlyKnownValues {
+            self.audioCodec = "—"
+        }
+        if let container = summary.container, !container.isEmpty {
+            self.container = container
+        } else if !overwriteOnlyKnownValues {
+            self.container = "—"
+        }
+        if summary.bitrateKbps > 0 || !overwriteOnlyKnownValues {
+            sourceBitrateKbps = summary.bitrateKbps
         }
     }
 

@@ -17,41 +17,11 @@ extension PlaybackController {
     }
 
     func sourceDiagnosticFields() -> [String: DiagnosticFieldValue] {
-        let media = item.media.flatMap { mediaItems -> Media? in
-            if mediaItems.indices.contains(mediaIndex) { return mediaItems[mediaIndex] }
-            return mediaItems.first
-        }
-        let part = media?.part.first
-        var fields: [String: DiagnosticFieldValue] = [
-            "source_container": .label(media?.container ?? part?.container),
-            "source_video_codec": .label(media?.videoCodec ?? part?.videoStreams.first?.codec),
-            "source_audio_codec": .label(media?.audioCodec ?? part?.audioStreams.first?.codec),
-            "source_bitrate_kbps": .int(media?.bitrate ?? 0),
-            "duration": .millisecondsBucket(media?.duration ?? item.duration),
-            "part_index": .int(0),
-            "subtitle_mode": .label((part?.subtitleStreams.isEmpty == false) ? "available" : "none"),
-        ]
-        if let width = media?.width, let height = media?.height {
-            fields["source_resolution"] = .label("\(width)x\(height)")
-        }
-        if let channels = part?.audioStreams.first?.channels {
-            fields["source_audio_channels"] = .int(channels)
-        }
-        return fields
+        PlaybackSourceSummary.plex(item: item, mediaIndex: mediaIndex).diagnosticFields
     }
 
     func mediaBrowserSourceDiagnosticFields(_ source: MediaBrowserPlaybackSourceMetadata?) -> [String: DiagnosticFieldValue] {
-        guard let source else { return [:] }
-        var fields: [String: DiagnosticFieldValue] = [
-            "source_container": .label(source.container),
-            "source_video_codec": .label(source.videoCodec),
-            "source_audio_codec": .label(source.audioCodec),
-            "source_bitrate_kbps": .int(source.bitrate ?? 0),
-        ]
-        if let width = source.width, let height = source.height {
-            fields["source_resolution"] = .label("\(width)x\(height)")
-        }
-        return fields
+        PlaybackSourceSummary.mediaBrowser(source)?.diagnosticFields ?? [:]
     }
 
     func decisionDiagnosticFields(_ decision: DecisionResponse) -> [String: DiagnosticFieldValue] {
