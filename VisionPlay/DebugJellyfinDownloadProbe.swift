@@ -34,6 +34,7 @@ enum DebugJellyfinDownloadProbe {
         defer { AppDiagnostics.setEnabled(prior) }
 
         let query = value(after: "--vp-probe-query", in: args) ?? ""
+        let ratingKey = value(after: "--vp-probe-rating-key", in: args)
         let startDownload = args.contains("--vp-probe-start-download")
         let optimize = args.contains("--vp-probe-start-optimize")
         let preset = value(after: "--vp-probe-download-preset", in: args) ?? "1080p 8 Mbps"
@@ -52,7 +53,13 @@ enum DebugJellyfinDownloadProbe {
 
         let service = JellyfinBrowseService(appModel: appModel)
         do {
-            let item = try await resolveItem(query: query, service: service)
+            // Prefer an explicit item id (unambiguous) over a query search.
+            let item: MediaItem
+            if let ratingKey, !ratingKey.isEmpty {
+                item = try await service.metadata(itemId: ratingKey)
+            } else {
+                item = try await resolveItem(query: query, service: service)
+            }
             let recordKey = "jellyfin:\(item.ratingKey)"
             let media = item.media?.first
             let part = media?.part.first
