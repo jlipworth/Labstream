@@ -1259,25 +1259,23 @@ public final class DownloadManager {
         let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
             videoCodec: decision.videoCodec, audioCodec: decision.audioCodec,
             sourceContainer: decision.container)
-        enum EmbyDownloadRoute { case original, compatibleRemux, transcode }
-        let route: EmbyDownloadRoute
+        // #135 Stage 5a: the three-way route decision (#112/#126 existing-version + #83 compatible
+        // remux, all against the AUTHORITATIVE negotiated verdict) lives in the pure, tested
+        // `EmbyDownloadRouter`. `.original`/`.existingVersion` negotiate identically (a directly
+        // playable local-container file downloads byte-for-byte, else transcode); `.optimizeCompatible`
+        // stays a remux only while the source video is stream-copy eligible; `.optimize` always transcodes.
+        let intent: EmbyDownloadRouter.Intent
         switch choice {
-        case .original, .existingVersion:
-            // #126: `.existingVersion` IS produced for Emby now — the UI passes the chosen converted
-            // MediaSource id as `mediaSourceIDOverride`, so `embyMediaSourceHint`/PlaybackInfo already
-            // resolved `decision` to THAT source. Both lanes then negotiate identically: a directly
-            // playable file in a local container downloads byte-for-byte (.original) via
-            // `downloadOriginalRequest`; anything else falls to transcode. (For an existing version the
-            // override-selected converted source is mp4/h264 → .original, the intended byte-for-byte path.)
-            route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
-        case .optimizeCompatible:
-            // Honour the compatible lane when the source video is stream-copy eligible. The
-            // negotiated DirectStream flag may be false for audio-only transcode cases (for
-            // example HEVC + DTS -> MP4 + AAC), which still preserve original video quality.
-            route = remuxEligibility.isEligible ? .compatibleRemux : .transcode
-        case .optimize:
-            route = .transcode
+        case .original, .existingVersion: intent = .directOrExisting
+        case .optimizeCompatible: intent = .compatible
+        case .optimize: intent = .transcode
         }
+        let route = EmbyDownloadRouter.route(intent: intent,
+                                             supportsDirectPlay: decision.supportsDirectPlay,
+                                             container: decision.container,
+                                             videoCodec: decision.videoCodec,
+                                             audioCodec: decision.audioCodec,
+                                             part: part)
         recordDownloadDiagnostic("downloads.emby_decision", fields: [
             "download_id": .identifier(ratingKey),
             "negotiated_direct_play": .bool(decision.supportsDirectPlay),
