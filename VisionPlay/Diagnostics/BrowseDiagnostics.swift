@@ -171,16 +171,6 @@ enum BrowseDiagnostics {
     }
 
     private static func safeToken(_ value: String) -> String {
-        var output = ""
-        output.reserveCapacity(value.count)
-        for scalar in value.unicodeScalars {
-            switch scalar.value {
-            case 48...57, 65...90, 97...122, 45, 46, 58, 95, 44: // 0-9 A-Z a-z - . : _ ,
-                output.unicodeScalars.append(scalar)
-            default:
-                output.append("_")
-            }
-        }
-        return output.isEmpty ? "unknown" : output
+        DiagnosticRedactor.safeLogToken(value)
     }
 }

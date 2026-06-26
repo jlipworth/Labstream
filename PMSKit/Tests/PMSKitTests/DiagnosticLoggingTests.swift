@@ -149,6 +149,15 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertFalse(line.contains("secret"))
     }
 
+    func testSafeLogTokenAllowsStableCharactersAndIsIdempotent() {
+        let token = DiagnosticRedactor.safeLogToken("Jellyfin/Movies & TV,4K:HDR")
+
+        XCTAssertEqual(token, "Jellyfin_Movies___TV,4K:HDR")
+        XCTAssertEqual(DiagnosticRedactor.safeLogToken(token), token)
+        XCTAssertEqual(DiagnosticRedactor.safeLogToken(""), "unknown")
+        XCTAssertEqual(DiagnosticRedactor.safeLogToken(nil), "unknown")
+    }
+
     /// The best-effort redactor cannot scrub a personal server name with no dot/TLD (it looks like
     /// an ordinary label), so the call-site must NEVER pass the raw user-chosen name. This asserts
     /// the sanitized server line the SettingsView call-site produces keeps the personal name out of

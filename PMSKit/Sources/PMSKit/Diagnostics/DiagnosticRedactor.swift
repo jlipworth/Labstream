@@ -114,6 +114,23 @@ public enum DiagnosticRedactor {
         return sanitized.isEmpty ? "event" : sanitized
     }
 
+    /// Compact token for DEBUG text logs and signpost fields that must remain human-readable but
+    /// cannot carry arbitrary user/server text. Idempotent by construction.
+    public static func safeLogToken(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "unknown" }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:_,")
+        var output = ""
+        output.reserveCapacity(value.count)
+        for scalar in value.unicodeScalars {
+            if allowed.contains(scalar) {
+                output.unicodeScalars.append(scalar)
+            } else {
+                output.append("_")
+            }
+        }
+        return output.isEmpty ? "unknown" : output
+    }
+
     public static func urlShape(_ url: URL?) -> String {
         guard let url else { return "scheme=none path=none" }
         let scheme = redact(url.scheme?.lowercased() ?? "unknown")

@@ -110,8 +110,8 @@ struct FeedbackSheet: View {
                     }
 
                     ShareLink(
-                        item: FeedbackReportFile(text: reportText),
-                        preview: SharePreview("VisionPlay-Feedback.txt")
+                        item: DiagnosticReportArtifact.ShareFile(text: reportText),
+                        preview: SharePreview(DiagnosticReportArtifact.feedbackFilename)
                     ) {
                         Label("Share report…", systemImage: "square.and.arrow.up")
                     }
@@ -149,18 +149,5 @@ struct FeedbackSheet: View {
     /// not safe here).
     private static func percentEncoded(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-    }
-}
-
-/// Transferable wrapper so `ShareLink` shares the report as a `.txt` file (first share-sheet
-/// use in the app). Exported as `.plainText`; the share sheet suggests the filename below.
-struct FeedbackReportFile: Transferable {
-    let text: String
-
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .plainText) { file in
-            Data(file.text.utf8)
-        }
-        .suggestedFileName("VisionPlay-Feedback.txt")
     }
 }
