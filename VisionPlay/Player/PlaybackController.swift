@@ -2339,20 +2339,11 @@ final class PlaybackController {
         }
     }
 
-    /// Build the `/photo/:/transcode` URL for an image path, mirroring `PosterImage` /
-    /// `DownloadManager`. Requests a poster-sized image so the chrome artwork stays small.
+    /// Build the `/photo/:/transcode` URL for an image path via the shared `PlexPhotoTranscode`
+    /// builder. Requests a poster-sized image so the chrome artwork stays small.
     private nonisolated static func posterTranscodeURL(imagePath: String, server: URL, token: String) -> URL? {
-        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: imagePath),
-            .init(name: "width", value: "600"),
-            .init(name: "height", value: "900"),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
+        PlexPhotoTranscode.url(server: server, token: token, imagePath: imagePath,
+                               width: 600, height: 900)
     }
 
     /// Builds a `/photo/:/transcode` URL for a chapter thumbnail key, sized 16:9

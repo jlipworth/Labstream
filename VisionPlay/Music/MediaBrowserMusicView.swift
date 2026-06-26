@@ -13,6 +13,11 @@ struct MediaBrowserMusicView: View {
     @State private var libraries: [MusicLibrary] = []
     @State private var selectedLibraryID: String?
     @State private var loadState: HomeView.LoadState = .idle
+    /// The `backendIdentity` the currently-loaded `libraries` belong to. Mirrors
+    /// `MusicLibraryView.loadedIdentity`: without it, the `.task(id: backendIdentity)` reload
+    /// fires on a backend switch but `load()` early-returns (still `.loaded`) and keeps showing
+    /// the previous backend's libraries.
+    @State private var loadedIdentity: String?
 
     private var selectedLibrary: MusicLibrary? {
         libraries.first { $0.id == selectedLibraryID } ?? libraries.first
@@ -74,14 +79,24 @@ struct MediaBrowserMusicView: View {
     }
 
     private func load(force: Bool = false) async {
-        if !force, case .loaded = loadState, !libraries.isEmpty { return }
-        if case .loaded = loadState {} else { loadState = .loading }
+        let activeIdentity = backendIdentity
+        if !force, loadedIdentity == activeIdentity, case .loaded = loadState, !libraries.isEmpty { return }
+        let identityChanged = loadedIdentity != activeIdentity
+        if identityChanged { loadState = .loading }
+        else if case .loaded = loadState {} else { loadState = .loading }
         do {
             let libs = try await appModel.musicProvider.musicLibraries()
+            // A newer backend switch may have superseded this fetch while it was in flight; its own
+            // `.task(id:)` reload will deliver the correct libraries, so drop this stale result.
+            guard backendIdentity == activeIdentity else { return }
             libraries = libs
-            if selectedLibraryID == nil { selectedLibraryID = libs.first?.id }
+            // Reset the selection when the backend changed — the previous backend's library id is
+            // meaningless for the new server.
+            if selectedLibraryID == nil || identityChanged { selectedLibraryID = libs.first?.id }
+            loadedIdentity = activeIdentity
             loadState = .loaded
         } catch {
+            guard backendIdentity == activeIdentity else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }

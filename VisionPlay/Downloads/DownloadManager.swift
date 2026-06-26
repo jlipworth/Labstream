@@ -2870,20 +2870,11 @@ public final class DownloadManager {
         }
     }
 
-    /// Build the `/photo/:/transcode` URL for an image path, mirroring `PosterImage`.
-    /// Requests a poster-sized image so the cached file stays small.
+    /// Build the `/photo/:/transcode` URL for an image path via the shared `PlexPhotoTranscode`
+    /// builder. Requests a poster-sized image so the cached file stays small.
     private static func posterTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
-        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: thumb),
-            .init(name: "width", value: "400"),
-            .init(name: "height", value: "600"),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
+        PlexPhotoTranscode.url(server: server, token: token, imagePath: thumb,
+                               width: 400, height: 600)
     }
 
     private func cachePlexTextSubtitles(ratingKey: String, part: Part, server: URL, token: String) {
@@ -4777,11 +4768,15 @@ public final class DownloadManager {
     /// Pick an already-existing server-prepared (converted) `File` source to REUSE for a convert
     /// request, or nil if none satisfies it. A reusable candidate is a non-primary h264/mp4 File
     /// source (the convert profile's output — never the HEVC/MKV original). Prefer a converted
-    /// source whose resolution tier matches the requested preset, but fall back to the most-recent
-    /// converted source when Emby's `tv` profile produces a non-ladder size (live #133 example:
-    /// a "1080p 8 Mbps" Sync copy exposed as 720×404). Reusing an API-visible converted file is
-    /// better than starting a duplicate server conversion; users can still choose specific visible
-    /// versions from the picker.
+    /// source whose resolution tier matches the requested preset. For the resolution-capping `tv`
+    /// tiers (≤1080p) only, fall back to the most-recent converted source no larger than the
+    /// requested tier, because Emby's `tv` profile can produce a non-ladder size (live #133 example:
+    /// a "1080p 8 Mbps" Sync copy exposed as 720×404). The custom 4K/Original profile (#128)
+    /// preserves source resolution and has no non-ladder case, so it requires an exact tier match
+    /// (no fallback) — otherwise a 4K request could silently reuse a stale 1080p convert, or a sub-4K
+    /// request could be handed a multi-GB 4K file. Reusing an API-visible converted file is better
+    /// than starting a duplicate server conversion; users can still choose specific visible versions
+    /// from the picker.
     static func reusableConvertedSource(_ sources: [EmbyMediaSourceInfo],
                                         requestedHeight: Int?,
                                         primaryMediaSourceId: String?) -> EmbyMediaSourceInfo? {
@@ -4803,10 +4798,33 @@ public final class DownloadManager {
         }
         func recency(_ s: EmbyMediaSourceInfo) -> Int { Int(s.id ?? "") ?? -1 }
         let converted = sources.filter { $0.id != primaryMediaSourceId && looksConverted($0) }
+        if let exact = converted
+            .filter({ resolution($0) == wantedTier })
+            .max(by: { recency($0) < recency($1) }) {
+            return exact
+        }
+        // No exact-tier match. Fall back to the most-recent converted sibling ONLY for the
+        // resolution-capping `tv` profile tiers (≤1080p), where Emby can emit a non-ladder size
+        // SMALLER than the nominal tier (live #133: a "1080p 8 Mbps" copy came back 720×404) — and
+        // even then never reuse a source in a HIGHER tier than requested. The custom profile (#128
+        // 4K/Original) preserves source resolution and has no non-ladder case, so reusing a smaller/
+        // older convert there would silently downgrade a 4K request (deliver 1080p), and a sub-4K
+        // request must never be handed back a multi-GB 4K file. For 4K/Original we therefore require
+        // the exact tier above and otherwise convert fresh.
+        guard requestedHeight <= 1080 else { return nil }
+        func tierRank(_ label: String?) -> Int {
+            switch label {
+            case "4K":    return 4
+            case "1080p": return 3
+            case "720p":  return 2
+            case "480p":  return 1
+            default:      return 0   // sub-480 non-ladder (e.g. "720×404") or unknown
+            }
+        }
+        let requestedRank = tierRank(wantedTier)
         return converted
-            .filter { resolution($0) == wantedTier }
+            .filter { tierRank(resolution($0)) <= requestedRank }
             .max { recency($0) < recency($1) }
-            ?? converted.max { recency($0) < recency($1) }
     }
 
     // MARK: - Server conversion queue probe

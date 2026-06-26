@@ -123,7 +123,8 @@ struct MediaBrowserMusicProvider: MusicProvider {
                                                       artistIds: nil,
                                                       filters: [],
                                                       startIndex: nil,
-                                                      limit: nil)
+                                                      limit: nil,
+                                                      extraFields: ["ChildCount"])
         return result.items
     }
 
@@ -132,20 +133,21 @@ struct MediaBrowserMusicProvider: MusicProvider {
         try await browser.musicPlaylistItems(playlistId: playlist.ratingKey)
     }
 
-    /// The music Home rails (#111): Recently Added albums, Recently Played tracks, Favorite
-    /// albums. An EMPTY rail is dropped, and a FAILED rail is tolerated (it just doesn't
-    /// appear) so one bad request can't blank the whole Home — mirroring the video
-    /// `homeRails` degraded-load tolerance (`HomeRailsLoadTracker.attempt`). Fetched
-    /// sequentially (the `browser` existential is main-actor-bound, not Sendable, so it
-    /// can't ride an `async let` child task — same shape as the video per-view rail loop).
+    /// The music Home rails (#111): Discover, Recently Added albums, Recently Played tracks,
+    /// Favorite albums. An EMPTY rail is dropped, and a FAILED rail is tolerated (it just
+    /// doesn't appear) so one bad request can't blank the whole Home — mirroring the video
+    /// `homeRails` degraded-load tolerance (`HomeRailsLoadTracker`). The four rails are
+    /// independent requests, so they are launched together: `HomeRailsLoadTracker.resultOf`
+    /// keeps each closure main-actor isolated (via `#isolation`), letting the `browser`
+    /// existential ride an `async let` without a Sendable violation — Home pays the MAX rail
+    /// latency, not the SUM (mirrors `JellyfinBrowseService.homeRails`).
     func musicHomeRails(libraryID: String) async throws -> [MusicHomeRail] {
         var tracker = HomeRailsLoadTracker()
-        var rails: [MusicHomeRail] = []
 
         // Discover leads: a random album shelf. Unlike Recently Added (whose freshest items
         // are mostly art-less here), a random draw is ~95% covered art, so it reads well at the
         // top of Home and surfaces the back catalog (#111).
-        let discover = await tracker.attempt {
+        async let discoverResult = HomeRailsLoadTracker.resultOf {
             try await browser.musicItemsPage(parentId: libraryID,
                                              recursive: true,
                                              includeItemTypes: "MusicAlbum",
@@ -156,23 +158,13 @@ struct MediaBrowserMusicProvider: MusicProvider {
                                              filters: [],
                                              startIndex: nil,
                                              limit: 20).items
-        } ?? []
-        if !discover.isEmpty {
-            rails.append(MusicHomeRail(id: "discover", title: "Discover",
-                                       items: discover, style: .albums))
         }
-
-        let recentlyAdded = await tracker.attempt {
+        async let recentlyAddedResult = HomeRailsLoadTracker.resultOf {
             try await browser.musicLatestItems(parentId: libraryID,
                                                includeItemTypes: "MusicAlbum",
                                                limit: 20)
-        } ?? []
-        if !recentlyAdded.isEmpty {
-            rails.append(MusicHomeRail(id: "recently-added", title: "Recently Added",
-                                       items: recentlyAdded, style: .albums))
         }
-
-        let recentlyPlayed = await tracker.attempt {
+        async let recentlyPlayedResult = HomeRailsLoadTracker.resultOf {
             try await browser.musicItemsPage(parentId: libraryID,
                                              recursive: true,
                                              includeItemTypes: "Audio",
@@ -183,13 +175,8 @@ struct MediaBrowserMusicProvider: MusicProvider {
                                              filters: ["IsPlayed"],
                                              startIndex: nil,
                                              limit: 20).items
-        } ?? []
-        if !recentlyPlayed.isEmpty {
-            rails.append(MusicHomeRail(id: "recently-played", title: "Recently Played",
-                                       items: recentlyPlayed, style: .tracks))
         }
-
-        let favorites = await tracker.attempt {
+        async let favoritesResult = HomeRailsLoadTracker.resultOf {
             try await browser.musicItemsPage(parentId: libraryID,
                                              recursive: true,
                                              includeItemTypes: "MusicAlbum",
@@ -200,7 +187,27 @@ struct MediaBrowserMusicProvider: MusicProvider {
                                              filters: ["IsFavorite"],
                                              startIndex: nil,
                                              limit: 20).items
-        } ?? []
+        }
+
+        // Fold results back in the fixed display order.
+        let discover = tracker.record(await discoverResult) ?? []
+        let recentlyAdded = tracker.record(await recentlyAddedResult) ?? []
+        let recentlyPlayed = tracker.record(await recentlyPlayedResult) ?? []
+        let favorites = tracker.record(await favoritesResult) ?? []
+
+        var rails: [MusicHomeRail] = []
+        if !discover.isEmpty {
+            rails.append(MusicHomeRail(id: "discover", title: "Discover",
+                                       items: discover, style: .albums))
+        }
+        if !recentlyAdded.isEmpty {
+            rails.append(MusicHomeRail(id: "recently-added", title: "Recently Added",
+                                       items: recentlyAdded, style: .albums))
+        }
+        if !recentlyPlayed.isEmpty {
+            rails.append(MusicHomeRail(id: "recently-played", title: "Recently Played",
+                                       items: recentlyPlayed, style: .tracks))
+        }
         if !favorites.isEmpty {
             rails.append(MusicHomeRail(id: "favorite-albums", title: "Favorite Albums",
                                        items: favorites, style: .albums))
@@ -230,9 +237,15 @@ private extension MusicBrowseSort {
 /// The slice of a MediaBrowser browse service the music provider needs. Both
 /// `JellyfinBrowseService` and `EmbyBrowseService` already expose these shapes; the
 /// conformances below just rename onto the common seam.
+///
+/// `Sendable` so the `any MediaBrowserMusicBrowsing` existential can ride an `async let` in
+/// `musicHomeRails` (the conformers are `@MainActor` structs, hence implicitly Sendable).
 @MainActor
-protocol MediaBrowserMusicBrowsing {
+protocol MediaBrowserMusicBrowsing: Sendable {
     func musicLibraryLinks() async throws -> [(id: String, title: String, collectionType: String?)]
+    /// `extraFields` are appended to the default item fields — e.g. `ChildCount` so a playlist
+    /// row decodes its track count for the "N tracks" subtitle (#111). Most callers want the
+    /// defaults; use the no-`extraFields` convenience overload below.
     func musicItemsPage(parentId: String?,
                         recursive: Bool,
                         includeItemTypes: String,
@@ -242,7 +255,8 @@ protocol MediaBrowserMusicBrowsing {
                         artistIds: String?,
                         filters: [String],
                         startIndex: Int?,
-                        limit: Int?) async throws -> (items: [MediaItem], total: Int?)
+                        limit: Int?,
+                        extraFields: [String]) async throws -> (items: [MediaItem], total: Int?)
     /// Real, tag-aggregated album artists (`/Artists/AlbumArtists`) — not the folder-derived
     /// `MusicArtist` stubs a plain items browse returns (#111).
     func musicAlbumArtistsPage(parentId: String?,
@@ -259,6 +273,32 @@ protocol MediaBrowserMusicBrowsing {
     func musicPlaylistItems(playlistId: String) async throws -> [MediaItem]
 }
 
+extension MediaBrowserMusicBrowsing {
+    /// Default-fields convenience so the common browse callers don't repeat `extraFields: []`.
+    func musicItemsPage(parentId: String?,
+                        recursive: Bool,
+                        includeItemTypes: String,
+                        sortBy: String,
+                        sortOrder: String,
+                        albumArtistIds: String?,
+                        artistIds: String?,
+                        filters: [String],
+                        startIndex: Int?,
+                        limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
+        try await musicItemsPage(parentId: parentId,
+                                 recursive: recursive,
+                                 includeItemTypes: includeItemTypes,
+                                 sortBy: sortBy,
+                                 sortOrder: sortOrder,
+                                 albumArtistIds: albumArtistIds,
+                                 artistIds: artistIds,
+                                 filters: filters,
+                                 startIndex: startIndex,
+                                 limit: limit,
+                                 extraFields: [])
+    }
+}
+
 extension JellyfinBrowseService: MediaBrowserMusicBrowsing {
     func musicLibraryLinks() async throws -> [(id: String, title: String, collectionType: String?)] {
         try await userViewLinks().map { ($0.id, $0.title, $0.collectionType) }
@@ -273,17 +313,22 @@ extension JellyfinBrowseService: MediaBrowserMusicBrowsing {
                         artistIds: String?,
                         filters: [String],
                         startIndex: Int?,
-                        limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
-        try await itemsPage(parentId: parentId,
-                            recursive: recursive,
-                            startIndex: startIndex,
-                            limit: limit,
-                            sortBy: sortBy,
-                            sortOrder: sortOrder,
-                            includeItemTypes: includeItemTypes,
-                            albumArtistIds: albumArtistIds,
-                            artistIds: artistIds,
-                            filters: filters)
+                        limit: Int?,
+                        extraFields: [String]) async throws -> (items: [MediaItem], total: Int?) {
+        let fields = extraFields.isEmpty
+            ? JellyfinLibrary.fullItemFields
+            : JellyfinLibrary.fullItemFields + "," + extraFields.joined(separator: ",")
+        return try await itemsPage(parentId: parentId,
+                                   recursive: recursive,
+                                   startIndex: startIndex,
+                                   limit: limit,
+                                   sortBy: sortBy,
+                                   sortOrder: sortOrder,
+                                   includeItemTypes: includeItemTypes,
+                                   fields: fields,
+                                   albumArtistIds: albumArtistIds,
+                                   artistIds: artistIds,
+                                   filters: filters)
     }
 
     func musicAlbumArtistsPage(parentId: String?,
@@ -323,17 +368,22 @@ extension EmbyBrowseService: MediaBrowserMusicBrowsing {
                         artistIds: String?,
                         filters: [String],
                         startIndex: Int?,
-                        limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
-        try await itemsPage(parentId: parentId,
-                            recursive: recursive,
-                            startIndex: startIndex,
-                            limit: limit,
-                            sortBy: sortBy,
-                            sortOrder: sortOrder,
-                            includeItemTypes: includeItemTypes,
-                            albumArtistIds: albumArtistIds,
-                            artistIds: artistIds,
-                            filters: filters)
+                        limit: Int?,
+                        extraFields: [String]) async throws -> (items: [MediaItem], total: Int?) {
+        let fields = extraFields.isEmpty
+            ? EmbyLibrary.fullItemFields
+            : EmbyLibrary.fullItemFields + "," + extraFields.joined(separator: ",")
+        return try await itemsPage(parentId: parentId,
+                                   recursive: recursive,
+                                   startIndex: startIndex,
+                                   limit: limit,
+                                   sortBy: sortBy,
+                                   sortOrder: sortOrder,
+                                   includeItemTypes: includeItemTypes,
+                                   fields: fields,
+                                   albumArtistIds: albumArtistIds,
+                                   artistIds: artistIds,
+                                   filters: filters)
     }
 
     func musicAlbumArtistsPage(parentId: String?,

@@ -60,23 +60,13 @@ enum MediaArtwork {
         return "Plex"
     }
 
-    /// Plex `/photo/:/transcode` resizer URL (token in query — Plex images authenticate
-    /// that way, unlike the header-authed MediaBrowser image endpoints).
+    /// Plex `/photo/:/transcode` resizer URL via the shared `PlexPhotoTranscode` builder.
     private static func plexTranscodeURL(path: String,
                                          appModel: AppModel,
                                          pixelWidth: Int,
                                          pixelHeight: Int) -> URL? {
         guard let base = appModel.serverBaseURL, let token = appModel.serverToken else { return nil }
-        guard var comps = URLComponents(url: base.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: path),
-            .init(name: "width", value: String(pixelWidth)),
-            .init(name: "height", value: String(pixelHeight)),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
+        return PlexPhotoTranscode.url(server: base, token: token, imagePath: path,
+                                      width: pixelWidth, height: pixelHeight)
     }
 }
