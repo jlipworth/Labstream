@@ -44,7 +44,10 @@ struct LiveProbeConfig {
     /// routes log output through it, so tightening the scrub here covers all of them at once.
     /// `credentialKeys` defaults to both backends' token query params so one impl serves both.
     static func redact(_ string: String, token: String, server: URL,
-                       credentialKeys: [String] = ["X-Plex-Token", "api_key"]) -> String {
+                       credentialKeys: [String] = [
+                        "X-Plex-Token", "api_key",
+                        "DeviceId", "MediaSourceId", "PlaySessionId", "UserId",
+                       ]) -> String {
         var out = string
         if !token.isEmpty {
             out = out.replacingOccurrences(of: token, with: "<redacted-token>")
@@ -63,6 +66,13 @@ struct LiveProbeConfig {
             out = out.replacingOccurrences(of: "(?i)(\(escaped)=)[^&\\s\"]+",
                                            with: "$1<redacted>", options: .regularExpression)
         }
+        // Server-relative playback URLs can still carry raw item ids in path segments even after
+        // the host and query identifiers are scrubbed (for example `/emby/videos/<item>/...`).
+        // Keep the route shape, not the live media/user id.
+        out = out.replacingOccurrences(
+            of: #"(?i)(/(?:videos|items|users|library/metadata|photo/:/transcode)/)[^/?#\s"]+"#,
+            with: "$1<id>",
+            options: .regularExpression)
         return out
     }
 

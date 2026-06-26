@@ -15,6 +15,22 @@ final class LiveProbeConfigTests: XCTestCase {
         XCTAssertTrue(redacted.contains("X-Plex-Token=<redacted>"))
     }
 
+    func testRedactRemovesPlaybackIdentifiersFromURLs() throws {
+        let server = try XCTUnwrap(URL(string: "https://private.example.com:8920/emby"))
+        let raw = "GET https://private.example.com:8920/emby/videos/88544/master.m3u8?DeviceId=device-raw&MediaSourceId=mediasource_88544&PlaySessionId=session-raw&api_key=embysecret"
+
+        let redacted = LiveProbeConfig.redact(raw, token: "embysecret", server: server)
+
+        XCTAssertFalse(redacted.contains("88544"))
+        XCTAssertFalse(redacted.contains("device-raw"))
+        XCTAssertFalse(redacted.contains("mediasource_88544"))
+        XCTAssertFalse(redacted.contains("session-raw"))
+        XCTAssertTrue(redacted.contains("/videos/<id>/master.m3u8"))
+        XCTAssertTrue(redacted.contains("DeviceId=<redacted>"))
+        XCTAssertTrue(redacted.contains("MediaSourceId=<redacted>"))
+        XCTAssertTrue(redacted.contains("PlaySessionId=<redacted>"))
+    }
+
     func testServerNameSummaryNeverIncludesRawName() {
         let raw = "John's Family Emby Server"
         let summary = LiveProbeLogger.serverNameSummary(raw)
