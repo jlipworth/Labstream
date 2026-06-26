@@ -52,6 +52,34 @@ else
   git diff --check
 fi
 
+check_pbxproj_churn() {
+  local label="$1"
+  shift
+  local diff_output
+  diff_output=$(git diff --unified=0 "$@" -- VisionPlay.xcodeproj/project.pbxproj)
+  [[ -n "$diff_output" ]] || return 0
+
+  # New Swift/resources under the synchronized VisionPlay root are discovered by
+  # Xcode without PBXFileReference/PBXBuildFile churn. Keep allowing project
+  # build-setting/version edits, but stop accidental file-reference/build-phase
+  # noise before it reaches CI or review.
+  if printf '%s\n' "$diff_output" | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' >/dev/null; then
+    printf '%s\n' "$diff_output" | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' >&2 || true
+    fail "unexpected project.pbxproj file-reference/build-file churn in $label; synchronized groups should pick up new Swift/resource files without pbxproj edits"
+  fi
+}
+
+printf '== Xcode project churn guard ==\n'
+if [[ "$has_unstaged_changes" == true ]]; then
+  check_pbxproj_churn "unstaged diff"
+fi
+if [[ "$has_staged_changes" == true ]]; then
+  check_pbxproj_churn "staged diff" --cached
+elif [[ "$has_unstaged_changes" != true ]] && git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+  check_pbxproj_churn "HEAD against parent" HEAD^ HEAD
+fi
+
+
 
 # The shared signing template is intentionally committed. Local overrides and
 # credential/profile material must never be tracked.

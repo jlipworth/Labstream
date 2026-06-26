@@ -3,8 +3,8 @@
 # worktree-sim.sh — give each git worktree its own visionOS simulator.
 #
 # The MAIN worktree owns a "golden" logged-in sim (its UDID lives in <main>/.simid).
-# Each LINKED worktree gets a clone of that golden sim, named vpwt-<branch>, created
-# SHUT DOWN. The clone's UDID is written to <worktree>/.simid (git-ignored). The
+# Each LINKED worktree gets a clone of that golden sim, named vpwt-<branch>-<hash>,
+# created SHUT DOWN. The clone's UDID is written to <worktree>/.simid (git-ignored). The
 # worktree's own agent boots/manipulates the sim as needed.
 #
 # Subcommands:
@@ -41,11 +41,22 @@ golden_udid() {
   cat "$f"
 }
 
+hash_short() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -c1-8
+  else
+    shasum -a 256 | cut -c1-8
+  fi
+}
+
 sim_name() {
-  local b
+  local b root h
   b=$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD)
+  root=$(worktree_root)
+  h=$(printf '%s\n%s' "$root" "$b" | hash_short)
   b=$(printf '%s' "$b" | sed 's#[^A-Za-z0-9_-]#-#g')
-  printf '%s%s' "$NAME_PREFIX" "$b"
+  b=${b:0:40}
+  printf '%s%s-%s' "$NAME_PREFIX" "$b" "$h"
 }
 
 # Print the UDID of the first sim with the given exact name (empty if none).
@@ -188,9 +199,19 @@ cmd_closeout() {
 
 cmd_id() {
   if is_main; then golden_udid; return 0; fi
-  local root simid_file; root=$(worktree_root); simid_file="$root/.simid"
-  [ -f "$simid_file" ] || cmd_setup >&2
-  cat "$simid_file"
+  local root simid_file udid; root=$(worktree_root); simid_file="$root/.simid"
+  if [ -f "$simid_file" ]; then
+    udid=$(cat "$simid_file")
+    if sim_exists "$udid"; then
+      printf '%s\n' "$udid"
+      return 0
+    fi
+    echo "worktree-sim: stale .simid ($udid); provisioning a live simulator" >&2
+  fi
+  cmd_setup >&2
+  udid=$(cat "$simid_file")
+  sim_exists "$udid" || die "setup wrote $udid, but that simulator does not exist"
+  printf '%s\n' "$udid"
 }
 
 cmd_install_hook() {
