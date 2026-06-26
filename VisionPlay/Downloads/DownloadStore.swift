@@ -83,11 +83,12 @@ final class DownloadStore: @unchecked Sendable {
         self.baseDirectory = dir
         self.indexURL = dir.appendingPathComponent("index.json")
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
-        // Exclude the offline cache from iCloud/device backups.
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var mutableDir = self.baseDirectory
-        try? mutableDir.setResourceValues(values)
+        // Exclude the offline cache from iCloud/device backups and give newly-created
+        // auth-adjacent artifacts a protected parent directory.
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: self.baseDirectory,
+            protection: CredentialArtifactStorage.authArtifactProtection,
+            fileManager: fileManager)
         load()
     }
 
@@ -365,8 +366,9 @@ final class DownloadStore: @unchecked Sendable {
             return
         }
         let url = resumeDataDestinationURL(ratingKey: ratingKey)
-        do { try data.write(to: url, options: .atomic) }
-        catch {
+        do {
+            try CredentialArtifactStorage.writeAuthArtifact(data, to: url, fileManager: fileManager)
+        } catch {
             NSLog("DownloadStore: failed to persist resume data for %@ (%@)",
                   ratingKey, DiagnosticRedactor.safeErrorSummary(error))
             return
