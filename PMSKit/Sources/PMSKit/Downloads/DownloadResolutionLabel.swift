@@ -23,9 +23,17 @@ public enum DownloadResolutionLabel {
     }
 
     public static func label(forVideoResolution raw: String) -> String? {
-        let parts = raw.lowercased().split(separator: "x")
-        guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) else { return nil }
-        return label(width: w, height: h)
+        guard let d = dimensions(forVideoResolution: raw) else { return nil }
+        return label(width: d.width, height: d.height)
+    }
+
+    /// Parse a `"WIDTHxHEIGHT"` video-resolution string (case-insensitive) into pixel dimensions.
+    /// Shared so the optimized-version matcher and the label logic use one parser (GH #135 Stage 1a
+    /// — was an inline copy in `DownloadManager` that did not lowercase).
+    public static func dimensions(forVideoResolution raw: String) -> (width: Int, height: Int)? {
+        let parts = raw.lowercased().split(separator: "x").compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        return (width: parts[0], height: parts[1])
     }
 
     public static func label(forHeight height: Int?) -> String? {

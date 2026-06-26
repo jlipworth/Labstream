@@ -697,18 +697,32 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         let destination = entry.destination
         let ratingKey = entry.ratingKey
 
-        // #83/#127: HEVC tag fixup. A stream-copied HEVC MP4 can be `hev1`-tagged, which
-        // AVFoundation black-screens. Rewrite it losslessly to `hvc1` on the moved file BEFORE the
-        // playability probe (which is exactly what would otherwise fail on an `hev1` file and reject
-        // a perfectly good download). Originally this was gated to the compatible-remux lane (#83),
-        // but #127: a Plex `.original` / `.existingVersion` STATIC download of a server-original
-        // MP4/MOV can be `hev1`-tagged just as easily, and those lanes were skipping the fixup and
-        // black-screening on device. Gate on the CONTAINER instead of the lane — run for any
-        // mp4-family download. `rewriteFile` no-ops (returns 0) on non-HEVC / non-`hev1` files, so
-        // this is safe for every mp4/m4v/mov download; other containers (mkv, …) are skipped since
-        // the ISO-BMFF FourCC rewrite doesn't apply to them.
-        let mp4FamilyContainers: Set<String> = ["mp4", "m4v", "mov"]
-        if mp4FamilyContainers.contains(destination.pathExtension.lowercased()) {
+        // GH #135: the fixup + #98 retrying probe + truncation guard + complete/unverified decision
+        // are shared with the byte-range pipeline via `finalizeTransferredFile` so a static download
+        // is validated identically no matter how its bytes arrived (this opaque path historically
+        // ran them; the range path skipped them — #127 black-screen / H1–H3).
+        Task { [weak self] in
+            await self?.finalizeTransferredFile(ratingKey: ratingKey,
+                                                destination: destination,
+                                                bytes: bytes,
+                                                validationLabel: "local_playback")
+        }
+    }
+
+    /// Shared post-transfer finalize for BOTH download pipelines (the opaque background
+    /// `downloadTask` and the app-managed byte-range `dataTask`). Runs the `hev1`→`hvc1` HEVC tag
+    /// fixup, the GH #98 retrying playability probe, the duration truncation guard, and records the
+    /// unified `.complete` / `.failed` (truncated) / `.unverified` (probe miss) outcome. GH #135:
+    /// the range pipeline historically re-implemented a thinner, drifted version of this (no fixup,
+    /// no truncation guard, probe miss → `.failed`); funnel both here so the decisions can't diverge.
+    private func finalizeTransferredFile(ratingKey: String,
+                                         destination: URL,
+                                         bytes: Int,
+                                         validationLabel: String) async {
+        // #83/#127: rewrite a stream-copied HEVC MP4 from `hev1` to `hvc1` (AVFoundation black-screens
+        // on `hev1`) BEFORE the playability probe. Gated on the CONTAINER, not the lane — any
+        // mp4-family download can be `hev1`-tagged. `rewriteFile` no-ops on non-HEVC/non-`hev1` bodies.
+        if DownloadCompletionValidation.needsHEVCTagFixup(pathExtension: destination.pathExtension) {
             do {
                 let count = try HEVCTagFixup.rewriteFile(at: destination)
                 if count > 0 {
@@ -726,76 +740,70 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             }
         }
 
-        Task { [weak self] in
-            guard let self else { return }
-            // GH #98: the post-download playability probe is an INTERMITTENT false-negative — on a
-            // device busy right after a heavy transcode+download, AVFoundation can transiently fail
-            // to open/advance a COMPLETE file that a later attempt on the same bytes plays fine
-            // (confirmed: a download that "did not start local playback" succeeded on a plain
-            // re-download with no other change). Retry with progressively longer timeouts before
-            // condemning the download.
-            var validation = await Self.validateLocalPlayback(destination)
-            if !validation.played {
-                for extraTimeout in [15.0, 25.0] {
-                    downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
-                    try? await Task.sleep(for: .seconds(2))
-                    validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)
-                    if validation.played { break }
-                }
+        // GH #98: the post-download playability probe is an INTERMITTENT false-negative — on a device
+        // busy right after a heavy transcode+download, AVFoundation can transiently fail to
+        // open/advance a COMPLETE file that a later attempt on the same bytes plays fine. Retry with
+        // progressively longer timeouts before deciding.
+        var validation = await Self.validateLocalPlayback(destination)
+        if !validation.played {
+            for extraTimeout in [15.0, 25.0] {
+                downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
+                try? await Task.sleep(for: .seconds(2))
+                validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)
+                if validation.played { break }
             }
-            // Truncation guard: a transcode that aborts early (or a static download cut short by the
-            // server while still returning HTTP 200) can open and play its first fraction of a second
-            // and otherwise pass the probe. Compare the decoded duration to the EXPECTED media
-            // duration — a file far shorter than the source is truncated, not complete. Only applied
-            // when both durations are known; legitimate short clips compare against their own short
-            // expected duration and pass. (Step 3 above no longer rejects on raw byte size.)
-            let expectedDurationMs = self.store.records.first { $0.ratingKey == ratingKey }?.metadata?.duration
-            if validation.played, let expectedDurationMs, expectedDurationMs > 0,
-               let actualDurationMs = validation.durationMs,
-               Double(actualDurationMs) < Double(expectedDurationMs) * 0.80 {
-                downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedDurationMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
-                AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("truncated_duration"),
-                    "expected_duration_ms": .int(expectedDurationMs),
-                    "actual_duration_ms": .int(actualDurationMs),
-                ])
-                try? self.fileManager.removeItem(at: destination)
-                self.clearRetryCount(ratingKey: ratingKey)
-                self.store.setStatus(ratingKey: ratingKey, .failed)
-                self.onError?(ratingKey, .invalidDownload("Downloaded file is truncated (\(actualDurationMs / 1000)s of \(expectedDurationMs / 1000)s)."))
-                self.onChange?()
-                return
-            }
-            if validation.played {
-                // Validated: mark explicitly complete (D2) so a relaunch trusts it.
-                downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
-                AppDiagnostics.record(.downloads, "downloads.complete", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "bytes": .bytes(bytes),
-                    "validation": .label("local_playback"),
-                ])
-                self.clearRetryCount(ratingKey: ratingKey)
-                self.store.setStatus(ratingKey: ratingKey, .complete)
-            } else {
-                downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) detail=\(validation.detail ?? "nil", privacy: .public) bytes=\(bytes, privacy: .public) preserved=true")
-                AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label(validation.reason),
-                    "detail": .label(validation.detail ?? "none"),
-                    "bytes": .bytes(bytes),
-                    "preserved": .bool(true),
-                ])
-                // GH #98: do NOT delete or fail the file on a probe miss. The probe is an
-                // intermittent false-negative on COMPLETE downloads; deleting/failing forces a
-                // wasteful 0% re-download and discards good bytes. Keep the row playable but
-                // explicitly unverified so the user can try the local file and the bytes remain
-                // available for on-device ffprobe/root-cause work.
-                self.clearRetryCount(ratingKey: ratingKey)
-                self.store.setStatus(ratingKey: ratingKey, .unverified)
-            }
-            self.onChange?()
         }
+
+        // Truncation guard (only meaningful when both durations are known): a transcode that aborts
+        // early — or a static download the server cut short while still returning 2xx — can play its
+        // first fraction of a second and pass the probe. A decoded duration far under the source's is
+        // truncated, not complete. Legitimate short clips compare against their own short duration.
+        let expectedDurationMs = store.records.first { $0.ratingKey == ratingKey }?.metadata?.duration
+        let outcome = DownloadCompletionValidation.outcome(played: validation.played,
+                                                           probeReason: validation.reason,
+                                                           expectedDurationMs: expectedDurationMs,
+                                                           actualDurationMs: validation.durationMs)
+        switch outcome {
+        case .truncated(let actualDurationMs, let expectedMs):
+            downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("truncated_duration"),
+                "expected_duration_ms": .int(expectedMs),
+                "actual_duration_ms": .int(actualDurationMs),
+            ])
+            try? fileManager.removeItem(at: destination)
+            clearRetryCount(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .failed)
+            onError?(ratingKey, .invalidDownload("Downloaded file is truncated (\(actualDurationMs / 1000)s of \(expectedMs / 1000)s)."))
+        case .complete:
+            // Validated: mark explicitly complete (D2) so a relaunch trusts it.
+            downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.complete", fields: [
+                "download_id": .identifier(ratingKey),
+                "bytes": .bytes(bytes),
+                "validation": .label(validationLabel),
+            ])
+            clearRetryCount(ratingKey: ratingKey)
+            store.updateProgress(ratingKey: ratingKey, bytes: bytes, progress: 1)
+            store.setStatus(ratingKey: ratingKey, .complete)
+        case .unverified(let reason):
+            // GH #98: do NOT delete or fail the file on a probe miss — the probe is an intermittent
+            // false-negative on COMPLETE downloads; deleting/failing forces a wasteful 0%
+            // re-download and discards good bytes. Keep the row playable but explicitly unverified.
+            // (H3: the range pipeline used to condemn this identical condition to `.failed`.)
+            downloadLog.error("invalid-download ratingKey=\(ratingKey, privacy: .public) reason=\(reason, privacy: .public) detail=\(validation.detail ?? "nil", privacy: .public) bytes=\(bytes, privacy: .public) preserved=true")
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+                "detail": .label(validation.detail ?? "none"),
+                "bytes": .bytes(bytes),
+                "preserved": .bool(true),
+            ])
+            clearRetryCount(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .unverified)
+        }
+        onChange?()
     }
 
 
@@ -853,9 +861,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
+        // H4 (GH #135): the opaque background session and the app-range session have INDEPENDENT
+        // taskIdentifier spaces, so a range id can equal a background id. Evict from only the map
+        // that owns this session — removing from both by bare id could silently drop the other
+        // session's in-flight entry and lose its completion.
+        let isRange = (session === rangeURLSession)
         lock.lock()
-        let rangeEntry = rangeInflight.removeValue(forKey: task.taskIdentifier)
-        let entry = inflight.removeValue(forKey: task.taskIdentifier)
+        let rangeEntry = isRange ? rangeInflight.removeValue(forKey: task.taskIdentifier) : nil
+        let entry = isRange ? nil : inflight.removeValue(forKey: task.taskIdentifier)
         loggedExpectation.remove(task.taskIdentifier)
         loggedProgressMilestones.removeValue(forKey: task.taskIdentifier)
         lock.unlock()
@@ -891,6 +904,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                     "status_code": .int(status),
                     "bytes": .bytes(rangeEntry.totalBytes),
                 ])
+                // H5 (GH #135): the data-task wrote the server's error-page body into the FINAL
+                // partial file. Delete it (the opaque pipeline already deletes a bad body) so the
+                // next start() computes a clean 0 offset instead of issuing a Range request that
+                // appends real bytes AFTER the garbage and produces a corrupt, unplayable file.
+                try? fileManager.removeItem(at: rangeEntry.destination)
                 store.setStatus(ratingKey: rangeEntry.ratingKey, .failed)
                 onError?(rangeEntry.ratingKey, .transferFailed("Server returned HTTP \(status)."))
                 onChange?()
@@ -911,29 +929,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
 
             let bytes = (try? fileManager.attributesOfItem(atPath: rangeEntry.destination.path)[.size] as? Int)
                 ?? rangeEntry.totalBytes
-            Task {
-                let validation = await Self.validateLocalPlayback(rangeEntry.destination)
-                if validation.played {
-                    downloadLog.info("range-complete ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
-                    AppDiagnostics.record(.downloads, "downloads.complete", fields: [
-                        "download_id": .identifier(rangeEntry.ratingKey),
-                        "bytes": .bytes(bytes),
-                        "validation": .label("range_checkpoint"),
-                    ])
-                    self.clearRetryCount(ratingKey: rangeEntry.ratingKey)
-                    self.store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: bytes, progress: 1)
-                    self.store.setStatus(ratingKey: rangeEntry.ratingKey, .complete)
-                } else {
-                    AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
-                        "download_id": .identifier(rangeEntry.ratingKey),
-                        "reason": .label(validation.reason),
-                        "detail": .label(validation.detail ?? "none"),
-                        "bytes": .bytes(bytes),
-                    ])
-                    self.store.setStatus(ratingKey: rangeEntry.ratingKey, .failed)
-                    self.onError?(rangeEntry.ratingKey, .invalidDownload(validation.reason))
-                }
-                self.onChange?()
+            // GH #135 (H1–H3): funnel the byte-range completion through the SAME finalize as the
+            // opaque pipeline — so a static `hev1` MP4 gets the `hvc1` fixup it used to skip
+            // (#127 black-screen), a short body is caught by the truncation guard, and a probe miss
+            // is kept `.unverified` (#98 leniency) instead of being condemned to `.failed`.
+            Task { [weak self] in
+                await self?.finalizeTransferredFile(ratingKey: rangeEntry.ratingKey,
+                                                    destination: rangeEntry.destination,
+                                                    bytes: bytes,
+                                                    validationLabel: "range_checkpoint")
             }
             return
         }
