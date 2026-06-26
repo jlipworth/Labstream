@@ -591,36 +591,11 @@ public final class DownloadManager {
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
                            server: server, token: token)
         cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
-        do {
-            recordDownloadDiagnostic("downloads.start", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Plex"),
-                "choice": .label(choiceLabel),
-                "url_shape": .urlShape(url),
-                "expected_bytes": .bytes(part.size),
-            ])
+        beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Plex", choiceLabel: choiceLabel,
+                                urlShape: url, expectedBytes: part.size,
+                                releaseInFlightOnFailure: false) {
             try session.start(ratingKey: ratingKey, from: url, to: destination,
-                              expectedBytes: part.size,
-                              byteRangeCheckpoint: true)
-            refreshRecords()
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Plex"),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Plex"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
+                              expectedBytes: part.size, byteRangeCheckpoint: true)
         }
     }
 
@@ -988,14 +963,10 @@ public final class DownloadManager {
                                        part: part, server: server, token: token, identity: identity)
         }
 
-        do {
-            recordDownloadDiagnostic("downloads.start", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "choice": .label(Self.diagnosticChoiceLabel(choice)),
-                "url_shape": .urlShape(request.url),
-                "expected_bytes": .bytes(expectedBytes),
-            ])
+        beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Jellyfin",
+                                choiceLabel: Self.diagnosticChoiceLabel(choice),
+                                urlShape: request.url, expectedBytes: expectedBytes,
+                                releaseInFlightOnFailure: true) {
             // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
             // the transcoder/remuxer — there is no separate "render then static download" phase, so
             // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
@@ -1015,27 +986,6 @@ public final class DownloadManager {
                                   case .optimize, .optimizeCompatible: return false
                                   }
                               }())
-            refreshRecords()
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
         }
     }
 
@@ -1432,14 +1382,12 @@ public final class DownloadManager {
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .emby,
                            server: server, token: token)
 
-        do {
-            recordDownloadDiagnostic("downloads.start", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "choice": .label(route == .original ? "original" : route == .compatibleRemux ? "optimize_compatible" : Self.diagnosticChoiceLabel(choice)),
-                "url_shape": .urlShape(request.url),
-                "expected_bytes": .bytes(expectedBytes),
-            ])
+        beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Emby",
+                                choiceLabel: route == .original ? "original"
+                                    : route == .compatibleRemux ? "optimize_compatible"
+                                    : Self.diagnosticChoiceLabel(choice),
+                                urlShape: request.url, expectedBytes: expectedBytes,
+                                releaseInFlightOnFailure: true) {
             if useServerSession {
                 // Transcode/remux download: rate is encoder-gated (served as it renders), forward-only
                 // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
@@ -1454,27 +1402,6 @@ public final class DownloadManager {
                               to: destination,
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: route == .original)
-            refreshRecords()
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
         }
     }
 
@@ -2313,6 +2240,52 @@ public final class DownloadManager {
     private func recordDownloadDiagnostic(_ name: String,
                                           fields: [String: DiagnosticFieldValue] = [:]) {
         AppDiagnostics.record(.downloads, name, fields: fields)
+    }
+
+    /// Shared terminal step for every download lane (#135 Stage 5b): record `downloads.start`, kick
+    /// off the background transfer via `start`, and on failure record `downloads.start_failed`,
+    /// surface the error, fail the row, and refresh. `start` performs the lane's own
+    /// `session.start(...)` call plus any pre-start side effects (transcode-sourced marking,
+    /// PlaySessionId persistence) so the two `session.start` overloads stay at their call sites.
+    ///
+    /// `releaseInFlightOnFailure` preserves a real per-lane difference: the JF/Emby encoder lanes
+    /// release the in-flight slot explicitly on a start failure, while the Plex static lane lets the
+    /// terminal `.failed`/`refreshRecords` release it (its caller never released here).
+    private func beginBackgroundTransfer(ratingKey: String, backendLabel: String, choiceLabel: String,
+                                         urlShape: URL?, expectedBytes: Int?,
+                                         releaseInFlightOnFailure: Bool,
+                                         start: () throws -> Void) {
+        recordDownloadDiagnostic("downloads.start", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backendLabel),
+            "choice": .label(choiceLabel),
+            "url_shape": .urlShape(urlShape),
+            "expected_bytes": .bytes(expectedBytes),
+        ])
+        do {
+            try start()
+            refreshRecords()
+        } catch let error as DownloadError {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backendLabel),
+                "error": .label(String(describing: error)),
+            ])
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
+            refreshRecords()
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backendLabel),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
+            refreshRecords()
+        }
     }
 
     private func downloadDiagnosticFields(item: MediaItem,
