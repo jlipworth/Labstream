@@ -1,13 +1,16 @@
 import SwiftUI
 import PMSKit
 
-/// Playlist page — a structural clone of `AlbumDetailView` minus the year header and
-/// disc sort (MUSIC-DESIGN §3.4): blurred composite-art backdrop, title and
-/// track-count/duration credits, Play / Shuffle, and the ordered track list. Items
-/// come from `GET /playlists/{ratingKey}/items` and PLAYLIST ORDER IS PRESERVED —
-/// no client-side sorting. Per-row 44-pt art because artwork varies across a
-/// playlist (unlike an album, where the cover is the header). Read-only in v1.
-struct PlaylistDetailView: View {
+/// Playlist page for the MediaBrowser backends (Jellyfin / Emby) (#111). A structural
+/// clone of the Plex `PlaylistDetailView` — blurred composite-art backdrop, title +
+/// "N tracks · duration" credits, Play / Shuffle, and the ordered track list — but the
+/// tracks come from the shared `MusicProvider` (`/Playlists/{id}/Items`, playlist order
+/// preserved) and play through the same backend-aware `MusicPlayerController` path.
+///
+/// A separate view (rather than reusing the Plex `PlaylistDetailView`) because that view
+/// loads via Plex's `PlaylistRequest`/`serverBaseURL`; here the provider abstracts the
+/// backend. Read-only, matching the Plex playlist detail.
+struct MediaBrowserPlaylistDetailView: View {
     let playlist: MediaItem
 
     @Environment(AppModel.self) private var appModel
@@ -16,12 +19,12 @@ struct PlaylistDetailView: View {
     @State private var tracks: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
 
-    /// Hero art size, matching the album detail header.
+    /// Hero art size, matching the album/playlist detail header.
     private let coverSize: CGFloat = 300
 
     var body: some View {
         ZStack {
-            artBackdrop
+            MusicArtBackdrop(art: playlist.musicArtPath)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Space.xxl) {
@@ -52,14 +55,6 @@ struct PlaylistDetailView: View {
         }
         .navigationTitle(playlist.title)
         .task { await load() }
-    }
-
-    // MARK: - Backdrop
-
-    /// Blurred, dimmed wash of the composite art behind the content — same decorative
-    /// treatment as `AlbumDetailView`. Never hit-testable.
-    private var artBackdrop: some View {
-        MusicArtBackdrop(art: playlist.musicArtPath)
     }
 
     // MARK: - Header
@@ -107,13 +102,11 @@ struct PlaylistDetailView: View {
         }
     }
 
-    /// "42 tracks · 2 hr 5 min" — counts the loaded items when present (truth), the
-    /// playlist row's `leafCount`/`duration` before they arrive; drops missing halves.
+    /// "42 tracks · 2 hr 5 min" — counts the loaded items (truth), the playlist row's
+    /// `leafCount` before they arrive; drops missing halves.
     private var credits: String? {
         let count = tracks.isEmpty ? playlist.leafCount : tracks.count
-        let totalMs = tracks.isEmpty
-            ? playlist.duration
-            : tracks.compactMap(\.duration).reduce(0, +)
+        let totalMs = tracks.isEmpty ? nil : tracks.compactMap(\.duration).reduce(0, +)
         var parts: [String] = []
         if let count { parts.append(count == 1 ? "1 track" : "\(count) tracks") }
         if let totalMs, totalMs > 0 { parts.append(formatPlaylistDuration(milliseconds: totalMs)) }
@@ -122,22 +115,20 @@ struct PlaylistDetailView: View {
 
     // MARK: - Track list
 
-    /// Tracks on a single material card in PLAYLIST ORDER, separated by hairlines —
-    /// same card as the album list, but rows carry 44-pt art instead of numbers.
+    /// Tracks on a single material card in PLAYLIST ORDER, separated by hairlines — same
+    /// card as the album list, but rows carry 44-pt art instead of numbers.
     private var trackList: some View {
         VStack(spacing: 0) {
             // Position-keyed: a playlist may contain the SAME track twice, so the
-            // ratingKey is not a unique row identity here (unlike an album).
+            // ratingKey is not a unique row identity here.
             ForEach(Array(tracks.enumerated()), id: \.offset) { index, track in
                 Button {
                     player.play(tracks: tracks, startingAt: index)
                 } label: {
-                    PlaylistTrackRow(track: track,
-                                     isCurrent: player.current?.ratingKey == track.ratingKey)
+                    MediaBrowserPlaylistTrackRow(track: track,
+                                                 isCurrent: player.current?.ratingKey == track.ratingKey)
                 }
                 .cardLink(cornerRadius: DS.Radius.chip)
-                // Queue actions (#17 Phase 4): playlist items are FULL tracks
-                // (Media/Part present), so the shared menu applies directly.
                 .contextMenu { TrackQueueMenu(track: track, player: player) }
 
                 if index < tracks.count - 1 {
@@ -164,18 +155,12 @@ struct PlaylistDetailView: View {
     }
 
     private func load() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            loadState = .failed("No server selected.")
-            return
-        }
+        if case .loaded = loadState { return }
         loadState = .loading
-        let req = PlaylistRequest.items(server: server, token: token,
-                                        identity: appModel.identity,
-                                        ratingKey: playlist.ratingKey)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            // Playlist order is the user's order — keep the server sequence verbatim.
-            tracks = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            // Provider returns the tracks in playlist order; never re-sort.
+            tracks = try await MediaBrowserMusicProvider(appModel: appModel)
+                .playlistTracks(playlist: playlist)
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
@@ -183,10 +168,10 @@ struct PlaylistDetailView: View {
     }
 }
 
-/// One playlist track row: 44-pt album art (artwork varies across a playlist),
-/// title — tinted with a leading waveform glyph when it's the playing track —
-/// "artist · album" subtitle, and duration.
-private struct PlaylistTrackRow: View {
+/// One playlist track row: 44-pt album art (artwork varies across a playlist), title —
+/// tinted with a leading waveform glyph when it's the playing track — "artist" subtitle,
+/// and duration. Mirrors the Plex `PlaylistTrackRow`.
+private struct MediaBrowserPlaylistTrackRow: View {
     let track: MediaItem
     let isCurrent: Bool
 
@@ -200,8 +185,9 @@ private struct PlaylistTrackRow: View {
                     .font(.body)
                     .foregroundStyle(isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     .lineLimit(1)
-                if !subtitle.isEmpty {
-                    Text(subtitle)
+                // On a track, `grandparentTitle` is the album-artist.
+                if let artist = track.grandparentTitle, !artist.isEmpty {
+                    Text(artist)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -210,45 +196,20 @@ private struct PlaylistTrackRow: View {
 
             Spacer(minLength: DS.Space.md)
 
-            if let duration = track.duration {
-                Text(formatTrackDuration(milliseconds: duration))
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
             if isCurrent {
                 Image(systemName: "waveform")
                     .font(.subheadline)
                     .foregroundStyle(.tint)
             }
+            if let duration = track.duration {
+                Text(formatTrackDuration(milliseconds: duration))
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, DS.Space.lg)
         .padding(.vertical, DS.Space.sm)
         .contentShape(Rectangle())
-        // Highlight comes from the wrapping button's `.cardLink(cornerRadius: .chip)` —
-        // a custom ButtonStyle misroutes pinches to neighboring rows (DEVELOPMENT.md).
-        // The outer inset keeps the row highlight clear of the card's corner curve.
         .padding(.horizontal, DS.Space.sm)
     }
-
-    /// "artist · album" — `originalTitle` (compilation performer) wins over
-    /// `grandparentTitle`; drops whichever half is missing.
-    private var subtitle: String {
-        let artist = [track.originalTitle, track.grandparentTitle]
-            .compactMap { $0 }.first { !$0.isEmpty }
-        return [artist, track.parentTitle]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
-    }
 }
-
-/// Header total as "2 hr 5 min" / "23 min" — coarse on purpose (Apple Music style);
-/// per-row durations stay exact. Shared with the MediaBrowser playlist detail (#111).
-func formatPlaylistDuration(milliseconds: Int) -> String {
-    let totalMinutes = max(1, milliseconds / 60_000)
-    let hours = totalMinutes / 60
-    let minutes = totalMinutes % 60
-    return hours > 0 ? "\(hours) hr \(minutes) min" : "\(minutes) min"
-}
-

@@ -128,6 +128,29 @@ struct JellyfinLibraryTests {
         #expect(query["enableImages"] == "true")
     }
 
+    @Test func playlistItemsRequestPreservesPlaylistOrder() throws {
+        // Playlist tracks must come from `/Playlists/{id}/Items` (playlist order), not a
+        // `ParentId` items browse (which sorts) (#111).
+        let request = try JellyfinLibrary.playlistItemsRequest(server: server,
+                                                               token: "token-abc",
+                                                               identity: identity,
+                                                               userId: "user-1",
+                                                               playlistId: "playlist-5",
+                                                               startIndex: 0,
+                                                               limit: 200)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Playlists/playlist-5/Items")
+        #expect(query["userId"] == "user-1")
+        #expect(query["startIndex"] == "0")
+        #expect(query["limit"] == "200")
+        #expect(query["enableImages"] == "true")
+        // No SortBy override — the endpoint returns the user's playlist order verbatim.
+        #expect(query["sortBy"] == nil)
+    }
+
     @Test func itemsRequestCarriesAlbumArtistAndArtistFilters() throws {
         // An album artist's albums (AlbumArtistIds) and full discography (ArtistIds) are
         // reached by filter, not by `parentId` — those entities are tag aggregates (#111).
