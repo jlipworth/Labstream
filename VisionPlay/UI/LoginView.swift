@@ -189,7 +189,7 @@ struct LoginView: View {
                 // The hero moment of sign-in: one glass cell per character (the
                 // link PIN is always 4 chars), Apple-pairing-code style, instead
                 // of a single cramped chip.
-                codeCells(code, width: 76, height: 96, fontSize: 54)
+                PairingCodeCells(code: code, width: 76, height: 96, fontSize: 54)
 
                 HStack(spacing: DS.Space.sm) {
                     ProgressView()
@@ -366,9 +366,14 @@ struct LoginView: View {
     }
 
     private func jellyfinQuickConnectWaiting(code: String) -> some View {
-        codeWaitingView(
+        PairingCodeView(
             code: code,
-            header: {
+            fallbackTitle: "Use username and password instead",
+            onFallback: {
+                authManager.cancelCurrentAuthorization()
+                jellyfinSignInMethod = .credentials
+                working = false
+            }) {
                 VStack(spacing: DS.Space.xs) {
                     Text("Enter this code in Jellyfin")
                         .font(.title3.weight(.semibold))
@@ -378,13 +383,7 @@ struct LoginView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                 }
-            },
-            fallbackTitle: "Use username and password instead",
-            onFallback: {
-                authManager.cancelCurrentAuthorization()
-                jellyfinSignInMethod = .credentials
-                working = false
-            })
+            }
     }
 
     // MARK: - Emby (Emby Connect PIN — primary — or server URL + username/password)
@@ -486,9 +485,14 @@ struct LoginView: View {
     }
 
     private func embyConnectWaiting(code: String) -> some View {
-        codeWaitingView(
+        PairingCodeView(
             code: code,
-            header: {
+            fallbackTitle: "Use a server URL instead",
+            onFallback: {
+                authManager.cancelCurrentAuthorization()
+                embySignInMethod = .credentials
+                working = false
+            }) {
                 VStack(spacing: DS.Space.xs) {
                     Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
                         .font(.title3)
@@ -498,13 +502,7 @@ struct LoginView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                 }
-            },
-            fallbackTitle: "Use a server URL instead",
-            onFallback: {
-                authManager.cancelCurrentAuthorization()
-                embySignInMethod = .credentials
-                working = false
-            })
+            }
     }
 
     private func embyServerPicker(_ servers: [AuthManager.EmbyConnectServerChoice]) -> some View {
@@ -624,50 +622,6 @@ struct LoginView: View {
 
     private var hasJellyfinServerInput: Bool {
         !jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var codeCellShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
-    }
-
-    /// One glass cell per character — the shared "pairing-code" treatment used by every
-    /// backend's sign-in code screen, so Plex / Jellyfin / Emby stay visually identical.
-    private func codeCells(_ code: String, width: CGFloat, height: CGFloat, fontSize: CGFloat) -> some View {
-        HStack(spacing: DS.Space.md) {
-            ForEach(Array(code.enumerated()), id: \.offset) { _, character in
-                Text(String(character))
-                    .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
-                    .frame(width: width, height: height)
-                    .background(.thinMaterial, in: codeCellShape)
-                    .overlay(codeCellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
-            }
-        }
-        .padding(.vertical, DS.Space.xs)
-    }
-
-    /// Shared "enter this code / waiting for authorization" screen used by the Jellyfin Quick
-    /// Connect and Emby Connect code flows — identical layout; only the header + fallback differ.
-    private func codeWaitingView<Header: View>(
-        code: String,
-        @ViewBuilder header: () -> Header,
-        fallbackTitle: String,
-        onFallback: @escaping () -> Void
-    ) -> some View {
-        VStack(spacing: DS.Space.lg) {
-            header()
-
-            codeCells(code, width: 64, height: 82, fontSize: 44)
-
-            HStack(spacing: DS.Space.sm) {
-                ProgressView()
-                Text("Waiting for authorization…")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            Button(fallbackTitle, action: onFallback)
-                .buttonStyle(.bordered)
-        }
     }
 
     // MARK: - Error presentation
