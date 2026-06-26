@@ -6,9 +6,7 @@ import PMSKit
 struct LibrariesView: View {
     @Environment(AppModel.self) private var appModel
 
-    @State private var sections: [PlexSection] = []
-    @State private var jellyfinViews: [JellyfinLibraryLink] = []
-    @State private var embyViews: [EmbyLibraryLink] = []
+    @State private var rootItems: [LibraryRootItem] = []
     @State private var loadState: BrowseLoadState = .idle
     @State private var loadedIdentity: String?
     @State private var loadGeneration = 0
@@ -31,24 +29,19 @@ struct LibrariesView: View {
                                        systemImage: "exclamationmark.triangle",
                                        description: Text(message))
             case .loaded:
-                if appModel.activeBackend == .jellyfin {
-                    jellyfinLibrariesList
-                } else if appModel.activeBackend == .emby {
-                    embyLibrariesList
-                } else {
-                    plexLibrariesList
-                }
+                librariesList
             }
         }
         .navigationTitle("Libraries")
-        .navigationDestination(for: PlexSection.self) { section in
-            LibraryGridView(section: section)
-        }
-        .navigationDestination(for: JellyfinLibraryLink.self) { view in
-            LibraryGridView(jellyfin: view)
-        }
-        .navigationDestination(for: EmbyLibraryLink.self) { view in
-            LibraryGridView(emby: view)
+        .navigationDestination(for: LibraryRootItem.Destination.self) { destination in
+            switch destination {
+            case .plex(let section):
+                LibraryGridView(section: section)
+            case .jellyfin(let view):
+                LibraryGridView(jellyfin: view)
+            case .emby(let view):
+                LibraryGridView(emby: view)
+            }
         }
         .navigationDestination(for: MediaItem.self) { item in
             // Capture the active backend as the item's origin (#100) so actions resolve
@@ -79,62 +72,21 @@ struct LibrariesView: View {
         appModel.activeBrowseSessionKey
     }
 
-    // The Libraries menu is one shared card grid across all three backends (GH #94).
-    // Each backend feeds the same `LibrarySectionCard` via a `LibrarySectionKind`;
+    // The Libraries menu is one shared card grid across all three backends (GH #94/#153).
+    // Each backend maps its native section/view type into a `LibraryRootItem` descriptor;
     // layout (`librarySectionColumns`) and empty-state copy are identical, so the menu
     // reads as the same app regardless of which server is signed in.
 
     @ViewBuilder
-    private var plexLibrariesList: some View {
-        if sections.isEmpty {
+    private var librariesList: some View {
+        if rootItems.isEmpty {
             librariesEmptyState
         } else {
             ScrollView {
                 LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
-                    ForEach(sections) { section in
-                        NavigationLink(value: section) {
-                            LibrarySectionCard(title: section.title,
-                                               kind: LibrarySectionKind(plexType: section.type))
-                        }
-                        .cardLink(cornerRadius: DS.Radius.card)
-                    }
-                }
-                .padding(DS.Space.xl)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var jellyfinLibrariesList: some View {
-        if jellyfinViews.isEmpty {
-            librariesEmptyState
-        } else {
-            ScrollView {
-                LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
-                    ForEach(jellyfinViews) { view in
-                        NavigationLink(value: view) {
-                            LibrarySectionCard(title: view.title,
-                                               kind: LibrarySectionKind(collectionType: view.collectionType))
-                        }
-                        .cardLink(cornerRadius: DS.Radius.card)
-                    }
-                }
-                .padding(DS.Space.xl)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var embyLibrariesList: some View {
-        if embyViews.isEmpty {
-            librariesEmptyState
-        } else {
-            ScrollView {
-                LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
-                    ForEach(embyViews) { view in
-                        NavigationLink(value: view) {
-                            LibrarySectionCard(title: view.title,
-                                               kind: LibrarySectionKind(collectionType: view.collectionType))
+                    ForEach(rootItems) { item in
+                        NavigationLink(value: item.destination) {
+                            LibrarySectionCard(title: item.title, kind: item.kind)
                         }
                         .cardLink(cornerRadius: DS.Radius.card)
                     }
@@ -182,10 +134,11 @@ struct LibrariesView: View {
                 maybePresentFirstRunPrompt(backendKey: backendKey,
                                            candidates: allViews.map { candidate(jellyfin: $0) })
                 let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
-                jellyfinViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
+                let visible = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
+                rootItems = visible.map(LibraryRootItem.init(jellyfin:))
                 loadedIdentity = activeIdentity
                 loadState = .loaded
-                span.end(fields: ["library_count": jellyfinViews.count])
+                span.end(fields: ["library_count": rootItems.count])
             } catch {
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
@@ -203,10 +156,11 @@ struct LibrariesView: View {
                 maybePresentFirstRunPrompt(backendKey: backendKey,
                                            candidates: allViews.map { candidate(emby: $0) })
                 let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
-                embyViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
+                let visible = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
+                rootItems = visible.map(LibraryRootItem.init(emby:))
                 loadedIdentity = activeIdentity
                 loadState = .loaded
-                span.end(fields: ["library_count": embyViews.count])
+                span.end(fields: ["library_count": rootItems.count])
             } catch {
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
@@ -234,10 +188,11 @@ struct LibrariesView: View {
             maybePresentFirstRunPrompt(backendKey: backendKey,
                                        candidates: nonMusic.map { candidate(plex: $0) })
             let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
-            sections = LibraryVisibility.visible(nonMusic, hiddenIDs: hidden) { $0.key }
+            let visible = LibraryVisibility.visible(nonMusic, hiddenIDs: hidden) { $0.key }
+            rootItems = visible.map(LibraryRootItem.init(plex:))
             loadedIdentity = activeIdentity
             loadState = .loaded
-            span.end(fields: ["library_count": sections.count])
+            span.end(fields: ["library_count": rootItems.count])
         } catch {
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
@@ -286,6 +241,44 @@ struct LibrariesView: View {
         LibraryVisibility.Candidate(id: view.id,
                                     title: view.title,
                                     kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
+    }
+}
+
+struct LibraryRootItem: Identifiable, Hashable {
+    enum Destination: Hashable {
+        case plex(PlexSection)
+        case jellyfin(JellyfinLibraryLink)
+        case emby(EmbyLibraryLink)
+    }
+
+    let id: String
+    let backend: MediaBackendChoice
+    let title: String
+    let kind: LibrarySectionKind
+    let destination: Destination
+
+    init(plex section: PlexSection) {
+        self.id = "plex:\(section.key)"
+        self.backend = .plex
+        self.title = section.title
+        self.kind = LibrarySectionKind(plexType: section.type)
+        self.destination = .plex(section)
+    }
+
+    init(jellyfin view: JellyfinLibraryLink) {
+        self.id = "jellyfin:\(view.id)"
+        self.backend = .jellyfin
+        self.title = view.title
+        self.kind = LibrarySectionKind(collectionType: view.collectionType)
+        self.destination = .jellyfin(view)
+    }
+
+    init(emby view: EmbyLibraryLink) {
+        self.id = "emby:\(view.id)"
+        self.backend = .emby
+        self.title = view.title
+        self.kind = LibrarySectionKind(collectionType: view.collectionType)
+        self.destination = .emby(view)
     }
 }
 
