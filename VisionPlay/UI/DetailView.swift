@@ -42,6 +42,9 @@ struct DetailView: View {
     @State private var showDownloadOptions = false
     @State private var playbackErrorMessage: String?
     @State private var isResolvingPlayback = false
+    @State private var isTogglingWatched = false
+    @State private var metadataLoadingRatingKey: String?
+    @State private var playbackRequestID: UUID?
     @AppStorage(PlaybackPreferences.Keys.remoteQualityKbps) private var remoteMaxVideoBitrateKbps = PlaybackPreferences.defaultRemoteQualityKbps
     @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
@@ -298,7 +301,9 @@ struct DetailView: View {
             playerCover
         }
         .sheet(isPresented: $showDownloadOptions) {
-            DownloadOptionsSheet(item: detailed, mediaIndex: selectedMediaIndex)
+            DownloadOptionsSheet(item: detailed,
+                                 mediaIndex: selectedMediaIndex,
+                                 backend: actionBackend.downloadBackendKind)
         }
     }
 
@@ -414,7 +419,11 @@ struct DetailView: View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             HStack(spacing: DS.Space.lg) {
                 Button {
-                    Task { await startPlayback() }
+                    guard !isResolvingPlayback, !presentingPlayer, metadataReadyForActions else { return }
+                    isResolvingPlayback = true
+                    let requestID = UUID()
+                    playbackRequestID = requestID
+                    Task { await startPlayback(requestID: requestID) }
                 } label: {
                     Group {
                         if isResolvingPlayback {
@@ -428,7 +437,7 @@ struct DetailView: View {
                     .padding(.vertical, DS.Space.xs)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isResolvingPlayback)
+                .disabled(isResolvingPlayback || !metadataReadyForActions)
 
                 downloadButton
 
@@ -510,7 +519,7 @@ struct DetailView: View {
                     .font(.title3)
             }
             .buttonStyle(.bordered)
-            .disabled(isDownloading)
+            .disabled(isDownloading || !metadataReadyForActions)
         }
     }
 
@@ -519,6 +528,8 @@ struct DetailView: View {
     @ViewBuilder
     private var markWatchedButton: some View {
         Button {
+            guard !isTogglingWatched else { return }
+            isTogglingWatched = true
             Task { await toggleWatched() }
         } label: {
             Label(isWatched ? "Mark Unwatched" : "Mark Watched",
@@ -526,6 +537,7 @@ struct DetailView: View {
                 .font(.title3)
         }
         .buttonStyle(.bordered)
+        .disabled(isTogglingWatched)
     }
 
     /// Movie-version chooser (#108) — only shown when the grid collapsed several distinct
@@ -843,6 +855,8 @@ struct DetailView: View {
     /// request. On failure we roll the override back. NOTE: never logs the token — the
     /// builders carry it internally and we only ever inspect the `Bool` outcome here.
     private func toggleWatched() async {
+        defer { isTogglingWatched = false }
+        guard !isResolvingPlayback else { return }
         let wasWatched = isWatched
         // Optimistic flip.
         watchedOverride = !wasWatched
@@ -876,10 +890,23 @@ struct DetailView: View {
         }
     }
 
-    private func startPlayback() async {
+    private var metadataReadyForActions: Bool {
+        metadataLoadingRatingKey == nil && detailed.ratingKey == activeVersionRatingKey
+    }
+
+    private func startPlayback(requestID: UUID) async {
+        defer {
+            if playbackRequestID == requestID {
+                isResolvingPlayback = false
+                playbackRequestID = nil
+            }
+        }
+        guard playbackRequestID == requestID, metadataReadyForActions, !presentingPlayer else { return }
         // Defense-in-depth (#15): music is filtered from browse, but never let a music item
         // launch the video player. Unreachable in normal flow.
         guard !detailed.isMusic else { return }
+        let launchRatingKey = detailed.ratingKey
+        let launchBackend = actionBackend
         let span = PerformanceInstrumentation.begin(.playbackResolve,
                                                      backend: actionBackend.performanceLabel,
                                                      fields: [
@@ -889,22 +916,29 @@ struct DetailView: View {
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
         playingItem = itemWithResumeRewind(detailed)
-        switch actionBackend {
+        switch launchBackend {
         case .plex:
             remotePlayback = nil
             embyRemotePlayback = nil
             presentingPlayer = true
             span.end(fields: ["path_mode": "plex_stream"])
         case .jellyfin:
-            isResolvingPlayback = true
             embyRemotePlayback = nil
             do {
                 let service = JellyfinBrowseService(appModel: appModel)
-                let fetched = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                let fetched = (try? await service.metadata(itemId: launchRatingKey)) ?? detailed
+                guard playbackRequestID == requestID,
+                      metadataReadyForActions,
+                      actionBackend == launchBackend,
+                      detailed.ratingKey == launchRatingKey else { return }
                 let playbackItem = itemWithResumeRewind(fetched)
                 playingItem = playbackItem
                 let result = try await service
                     .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
+                guard playbackRequestID == requestID,
+                      metadataReadyForActions,
+                      actionBackend == launchBackend,
+                      detailed.ratingKey == launchRatingKey else { return }
                 remotePlayback = JellyfinRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
@@ -919,17 +953,23 @@ struct DetailView: View {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 playbackErrorMessage = friendlyMessage(error)
             }
-            isResolvingPlayback = false
         case .emby:
-            isResolvingPlayback = true
             remotePlayback = nil
             do {
                 let service = EmbyBrowseService(appModel: appModel)
-                let fetched = (try? await service.metadata(itemId: detailed.ratingKey)) ?? detailed
+                let fetched = (try? await service.metadata(itemId: launchRatingKey)) ?? detailed
+                guard playbackRequestID == requestID,
+                      metadataReadyForActions,
+                      actionBackend == launchBackend,
+                      detailed.ratingKey == launchRatingKey else { return }
                 let playbackItem = itemWithResumeRewind(fetched)
                 playingItem = playbackItem
                 let result = try await service
                     .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
+                guard playbackRequestID == requestID,
+                      metadataReadyForActions,
+                      actionBackend == launchBackend,
+                      detailed.ratingKey == launchRatingKey else { return }
                 embyRemotePlayback = EmbyRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
@@ -944,7 +984,6 @@ struct DetailView: View {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 playbackErrorMessage = friendlyMessage(error)
             }
-            isResolvingPlayback = false
         }
     }
 
@@ -1095,12 +1134,20 @@ struct DetailView: View {
     }
 
     private func refreshMetadata() async {
+        let requestedRatingKey = activeVersionRatingKey
+        metadataLoadingRatingKey = requestedRatingKey
+        defer {
+            if metadataLoadingRatingKey == requestedRatingKey {
+                metadataLoadingRatingKey = nil
+            }
+        }
         // Resolve metadata against the item's origin backend (#100), not the live active
         // backend, so a detail that lingered across a switch refreshes from the right server.
         let span = PerformanceInstrumentation.begin(.detailMetadata,
                                                      backend: actionBackend.performanceLabel)
         if actionBackend == .jellyfin {
-            if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: activeVersionRatingKey) {
+            if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: requestedRatingKey) {
+                guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
                 detailed = full
                 selectedMediaIndex = 0
                 watchedOverride = nil
@@ -1111,7 +1158,8 @@ struct DetailView: View {
             return
         }
         if actionBackend == .emby {
-            if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: activeVersionRatingKey) {
+            if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: requestedRatingKey) {
+                guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
                 detailed = full
                 selectedMediaIndex = 0
                 watchedOverride = nil
@@ -1126,9 +1174,10 @@ struct DetailView: View {
             return
         }
         let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: activeVersionRatingKey)
+                                     identity: appModel.identity, ratingKey: requestedRatingKey)
         if let resp = try? await appModel.client.send(req, as: MetadataResponse.self),
            let full = resp.mediaContainer.metadata.first {
+            guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
             detailed = full
             // The fresh payload may have a different number of versions; clamp the
             // selection and drop any stale optimistic watched override now that we have

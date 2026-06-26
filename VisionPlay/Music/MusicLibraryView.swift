@@ -17,6 +17,7 @@ struct MusicLibraryView: View {
     /// Server identity the current sections were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can share the same base URL.
     @State private var loadedIdentity: String?
+    @State private var loadGeneration = 0
 
     var body: some View {
         if appModel.activeBackend == .jellyfin {
@@ -84,6 +85,8 @@ struct MusicLibraryView: View {
         // Home pivot). Only pull-to-refresh and a real server change refetch.
         let activeIdentity = loadIdentity
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No reachable Plex server selected.")
             return
@@ -92,11 +95,13 @@ struct MusicLibraryView: View {
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
+            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             sections = resp.mediaContainer.directory.filter(\.isMusic)
             if selectedSectionKey == nil { selectedSectionKey = sections.first?.key }
             loadedIdentity = activeIdentity
             loadState = .loaded
         } catch {
+            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }
@@ -189,6 +194,7 @@ private struct MusicHomePivot: View {
     @State private var loadState: HomeView.LoadState = .idle
     @State private var isShuffling = false
     @State private var shuffleError: String?
+    @State private var loadGeneration = 0
 
     var body: some View {
         ScrollView {
@@ -260,6 +266,8 @@ private struct MusicHomePivot: View {
         // the rails for the skeleton and throw away scroll position. Refresh only
         // on first load or explicit pull-to-refresh.
         if !force, case .loaded = loadState { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
@@ -272,6 +280,7 @@ private struct MusicHomePivot: View {
                                                    identity: appModel.identity,
                                                    sectionKey: section.key)
             let resp = try await appModel.client.send(hubsReq, as: HubsResponse.self)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             hubs = resp.mediaContainer.hub.compactMap { hub in
                 // The played hub carries ARTISTS; our history-songs rail replaces it.
                 // Prefix-match the identifier; exact ids drift across PMS versions.
@@ -283,14 +292,17 @@ private struct MusicHomePivot: View {
                            size: items.count, metadata: items)
             }
 
-            historyTracks = await loadHistoryTracks(server: server, token: token)
+            let freshHistoryTracks = await loadHistoryTracks(server: server, token: token)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            historyTracks = freshHistoryTracks
             fallbackAlbums = []
             loadState = .loaded
         } catch {
             // Rung 3 — hubs failed entirely: degrade to exactly the old layout.
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             hubs = []
             historyTracks = []
-            await loadFallback(server: server, token: token)
+            await loadFallback(server: server, token: token, generation: generation)
         }
     }
 
@@ -313,15 +325,17 @@ private struct MusicHomePivot: View {
         return tracks
     }
 
-    private func loadFallback(server: URL, token: String) async {
+    private func loadFallback(server: URL, token: String, generation: Int) async {
         let req = MusicRequest.recentlyAddedAlbums(server: server, token: token,
                                                    identity: appModel.identity,
                                                    sectionKey: section.key)
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             fallbackAlbums = resp.mediaContainer.metadata
             loadState = .loaded
         } catch {
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }
@@ -573,6 +587,7 @@ private struct MusicPlaylistsPivot: View {
 
     @State private var playlists: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadGeneration = 0
 
     var body: some View {
         ScrollView {
@@ -622,6 +637,8 @@ private struct MusicPlaylistsPivot: View {
     }
 
     private func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             loadState = .failed("No server selected.")
             return
@@ -631,9 +648,11 @@ private struct MusicPlaylistsPivot: View {
                                                  identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             playlists = resp.mediaContainer.metadata.filter { $0.kind == .playlist }
             loadState = .loaded
         } catch {
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }

@@ -375,6 +375,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         return true
     }
 
+    private func pauseStillApplies(ratingKey: String) -> Bool {
+        store.records.first { $0.ratingKey == ratingKey }?.status == .downloading
+    }
+
     /// Pause any in-flight transfer for a ratingKey. Prefer URLSession resume data for static
     /// byte-range-safe lanes; for forward-only transcode/remux streams, this still becomes a safe
     /// user pause (no auto-retry until Resume), but Resume restarts cleanly.
@@ -404,6 +408,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                         "download_id": .identifier(ratingKey),
                         "bytes": .bytes(bytes),
                     ])
+                    guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
                     self.store.setStatus(ratingKey: ratingKey, .paused)
                     self.onError?(ratingKey, .interruptedResumable)
                     self.onChange?()
@@ -417,6 +422,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                             "resume_blob_bytes": .bytes(resumeBytes),
                             "supports_resume": .bool(supportsResume),
                         ])
+                        guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
                         if let resumeData, !resumeData.isEmpty, supportsResume {
                             self.store.setResumeData(ratingKey: ratingKey, resumeData)
                         }
@@ -426,13 +432,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                     }
                 } else {
                     task.cancel()
+                    guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
                     self.store.setStatus(ratingKey: ratingKey, .paused)
                     self.onError?(ratingKey, .interruptedResumable)
                     self.onChange?()
                 }
             }
 
-            if !matched {
+            if !matched, self.pauseStillApplies(ratingKey: ratingKey) {
                 self.store.setStatus(ratingKey: ratingKey, .paused)
                 self.onChange?()
             }

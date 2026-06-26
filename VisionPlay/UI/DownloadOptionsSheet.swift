@@ -10,6 +10,7 @@ struct DownloadOptionsSheet: View {
     let item: MediaItem
     var mediaIndex: Int = 0
     var partIndex: Int = 0
+    var backend: DownloadBackendKind? = nil
 
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
@@ -71,9 +72,14 @@ struct DownloadOptionsSheet: View {
 
     @State private var probeState: ProbeState = .checking
     @State private var selectedChoice: DownloadSelection?
+    @State private var retryingExistingDownload = false
+
+    private var sheetBackend: DownloadBackendKind {
+        backend ?? appModel.activeBackend.downloadBackendKind
+    }
 
     private var existingRecord: DownloadRecord? {
-        let key = downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind)
+        let key = downloadManager.recordKey(for: item, backend: sheetBackend)
         return downloadManager.records.first { $0.ratingKey == key }
     }
 
@@ -132,12 +138,12 @@ struct DownloadOptionsSheet: View {
 
     private func runProbe() async {
         guard existingRecord == nil else { return }
-        downloadLog.notice("download-sheet-run-probe item=\(item.ratingKey, privacy: .public) activeBackend=\(appModel.activeBackend.rawValue, privacy: .public) mediaIndex=\(mediaIndex, privacy: .public)")
-        if appModel.activeBackend == .jellyfin {
+        downloadLog.notice("download-sheet-run-probe item=\(item.ratingKey, privacy: .public) activeBackend=\(String(describing: sheetBackend), privacy: .public) mediaIndex=\(mediaIndex, privacy: .public)")
+        if sheetBackend == .jellyfin {
             await runJellyfinProbe()
             return
         }
-        if appModel.activeBackend == .emby {
+        if sheetBackend == .emby {
             await runEmbyProbe()
             return
         }
@@ -525,7 +531,7 @@ struct DownloadOptionsSheet: View {
 
 
     private func plexOriginalOptimizePreset(in presets: [String]) -> String? {
-        guard appModel.activeBackend == .plex else { return nil }
+        guard sheetBackend == .plex else { return nil }
         return presets.first {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 .localizedCaseInsensitiveCompare("Original video quality") == .orderedSame
@@ -549,7 +555,7 @@ struct DownloadOptionsSheet: View {
     /// alternate versions differently and use the compatible-remux lane), and never offered when
     /// the item has a single version.
     private func plexExistingVersions() -> [ExistingVersionOption] {
-        guard appModel.activeBackend == .plex, let media = item.media, media.count > 1 else {
+        guard sheetBackend == .plex, let media = item.media, media.count > 1 else {
             downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(item.media?.count ?? 0, privacy: .public) offered=0")
             return []
         }
@@ -879,7 +885,7 @@ struct DownloadOptionsSheet: View {
         // If the source cannot be stored raw, default to the highest source-quality-preserving
         // option before bitrate caps. Plex's version is an optimized/prepared copy; Jellyfin/Emby
         // use the compatible remux lane.
-        if appModel.activeBackend == .plex, let plexOriginal = plexOriginalOptimizePreset(in: presets) {
+        if sheetBackend == .plex, let plexOriginal = plexOriginalOptimizePreset(in: presets) {
             return .plexOriginalQuality(plexOriginal)
         }
         if compatibleRemuxAvailable { return .optimizeCompatible }
@@ -936,9 +942,12 @@ struct DownloadOptionsSheet: View {
                 Label("Download failed", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
                 Button {
+                    guard !retryingExistingDownload else { return }
+                    retryingExistingDownload = true
                     retryDownload()
                     dismiss()
                 } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
+                .disabled(retryingExistingDownload)
             } else if isPaused {
                 Label("Download paused", systemImage: "pause.circle")
                     .foregroundStyle(.secondary)
@@ -947,9 +956,12 @@ struct DownloadOptionsSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Button {
+                    guard !retryingExistingDownload else { return }
+                    retryingExistingDownload = true
                     retryDownload()
                     dismiss()
                 } label: { Label("Resume Download", systemImage: "play.circle") }
+                .disabled(retryingExistingDownload)
             } else if isPreparing {
                 // Emby convert-then-download: the server is rendering the file before any byte
                 // download begins. Surface it as an indeterminate "Preparing on server…" with the
@@ -968,12 +980,12 @@ struct DownloadOptionsSheet: View {
                 Text("\(Int(record.progress * 100))%")
                     .font(.caption).foregroundStyle(.secondary)
                 Button {
-                    downloadManager.pause(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
+                    downloadManager.pause(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
                     dismiss()
                 } label: { Label("Pause Download", systemImage: "pause.circle") }
             }
             Button(role: .destructive) {
-                downloadManager.delete(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
+                downloadManager.delete(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
                 dismiss()
             } label: {
                 Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
@@ -1002,15 +1014,15 @@ struct DownloadOptionsSheet: View {
     private func retryDownload() {
         // Exhaustive over the backend so a new lane is a compile error here, not a silent
         // fall-through into the Plex retry path (which would mis-key and no-op for Emby).
-        switch appModel.activeBackend {
+        switch sheetBackend {
         case .plex:
             downloadManager.retry(ratingKey: item.ratingKey)
         case .jellyfin:
-            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
+            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
         case .emby:
             // Re-run the full Emby lane, which re-probes PlaybackInfo and re-decides original vs
             // transcode (a now-compatible file goes original). `.original` is intent-only here.
-            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: appModel.activeBackend.downloadBackendKind))
+            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
         }
     }
 
@@ -1023,7 +1035,7 @@ struct DownloadOptionsSheet: View {
         let downloadPartIndex = partIndex(for: selectedChoice)
         // Exhaustive over the backend so a new lane is a compile error here, not a silent
         // fall-through into the Plex download path (which fails quietly on nil Plex creds).
-        switch appModel.activeBackend {
+        switch sheetBackend {
         case .plex:
             Task { await downloadManager.download(item, choice: choice,
                                                   mediaIndex: downloadMediaIndex, partIndex: downloadPartIndex) }
