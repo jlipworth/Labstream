@@ -305,11 +305,17 @@ enum BrowseAPI {
     }
 
     /// `GET /library/sections/<key>/firstCharacter` — available initials + counts for fast jumps.
+    /// `type` scopes the initials to one item type within the section (8 = artist, 9 = album),
+    /// so a music section's Artists and Albums rails get their own letter runs (#111). Omitted
+    /// for the video grids, which use the section's default type.
     static func firstCharacters(server: URL, token: String, identity: ClientIdentity,
-                                sectionKey: String) -> PlexRequest {
-        PlexRequest(url: server.appendingPathComponent("/library/sections/\(sectionKey)/firstCharacter"),
-                    method: "GET",
-                    headers: PlexHeaders.standard(identity: identity, token: token))
+                                sectionKey: String, type: Int? = nil) -> PlexRequest {
+        var queryItems: [URLQueryItem] = []
+        if let type { queryItems.append(.init(name: "type", value: String(type))) }
+        return PlexRequest(url: server.appendingPathComponent("/library/sections/\(sectionKey)/firstCharacter"),
+                           method: "GET",
+                           queryItems: queryItems,
+                           headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
     /// `GET /hubs` — the home hubs (Continue Watching, Recently Added, …).

@@ -117,9 +117,11 @@ private struct MediaBrowserMusicLibraryView: View {
             case .home:
                 MediaBrowserMusicHome(library: library).id("home")
             case .artists:
-                MediaBrowserMusicGrid(library: library, kind: .artists).id("artists")
+                MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .artists)
+                    .id("artists")
             case .albums:
-                MediaBrowserMusicGrid(library: library, kind: .albums).id("albums")
+                MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .albums)
+                    .id("albums")
             case .playlists:
                 MediaBrowserMusicPlaylists().id("playlists")
             }
@@ -336,114 +338,5 @@ private struct MediaBrowserPlaylistRow: View {
     }
 }
 
-/// A forward-paged adaptive grid of a MediaBrowser music library's albums or artists.
-/// Loads a page at a time, appending as the last cell appears — simpler than the Plex
-/// random-access grid, which it doesn't need (these listings are browsed top-down).
-private struct MediaBrowserMusicGrid: View {
-    enum Kind { case albums, artists }
-
-    let library: MusicLibrary
-    let kind: Kind
-
-    @Environment(AppModel.self) private var appModel
-
-    @State private var items: [MediaItem] = []
-    @State private var total = 0
-    @State private var loadState: HomeView.LoadState = .idle
-    @State private var loadingMore = false
-
-    private let pageSize = 120
-    private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
-                                    spacing: DS.Space.xl)]
-
-    /// Albums sort newest-first; artists alphabetically.
-    private var sort: MusicBrowseSort { kind == .albums ? .recentlyAdded : .name }
-
-    var body: some View {
-        ScrollView {
-            switch loadState {
-            case .idle, .loading:
-                ProgressView()
-                    .controlSize(.large)
-                    .frame(maxWidth: .infinity, minHeight: 360)
-            case .failed(let message):
-                ContentUnavailableView("Couldn’t load \(library.title)",
-                                       systemImage: "exclamationmark.triangle",
-                                       description: Text(message))
-                    .frame(maxWidth: .infinity, minHeight: 360)
-            case .loaded:
-                if items.isEmpty {
-                    ContentUnavailableView(kind == .albums ? "No Albums" : "No Artists",
-                                           systemImage: "music.note",
-                                           description: Text("Nothing to show in \(library.title)."))
-                        .frame(maxWidth: .infinity, minHeight: 360)
-                } else {
-                    grid
-                }
-            }
-        }
-        .task { await loadFirstPage() }
-    }
-
-    private var grid: some View {
-        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                NavigationLink(value: item) {
-                    SquareArtCell(item: item, size: MusicArt.gridMin, subtitle: subtitle(item))
-                }
-                .cardLink()
-                .onAppear {
-                    // Page in more as the tail approaches.
-                    if index >= items.count - 12 { Task { await loadMoreIfNeeded() } }
-                }
-            }
-        }
-        .padding(.horizontal, DS.Space.xxl)
-        .padding(.vertical, DS.Space.xl)
-    }
-
-    /// "Artist · 1973" on albums, dropping whichever half is missing; nil for artists.
-    private func subtitle(_ item: MediaItem) -> String? {
-        guard kind == .albums else { return nil }
-        let parts = [item.parentTitle, item.year.map(String.init)].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private func loadFirstPage() async {
-        if case .loaded = loadState { return }
-        loadState = .loading
-        do {
-            let page = try await fetch(start: 0)
-            items = page.items
-            total = page.total
-            loadState = .loaded
-        } catch {
-            loadState = .failed(friendlyMessage(error))
-        }
-    }
-
-    private func loadMoreIfNeeded() async {
-        guard !loadingMore, items.count < total else { return }
-        loadingMore = true
-        defer { loadingMore = false }
-        do {
-            let page = try await fetch(start: items.count)
-            // Guard against duplicate appends from overlapping onAppear triggers.
-            let known = Set(items.map(\.ratingKey))
-            items.append(contentsOf: page.items.filter { !known.contains($0.ratingKey) })
-        } catch {
-            // Non-fatal: keep what we have; a later scroll retries.
-        }
-    }
-
-    private func fetch(start: Int) async throws -> MusicPage {
-        switch kind {
-        case .albums:
-            return try await appModel.musicProvider.albums(libraryID: library.id, sort: sort,
-                                                           start: start, size: pageSize)
-        case .artists:
-            return try await appModel.musicProvider.artists(libraryID: library.id, sort: sort,
-                                                            start: start, size: pageSize)
-        }
-    }
-}
+// The Albums/Artists grids now use the shared `MusicPagedGrid` (#111) — random-access
+// paging + A–Z rail + sort menu — so the old forward-paged `MediaBrowserMusicGrid` is gone.

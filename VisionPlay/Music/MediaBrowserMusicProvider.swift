@@ -142,6 +142,26 @@ struct MediaBrowserMusicProvider: MusicProvider {
         var tracker = HomeRailsLoadTracker()
         var rails: [MusicHomeRail] = []
 
+        // Discover leads: a random album shelf. Unlike Recently Added (whose freshest items
+        // are mostly art-less here), a random draw is ~95% covered art, so it reads well at the
+        // top of Home and surfaces the back catalog (#111).
+        let discover = await tracker.attempt {
+            try await browser.musicItemsPage(parentId: libraryID,
+                                             recursive: true,
+                                             includeItemTypes: "MusicAlbum",
+                                             sortBy: "Random",
+                                             sortOrder: "Ascending",
+                                             albumArtistIds: nil,
+                                             artistIds: nil,
+                                             filters: [],
+                                             startIndex: nil,
+                                             limit: 20).items
+        } ?? []
+        if !discover.isEmpty {
+            rails.append(MusicHomeRail(id: "discover", title: "Discover",
+                                       items: discover, style: .albums))
+        }
+
         let recentlyAdded = await tracker.attempt {
             try await browser.musicLatestItems(parentId: libraryID,
                                                includeItemTypes: "MusicAlbum",

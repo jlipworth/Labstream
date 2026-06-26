@@ -252,7 +252,7 @@ private func jellyfinLibraryRecursive(for view: JellyfinLibraryLink) -> Bool {
     MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
 }
 
-private struct FirstCharacterResponse: Decodable {
+struct FirstCharacterResponse: Decodable {
     let mediaContainer: Container
     enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
 

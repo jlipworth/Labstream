@@ -46,11 +46,31 @@ struct MusicPage {
 }
 
 /// Cross-backend sort options for the artist/album grids. Each provider maps these onto
-/// its own server's sort parameters.
-enum MusicBrowseSort {
+/// its own server's sort parameters. `rawValue` is a stable key, folded into the shared
+/// paging source's identity so a sort change rebuilds the grid (#111).
+enum MusicBrowseSort: String, CaseIterable, Identifiable, Sendable {
     case name
     case recentlyAdded
     case year
+
+    var id: String { rawValue }
+
+    /// Menu label. "Name" reads as "Title" for albums but the same key drives both grids.
+    var label: String {
+        switch self {
+        case .name:          return "Name"
+        case .recentlyAdded: return "Recently Added"
+        case .year:          return "Year"
+        }
+    }
+
+    /// Only an alphabetical sort makes the A–Z rail's offsets meaningful; the other
+    /// orderings hide the rail (#111).
+    var isAlphabetical: Bool { self == .name }
+
+    /// Sort options offered for each grid: albums get Year, artists don't (no release year).
+    static let albumCases: [MusicBrowseSort] = [.recentlyAdded, .name, .year]
+    static let artistCases: [MusicBrowseSort] = [.name, .recentlyAdded]
 }
 
 /// Everything an artist page renders. The categorized shelves / popular / appears-on /

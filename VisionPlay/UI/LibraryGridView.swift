@@ -442,33 +442,6 @@ private struct LibraryPlaceholderPoster: View {
     }
 }
 
-private struct LibraryAlphabetRail: View {
-    let entries: [AlphabetBucket]
-    let onPick: (AlphabetBucket) -> Void
-
-    var body: some View {
-        VStack(spacing: 2) {
-            ForEach(entries, id: \.display) { entry in
-                Button {
-                    onPick(entry)
-                } label: {
-                    Text(entry.display)
-                        .font(.caption2.weight(.semibold))
-                        .monospaced()
-                        .frame(width: 26, height: 20)
-                }
-                .buttonStyle(.plain)
-                .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .hoverEffect(.highlight)
-                .accessibilityLabel("Jump to \(entry.display)")
-            }
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 4)
-        .background(.ultraThinMaterial, in: Capsule())
-    }
-}
-
 /// Shimmering poster grid shown while a library section loads, so the screen keeps
 /// its layout (and the same gutters as the real grid) rather than flashing a spinner.
 private struct SkeletonGrid: View {
