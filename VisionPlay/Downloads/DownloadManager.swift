@@ -557,6 +557,15 @@ public final class DownloadManager {
             retryPausedPlexOptimize(record: record, targetName: targetName)
             return
         }
+        // #131/#146/#168 live checks: paused static-byte-range rows may have only the durable
+        // partial file as their checkpoint (no URLSession resume blob). Promote them out of
+        // `.paused` before backend-specific retry dispatch, because Jellyfin/Emby retry bodies also
+        // pass through `retryAttemptCanContinue`; if the row is still `.paused`, that async guard
+        // treats the user's Resume tap as cancelled and silently no-ops.
+        if record.status == .paused, Self.hasIncompleteStaticPartial(record) {
+            store.setStatus(ratingKey: ratingKey, .queued)
+            refreshRecords()
+        }
         if Self.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record)
             return
@@ -564,15 +573,6 @@ public final class DownloadManager {
         if Self.isEmbyRecordKey(ratingKey) {
             retryEmby(record: record)
             return
-        }
-        // #131/#146 live check: paused static-byte-range rows may have only the durable partial
-        // file as their checkpoint (no URLSession resume blob). Promote them out of `.paused`
-        // before the async retry body reaches `retryAttemptCanContinue`; otherwise the guard sees
-        // the unchanged paused row and silently drops the user's Resume tap before `download(...)`
-        // can reissue the Range request from the partial-file size.
-        if record.status == .paused, Self.hasIncompleteStaticPartial(record) {
-            store.setStatus(ratingKey: ratingKey, .queued)
-            refreshRecords()
         }
         let metadata = record.metadata
         let item = metadata?.makeMediaItem()
@@ -663,10 +663,7 @@ public final class DownloadManager {
     }
 
     private static func hasIncompleteStaticPartial(_ record: DownloadRecord) -> Bool {
-        record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange
-            && record.bytes > 0
-            && record.progress < 0.999
-            && FileManager.default.fileExists(atPath: record.localURL.path)
+        DownloadRetryPolicy.shouldPromotePausedStaticPartial(record)
     }
 
     private func retryRowStillPresent(ratingKey: String) -> Bool {
