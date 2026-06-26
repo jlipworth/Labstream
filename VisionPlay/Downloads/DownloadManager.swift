@@ -2212,7 +2212,7 @@ public final class DownloadManager {
             return Set(baseline)
         }
         return Set((item.media ?? []).flatMap { media in
-            media.part.filter { !isServerOptimizedPart($0) }.map(\.id)
+            media.part.filter { !OptimizedVersionMatch.isServerOptimizedPart($0) }.map(\.id)
         })
     }
 
@@ -2224,7 +2224,7 @@ public final class DownloadManager {
         if let selected = media?.part[safe: partIndex]?.id { return [selected] }
         if let ids = media?.part.map(\.id), !ids.isEmpty { return ids }
         return (item.media ?? fallbackItem.media ?? [])
-            .flatMap { media in media.part.filter { !isServerOptimizedPart($0) }.map(\.id) }
+            .flatMap { media in media.part.filter { !OptimizedVersionMatch.isServerOptimizedPart($0) }.map(\.id) }
     }
 
     public var totalDownloadedBytes: Int {
@@ -3931,85 +3931,24 @@ public final class DownloadManager {
     }
 
     /// Pick only a NEW Plex server-optimized output that the local/offline player can open.
-    /// Multi-version libraries can have several pre-existing compatible source parts; excluding
-    /// just the selected source part is not enough, and any concurrent/manual version creation for
-    /// the same item should not win unless it has Plex's optimized-version path shape.
+    ///
+    /// GH #135 Stage 1a: the bounding-box / bitrate matching now lives in the pure, unit-tested
+    /// `OptimizedVersionMatch`. This thin shim keeps the app-side target-name → settings resolution
+    /// and injects the already-resolved tier into the matcher.
     private static func optimizedDownloadCandidate(from media: [Media],
                                                    baselinePartIDs: Set<Int>,
                                                    targetName: String,
                                                    sourceHeight: Int?) -> Part? {
-        for mediaItem in media where serverOptimizedMedia(mediaItem, matchesTargetName: targetName,
-                                                          sourceHeight: sourceHeight) {
-            if let part = mediaItem.part.first(where: { part in
-                !baselinePartIDs.contains(part.id)
-                    && isServerOptimizedPart(part)
-                    && isLocallyPlayableOriginal(part: part)
-            }) {
-                return part
-            }
-        }
-        return nil
-    }
-
-    /// Decide whether an already-rendered Plex Version is the same effective target the current
-    /// attempt requested. Plex metadata does not preserve our queue title on the rendered Part, so
-    /// match on the durable media attributes PMS exposes: resolution and approximate bitrate. This
-    /// prevents a retry from asking for 1080p 8 Mbps and silently reusing an old 720p 3 Mbps file.
-    private static func serverOptimizedMedia(_ media: Media,
-                                             matchesTargetName targetName: String,
-                                             sourceHeight: Int?) -> Bool {
         let settings = customDownloadProfile(named: targetName)?.settings ?? mediaSettings(forTargetName: targetName)
-        if isPlexOriginalQualityTarget(targetName),
-           let sourceHeight, let actualHeight = media.height,
-           abs(actualHeight - sourceHeight) > 16 {
-            return false
-        }
-        if let targetResolution = settings.videoResolution,
-           let targetDimensions = resolutionDimensions(targetResolution) {
-            // Treat Plex target resolution as a bounding box, not an exact output height. Wide
-            // CinemaScope-ish sources rendered by a 1080p Universal TV profile can legitimately
-            // come back as e.g. 1920x802: width hits the 1080p target while height preserves
-            // aspect ratio. Reject only outputs that exceed the box or do not land near either
-            // target edge (so an old 720p version is not reused for a 1080p request).
-            let actualWidth = media.width
-            let actualHeight = media.height
-            if let actualWidth, actualWidth > targetDimensions.width + 16 { return false }
-            if let actualHeight, actualHeight > targetDimensions.height + 16 { return false }
-            if let actualWidth, let actualHeight {
-                let nearWidth = abs(actualWidth - targetDimensions.width) <= 16
-                let nearHeight = abs(actualHeight - targetDimensions.height) <= 16
-                if !nearWidth && !nearHeight { return false }
-            } else if let actualHeight {
-                // Legacy metadata may omit width; keep the old height-only behavior in that case.
-                if abs(actualHeight - targetDimensions.height) > 16 { return false }
-            }
-        }
-        if let targetKbps = settings.maxVideoBitrateKbps,
-           let actualKbps = media.bitrate {
-            // `media.bitrate` is the whole-container rate (video + audio), while `targetKbps` caps
-            // VIDEO only. Allow the video variance (×1.10) plus a realistic ceiling for a rendered
-            // surround track (~640 kbps AC3/AAC 5.1 + margin) so a valid optimized Part isn't judged
-            // a mismatch and needlessly re-rendered. The slop stays well under the gap between bitrate
-            // ladder rungs, so an 8 vs 10 Mbps render is still distinguished.
-            let allowedKbps = Int(Double(targetKbps) * 1.10) + 768
-            if actualKbps > allowedKbps { return false }
-        }
-        return true
-    }
-
-    private static func resolutionHeight(_ value: String) -> Int? {
-        resolutionDimensions(value)?.height
-    }
-
-    private static func resolutionDimensions(_ value: String) -> (width: Int, height: Int)? {
-        let parts = value.split(separator: "x").compactMap { Int($0) }
-        guard parts.count == 2 else { return nil }
-        return (width: parts[0], height: parts[1])
-    }
-
-    private static func isServerOptimizedPart(_ part: Part) -> Bool {
-        guard let file = part.file?.lowercased() else { return false }
-        return file.contains("/plex versions/")
+        let targetDimensions = settings.videoResolution
+            .flatMap(DownloadResolutionLabel.dimensions(forVideoResolution:))
+        return OptimizedVersionMatch.candidate(
+            from: media,
+            baselinePartIDs: baselinePartIDs,
+            targetDimensions: targetDimensions,
+            targetVideoKbps: settings.maxVideoBitrateKbps,
+            isOriginalQuality: isPlexOriginalQualityTarget(targetName),
+            sourceHeight: sourceHeight)
     }
 
     private func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
