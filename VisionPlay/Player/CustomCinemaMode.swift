@@ -3,6 +3,58 @@ import PMSKit
 import RealityKit
 import SwiftUI
 
+/// User-tunable posture adjustment for the immersive Cinema screen.
+///
+/// The base geometry still comes from the content aspect ratio; this value stores only the
+/// viewer's posture preference so it can be applied consistently as different items enter Cinema.
+struct CustomCinemaScreenAdjustment: Equatable, Sendable {
+    static let `default` = CustomCinemaScreenAdjustment()
+    static let reclinedPreset = CustomCinemaScreenAdjustment(pitchDegrees: 18,
+                                                            verticalDeltaMeters: 0.90,
+                                                            distanceDeltaMeters: 0)
+
+    static let pitchDegreesRange: ClosedRange<Float> = (-30)...30
+    static let verticalDeltaRange: ClosedRange<Float> = (-1.20)...1.80
+    static let distanceDeltaRange: ClosedRange<Float> = (-1.5)...1.0
+
+    private enum DefaultsKey {
+        static let pitchDegrees = "cinema.screenAdjustment.pitchDegrees"
+        static let verticalDeltaMeters = "cinema.screenAdjustment.verticalDeltaMeters"
+        static let distanceDeltaMeters = "cinema.screenAdjustment.distanceDeltaMeters"
+    }
+
+    var pitchDegrees: Float = 0
+    var verticalDeltaMeters: Float = 0
+    var distanceDeltaMeters: Float = 0
+
+    var pitchRadians: Float { pitchDegrees * .pi / 180 }
+
+    var clamped: CustomCinemaScreenAdjustment {
+        CustomCinemaScreenAdjustment(
+            pitchDegrees: pitchDegrees.clamped(to: Self.pitchDegreesRange),
+            verticalDeltaMeters: verticalDeltaMeters.clamped(to: Self.verticalDeltaRange),
+            distanceDeltaMeters: distanceDeltaMeters.clamped(to: Self.distanceDeltaRange)
+        )
+    }
+
+    static func load() -> CustomCinemaScreenAdjustment {
+        let defaults = UserDefaults.standard
+        return CustomCinemaScreenAdjustment(
+            pitchDegrees: Float(defaults.double(forKey: DefaultsKey.pitchDegrees)),
+            verticalDeltaMeters: Float(defaults.double(forKey: DefaultsKey.verticalDeltaMeters)),
+            distanceDeltaMeters: Float(defaults.double(forKey: DefaultsKey.distanceDeltaMeters))
+        ).clamped
+    }
+
+    func persist() {
+        let value = clamped
+        let defaults = UserDefaults.standard
+        defaults.set(Double(value.pitchDegrees), forKey: DefaultsKey.pitchDegrees)
+        defaults.set(Double(value.verticalDeltaMeters), forKey: DefaultsKey.verticalDeltaMeters)
+        defaults.set(Double(value.distanceDeltaMeters), forKey: DefaultsKey.distanceDeltaMeters)
+    }
+}
+
 /// Meter-based layout snapshot for the custom-player Cinema scene.
 struct CustomCinemaGeometry: Equatable, Sendable {
     static let `default` = CustomCinemaGeometry(aspectRatio: 16.0 / 9.0)
@@ -15,11 +67,13 @@ struct CustomCinemaGeometry: Equatable, Sendable {
     var screenWidthMeters: Float
     var screenDistanceMeters: Float
     var verticalOffsetMeters: Float
+    var pitchRadians: Float
 
     init(aspectRatio rawAspectRatio: Float,
          screenWidthMeters: Float? = nil,
          screenDistanceMeters: Float? = nil,
-         verticalOffsetMeters: Float? = nil) {
+         verticalOffsetMeters: Float? = nil,
+         pitchRadians: Float? = nil) {
         let aspect = rawAspectRatio.isFinite ? rawAspectRatio.clamped(to: 1.0...2.76) : 16.0 / 9.0
         self.aspectRatio = aspect
 
@@ -46,7 +100,8 @@ struct CustomCinemaGeometry: Equatable, Sendable {
         let computedWidth = defaultHeight * aspect
         self.screenWidthMeters = (screenWidthMeters ?? computedWidth).clamped(to: 4.2...9.8)
         self.screenDistanceMeters = (screenDistanceMeters ?? defaultDistance).clamped(to: 4.8...9.0)
-        self.verticalOffsetMeters = (verticalOffsetMeters ?? defaultVertical).clamped(to: (-0.2)...1.1)
+        self.verticalOffsetMeters = (verticalOffsetMeters ?? defaultVertical).clamped(to: (-1.0)...2.4)
+        self.pitchRadians = (pitchRadians ?? 0).clamped(to: (-Float.pi / 6)...(Float.pi / 6))
     }
 
     init(item: MediaItem, mediaIndex: Int) {
@@ -62,9 +117,21 @@ struct CustomCinemaGeometry: Equatable, Sendable {
     var screenHeightMeters: Float { screenWidthMeters / aspectRatio }
     var screenPosition: SIMD3<Float> { SIMD3<Float>(0, verticalOffsetMeters, -screenDistanceMeters) }
 
+    func applying(_ adjustment: CustomCinemaScreenAdjustment) -> CustomCinemaGeometry {
+        let value = adjustment.clamped
+        return CustomCinemaGeometry(
+            aspectRatio: aspectRatio,
+            screenWidthMeters: screenWidthMeters,
+            screenDistanceMeters: screenDistanceMeters + value.distanceDeltaMeters,
+            verticalOffsetMeters: verticalOffsetMeters + value.verticalDeltaMeters,
+            pitchRadians: value.pitchRadians
+        )
+    }
+
     var debugSummary: String {
-        String(format: "aspect %.2f · width %.1fm · distance %.1fm · vertical %.2fm",
-               aspectRatio, screenWidthMeters, screenDistanceMeters, verticalOffsetMeters)
+        String(format: "aspect %.2f · width %.1fm · distance %.1fm · vertical %.2fm · pitch %.0f°",
+               aspectRatio, screenWidthMeters, screenDistanceMeters, verticalOffsetMeters,
+               pitchRadians * 180 / .pi)
     }
 }
 
@@ -122,7 +189,9 @@ final class CustomCinemaSessionStore {
     /// `item` — survives `stopAndClearForImmersiveExit`, dropped only in `clear()`.
     var origin: CinemaOrigin = .systemEntry
     var controller: PlaybackController?
+    private var baseGeometry: CustomCinemaGeometry = .default
     var geometry: CustomCinemaGeometry = .default
+    var screenAdjustment: CustomCinemaScreenAdjustment = .load()
     var trickPlayProvider: (any TrickPlayThumbnailProviding)?
     var presentationState: PresentationState = .closed
     var pendingReturnItem: MediaItem?
@@ -144,7 +213,9 @@ final class CustomCinemaSessionStore {
         self.item = item
         self.origin = origin
         self.controller = controller
-        self.geometry = geometry
+        baseGeometry = geometry
+        screenAdjustment = CustomCinemaScreenAdjustment.load()
+        self.geometry = geometry.applying(screenAdjustment)
         self.trickPlayProvider = trickPlayProvider
         pendingReturnItem = nil
         pendingReturnAutoPlay = false
@@ -156,6 +227,31 @@ final class CustomCinemaSessionStore {
         pendingReturnAutoPlay = autoPlay
         pendingAdvancingToNext = advancingToNext
         presentationState = .inTransition
+    }
+
+    func updateScreenAdjustment(_ adjustment: CustomCinemaScreenAdjustment) {
+        let value = adjustment.clamped
+        screenAdjustment = value
+        value.persist()
+        geometry = baseGeometry.applying(value)
+    }
+
+    func nudgeScreenAdjustment(pitchDegrees: Float = 0,
+                               verticalDeltaMeters: Float = 0,
+                               distanceDeltaMeters: Float = 0) {
+        var next = screenAdjustment
+        next.pitchDegrees += pitchDegrees
+        next.verticalDeltaMeters += verticalDeltaMeters
+        next.distanceDeltaMeters += distanceDeltaMeters
+        updateScreenAdjustment(next)
+    }
+
+    func applyReclinedScreenPreset() {
+        updateScreenAdjustment(.reclinedPreset)
+    }
+
+    func resetScreenAdjustment() {
+        updateScreenAdjustment(.default)
     }
 
     /// Tear down the active playback session before the immersive space is dismissed.
@@ -178,7 +274,8 @@ final class CustomCinemaSessionStore {
         item = nil
         origin = .systemEntry
         controller = nil
-        geometry = .default
+        baseGeometry = .default
+        geometry = .default.applying(screenAdjustment)
         trickPlayProvider = nil
         pendingReturnItem = nil
         pendingReturnAutoPlay = false
@@ -325,6 +422,7 @@ struct CustomCinemaScaffoldView: View {
     @MainActor
     private static func place(_ entity: Entity, geometry: CustomCinemaGeometry) {
         entity.position = geometry.screenPosition
+        entity.orientation = simd_quatf(angle: geometry.pitchRadians, axis: SIMD3<Float>(1, 0, 0))
 
         // A RealityView attachment is NOT authored at 1 point = 1 meter. RealityKit renders the
         // SwiftUI view into a mesh whose physical size is the view's point size divided by a system
