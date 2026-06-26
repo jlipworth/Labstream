@@ -2,11 +2,8 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let server = URL(string: "https://192.0.2.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID",
-                                product: "VisionPlay",
-                                version: "0.1.0",
-                                deviceName: "AVP")
+private let server = TestFixtures.plexServer
+private let id = TestFixtures.plexIdentity
 
 // MARK: - Section listings
 
@@ -14,8 +11,7 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let r = MusicRequest.artists(server: server, token: "tok", identity: id, sectionKey: "3")
     #expect(r.url.path == "/library/sections/3/all")
     #expect(r.method == "GET")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "8")
+    #expect(queryValue(r, "type") == "8")
     #expect(r.headers["X-Plex-Token"] == "tok")
     #expect(r.headers["X-Plex-Client-Identifier"] == "CID")
 }
@@ -23,19 +19,17 @@ private let id = ClientIdentity(clientIdentifier: "CID",
 @Test func albumsRequestUsesAlbumType() {
     let r = MusicRequest.albums(server: server, token: "tok", identity: id, sectionKey: "3")
     #expect(r.url.path == "/library/sections/3/all")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "9")
+    #expect(queryValue(r, "type") == "9")
 }
 
 @Test func recentlyAddedAlbumsSortsByAddedAtDescending() {
     let r = MusicRequest.recentlyAddedAlbums(server: server, token: "tok",
                                              identity: id, sectionKey: "3")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "9")
-    #expect(v("sort") == "addedAt:desc")
+    #expect(queryValue(r, "type") == "9")
+    #expect(queryValue(r, "sort") == "addedAt:desc")
     // Paged: without an explicit container size PMS returns the whole album list.
-    #expect(v("X-Plex-Container-Start") == "0")
-    #expect(v("X-Plex-Container-Size") == "20")
+    #expect(queryValue(r, "X-Plex-Container-Start") == "0")
+    #expect(queryValue(r, "X-Plex-Container-Size") == "20")
 }
 
 @Test func artistsDefaultsCarryNoSortOrPaging() {
@@ -49,11 +43,10 @@ private let id = ClientIdentity(clientIdentifier: "CID",
 @Test func artistsAcceptSortAndPaging() {
     let r = MusicRequest.artists(server: server, token: "tok", identity: id, sectionKey: "3",
                                  sort: "titleSort", containerStart: 100, containerSize: 50)
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "8")
-    #expect(v("sort") == "titleSort")
-    #expect(v("X-Plex-Container-Start") == "100")
-    #expect(v("X-Plex-Container-Size") == "50")
+    #expect(queryValue(r, "type") == "8")
+    #expect(queryValue(r, "sort") == "titleSort")
+    #expect(queryValue(r, "X-Plex-Container-Start") == "100")
+    #expect(queryValue(r, "X-Plex-Container-Size") == "50")
 }
 
 @Test func asymmetricPagingEmitsNeitherItem() {
@@ -73,18 +66,16 @@ private let id = ClientIdentity(clientIdentifier: "CID",
 @Test func sortAloneEmitsNoPaging() {
     let r = MusicRequest.artists(server: server, token: "tok", identity: id,
                                  sectionKey: "3", sort: "titleSort")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("sort") == "titleSort")
+    #expect(queryValue(r, "sort") == "titleSort")
     #expect(!r.queryItems.map(\.name).contains("X-Plex-Container-Start"))
 }
 
 @Test func albumsAcceptSortAndPaging() {
     let r = MusicRequest.albums(server: server, token: "tok", identity: id, sectionKey: "3",
                                 sort: "titleSort", containerStart: 0, containerSize: 60)
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "9")
-    #expect(v("sort") == "titleSort")
-    #expect(v("X-Plex-Container-Size") == "60")
+    #expect(queryValue(r, "type") == "9")
+    #expect(queryValue(r, "sort") == "titleSort")
+    #expect(queryValue(r, "X-Plex-Container-Size") == "60")
 }
 
 // MARK: - Section hubs + play history (MUSIC-DESIGN §6)
@@ -93,9 +84,8 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let r = MusicRequest.sectionHubs(server: server, token: "tok", identity: id, sectionKey: "3")
     #expect(r.url.path == "/hubs/sections/3")
     #expect(r.method == "GET")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("count") == "20")
-    #expect(v("excludeFields") == "summary")
+    #expect(queryValue(r, "count") == "20")
+    #expect(queryValue(r, "excludeFields") == "summary")
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
@@ -103,12 +93,11 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let r = MusicRequest.playHistory(server: server, token: "tok", identity: id,
                                      librarySectionID: "3")
     #expect(r.url.path == "/status/sessions/history/all")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("sort") == "viewedAt:desc")
-    #expect(v("librarySectionID") == "3")
+    #expect(queryValue(r, "sort") == "viewedAt:desc")
+    #expect(queryValue(r, "librarySectionID") == "3")
     // Paged: history is unbounded, a rail only needs the head.
-    #expect(v("X-Plex-Container-Start") == "0")
-    #expect(v("X-Plex-Container-Size") == "20")
+    #expect(queryValue(r, "X-Plex-Container-Start") == "0")
+    #expect(queryValue(r, "X-Plex-Container-Size") == "20")
     // No account scoping unless asked: server-wide history by default.
     #expect(!r.queryItems.map(\.name).contains("accountID"))
 }
@@ -131,10 +120,9 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let r = MusicRequest.artistAlbums(server: server, token: "tok", identity: id,
                                       sectionKey: "3", artistRatingKey: "2982")
     #expect(r.url.path == "/library/sections/3/all")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "9")
-    #expect(v("artist.id") == "2982")
-    #expect(v("sort") == "originallyAvailableAt:desc")
+    #expect(queryValue(r, "type") == "9")
+    #expect(queryValue(r, "artist.id") == "2982")
+    #expect(queryValue(r, "sort") == "originallyAvailableAt:desc")
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
@@ -144,10 +132,9 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let r = MusicRequest.appearsOnAlbums(server: server, token: "tok", identity: id,
                                          sectionKey: "3", artistTitle: "Wolfgang Lohr")
     #expect(r.url.path == "/library/sections/3/all")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "9")
-    #expect(v("track.originalTitle") == "Wolfgang Lohr")
-    #expect(v("sort") == "originallyAvailableAt:desc")
+    #expect(queryValue(r, "type") == "9")
+    #expect(queryValue(r, "track.originalTitle") == "Wolfgang Lohr")
+    #expect(queryValue(r, "sort") == "originallyAvailableAt:desc")
 }
 
 @Test func relatedHubsTargetsMetadataRelated() {
@@ -164,11 +151,10 @@ private let id = ClientIdentity(clientIdentifier: "CID",
 @Test func randomTracksIsSingleRandomSortedTrackPage() {
     let r = MusicRequest.randomTracks(server: server, token: "tok", identity: id, sectionKey: "3")
     #expect(r.url.path == "/library/sections/3/all")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "10")
-    #expect(v("sort") == "random")
-    #expect(v("X-Plex-Container-Start") == "0")
-    #expect(v("X-Plex-Container-Size") == "200")
+    #expect(queryValue(r, "type") == "10")
+    #expect(queryValue(r, "sort") == "random")
+    #expect(queryValue(r, "X-Plex-Container-Start") == "0")
+    #expect(queryValue(r, "X-Plex-Container-Size") == "200")
 }
 
 @Test func allLeavesTargetsMetadataAllLeaves() {
@@ -182,16 +168,15 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     let r = MusicRequest.popularTracks(server: server, token: "tok", identity: id,
                                        sectionKey: "3", artistRatingKey: "777")
     #expect(r.url.path == "/library/sections/3/all")
-    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
-    #expect(v("type") == "10")
-    #expect(v("artist.id") == "777")
-    #expect(v("group") == "title")
-    #expect(v("sort") == "ratingCount:desc")
-    #expect(v("limit") == "5")
+    #expect(queryValue(r, "type") == "10")
+    #expect(queryValue(r, "artist.id") == "777")
+    #expect(queryValue(r, "group") == "title")
+    #expect(queryValue(r, "sort") == "ratingCount:desc")
+    #expect(queryValue(r, "limit") == "5")
     // Filter operators live in the item NAME: `ratingCount>>` = "0", and the
     // plexapi subformat exclusion keeps compilation/live dupes out of Popular.
-    #expect(v("ratingCount>>") == "0")
-    #expect(v("album.subformat!") == "Compilation,Live")
+    #expect(queryValue(r, "ratingCount>>") == "0")
+    #expect(queryValue(r, "album.subformat!") == "Compilation,Live")
 }
 
 @Test func popularTracksFilterOperatorsPercentEncodeOnTheWire() throws {

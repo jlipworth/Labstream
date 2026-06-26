@@ -7,18 +7,10 @@ import Testing
 
 @Suite("MediaBrowser poster request")
 struct MediaBrowserPosterRequestTests {
-    private let jellyfinServer = URL(string: "https://jf.example.test/jellyfin")!
-    private let embyServer = URL(string: "https://emby.example.test/emby")!
-    private let jellyfinIdentity = JellyfinClientIdentity(
-        client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
-    private let embyIdentity = EmbyClientIdentity(
-        client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
-
-    private func query(_ request: URLRequest) throws -> [String: String] {
-        let url = try #require(request.url)
-        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        return Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-    }
+    private let jellyfinServer = TestFixtures.jellyfinImageServer
+    private let embyServer = TestFixtures.embyServer
+    private let jellyfinIdentity = TestFixtures.jellyfinIdentity
+    private let embyIdentity = TestFixtures.embyIdentity
 
     // MARK: - Synthetic ref parsing
 
@@ -74,16 +66,14 @@ struct MediaBrowserPosterRequestTests {
         let url = try #require(req.url)
         #expect(url.host == "jf.example.test")
         #expect(url.path == "/jellyfin/Items/item-1/Images/Primary")
-        let q = try query(req)
+        let q = try queryMap(req)
         #expect(q["tag"] == "tag-1")
         #expect(q["width"] == "400")
         #expect(q["height"] == "600")
         // Auth header present, carries identity + token; token NOT in the URL.
-        let auth = try #require(req.value(forHTTPHeaderField: "Authorization"))
+        let auth = try assertAuthHeaderContainsTokenNotInURL(req, token: "token-abc")
         #expect(auth.hasPrefix("MediaBrowser "))
-        #expect(auth.contains("Token=\"token-abc\""))
         #expect(auth.contains("DeviceId=\"device-123\""))
-        #expect(!url.absoluteString.contains("token-abc"))
     }
 
     @Test func jellyfinPosterRequestReturnsNilForEmbyRef() throws {
@@ -107,16 +97,14 @@ struct MediaBrowserPosterRequestTests {
         let url = try #require(req.url)
         #expect(url.host == "emby.example.test")
         #expect(url.path == "/emby/Items/item-1/Images/Primary")
-        let q = try query(req)
+        let q = try queryMap(req)
         #expect(q["tag"] == "tag-xyz")
         #expect(q["width"] == "400")
         #expect(q["height"] == "600")
         // Emby auth header present, carries UserId + Token; token NOT in the URL.
-        let auth = try #require(req.value(forHTTPHeaderField: "Authorization"))
+        let auth = try assertAuthHeaderContainsTokenNotInURL(req, token: "token-abc")
         #expect(auth.hasPrefix("Emby "))
         #expect(auth.contains("UserId=\"user-9\""))
-        #expect(auth.contains("Token=\"token-abc\""))
-        #expect(!url.absoluteString.contains("token-abc"))
         #expect(!url.absoluteString.contains("user-9"))
     }
 
