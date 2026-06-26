@@ -273,17 +273,15 @@ struct JellyfinBrowseService {
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
         let context = try context()
-        let maxBitrateBps = maxVideoBitrateKbps <= 0 ? 200_000_000 : maxVideoBitrateKbps * 1_000
-        let resolutionCap = Self.resolutionCap(forBitrateKbps: maxVideoBitrateKbps)
-        let audioBitrate = Self.audioBitrate(forBitrateKbps: maxVideoBitrateKbps)
-        let startTicks = (resumeOffsetMs ?? item.viewOffset).map { $0 * 10_000 }
+        let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
+        let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,
                                                            identity: jellyfinIdentity,
                                                            itemId: item.ratingKey,
                                                            userId: context.userID,
                                                            startTimeTicks: startTicks,
-                                                           maxStreamingBitrate: maxBitrateBps,
+                                                           maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                            audioStreamIndex: audioStreamIndex,
                                                            subtitleStreamIndex: subtitleStreamIndex)
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
@@ -293,38 +291,15 @@ struct JellyfinBrowseService {
                                                   token: context.token,
                                                   itemId: item.ratingKey,
                                                   startTimeTicks: startTicks,
-                                                  maxVideoBitrate: maxBitrateBps,
-                                                  maxWidth: resolutionCap?.width,
-                                                  maxHeight: resolutionCap?.height,
-                                                  audioBitrate: audioBitrate,
+                                                  maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+                                                  maxWidth: qualityPolicy.maxWidth,
+                                                  maxHeight: qualityPolicy.maxHeight,
+                                                  audioBitrate: qualityPolicy.audioBitrateBps,
                                                   audioStreamIndex: audioStreamIndex,
                                                   subtitleStreamIndex: subtitleStreamIndex)
     }
 
 
-    private static func resolutionCap(forBitrateKbps kbps: Int) -> (width: Int, height: Int)? {
-        switch kbps {
-        case 1...4_000:
-            return (1280, 720)
-        case 4_001...20_000:
-            return (1920, 1080)
-        case 20_001...40_000:
-            return (3840, 2160)
-        default:
-            return nil
-        }
-    }
-
-    private static func audioBitrate(forBitrateKbps kbps: Int) -> Int? {
-        switch kbps {
-        case 1...4_000:
-            return 256_000
-        case 4_001...20_000:
-            return 640_000
-        default:
-            return nil
-        }
-    }
 
     func setPlayed(itemId: String, played: Bool) async throws {
         let context = try context()
@@ -399,7 +374,7 @@ struct JellyfinBrowseService {
             // rejection (401/403) or a server error (5xx) means the DELETE did NOT confirm
             // the job is dead — the encoder may still be live, so keep the psid and retry on
             // a later launch rather than orphaning it (#84).
-            return status == 400 || status == 404 || status == 410
+            return MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: status)
         } catch {
             return false   // transport failure — keep the psid for a later launch
         }
