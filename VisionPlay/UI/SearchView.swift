@@ -79,7 +79,7 @@ struct SearchView: View {
     }
 
     private var searchTaskID: String {
-        "\(appModel.activeBackend.rawValue):\(query)"
+        "\(appModel.activeBrowseSessionKey):\(query)"
     }
 
     // MARK: - Faceting
@@ -129,7 +129,7 @@ struct SearchView: View {
         }
         // `.task(id:)` re-fires on pop-back from a result with the query unchanged;
         // re-running then would flash the spinner and dump the scroll position.
-        let searchKey = "\(appModel.activeBackend.rawValue):\(trimmed)"
+        let searchKey = "\(appModel.activeBrowseSessionKey):\(trimmed)"
         if searchKey == loadedQuery, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))

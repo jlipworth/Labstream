@@ -76,16 +76,7 @@ struct LibrariesView: View {
     }
 
     private var loadIdentity: String {
-        switch appModel.activeBackend {
-        case .plex:
-            return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
-        case .jellyfin:
-            // Match HomeView's #93 cache-bust: re-auth to the same server changes the
-            // token, so the library list must refresh instead of reusing stale/empty state.
-            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil"):\(appModel.jellyfinAccessToken ?? "nil")"
-        case .emby:
-            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil"):\(appModel.embyAccessToken ?? "nil")"
-        }
+        appModel.activeBrowseSessionKey
     }
 
     // The Libraries menu is one shared card grid across all three backends (GH #94).
@@ -186,6 +177,7 @@ struct LibrariesView: View {
             do {
                 let allViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
                 let backendKey = appModel.libraryVisibilityBackendKey
                 maybePresentFirstRunPrompt(backendKey: backendKey,
                                            candidates: allViews.map { candidate(jellyfin: $0) })
@@ -206,6 +198,7 @@ struct LibrariesView: View {
             do {
                 let allViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
                 let backendKey = appModel.libraryVisibilityBackendKey
                 maybePresentFirstRunPrompt(backendKey: backendKey,
                                            candidates: allViews.map { candidate(emby: $0) })
@@ -236,6 +229,7 @@ struct LibrariesView: View {
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
             let nonMusic = resp.mediaContainer.directory.filter { !$0.isMusic }
+            appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
             let backendKey = appModel.libraryVisibilityBackendKey
             maybePresentFirstRunPrompt(backendKey: backendKey,
                                        candidates: nonMusic.map { candidate(plex: $0) })

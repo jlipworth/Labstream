@@ -86,17 +86,7 @@ struct HomeView: View {
     }
 
     private var loadIdentity: String {
-        switch appModel.activeBackend {
-        case .plex:
-            return "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
-        case .jellyfin:
-            // Include the access token so a re-login to the SAME server (URL unchanged)
-            // still busts the cache and forces a full Home refresh (#93). Without this,
-            // signing in again after a sign-out reused the stale `.loaded` state.
-            return "jellyfin:\(appModel.jellyfinServerBaseURL?.absoluteString ?? "nil"):\(appModel.jellyfinAccessToken ?? "nil")"
-        case .emby:
-            return "emby:\(appModel.embyServerBaseURL?.absoluteString ?? "nil"):\(appModel.embyAccessToken ?? "nil")"
-        }
+        appModel.activeBrowseSessionKey
     }
 
     @ViewBuilder
@@ -173,7 +163,9 @@ struct HomeView: View {
                 // Jellyfin/Emby Home rails are library-scoped (built from `views`), so filtering
                 // `views` here keeps Home consistent. (Plex Home uses non-library `/hubs` and is
                 // deferred — see #104.)
-                let hidden = LibraryVisibilityStore().hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+                let visibilityStore = LibraryVisibilityStore()
+                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
+                let hidden = visibilityStore.hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
                 let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 jellyfinViews = views
                 let load = try await service.homeRails(for: views)
@@ -204,7 +196,9 @@ struct HomeView: View {
                 let service = EmbyBrowseService(appModel: appModel)
                 let allViews = try await service.userViewLinks()
                 // See the Jellyfin branch: hide hidden-library rails (#104). Plex Home deferred.
-                let hidden = LibraryVisibilityStore().hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+                let visibilityStore = LibraryVisibilityStore()
+                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
+                let hidden = visibilityStore.hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
                 let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 embyViews = views
                 let load = try await service.homeRails(for: views)

@@ -74,7 +74,7 @@ struct MusicLibraryView: View {
     }
 
     private var loadIdentity: String {
-        "plex:\(appModel.selectedServer?.clientIdentifier ?? "nil"):\(appModel.serverBaseURL?.absoluteString ?? "nil")"
+        appModel.browseSessionKey(for: .plex)
     }
 
     /// The section to browse: the explicit selection, else the first music section.
