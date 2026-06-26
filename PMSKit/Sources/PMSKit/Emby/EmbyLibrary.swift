@@ -268,6 +268,28 @@ public enum EmbyLibrary {
         return req
     }
 
+    /// Direct-play audio stream URL for music playback (#111) — the Emby twin of
+    /// ``JellyfinLibrary/audioStreamURL(server:identity:userId:itemId:maxStreamingBitrate:)``.
+    /// Targets `/Audio/{itemId}/universal`, which streams the original bytes for a
+    /// container in the allowlist within `MaxStreamingBitrate` and otherwise transcodes
+    /// to HLS/AAC (AVPlayer plays either). Token is NOT in the URL — auth rides in the
+    /// header via ``authenticatedRequest(url:token:identity:userId:)``.
+    public static func audioStreamURL(server: URL,
+                                      identity: EmbyClientIdentity,
+                                      userId: String,
+                                      itemId: String,
+                                      maxStreamingBitrate: Int = 140_000_000) throws -> URL {
+        try url(server: server, path: "/Audio/\(itemId)/universal", queryItems: [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "DeviceId", value: identity.deviceId),
+            URLQueryItem(name: "MaxStreamingBitrate", value: String(maxStreamingBitrate)),
+            URLQueryItem(name: "Container", value: JellyfinLibrary.musicDirectPlayContainers),
+            URLQueryItem(name: "TranscodingContainer", value: "ts"),
+            URLQueryItem(name: "TranscodingProtocol", value: "hls"),
+            URLQueryItem(name: "AudioCodec", value: "aac"),
+        ])
+    }
+
     /// Bare image URL — token is NOT baked in (mirror Jellyfin's no-token-in-stored-URL
     /// rule). The caller attaches the Emby auth header (or `api_key` query) on the live
     /// request.

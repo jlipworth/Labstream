@@ -365,10 +365,10 @@ struct EmbyBrowseService {
 }
 
 /// Search is format-normalized here, but match semantics stay native (#103):
-/// MediaBrowser `searchTerm` is not made fuzzy. Music is also intentionally absent
-/// for this first pass because `MediaBrowserBaseItemDto.toMediaItem()` currently maps
-/// only Movie/Series/Season/Episode/Video; requesting Audio/Album/MusicArtist rows
-/// would decode and then be dropped before SearchView can facet them.
+/// MediaBrowser `searchTerm` is not made fuzzy. Music libraries now facet too (#111):
+/// `toMediaItem()` maps MusicArtist/MusicAlbum/Audio onto PMS music kinds, and the
+/// detail/playback path is backend-aware, so SearchView's Artists/Albums/Songs rails
+/// resolve and play.
 private func mediaBrowserSearchItemTypes(for view: EmbyLibraryLink) -> String {
     switch view.collectionType?.lowercased() {
     case "movies":
@@ -377,6 +377,8 @@ private func mediaBrowserSearchItemTypes(for view: EmbyLibraryLink) -> String {
         return "Series,Season,Episode"
     case "homevideos", "livetv":
         return "Video"
+    case "music":
+        return "MusicArtist,MusicAlbum,Audio"
     default:
         return "Movie,Series,Season,Episode,Video"
     }

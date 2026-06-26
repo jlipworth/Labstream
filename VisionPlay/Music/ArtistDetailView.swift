@@ -29,7 +29,8 @@ struct ArtistDetailView: View {
     /// Own albums not already on a categorized shelf (the LPs, typically).
     @State private var albums: [MediaItem] = []
     /// PMS-categorized release shelves (Singles & EPs / Compilations / …), server order.
-    @State private var categorized: [Hub] = []
+    /// Empty for MediaBrowser backends, which only surface the flat Albums shelf.
+    @State private var categorized: [ArtistShelf] = []
     @State private var appearsOn: [MediaItem] = []
     @State private var similar: [MediaItem] = []
     @State private var loadState: HomeView.LoadState = .idle
@@ -130,16 +131,11 @@ struct ArtistDetailView: View {
     /// Fetch every track under the artist in one flat list and play it (in album
     /// order, or shuffled). One request, zero controller changes.
     private func playDiscography(shuffled: Bool) async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         isStartingPlayback = true
         playError = nil
         defer { isStartingPlayback = false }
-        let req = MusicRequest.allLeaves(server: server, token: token,
-                                         identity: appModel.identity,
-                                         ratingKey: artist.ratingKey)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            let tracks = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            let tracks = try await appModel.musicProvider.discographyTracks(artist: artist)
             guard !tracks.isEmpty else {
                 playError = "No tracks to play."
                 return
@@ -158,8 +154,8 @@ struct ArtistDetailView: View {
     private var shelves: some View {
         if !popular.isEmpty { popularList }
         if !albums.isEmpty { MusicRail(title: "Albums", items: albums) }
-        ForEach(categorized) { hub in
-            MusicRail(title: hub.title, items: hub.metadata)
+        ForEach(categorized) { shelf in
+            MusicRail(title: shelf.title, items: shelf.items)
         }
         if !appearsOn.isEmpty { MusicRail(title: "Appears On", items: appearsOn) }
         if !similar.isEmpty { MusicRail(title: "Similar Artists", items: similar) }
@@ -213,77 +209,18 @@ struct ArtistDetailView: View {
         // `.task` re-fires when popping back from a pushed album; reloading then
         // resets the scroll position the user is returning to. Load once.
         if case .loaded = loadState { return }
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            loadState = .failed("No server selected.")
-            return
-        }
         loadState = .loading
-        guard let sectionKey else {
-            await loadViaChildren(server: server, token: token)
-            return
-        }
-        let identity = appModel.identity
-
-        // Discography is the primary request (drives the failure state); the other
-        // shelves are best-effort and degrade to absent.
-        async let relatedResp = try? appModel.client.send(
-            MusicRequest.relatedHubs(server: server, token: token, identity: identity,
-                                     ratingKey: artist.ratingKey),
-            as: HubsResponse.self)
-        async let appearsResp = try? appModel.client.send(
-            MusicRequest.appearsOnAlbums(server: server, token: token, identity: identity,
-                                         sectionKey: sectionKey, artistTitle: artist.title),
-            as: MetadataResponse.self)
-        async let popularResp = try? appModel.client.send(
-            MusicRequest.popularTracks(server: server, token: token, identity: identity,
-                                       sectionKey: sectionKey,
-                                       artistRatingKey: artist.ratingKey),
-            as: MetadataResponse.self)
-
-        let own: [MediaItem]
         do {
-            let resp = try await appModel.client.send(
-                MusicRequest.artistAlbums(server: server, token: token, identity: identity,
-                                          sectionKey: sectionKey,
-                                          artistRatingKey: artist.ratingKey),
-                as: MetadataResponse.self)
-            own = resp.mediaContainer.metadata
-        } catch {
-            loadState = .failed(friendlyMessage(error))
-            return
-        }
-
-        let hubs = (await relatedResp)?.mediaContainer.hub ?? []
-        categorized = hubs.compactMap { hub in
-            guard (hub.hubIdentifier ?? "").hasPrefix("artist.albums.") else { return nil }
-            let items = hub.metadata.filter { $0.kind == .album }
-            guard !items.isEmpty else { return nil }
-            return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title,
-                       type: hub.type, hubIdentifier: hub.hubIdentifier,
-                       size: items.count, metadata: items)
-        }
-        similar = hubs.first { ($0.hubIdentifier ?? "").hasPrefix("artist.similar") }?
-            .metadata.filter { $0.kind == .artist } ?? []
-
-        // "Albums" = own discography minus anything PMS already shelved (Singles &
-        // EPs etc.); "Appears On" = track-credit albums minus the artist's own.
-        let categorizedKeys = Set(categorized.flatMap(\.metadata).map(\.ratingKey))
-        albums = own.filter { !categorizedKeys.contains($0.ratingKey) }
-        let ownKeys = Set(own.map(\.ratingKey))
-        appearsOn = ((await appearsResp)?.mediaContainer.metadata ?? [])
-            .filter { $0.kind == .album && !ownKeys.contains($0.ratingKey) }
-        popular = (await popularResp)?.mediaContainer.metadata.filter { $0.kind == .track } ?? []
-
-        loadState = .loaded
-    }
-
-    /// No section key in hand: the legacy children walk, one flat Albums shelf.
-    private func loadViaChildren(server: URL, token: String) async {
-        let req = BrowseAPI.children(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: artist.ratingKey)
-        do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            albums = resp.mediaContainer.metadata.filter { $0.kind == .album }
+            // The provider fills the Plex-specific shelves (popular / categorized /
+            // appears-on / similar) for Plex and leaves them empty for MediaBrowser,
+            // so the view renders whatever it's handed — no backend branching here.
+            let content = try await appModel.musicProvider.artistDetail(artist: artist,
+                                                                        libraryID: sectionKey)
+            popular = content.popular
+            albums = content.albums
+            categorized = content.categorized
+            appearsOn = content.appearsOn
+            similar = content.similar
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))

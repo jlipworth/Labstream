@@ -305,6 +305,37 @@ public enum JellyfinLibrary {
         return req
     }
 
+    /// Direct-play audio stream URL for music playback (#111), built against the
+    /// `/Audio/{itemId}/universal` endpoint the official clients use. `universal`
+    /// negotiates per-source: it streams the original bytes when the container is in
+    /// the `Container` allowlist and within `MaxStreamingBitrate`, otherwise transcodes
+    /// to an HLS/AAC stream — AVPlayer plays either form. A generous default bitrate keeps
+    /// lossless sources direct-playing; callers can clamp it to honor a quality cap.
+    ///
+    /// The token is deliberately NOT baked into the URL: music playback (like the video
+    /// path) carries auth in the `AVURLAssetHTTPHeaderFieldsKey` header via
+    /// ``authenticatedRequest(url:token:identity:)``, so no secret lingers in the
+    /// app-visible stream URL.
+    public static func audioStreamURL(server: URL,
+                                      identity: JellyfinClientIdentity,
+                                      userId: String,
+                                      itemId: String,
+                                      maxStreamingBitrate: Int = 140_000_000) throws -> URL {
+        try url(server: server, path: "/Audio/\(itemId)/universal", queryItems: [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "DeviceId", value: identity.deviceId),
+            URLQueryItem(name: "MaxStreamingBitrate", value: String(maxStreamingBitrate)),
+            URLQueryItem(name: "Container", value: musicDirectPlayContainers),
+            URLQueryItem(name: "TranscodingContainer", value: "ts"),
+            URLQueryItem(name: "TranscodingProtocol", value: "hls"),
+            URLQueryItem(name: "AudioCodec", value: "aac"),
+        ])
+    }
+
+    /// Containers AVPlayer decodes natively — passed to the `universal` endpoint so a
+    /// matching source direct-plays and only the exotic ones transcode. Shared with Emby.
+    static let musicDirectPlayContainers = "mp3,aac,m4a,m4b,flac,alac,wav,ogg,oga,opus,webma"
+
     public static func imageURL(server: URL,
                                 itemId: String,
                                 imageType: JellyfinImageType,

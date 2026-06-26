@@ -31,6 +31,26 @@ struct EmbyLibraryTests {
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("UserId=\"user-9\"") == true)
     }
 
+    @Test func audioStreamURLTargetsUniversalEndpointTokenless() throws {
+        let url = try EmbyLibrary.audioStreamURL(server: server,
+                                                 identity: identity,
+                                                 userId: "user-9",
+                                                 itemId: "track-9")
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        // Path-style endpoint preserving the /emby base path.
+        #expect(comps.path == "/emby/Audio/track-9/universal")
+        #expect(q["UserId"] == "user-9")
+        #expect(q["DeviceId"] == "device-123")
+        #expect(q["MaxStreamingBitrate"] == "140000000")
+        #expect(q["AudioCodec"] == "aac")
+        #expect(q["Container"]?.contains("flac") == true)
+        // No token / api_key baked into the stream URL — auth rides in the asset header.
+        #expect(q["api_key"] == nil)
+        #expect(url.absoluteString.lowercased().contains("token") == false)
+    }
+
     @Test func itemsRequestCarriesRecursiveIncludeItemTypesAndFields() throws {
         let request = try EmbyLibrary.itemsRequest(
             server: server,

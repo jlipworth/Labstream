@@ -20,12 +20,17 @@ struct MusicLibraryView: View {
     @State private var loadGeneration = 0
 
     var body: some View {
-        if appModel.activeBackend == .jellyfin {
-            ContentUnavailableView("Jellyfin music is not in this slice",
-                                   systemImage: "music.note",
-                                   description: Text("This branch is focused on Jellyfin video login, browse, and playback."))
-                .navigationTitle("Music")
-        } else {
+        switch appModel.activeBackend {
+        case .plex:
+            plexBody
+        case .jellyfin, .emby:
+            // Jellyfin/Emby music browses through the shared MusicProvider (#111).
+            MediaBrowserMusicView()
+        }
+    }
+
+    @ViewBuilder
+    private var plexBody: some View {
         Group {
             switch loadState {
             case .idle, .loading:
@@ -66,7 +71,6 @@ struct MusicLibraryView: View {
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
-        }
     }
 
     private var loadIdentity: String {

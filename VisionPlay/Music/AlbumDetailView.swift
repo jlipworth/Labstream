@@ -192,19 +192,11 @@ struct AlbumDetailView: View {
         // `.task` re-fires on pop-back/reappear; tracks don't change mid-session,
         // so load once and keep the view (and its scroll position) stable.
         if case .loaded = loadState { return }
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            loadState = .failed("No server selected.")
-            return
-        }
         loadState = .loading
-        let req = BrowseAPI.children(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: album.ratingKey)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            // Multi-disc albums: order by disc (`parentIndex`) then track (`index`).
-            tracks = resp.mediaContainer.metadata.sorted {
-                ($0.parentIndex ?? 1, $0.index ?? 0) < ($1.parentIndex ?? 1, $1.index ?? 0)
-            }
+            // The provider returns tracks already in disc-then-track order for the
+            // active backend (Plex children, MediaBrowser album items).
+            tracks = try await appModel.musicProvider.albumTracks(album: album)
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))

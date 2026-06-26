@@ -461,13 +461,16 @@ final class MusicPlayerController {
         guard queue.indices.contains(index) else { return }
         let track = queue[index]
 
-        // Validate BEFORE tearing anything down: a bad target track must not silence
-        // the one that's already playing.
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            playbackErrorMessage = "Not connected to a Plex server."
+        // Resolve the backend-specific stream BEFORE tearing anything down: a bad target
+        // track must not silence the one that's already playing.
+        let stream: MusicStreamResolver.Stream
+        do {
+            stream = try MusicStreamResolver.stream(for: track, appModel: appModel)
+        } catch MusicStreamResolver.ResolveError.notConnected {
+            // No server: surface it but DON'T advance — no track would play.
+            playbackErrorMessage = "Not connected to a server."
             return
-        }
-        guard let partKey = track.media?.first?.part.first?.key else {
+        } catch {
             // No playable file on this track: surface it and skip forward (mirrors
             // handleTrackFailure) instead of stranding the queue on a dead row.
             playbackErrorMessage = "\u{201C}\(track.title)\u{201D} has no playable file. Skipping."
@@ -486,15 +489,14 @@ final class MusicPlayerController {
         elapsedSeconds = 0
         currentArtwork = nil
 
-        let url = MusicRequest.trackStreamURL(server: server, token: token, partKey: partKey)
-        let playerItem = AVPlayerItem(asset: AVURLAsset(url: url))
+        // Auth rides in the asset header for MediaBrowser (token not in URL); Plex bakes
+        // its token into the URL and needs no header (see MusicStreamResolver).
+        let assetOptions: [String: Any]? = stream.headers.isEmpty
+            ? nil
+            : ["AVURLAssetHTTPHeaderFieldsKey": stream.headers]
+        let playerItem = AVPlayerItem(asset: AVURLAsset(url: stream.url, options: assetOptions))
 
-        reporter = TimelineReporter(item: track,
-                                    server: server,
-                                    token: token,
-                                    identity: appModel.identity,
-                                    client: appModel.client,
-                                    player: player)
+        reporter = makeReporter(for: track)
 
         prepareSessionIfNeeded()
         installTrackObservers(for: playerItem)
@@ -503,7 +505,21 @@ final class MusicPlayerController {
         isPlaying = true
 
         updateNowPlayingInfo(for: track)
-        fetchArtwork(for: track, server: server, token: token)
+        fetchArtwork(for: track)
+    }
+
+    /// Timeline/scrobble reporting uses the Plex PMS `/:/timeline` + scrobble endpoints,
+    /// so it is created only for Plex. MediaBrowser (Jellyfin/Emby) music progress
+    /// reporting is a later refinement; until then those tracks simply don't scrobble.
+    private func makeReporter(for track: MediaItem) -> TimelineReporter? {
+        guard appModel.activeBackend == .plex,
+              let server = appModel.serverBaseURL, let token = appModel.serverToken else { return nil }
+        return TimelineReporter(item: track,
+                                server: server,
+                                token: token,
+                                identity: appModel.identity,
+                                client: appModel.client,
+                                player: player)
     }
 
     /// One-time (per controller life) session prep: activate the music-mode audio
@@ -635,14 +651,8 @@ final class MusicPlayerController {
             reporter?.scrobble()
             // Fresh reporter for the replay: scrobbling is one-shot per reporter, so
             // reusing it would count only the first loop as played.
-            if let track = current,
-               let server = appModel.serverBaseURL, let token = appModel.serverToken {
-                reporter = TimelineReporter(item: track,
-                                            server: server,
-                                            token: token,
-                                            identity: appModel.identity,
-                                            client: appModel.client,
-                                            player: player)
+            if let track = current {
+                reporter = makeReporter(for: track)
                 reporter?.isReadyForReporting = true
             }
             seek(to: 0)
@@ -710,19 +720,18 @@ final class MusicPlayerController {
         center.nowPlayingInfo = info
     }
 
-    /// Best-effort 600×600 artwork fetch for the system Now Playing card, via the PMS
-    /// `/photo/:/transcode` endpoint (same construction as the video path's poster URL).
-    /// Guards that the track is still current before assigning, so a quick skip can't
-    /// attach stale art.
-    private func fetchArtwork(for track: MediaItem, server: URL, token: String) {
-        let imagePath = track.thumb ?? track.parentThumb
-        guard let imagePath, !imagePath.isEmpty,
-              let url = Self.artworkTranscodeURL(imagePath: imagePath,
-                                                 server: server,
-                                                 token: token) else { return }
+    /// Best-effort 600×600 artwork fetch for the system Now Playing card, resolved by the
+    /// shared `MediaArtwork` helper (Plex `/photo` transcode, or the authenticated
+    /// Jellyfin/Emby image endpoint). Guards that the track is still current before
+    /// assigning, so a quick skip can't attach stale art.
+    private func fetchArtwork(for track: MediaItem) {
+        guard let request = MediaArtwork.imageRequest(path: track.musicArtPath,
+                                                      appModel: appModel,
+                                                      pixelWidth: 600,
+                                                      pixelHeight: 600) else { return }
         let ratingKey = track.ratingKey
         Task { [weak self] in
-            guard let data = await Self.fetchArtworkData(url: url),
+            guard let data = await Self.fetchArtworkData(request: request),
                   let image = UIImage(data: data) else { return }
             let artwork = Self.makeArtwork(image)
             await MainActor.run {
@@ -744,29 +753,11 @@ final class MusicPlayerController {
         MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
-    /// Build the `/photo/:/transcode` URL for a square 600×600 artwork image, mirroring
-    /// `PlaybackController.posterTranscodeURL` (which is poster-shaped, 600×900).
-    private nonisolated static func artworkTranscodeURL(imagePath: String,
-                                                        server: URL,
-                                                        token: String) -> URL? {
-        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: imagePath),
-            .init(name: "width", value: "600"),
-            .init(name: "height", value: "600"),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
-    }
-
     /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it
     /// can't black-hole playback. `nonisolated` + returns Sendable `Data`.
-    private nonisolated static func fetchArtworkData(url: URL) async -> Data? {
+    private nonisolated static func fetchArtworkData(request: URLRequest) async -> Data? {
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse,
                !(200...299).contains(http.statusCode) { return nil }
             return data.isEmpty ? nil : data
