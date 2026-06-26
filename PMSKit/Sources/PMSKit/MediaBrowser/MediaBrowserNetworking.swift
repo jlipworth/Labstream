@@ -28,13 +28,37 @@ public enum MediaBrowserURL {
         return url
     }
 
-    /// Join a server-relative path (or pass through an absolute URL) onto the server base
+    /// Join a server-relative path (or same-origin absolute URL) onto the server base
     /// URL, PRESERVING the server's base path (for example `/emby`). Returns nil if a URL
-    /// cannot be constructed.
+    /// cannot be constructed or if an absolute URL is not same-origin with `server`.
     public static func join(server: URL, pathOrURLString: String) -> URL? {
+        joinTrustedServerURL(server: server, pathOrURLString: pathOrURLString)
+    }
+
+    /// Join a backend-provided media URL that will be fetched with MediaBrowser credentials.
+    ///
+    /// Relative paths are resolved against the configured server while preserving its base path.
+    /// Absolute URLs are accepted only when they match the server's effective origin: same
+    /// http(s) scheme, case-insensitive host, and effective port (implicit 443/80 default ports
+    /// are treated the same as explicit ones).
+    public static func joinTrustedServerURL(server: URL, pathOrURLString: String) -> URL? {
         if let absolute = URL(string: pathOrURLString), absolute.scheme != nil {
-            return absolute
+            return isSameOrigin(absolute, server: server) ? absolute : nil
         }
+        return joinRelative(server: server, pathOrURLString: pathOrURLString)
+    }
+
+    public static func isSameOrigin(_ url: URL, server: URL) -> Bool {
+        guard let lhs = origin(for: url),
+              let rhs = origin(for: server) else {
+            return false
+        }
+        return lhs.scheme == rhs.scheme &&
+            lhs.host.caseInsensitiveCompare(rhs.host) == .orderedSame &&
+            lhs.port == rhs.port
+    }
+
+    private static func joinRelative(server: URL, pathOrURLString: String) -> URL? {
         guard var comps = URLComponents(url: server, resolvingAgainstBaseURL: false) else {
             return nil
         }
@@ -52,6 +76,26 @@ public enum MediaBrowserURL {
         comps.percentEncodedPath = "/" + [basePath, cleanRelative].filter { !$0.isEmpty }.joined(separator: "/")
         comps.percentEncodedQuery = query
         return comps.url
+    }
+
+    private static func origin(for url: URL) -> (scheme: String, host: String, port: Int)? {
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = comps.scheme?.lowercased(),
+              let host = comps.host,
+              !host.isEmpty,
+              let port = effectivePort(for: scheme, explicitPort: comps.port) else {
+            return nil
+        }
+        return (scheme, host, port)
+    }
+
+    private static func effectivePort(for scheme: String, explicitPort: Int?) -> Int? {
+        if let explicitPort { return explicitPort }
+        switch scheme {
+        case "https": return 443
+        case "http": return 80
+        default: return nil
+        }
     }
 }
 

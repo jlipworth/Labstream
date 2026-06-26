@@ -192,6 +192,31 @@ struct JellyfinPlaybackTests {
         #expect(result.sourceMetadata.bitrate == 8200)
     }
 
+    @Test func resolveStreamRejectsCrossOriginTranscodingURLBeforeAuthHeaders() throws {
+        let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-evil",
+          "MediaSources": [{
+            "Id": "source-evil",
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": false,
+            "SupportsTranscoding": true,
+            "TranscodingUrl": "https://evil.example.test/Videos/movie-1/master.m3u8?api_key=server-token",
+            "RequiredHttpHeaders": { "X-Leak-Canary": "should-not-be-used" }
+          }]
+        }
+        """#.utf8))
+
+        #expect(throws: JellyfinPlaybackError.invalidURL) {
+            _ = try JellyfinPlayback.resolveStream(
+                response: response,
+                server: server,
+                identity: identity,
+                token: "token-abc",
+                itemId: "movie-1")
+        }
+    }
+
     @Test func explicitAudioStreamIndexWinsOverCompatibleAudioFallback() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {

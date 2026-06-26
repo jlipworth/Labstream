@@ -458,11 +458,14 @@ public enum JellyfinLibrary {
                                             width: Int = 320,
                                             tileURI: String) throws -> URLRequest {
         let basePath = "/Videos/\(itemId)/Trickplay/\(width)/"
-        let rawURL: URL
+        let rawURLString: String
         if let absolute = URL(string: tileURI), absolute.scheme != nil {
-            rawURL = absolute
+            rawURLString = absolute.absoluteString
         } else {
-            rawURL = try url(server: server, path: basePath + tileURI, queryItems: [])
+            rawURLString = basePath + tileURI
+        }
+        guard let rawURL = MediaBrowserURL.joinTrustedServerURL(server: server, pathOrURLString: rawURLString) else {
+            throw JellyfinPlaybackError.invalidURL
         }
         guard var comps = URLComponents(url: rawURL, resolvingAgainstBaseURL: false) else {
             throw JellyfinPlaybackError.invalidURL
