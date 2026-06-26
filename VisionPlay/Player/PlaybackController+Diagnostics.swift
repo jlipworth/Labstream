@@ -40,7 +40,7 @@ extension PlaybackController {
         return fields
     }
 
-    func jellyfinSourceDiagnosticFields(_ source: JellyfinPlaybackSourceMetadata?) -> [String: DiagnosticFieldValue] {
+    func mediaBrowserSourceDiagnosticFields(_ source: MediaBrowserPlaybackSourceMetadata?) -> [String: DiagnosticFieldValue] {
         guard let source else { return [:] }
         var fields: [String: DiagnosticFieldValue] = [
             "source_container": .label(source.container),
