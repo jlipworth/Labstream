@@ -4,7 +4,7 @@ import PMSKit
 /// Playlist page — a structural clone of `AlbumDetailView` minus the year header and
 /// disc sort (MUSIC-DESIGN §3.4): blurred composite-art backdrop, title and
 /// track-count/duration credits, Play / Shuffle, and the ordered track list. Items
-/// come from `GET /playlists/{ratingKey}/items` and PLAYLIST ORDER IS PRESERVED —
+/// come through `MusicProvider.playlistTracks` and PLAYLIST ORDER IS PRESERVED —
 /// no client-side sorting. Per-row 44-pt art because artwork varies across a
 /// playlist (unlike an album, where the cover is the header). Read-only in v1.
 struct PlaylistDetailView: View {
@@ -164,18 +164,9 @@ struct PlaylistDetailView: View {
     }
 
     private func load() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            loadState = .failed("No server selected.")
-            return
-        }
         loadState = .loading
-        let req = PlaylistRequest.items(server: server, token: token,
-                                        identity: appModel.identity,
-                                        ratingKey: playlist.ratingKey)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            // Playlist order is the user's order — keep the server sequence verbatim.
-            tracks = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            tracks = try await appModel.musicProvider.playlistTracks(playlist: playlist)
             loadState = .loaded
         } catch {
             loadState = .failed(friendlyMessage(error))
@@ -251,4 +242,3 @@ func formatPlaylistDuration(milliseconds: Int) -> String {
     let minutes = totalMinutes % 60
     return hours > 0 ? "\(hours) hr \(minutes) min" : "\(minutes) min"
 }
-
