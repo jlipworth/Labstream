@@ -3744,7 +3744,10 @@ final class PlaybackController {
                                                         audioStreamIndex: audioStreamIDOverride,
                                                         subtitleStreamIndex: subtitleStreamIndexOverride)
                 let reopened = try await remoteStreamReopener(request)
-                guard !Task.isCancelled, generation == self.playbackGeneration else {
+                guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
+                    capturedGeneration: generation,
+                    currentGeneration: self.playbackGeneration,
+                    isCancelled: Task.isCancelled) else {
                     reopened.onStop?()
                     return
                 }
@@ -3753,8 +3756,10 @@ final class PlaybackController {
                                                                            resumeOffsetMs: offsetMs,
                                                                            playMethod: nextPlayMethod,
                                                                            generation: generation),
-                      !Task.isCancelled,
-                      generation == self.playbackGeneration else {
+                      RemoteStreamLifecyclePolicy.acceptsReopenResult(
+                          capturedGeneration: generation,
+                          currentGeneration: self.playbackGeneration,
+                          isCancelled: Task.isCancelled) else {
                     reopened.onStop?()
                     return
                 }
@@ -3769,18 +3774,23 @@ final class PlaybackController {
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false
                 self.loadRemoteStream(playableURL, headers: reopened.headers, resumeOffsetMs: offsetMs)
-                let samePlaySession = priorPlaySessionId != nil && priorPlaySessionId == reopened.playSessionId
-                if samePlaySession {
+                switch RemoteStreamLifecyclePolicy.priorSessionStopDecision(
+                    priorPlaySessionID: priorPlaySessionId,
+                    reopenedPlaySessionID: reopened.playSessionId) {
+                case .skip(let reason):
                     self.recordPlaybackDiagnostic("playback.remote_stop_skipped", fields: [
-                        "reason": .label("same_play_session"),
+                        "reason": .label(reason),
                     ])
-                } else {
+                case .deferStop(let reason):
                     self.scheduleDeferredRemoteSessionStop(priorStop,
-                                                           reason: "after_reopen_item_detached",
+                                                           reason: reason,
                                                            delaySeconds: 2.0)
                 }
             } catch {
-                guard !Task.isCancelled, generation == self.playbackGeneration else { return }
+                guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
+                    capturedGeneration: generation,
+                    currentGeneration: self.playbackGeneration,
+                    isCancelled: Task.isCancelled) else { return }
                 self.recordPlaybackDiagnostic("playback.remote_reopen_failed", fields: [
                     "error": .error(error),
                     "target": .millisecondsBucket(offsetMs),
