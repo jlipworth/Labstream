@@ -6,19 +6,40 @@ Backend-agnostic dedup + robustness + de-godding plan for `VisionPlay/Downloads/
 
 ## Implementation status
 
-- **✅ Stage 2 — unify the completion/validation pipeline (this PR).** Both the opaque
+Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified by `swift test`
++ an app build + a sim/headless smoke). PMSKit test count 672 → 690.
+
+- **✅ Stage 2 — unify the completion/validation pipeline.** Both the opaque
   (`didFinishDownloadingTo`) and byte-range (`didCompleteWithError`) completion paths now funnel
-  through one `BackgroundDownloadSession.finalizeTransferredFile`, with the decidable rules extracted
-  into the pure, tested `PMSKit.DownloadCompletionValidation`. Fixes the verified **H1** (static lanes
-  never ran `HEVCTagFixup` → `hev1` MP4 black-screen, despite the #127 comment claiming otherwise),
-  **H2** (no duration truncation guard on the range path), and **H3** (range probe-miss condemned to
-  `.failed` instead of the #98 `.unverified` leniency). Net: the range pipeline's drifted ~25-line
-  completion block collapses into the shared finalize.
-- **Next, per the adversarial critique:** Stage 0 (characterize the range-completion + `reconcile`
-  transitions before moving more), then Stage 1a (`OptimizedVersionMatch` pure leaf) as a low-risk
-  pattern-setter, then Stages 3–5 (transfer-layer dedup → `ServerPrepEngine` → `DownloadStrategy`).
-  The stages have a real DAG (Stage 5 depends on the Stage 2/4 engines) — ship in order, not freely
-  reordered.
+  through one `BackgroundDownloadSession.finalizeTransferredFile`, with the decidable rules in the
+  pure, tested `PMSKit.DownloadCompletionValidation`. Fixes verified **H1** (static lanes never ran
+  `HEVCTagFixup` → `hev1` MP4 black-screen, despite the #127 comment), **H2** (no truncation guard on
+  the range path), **H3** (range probe-miss condemned to `.failed` vs the #98 `.unverified`
+  leniency). Verified E2E: a real Plex static download ran through the shared finalize to `.complete`
+  on the sim.
+- **✅ Stage 1a — `OptimizedVersionMatch`.** The Plex optimized-version matcher (±16px box / ×1.10+768
+  kbps) moved to a pure PMSKit unit + 12 tests; the WxH parser deduped into
+  `DownloadResolutionLabel.dimensions(forVideoResolution:)`; dead `resolutionHeight` deleted.
+- **✅ Stage 1b/1c — `TranscodeSizeEstimator` + `DownloadDisplayClassifier`.** The Content-Length-less
+  transcode size estimate and the #123 live-transcoder "/s"-suppression rule moved to pure PMSKit
+  units + 6 tests.
+- **✅ Stage 3 (first cut) — byte-range transfer hardening.** **H4**: evict from only the session that
+  owns the task (the opaque and app-range sessions have independent id spaces) instead of both maps.
+  **H5**: delete the poisoned partial on a non-2xx range response so a resume can't append after the
+  error-page body. Verified live: a simulated mid-transfer drop produces a clean `.paused` with the
+  partial + offset preserved.
+
+**Cross-backend verification harness** (kubectl port-forwards → live Plex/Emby/Jellyfin): Plex via
+the headless `swift test` route probe + the in-process sim download probe (E2E to `.complete`); Emby
+via the in-process dry-run probe (`route=transcode`, #133 refresh + existing-source enumeration both
+green). Jellyfin has no dedicated download probe yet (shares the Emby lane code) — a follow-up.
+
+- **Remaining:** Stage 1e/1f (BackendSession URL-identity + record-key leaves), **Stage 4**
+  (`ServerPrepEngine` collapsing the Plex-optimize / Emby-convert duplication + Jellyfin stale guard),
+  **Stage 5** (`DownloadStrategy` — collapse the ~300-line `download`/`downloadJellyfin`/`downloadEmby`
+  twins into `JobCoordinator.start(strategy:)`; the big de-godding), Stage 6 (persistence: schemaVersion
+  + per-row decode isolation, H8/H9), Stage 7 (side-cache unification + parity), Stage 8 (UI/probe
+  dedup). Real DAG: Stage 5 depends on the Stage 2/4 engines — ship in order.
 
 ---
 
