@@ -41,6 +41,20 @@ Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified 
   effects pass as a closure). The one real per-lane difference (JF/Emby release the in-flight slot on a
   start failure; Plex static relies on the terminal `.failed`) is carried by `releaseInFlightOnFailure`.
   `DownloadManager.swift` 4939 → 4779 lines across the landed stages.
+- **✅ Stage 5c (first two cuts) — per-backend subsystems split into their own files.** The headline
+  de-godding, applied incrementally: each cohesive lane subsystem moves verbatim into a
+  `DownloadManager+<Lane>.swift` extension (a `@MainActor`-class extension inherits the class's
+  isolation, so the bodies are unchanged), and the only production change is promoting the shared
+  lane services those methods reach from `private` to `internal` (module-scoped).
+  - **`DownloadManager+EmbyConvert.swift`** — the Emby "Convert Media" server-prep lane
+    (triggerConvertAndDownload → poll → finish + the #126 reuse-preflight helpers). ~620 lines.
+  - **`DownloadManager+PlexOptimize.swift`** — the Plex server-side optimize kickoff/render/queue
+    half (triggerOptimizeAndDownload → triggerOptimize → startOptimizedPartDownload + queue hygiene).
+    ~550 lines.
+  - Net: `DownloadManager.swift` **4939 → 3612 lines (−27%)**. Each cut is a separate commit, verified
+    by a clean build + a UUID-matched install + launch (no crash, Plex browse UI). Remaining 5c cuts
+    (same pattern): the Jellyfin download lane, the Plex-optimize metadata-polling half, and the
+    side-cache cluster (overlaps Stage 7).
 
 **Cross-backend verification harness** (kubectl port-forwards → live Plex/Emby/Jellyfin): Plex via
 the headless `swift test` route probe + the in-process sim download probe (E2E to `.complete`); Emby
