@@ -479,10 +479,10 @@ private struct MusicTrackRail: View {
 // MARK: - Playlists pivot (read-only v1, MUSIC-DESIGN §3.4)
 
 /// Audio playlists as card rows — 56-pt composite art, title, "N tracks". Playlists
-/// live OUTSIDE the section tree (`GET /playlists?playlistType=audio` is server-wide),
-/// so unlike the other pivots this takes no section; the toolbar library Picker does
-/// not scope it. Rows push `PlaylistDetailView` via the shared `musicDestination`.
-private struct MusicPlaylistsPivot: View {
+/// are loaded through `MusicProvider` and are backend-wide, so unlike the artist/album pivots
+/// this takes no library id; the toolbar library Picker does not scope it. Rows push the shared
+/// provider-backed `PlaylistDetailView` via `musicDestination`.
+struct MusicPlaylistsPivot: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var playlists: [MediaItem] = []
@@ -539,17 +539,11 @@ private struct MusicPlaylistsPivot: View {
     private func load() async {
         loadGeneration += 1
         let generation = loadGeneration
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            loadState = .failed("No server selected.")
-            return
-        }
         loadState = .loading
-        let req = PlaylistRequest.audioPlaylists(server: server, token: token,
-                                                 identity: appModel.identity)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            let loaded = try await appModel.musicProvider.musicPlaylists()
             guard generation == loadGeneration, !Task.isCancelled else { return }
-            playlists = resp.mediaContainer.metadata.filter { $0.kind == .playlist }
+            playlists = loaded
             loadState = .loaded
         } catch {
             guard generation == loadGeneration, !Task.isCancelled else { return }

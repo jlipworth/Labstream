@@ -30,6 +30,12 @@ protocol MusicProvider {
 
     /// Every playable track under an artist, in album order — Play/Shuffle Artist.
     func discographyTracks(artist: MediaItem) async throws -> [MediaItem]
+
+    /// Audio playlists in the provider's natural display order.
+    func musicPlaylists() async throws -> [MediaItem]
+
+    /// A playlist's tracks in playlist order. Duplicate entries must be preserved.
+    func playlistTracks(playlist: MediaItem) async throws -> [MediaItem]
 }
 
 /// A browsable music library/section.

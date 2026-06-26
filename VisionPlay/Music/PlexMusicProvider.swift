@@ -65,6 +65,24 @@ struct PlexMusicProvider: MusicProvider {
         return resp.mediaContainer.metadata.filter { $0.kind == .track }
     }
 
+    func musicPlaylists() async throws -> [MediaItem] {
+        let s = try session()
+        let req = PlaylistRequest.audioPlaylists(server: s.server, token: s.token,
+                                                 identity: s.identity)
+        let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+        return resp.mediaContainer.metadata.filter { $0.kind == .playlist }
+    }
+
+    func playlistTracks(playlist: MediaItem) async throws -> [MediaItem] {
+        let s = try session()
+        let req = PlaylistRequest.items(server: s.server, token: s.token,
+                                        identity: s.identity,
+                                        ratingKey: playlist.ratingKey)
+        let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+        // Playlist order is the user's order — keep the server sequence verbatim.
+        return resp.mediaContainer.metadata.filter { $0.kind == .track }
+    }
+
     func artistDetail(artist: MediaItem, libraryID: String?) async throws -> ArtistDetailContent {
         let s = try session()
         // No section key (cross-section search result): the legacy children walk, one
