@@ -331,8 +331,7 @@ public enum EmbyPlayback {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(EmbyAuth.authorizationHeader(identity: identity, userId: userId, token: token),
-                     forHTTPHeaderField: "Authorization")
+        EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
         var body: [String: Any] = [
             "UserId": userId,
             "MaxStaticBitrate": maxStaticBitrate,
@@ -342,6 +341,7 @@ public enum EmbyPlayback {
             "EnableTranscoding": true,
             "AllowVideoStreamCopy": true,
             "AllowAudioStreamCopy": true,
+            "AutoOpenLiveStream": false,
             "DeviceProfile": visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }

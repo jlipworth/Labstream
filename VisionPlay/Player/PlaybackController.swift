@@ -135,13 +135,14 @@ final class PlaybackController {
     private var offlineSubtitleCuesByTrackID: [Int: [OfflineTextSubtitleCue]] = [:]
     private var selectedOfflineSubtitleTrackID: Int?
 
-    /// Already-resolved remote media URL, when a non-Plex backend (currently Jellyfin) has
+    /// Already-resolved remote media URL, when a non-Plex backend (Jellyfin/Emby) has
     /// performed its own playback negotiation and only needs the custom player to open the
     /// resulting stream. This keeps the player surface agnostic: Plex owns its transcode resolver,
     /// while other backends can hand us a concrete stream URL and a re-open hook for quality/seek.
     private let remoteStreamURL: URL?
+    private let remoteBackendLabel: String?
 
-    /// Optional HTTP headers required by `remoteStreamURL`. Jellyfin playback tokens must stay in
+    /// Optional HTTP headers required by `remoteStreamURL`. Backend playback tokens must stay in
     /// headers rather than URL query parameters so client logs/history never capture URL tokens.
     private var remoteHTTPHeaders: [String: String]
     private var remoteSourceMetadata: JellyfinPlaybackSourceMetadata?
@@ -635,6 +636,7 @@ final class PlaybackController {
         self.offlineTextSubtitles = []
         self.offlineSubtitleBaseURL = nil
         self.remoteStreamURL = nil
+        self.remoteBackendLabel = nil
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
@@ -670,6 +672,7 @@ final class PlaybackController {
         self.server = nil
         self.token = nil
         self.remoteStreamURL = nil
+        self.remoteBackendLabel = nil
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
@@ -696,6 +699,7 @@ final class PlaybackController {
          item: MediaItem,
          identity: ClientIdentity,
          client: PlexClient,
+         remoteBackendLabel: String = "Jellyfin",
          httpHeaders: [String: String] = [:],
          remotePlaySessionId: String? = nil,
          sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
@@ -710,6 +714,7 @@ final class PlaybackController {
         self.offlineTextSubtitles = []
         self.offlineSubtitleBaseURL = nil
         self.remoteStreamURL = remoteStreamURL
+        self.remoteBackendLabel = remoteBackendLabel
         self.remoteHTTPHeaders = httpHeaders
         self.remotePlaySessionId = remotePlaySessionId
         self.remoteSourceMetadata = sourceMetadata
@@ -3902,7 +3907,7 @@ final class PlaybackController {
 
     private var performanceBackendLabel: String {
         if localFile != nil { return "Local" }
-        if remoteStreamURL != nil { return "Jellyfin" }
+        if remoteStreamURL != nil { return remoteBackendLabel ?? "Remote" }
         return "Plex"
     }
 

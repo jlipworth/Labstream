@@ -69,6 +69,23 @@ struct LiveEmbyProbeTests {
         return (data, status)
     }
 
+    private func stopActiveEncodingIfNeeded(_ result: EmbyPlaybackOpenResult,
+                                            cfg: LiveConfig,
+                                            label: String) async throws {
+        guard result.usesServerEncoding else { return }
+        let stop = try EmbyLibrary.activeEncodingStopRequest(
+            server: cfg.server,
+            token: cfg.token,
+            identity: cfg.identity,
+            userId: cfg.userId,
+            deviceId: cfg.identity.deviceId,
+            playSessionId: result.playSessionId)
+        let (_, stopStatus) = try await send(stop)
+        print(">>> LIVE [\(label)] ActiveEncodings DELETE HTTP \(stopStatus)")
+        #expect((200..<300).contains(stopStatus) || [400, 404, 410].contains(stopStatus),
+                "active encoding cleanup should return success or already-gone status, got \(stopStatus)")
+    }
+
     @Test func liveEmbyProbe() async throws {
         guard let cfg = LiveConfig() else {
             print(">>> LIVE skipped: set EMBY_LIVE_SERVER / EMBY_LIVE_TOKEN / EMBY_LIVE_USER_ID / EMBY_LIVE_ITEM_ID to run.")
@@ -205,12 +222,18 @@ struct LiveEmbyProbeTests {
 
             // The burned-in stream URL must actually fetch. GET it and confirm a success status
             // (HLS playlists are small; this just proves the server accepts the burn-in request).
-            var fetch = URLRequest(url: resolvedSub.url)
-            for (k, v) in resolvedSub.requiredHTTPHeaders { fetch.setValue(v, forHTTPHeaderField: k) }
-            let (_, fetchStatus) = try await send(fetch)
-            print(">>> LIVE [subtitle] burn-in stream GET HTTP \(fetchStatus)")
-            #expect((200..<400).contains(fetchStatus),
-                    "burn-in stream should fetch with a success status, got \(fetchStatus)")
+            do {
+                var fetch = URLRequest(url: resolvedSub.url)
+                for (k, v) in resolvedSub.requiredHTTPHeaders { fetch.setValue(v, forHTTPHeaderField: k) }
+                let (_, fetchStatus) = try await send(fetch)
+                print(">>> LIVE [subtitle] burn-in stream GET HTTP \(fetchStatus)")
+                #expect((200..<400).contains(fetchStatus),
+                        "burn-in stream should fetch with a success status, got \(fetchStatus)")
+            } catch {
+                try? await stopActiveEncodingIfNeeded(resolvedSub, cfg: cfg, label: "subtitle")
+                throw error
+            }
+            try await stopActiveEncodingIfNeeded(resolvedSub, cfg: cfg, label: "subtitle")
         }
     }
 }

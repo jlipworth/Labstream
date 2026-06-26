@@ -65,6 +65,7 @@ enum DebugJellyfinPlaybackProbe {
                                               item: detailed,
                                               identity: appModel.identity,
                                               client: appModel.client,
+                                              remoteBackendLabel: "Jellyfin",
                                               httpHeaders: initial.requiredHTTPHeaders,
                                               remotePlaySessionId: initial.playSessionId,
                                               sourceMetadata: initial.sourceMetadata,

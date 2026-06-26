@@ -694,6 +694,7 @@ struct DetailView: View {
                                                     item: playing,
                                                     identity: appModel.identity,
                                                     client: appModel.client,
+                                                    remoteBackendLabel: "Jellyfin",
                                                     httpHeaders: remote.headers,
                                                     remotePlaySessionId: remote.playSessionId,
                                                     sourceMetadata: remote.sourceMetadata,
@@ -744,14 +745,17 @@ struct DetailView: View {
                                                     item: playing,
                                                     identity: appModel.identity,
                                                     client: appModel.client,
+                                                    remoteBackendLabel: "Emby",
                                                     httpHeaders: remote.headers,
                                                     remotePlaySessionId: remote.playSessionId,
                                                     sourceMetadata: remote.sourceMetadata.asRemoteCarrier(),
                                                     playMethod: remote.playMethod.asRemoteCarrier(),
                                                     onStopRemoteSession: {
                                                         Task {
-                                                            await EmbyBrowseService(appModel: appModel)
-                                                                .stopActiveEncoding(playSessionId: remote.playSessionId)
+                                                            if remote.usesServerEncoding {
+                                                                await EmbyBrowseService(appModel: appModel)
+                                                                    .stopActiveEncoding(playSessionId: remote.playSessionId)
+                                                            }
                                                         }
                                                     },
                                                     remoteStreamReopener: { request in
@@ -974,7 +978,8 @@ struct DetailView: View {
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
                                                         sourceMetadata: result.sourceMetadata,
-                                                        playMethod: result.playMethod)
+                                                        playMethod: result.playMethod,
+                                                        usesServerEncoding: result.usesServerEncoding)
                 presentingPlayer = true
                 span.end(fields: [
                     "path_mode": "remote_stream",
@@ -1209,6 +1214,7 @@ private struct EmbyRemotePlayback: Identifiable, Equatable {
     let playSessionId: String
     let sourceMetadata: EmbyPlaybackSourceMetadata
     let playMethod: EmbyPlayMethod
+    let usesServerEncoding: Bool
 }
 
 // The shared remote-stream player path (`RemoteStreamOpenResult`/`PlaybackController`)
