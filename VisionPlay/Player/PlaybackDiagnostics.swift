@@ -184,10 +184,10 @@ final class PlaybackDiagnostics {
         self.targetBitrateKbps = targetBitrateKbps
     }
 
-    /// Overlay backend-resolved source facts, used by Jellyfin PlaybackInfo results when
+    /// Overlay backend-resolved source facts, used by MediaBrowser PlaybackInfo results when
     /// the browse/detail item did not carry enough `MediaSources` data for `applyStatic`.
-    func applyJellyfinSource(_ source: JellyfinPlaybackSourceMetadata,
-                             playMethod: JellyfinPlayMethod) {
+    func applyMediaBrowserSource(_ source: MediaBrowserPlaybackSourceMetadata,
+                                 playMethod: MediaBrowserPlayMethod) {
         if let width = source.width, let height = source.height {
             sourceResolution = "\(width)×\(height)"
         }
@@ -295,7 +295,7 @@ final class PlaybackDiagnostics {
         lastAccessLogProgress = progress
 
         // AVFoundation reports bits/sec; show kbps. -1 means "not available". When the app's
-        // loopback proxy fronts a Jellyfin HLS seek, this value is localhost/proxy burst rate,
+        // loopback proxy fronts a remote HLS seek, this value is localhost/proxy burst rate,
         // not the server/network bitrate; leave Observed blank and rely on Indicated/Target.
         if usesLocalMediaProxy {
             observedBitrateState = .localProxy

@@ -72,8 +72,8 @@ enum DebugEmbyPlaybackProbe {
                                               remoteBackendLabel: "Emby",
                                               httpHeaders: initial.requiredHTTPHeaders,
                                               remotePlaySessionId: initial.playSessionId,
-                                              sourceMetadata: initial.sourceMetadata.asRemoteCarrier(),
-                                              playMethod: initial.playMethod.asRemoteCarrier(),
+                                              sourceMetadata: MediaBrowserPlaybackSourceMetadata(initial.sourceMetadata),
+                                              playMethod: MediaBrowserPlayMethod(initial.playMethod),
                                               onStopRemoteSession: {
                                                   Task {
                                                       if initial.usesServerEncoding {
@@ -93,8 +93,8 @@ enum DebugEmbyPlaybackProbe {
                                                       url: reopened.url,
                                                       headers: reopened.requiredHTTPHeaders,
                                                       playSessionId: reopened.playSessionId,
-                                                      sourceMetadata: reopened.sourceMetadata.asRemoteCarrier(),
-                                                      playMethod: reopened.playMethod.asRemoteCarrier(),
+                                                      sourceMetadata: MediaBrowserPlaybackSourceMetadata(reopened.sourceMetadata),
+                                                      playMethod: MediaBrowserPlayMethod(reopened.playMethod),
                                                       onStop: {
                                                           Task {
                                                               if reopened.usesServerEncoding {

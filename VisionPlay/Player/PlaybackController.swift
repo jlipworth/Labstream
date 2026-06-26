@@ -9,15 +9,15 @@ struct RemoteStreamOpenResult {
     let url: URL
     let headers: [String: String]
     let playSessionId: String?
-    let sourceMetadata: JellyfinPlaybackSourceMetadata?
-    let playMethod: JellyfinPlayMethod?
+    let sourceMetadata: MediaBrowserPlaybackSourceMetadata?
+    let playMethod: MediaBrowserPlayMethod?
     let onStop: (() -> Void)?
 
     init(url: URL,
          headers: [String: String],
          playSessionId: String? = nil,
-         sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
-         playMethod: JellyfinPlayMethod? = nil,
+         sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
+         playMethod: MediaBrowserPlayMethod? = nil,
          onStop: (() -> Void)? = nil) {
         self.url = url
         self.headers = headers
@@ -147,8 +147,8 @@ final class PlaybackController {
     /// Optional HTTP headers required by `remoteStreamURL`. Backend playback tokens must stay in
     /// headers rather than URL query parameters so client logs/history never capture URL tokens.
     private var remoteHTTPHeaders: [String: String]
-    private var remoteSourceMetadata: JellyfinPlaybackSourceMetadata?
-    private var remotePlayMethod: JellyfinPlayMethod?
+    private var remoteSourceMetadata: MediaBrowserPlaybackSourceMetadata?
+    private var remotePlayMethod: MediaBrowserPlayMethod?
     private var remotePlaySessionId: String?
     private var onStopRemoteSession: (() -> Void)?
     private let remoteStreamReopener: RemoteStreamReopener?
@@ -266,8 +266,8 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
-    private var jellyfinHLSProxy: MediaSessionProxy?
-    private var jellyfinHLSProxyGeneration: Int?
+    private var remoteHLSProxy: MediaSessionProxy?
+    private var remoteHLSProxyGeneration: Int?
     /// User transport intent, independent of AVPlayer's transient loading state.
     ///
     /// During initial HLS priming AVPlayer sits in `.waitingToPlayAtSpecifiedRate`, so a quick
@@ -509,12 +509,12 @@ final class PlaybackController {
     var isStreaming: Bool { localFile == nil && server != nil && token != nil }
 
     /// Whether this session can reopen its media stream at a new offset/quality.
-    /// Plex uses the media-session proxy; backend-resolved playback (Jellyfin) can
+    /// Plex uses the media-session proxy; backend-resolved playback (Jellyfin/Emby) can
     /// provide a reopener closure without pretending to be a Plex timeline session.
     var supportsQualityReload: Bool { isStreaming || remoteStreamReopener != nil }
 
     /// Whether the Audio tab should use backend/container metadata instead of AVFoundation's
-    /// currently-loaded audible group. Plex and Jellyfin both expose alternate tracks in media
+    /// currently-loaded audible group. Plex and MediaBrowser backends expose alternate tracks in media
     /// metadata and require a stream reopen/rebuild to switch tracks; local downloads still use
     /// AVFoundation because the whole playable file is already on disk.
     var supportsMetadataAudioSelection: Bool { isStreaming || remoteStreamReopener != nil }
@@ -704,11 +704,11 @@ final class PlaybackController {
          item: MediaItem,
          identity: ClientIdentity,
          client: PlexClient,
-         remoteBackendLabel: String = "Jellyfin",
+         remoteBackendLabel: String = "Remote",
          httpHeaders: [String: String] = [:],
          remotePlaySessionId: String? = nil,
-         sourceMetadata: JellyfinPlaybackSourceMetadata? = nil,
-         playMethod: JellyfinPlayMethod? = nil,
+         sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
+         playMethod: MediaBrowserPlayMethod? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
          remoteStreamReopener: RemoteStreamReopener? = nil,
          maxVideoBitrateKbps: Int = 0,
@@ -800,10 +800,10 @@ final class PlaybackController {
         upNextTask?.cancel()
         upNextTask = nil
         playbackGeneration += 1
-        if let proxy = jellyfinHLSProxy, let generation = jellyfinHLSProxyGeneration {
+        if let proxy = remoteHLSProxy, let generation = remoteHLSProxyGeneration {
             Task { await proxy.stop(generation: generation) }
-            jellyfinHLSProxy = nil
-            jellyfinHLSProxyGeneration = nil
+            remoteHLSProxy = nil
+            remoteHLSProxyGeneration = nil
         }
         timeline.report(state: .stopped, force: true)
         recordLocalPlaybackPosition()
@@ -2175,7 +2175,7 @@ final class PlaybackController {
                                 server: url,
                                 targetBitrateKbps: maxVideoBitrateKbps)
         if let remoteSourceMetadata, let remotePlayMethod {
-            diagnostics.applyJellyfinSource(remoteSourceMetadata,
+            diagnostics.applyMediaBrowserSource(remoteSourceMetadata,
                                             playMethod: remotePlayMethod)
         }
         diagnostics.usesLocalMediaProxy = Self.isLoopback(url)
@@ -2194,7 +2194,7 @@ final class PlaybackController {
             "headers_present": .bool(!headers.isEmpty),
         ]
         fields.merge(sourceDiagnosticFields()) { _, new in new }
-        fields.merge(jellyfinSourceDiagnosticFields(remoteSourceMetadata)) { _, new in new }
+        fields.merge(mediaBrowserSourceDiagnosticFields(remoteSourceMetadata)) { _, new in new }
         recordPlaybackDiagnostic("playback.start_path", fields: fields)
 
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
@@ -2205,7 +2205,7 @@ final class PlaybackController {
 
     private func playableRemoteStreamURL(_ url: URL,
                                          resumeOffsetMs: Int?,
-                                         playMethod: JellyfinPlayMethod?,
+                                         playMethod: MediaBrowserPlayMethod?,
                                          generation: Int) async -> URL? {
         guard !Task.isCancelled, generation == playbackGeneration else { return nil }
         guard playMethod == .transcode,
@@ -2222,11 +2222,11 @@ final class PlaybackController {
                 await proxy.stop(generation: handle.generation)
                 return nil
             }
-            if let oldProxy = jellyfinHLSProxy, let oldGeneration = jellyfinHLSProxyGeneration {
+            if let oldProxy = remoteHLSProxy, let oldGeneration = remoteHLSProxyGeneration {
                 await oldProxy.stop(generation: oldGeneration)
             }
-            jellyfinHLSProxy = proxy
-            jellyfinHLSProxyGeneration = handle.generation
+            remoteHLSProxy = proxy
+            remoteHLSProxyGeneration = handle.generation
             recordPlaybackDiagnostic("playback.remote_hls_proxy_open", fields: [
                 "target": .millisecondsBucket(resumeOffsetMs),
                 "strips_start_time_ticks": .bool(true),
@@ -3472,7 +3472,7 @@ final class PlaybackController {
     /// watchdog cancelled itself without surfacing and stranded the viewer on AVKit's spinner
     /// with no Retry. Keying on `timeControlStatus` still spares a normal pause (which reports
     /// `.paused`, not `.waitingToPlayAtSpecifiedRate`).
-    /// First tries a bounded client-driven ABR downshift for reopenable Plex/Jellyfin streams:
+    /// First tries a bounded client-driven ABR downshift for reopenable Plex/MediaBrowser streams:
     /// if the server only gave AVPlayer one rendition, a lower-cap reopen is the cheapest
     /// approximation of a bitrate downshift. Once the session reaches the lowest rung (or for
     /// non-reopenable/static streams), the same visible Retry failure path remains terminal.
@@ -3714,7 +3714,7 @@ final class PlaybackController {
 
     /// Centralized in-place restart at a known playhead. Several call sites (audio-stream
     /// switch, quality reload, retry, ABR step) tear the live stream down and start a fresh one
-    /// at the current position, forking by hand between the Jellyfin reopener path
+    /// at the current position, forking by hand between the remote-stream reopener path
     /// (`reopenRemoteStream`) and the Plex path (`beginStreaming`) and applying SOME subset of
     /// the same bookkeeping. This collects the fork and the bookkeeping in one place so each
     /// caller requests exactly the steps it needs, in a single canonical order:
@@ -3756,9 +3756,9 @@ final class PlaybackController {
         lastPrimedOffsetMs = offsetMs
         let priorStop = didStopRemoteSession ? nil : onStopRemoteSession
         let priorPlaySessionId = remotePlaySessionId
-        // Detach the old AVPlayerItem before asking Jellyfin for a replacement stream. The
+        // Detach the old AVPlayerItem before asking the remote backend for a replacement stream. The
         // simulator logs for #43 showed AVPlayer surfacing NSURLErrorDomain -1008 immediately
-        // after we deleted the active Jellyfin encoding during a seek/reopen; stale init/segment
+        // after we deleted the active remote encoding during a seek/reopen; stale init/segment
         // loads can outlive observer teardown. Replacing the item first stops those resource
         // loads from racing with the new playlist.
         removeObservers()

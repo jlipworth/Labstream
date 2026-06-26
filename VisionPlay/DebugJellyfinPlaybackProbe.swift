@@ -68,8 +68,8 @@ enum DebugJellyfinPlaybackProbe {
                                               remoteBackendLabel: "Jellyfin",
                                               httpHeaders: initial.requiredHTTPHeaders,
                                               remotePlaySessionId: initial.playSessionId,
-                                              sourceMetadata: initial.sourceMetadata,
-                                              playMethod: initial.playMethod,
+                                              sourceMetadata: MediaBrowserPlaybackSourceMetadata(initial.sourceMetadata),
+                                              playMethod: MediaBrowserPlayMethod(initial.playMethod),
                                               onStopRemoteSession: {
                                                   Task {
                                                       await JellyfinBrowseService(appModel: appModel)
@@ -87,8 +87,8 @@ enum DebugJellyfinPlaybackProbe {
                                                       url: reopened.url,
                                                       headers: reopened.requiredHTTPHeaders,
                                                       playSessionId: reopened.playSessionId,
-                                                      sourceMetadata: reopened.sourceMetadata,
-                                                      playMethod: reopened.playMethod,
+                                                      sourceMetadata: MediaBrowserPlaybackSourceMetadata(reopened.sourceMetadata),
+                                                      playMethod: MediaBrowserPlayMethod(reopened.playMethod),
                                                       onStop: {
                                                           Task {
                                                               await JellyfinBrowseService(appModel: appModel)

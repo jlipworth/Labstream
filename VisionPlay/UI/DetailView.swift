@@ -716,8 +716,8 @@ struct DetailView: View {
                                                             url: result.url,
                                                             headers: result.requiredHTTPHeaders,
                                                             playSessionId: result.playSessionId,
-                                                            sourceMetadata: result.sourceMetadata,
-                                                            playMethod: result.playMethod,
+                                                            sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
+                                                            playMethod: MediaBrowserPlayMethod(result.playMethod),
                                                             onStop: {
                                                                 Task {
                                                                     await JellyfinBrowseService(appModel: appModel)
@@ -748,8 +748,8 @@ struct DetailView: View {
                                                     remoteBackendLabel: "Emby",
                                                     httpHeaders: remote.headers,
                                                     remotePlaySessionId: remote.playSessionId,
-                                                    sourceMetadata: remote.sourceMetadata.asRemoteCarrier(),
-                                                    playMethod: remote.playMethod.asRemoteCarrier(),
+                                                    sourceMetadata: remote.sourceMetadata,
+                                                    playMethod: remote.playMethod,
                                                     onStopRemoteSession: {
                                                         Task {
                                                             if remote.usesServerEncoding {
@@ -769,8 +769,8 @@ struct DetailView: View {
                                                             url: result.url,
                                                             headers: result.requiredHTTPHeaders,
                                                             playSessionId: result.playSessionId,
-                                                            sourceMetadata: result.sourceMetadata.asRemoteCarrier(),
-                                                            playMethod: result.playMethod.asRemoteCarrier(),
+                                                            sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
+                                                            playMethod: MediaBrowserPlayMethod(result.playMethod),
                                                             onStop: {
                                                                 // Active-encoding cleanup only when the source used
                                                                 // server-side encoding; harmless no-op otherwise.
@@ -946,8 +946,8 @@ struct DetailView: View {
                 remotePlayback = JellyfinRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
-                                                        sourceMetadata: result.sourceMetadata,
-                                                        playMethod: result.playMethod)
+                                                        sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
+                                                        playMethod: MediaBrowserPlayMethod(result.playMethod))
                 presentingPlayer = true
                 span.end(fields: [
                     "path_mode": "remote_stream",
@@ -977,8 +977,8 @@ struct DetailView: View {
                 embyRemotePlayback = EmbyRemotePlayback(url: result.url,
                                                         headers: result.requiredHTTPHeaders,
                                                         playSessionId: result.playSessionId,
-                                                        sourceMetadata: result.sourceMetadata,
-                                                        playMethod: result.playMethod,
+                                                        sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
+                                                        playMethod: MediaBrowserPlayMethod(result.playMethod),
                                                         usesServerEncoding: result.usesServerEncoding)
                 presentingPlayer = true
                 span.end(fields: [
@@ -1203,8 +1203,8 @@ private struct JellyfinRemotePlayback: Identifiable, Equatable {
     let url: URL
     let headers: [String: String]
     let playSessionId: String
-    let sourceMetadata: JellyfinPlaybackSourceMetadata
-    let playMethod: JellyfinPlayMethod
+    let sourceMetadata: MediaBrowserPlaybackSourceMetadata
+    let playMethod: MediaBrowserPlayMethod
 }
 
 private struct EmbyRemotePlayback: Identifiable, Equatable {
@@ -1212,33 +1212,9 @@ private struct EmbyRemotePlayback: Identifiable, Equatable {
     let url: URL
     let headers: [String: String]
     let playSessionId: String
-    let sourceMetadata: EmbyPlaybackSourceMetadata
-    let playMethod: EmbyPlayMethod
+    let sourceMetadata: MediaBrowserPlaybackSourceMetadata
+    let playMethod: MediaBrowserPlayMethod
     let usesServerEncoding: Bool
-}
-
-// The shared remote-stream player path (`RemoteStreamOpenResult`/`PlaybackController`)
-// carries Jellyfin-typed metadata. Bridge the Emby lane's own types onto that neutral
-// carrier at this seam so the player path is reused verbatim (no PlaybackController change).
-extension EmbyPlaybackSourceMetadata {
-    func asRemoteCarrier() -> JellyfinPlaybackSourceMetadata {
-        JellyfinPlaybackSourceMetadata(container: container,
-                                       width: width,
-                                       height: height,
-                                       bitrate: bitrate,
-                                       videoCodec: videoCodec,
-                                       audioCodec: audioCodec)
-    }
-}
-
-extension EmbyPlayMethod {
-    func asRemoteCarrier() -> JellyfinPlayMethod {
-        switch self {
-        case .directPlay: return .directPlay
-        case .directStream: return .directStream
-        case .transcode: return .transcode
-        }
-    }
 }
 
 /// Browser for a TV CONTAINER (a `show` or a `season`).
