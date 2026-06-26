@@ -463,7 +463,7 @@ func friendlyMessage(_ error: Error) -> String {
         case .decoding: return "Unexpected response from the server."
         }
     }
-    return error.localizedDescription
+    return DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Loading")
 }
 
 // MARK: - Music track filtering (#17 Phase 7 — replaces the #15 full hide)

@@ -101,7 +101,8 @@ final class TimelineReporter {
                     "duration": .millisecondsBucket(durationMs),
                     "error": .error(error),
                 ])
-                NSLog("TimelineReporter: timeline send failed (%@)", String(describing: error))
+                NSLog("TimelineReporter: timeline send failed (%@)",
+                      DiagnosticRedactor.safeErrorSummary(error))
             }
         }
     }
@@ -120,7 +121,8 @@ final class TimelineReporter {
                 AppDiagnostics.record(.timeline, "timeline.scrobble_failed", fields: [
                     "error": .error(error),
                 ])
-                NSLog("TimelineReporter: scrobble send failed (%@)", String(describing: error))
+                NSLog("TimelineReporter: scrobble send failed (%@)",
+                      DiagnosticRedactor.safeErrorSummary(error))
             }
         }
     }

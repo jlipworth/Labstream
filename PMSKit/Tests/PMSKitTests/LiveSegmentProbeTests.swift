@@ -97,7 +97,7 @@ struct LiveSegmentProbeTests {
         } catch {
             let elapsed = Date().timeIntervalSince(started)
             print(String(format: ">>> SEG [%@] ERROR after %.2fs — %@",
-                         label, elapsed, String(describing: error)))
+                         label, elapsed, DiagnosticRedactor.safeErrorSummary(error)))
             return nil
         }
     }

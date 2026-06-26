@@ -149,23 +149,6 @@ extension PlaybackController {
     }
 
     static func errorDomainFamily(_ domain: String) -> String {
-        switch domain {
-        case NSURLErrorDomain:
-            return "nsurl"
-        case AVFoundationErrorDomain:
-            return "avfoundation"
-        case NSOSStatusErrorDomain:
-            return "osstatus"
-        case CocoaError.errorDomain:
-            return "cocoa"
-        case POSIXError.errorDomain:
-            return "posix"
-        default:
-            let lower = domain.lowercased()
-            if lower.contains("coremedia") { return "coremedia" }
-            if lower.contains("fig") { return "fig" }
-            if lower.contains("audio") { return "audio" }
-            return "other"
-        }
+        DiagnosticRedactor.errorDomainFamily(domain)
     }
 }

@@ -368,7 +368,7 @@ final class DownloadStore: @unchecked Sendable {
         do { try data.write(to: url, options: .atomic) }
         catch {
             NSLog("DownloadStore: failed to persist resume data for %@ (%@)",
-                  ratingKey, String(describing: error))
+                  ratingKey, DiagnosticRedactor.safeErrorSummary(error))
             return
         }
         updateMetadata(ratingKey: ratingKey) { $0.resumeDataRelativePath = url.lastPathComponent }
@@ -571,8 +571,8 @@ final class DownloadStore: @unchecked Sendable {
             // permanently orphan the file — log it rather than vanish silently.
             do { try fileManager.removeItem(at: url) }
             catch where fileManager.fileExists(atPath: url.path) {
-                NSLog("DownloadStore: failed to delete media for %@ (%@); file orphaned at %@",
-                      ratingKey, String(describing: error), url.path)
+                NSLog("DownloadStore: failed to delete media for %@ (%@); local file orphaned",
+                      ratingKey, DiagnosticRedactor.safeErrorSummary(error))
             } catch {} // already absent — nothing to clean up
             // D5/#78: also delete cached side assets so a removed download leaves nothing behind.
             var assets = [row.metadata?.posterRelativePath,

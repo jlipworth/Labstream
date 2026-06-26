@@ -24,18 +24,29 @@ enum DebugJellyfinPlaybackProbe {
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
 
-        let query = value(after: "--vp-probe-query", in: arguments) ?? "1917"
+        let rawQuery = value(after: "--vp-probe-query", in: arguments)
+        let trimmedQuery = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let query = trimmedQuery, !query.isEmpty else {
+            log.error("probe.fail reason=missing_probe_query")
+            AppDiagnostics.record(.playback, "probe.jellyfin.fail", fields: [
+                "reason": .label("missing_probe_query"),
+                "query_present": .bool(false),
+            ])
+            return
+        }
         let bitrateKbps = intValue(after: "--vp-probe-bitrate-kbps", in: arguments) ?? appModel.activeStreamingQualityKbps
         let seekMs = intValue(after: "--vp-probe-seek-ms", in: arguments) ?? 16 * 60 * 1000
         let postSeekHoldSeconds = intValue(after: "--vp-probe-post-seek-hold-seconds", in: arguments) ?? 20
 
-        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .public) bitrate_kbps=\(bitrateKbps, privacy: .public) seek_ms=\(seekMs, privacy: .public)")
-        AppDiagnostics.record(.playback, "probe.jellyfin.start", fields: [
+        let querySummary = DiagnosticRedactor.probeQuerySummary(query)
+        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(querySummary, privacy: .public) bitrate_kbps=\(bitrateKbps, privacy: .public) seek_ms=\(seekMs, privacy: .public)")
+        var startFields: [String: DiagnosticFieldValue] = [
             "backend": .label(appModel.activeBackend.rawValue),
-            "query": .text(query),
             "quality_kbps": .int(bitrateKbps),
             "target": .millisecondsBucket(seekMs),
-        ])
+        ]
+        startFields.merge(DiagnosticRedactor.probeQueryFields(query)) { _, new in new }
+        AppDiagnostics.record(.playback, "probe.jellyfin.start", fields: startFields)
 
         guard appModel.activeBackend == .jellyfin, appModel.isBrowseReady else {
             log.error("probe.fail reason=not_jellyfin_or_not_ready")
@@ -104,7 +115,7 @@ enum DebugJellyfinPlaybackProbe {
             playback.stop()
             controller = nil
         } catch {
-            log.error("probe.fail error=\(String(describing: error), privacy: .public)")
+            log.error("probe.fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.playback, "probe.jellyfin.fail", fields: [
                 "error": .error(error),
             ])

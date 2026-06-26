@@ -164,7 +164,7 @@ extension DownloadManager {
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
-                "error": .label(String(describing: error)),
+                "error": .error(error),
             ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
@@ -180,7 +180,8 @@ extension DownloadManager {
                 "target": .label(targetName),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
+            lastError[ratingKey] = .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
@@ -303,7 +304,9 @@ extension DownloadManager {
         } catch let e as DownloadError {
             throw e
         } catch {
-            throw DownloadError.optimizeFailed("playlists?type=42: \(String(describing: error))")
+            throw DownloadError.optimizeFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error,
+                                                              operation: "Background queue lookup"))
         }
 
         // Clear our own abandoned optimize jobs first so this new one isn't stuck waiting
@@ -347,7 +350,9 @@ extension DownloadManager {
         do {
             try await appModel.client.send(create)
         } catch {
-            throw DownloadError.optimizeFailed("optimize POST: \(String(describing: error))")
+            throw DownloadError.optimizeFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error,
+                                                              operation: "Optimize request"))
         }
 
         // 4. Optionally jump this just-enqueued conversion ahead of the PENDING items (but never

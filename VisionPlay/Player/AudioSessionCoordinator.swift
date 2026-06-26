@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AVFAudio
+import PMSKit
 import UIKit
 
 /// Owns the shared `AVAudioSession` and the interruption / route-change /
@@ -67,7 +68,7 @@ final class AudioSessionCoordinator {
             try session.setActive(true)
         } catch {
             NSLog("AudioSessionCoordinator: AVAudioSession configuration failed (%@)",
-                  String(describing: error))
+                  DiagnosticRedactor.safeErrorSummary(error))
         }
     }
 
@@ -81,7 +82,7 @@ final class AudioSessionCoordinator {
                 .setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {
             NSLog("AudioSessionCoordinator: AVAudioSession deactivation failed (%@)",
-                  String(describing: error))
+                  DiagnosticRedactor.safeErrorSummary(error))
         }
     }
 

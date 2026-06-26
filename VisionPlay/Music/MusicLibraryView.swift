@@ -470,7 +470,8 @@ private struct MusicTrackRail: View {
                 "error": .error(error),
                 "candidate_count": .int(tracks.count),
             ])
-            NSLog("[VP] recently-played replay failed: %@", String(describing: error))
+            NSLog("[VP] recently-played replay failed: %@",
+                  DiagnosticRedactor.safeErrorSummary(error))
         }
     }
 }

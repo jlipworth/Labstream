@@ -41,7 +41,8 @@ enum DebugJellyfinDownloadProbe {
         let keepRecord = args.contains("--vp-probe-keep-record")
         let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: args) ?? 60
 
-        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .private) start=\(startDownload, privacy: .public) optimize=\(optimize, privacy: .public)")
+        let querySummary = DiagnosticRedactor.probeQuerySummary(query)
+        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(querySummary, privacy: .public) start=\(startDownload, privacy: .public) optimize=\(optimize, privacy: .public)")
 
         guard appModel.backendSession(for: .jellyfin) != nil else {
             log.error("probe.fail reason=not_jellyfin_configured")
@@ -88,7 +89,7 @@ enum DebugJellyfinDownloadProbe {
                 "progressed": .bool(progressed),
             ])
         } catch {
-            log.error("probe.fail error=\(String(describing: error), privacy: .public)")
+            log.error("probe.fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.jellyfin_download.fail", fields: [
                 "error": .error(error),
             ])

@@ -44,14 +44,16 @@ enum DebugPlexDownloadProbe {
         let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? (startDownload ? 90 : 5)
 
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) ratingKey=\(ratingKey, privacy: .public) start=\(startDownload, privacy: .public) existing=\(useExistingVersion, privacy: .public) pauseResume=\(pauseResume, privacy: .public) observeOnly=\(observeOnly, privacy: .public)")
-        AppDiagnostics.record(.downloads, "probe.plex_download.start", fields: [
+        var startFields: [String: DiagnosticFieldValue] = [
             "download_id": .identifier(ratingKey),
             "start": .bool(startDownload),
             "existing_version": .bool(useExistingVersion),
             "dump_search": .bool(dumpSearch),
             "pause_resume": .bool(pauseResume),
             "observe_only": .bool(observeOnly),
-        ])
+        ]
+        startFields.merge(DiagnosticRedactor.probeQueryFields(query)) { _, new in new }
+        AppDiagnostics.record(.downloads, "probe.plex_download.start", fields: startFields)
 
         guard appModel.activeBackend == .plex,
               appModel.isBrowseReady,
@@ -219,7 +221,7 @@ enum DebugPlexDownloadProbe {
                 ])
             }
         } catch {
-            log.error("probe.fail error=\(String(describing: error), privacy: .public)")
+            log.error("probe.fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.plex_download.fail", fields: [
                 "download_id": .identifier(ratingKey),
                 "error": .error(error),
@@ -333,7 +335,7 @@ enum DebugPlexDownloadProbe {
                 "content_length": .label(contentLength),
             ])
         } catch {
-            log.error("probe.range_fail error=\(String(describing: error), privacy: .public)")
+            log.error("probe.range_fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.plex_download.range_fail", fields: [
                 "download_id": .identifier(ratingKey),
                 "error": .error(error),

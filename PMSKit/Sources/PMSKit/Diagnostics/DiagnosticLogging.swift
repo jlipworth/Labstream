@@ -76,10 +76,7 @@ public enum DiagnosticFieldValue: Codable, Equatable, Sendable, CustomStringConv
     }
 
     public static func error(_ error: Error?) -> DiagnosticFieldValue {
-        guard let error else { return .string("none") }
-        let nsError = error as NSError
-        let kind = DiagnosticRedactor.errorClass(for: nsError)
-        return .string("class=\(kind) domain=\(DiagnosticRedactor.redact(nsError.domain)) code=\(nsError.code)")
+        .string(DiagnosticRedactor.safeErrorSummary(error))
     }
 
     public static func identifier(_ raw: String?) -> DiagnosticFieldValue {
@@ -258,6 +255,109 @@ public enum DiagnosticRedactor {
         return "error"
     }
 
+    /// Broad NSError domain family used in logs and diagnostics instead of raw domains/userInfo.
+    ///
+    /// Raw `NSError` descriptions can include failing URLs, headers, local paths, server bodies, or
+    /// other userInfo values. Public issue workflows should use this family plus the numeric code
+    /// and class/kind, never `String(describing: error)` or `localizedDescription`.
+    public static func errorDomainFamily(_ domain: String) -> String {
+        switch domain {
+        case NSURLErrorDomain:
+            return "nsurl"
+        // Avoid importing AVFoundation into PMSKit solely for `AVFoundationErrorDomain`; the public
+        // constant's string value is stable and keeps this shared diagnostics helper lightweight.
+        case "AVFoundationErrorDomain":
+            return "avfoundation"
+        case NSOSStatusErrorDomain:
+            return "osstatus"
+        case CocoaError.errorDomain:
+            return "cocoa"
+        case POSIXError.errorDomain:
+            return "posix"
+        default:
+            let lower = domain.lowercased()
+            if lower.contains("coremedia") { return "coremedia" }
+            if lower.contains("fig") { return "fig" }
+            if lower.contains("audio") { return "audio" }
+            return "other"
+        }
+    }
+
+    /// Redaction-safe error summary for public logs, diagnostics labels, and handoff text.
+    ///
+    /// The summary intentionally excludes `localizedDescription`, `debugDescription`, userInfo,
+    /// failing URLs, request paths, server messages, and filenames. It keeps only structural facts
+    /// useful for triage: Swift class name, broad URLSession/error kind, domain family, and code.
+    public static func safeErrorSummary(_ error: Error?) -> String {
+        guard let error else { return "class=none kind=none domain_family=none code=0" }
+        let nsError = error as NSError
+        return [
+            "class=\(safeErrorTypeName(error))",
+            "kind=\(errorClass(for: nsError))",
+            "domain_family=\(errorDomainFamily(nsError.domain))",
+            "code=\(nsError.code)"
+        ].joined(separator: " ")
+    }
+
+    /// Short, user-facing message that remains useful without echoing raw URLSession/server text.
+    public static func safeUserFacingErrorMessage(_ error: Error?,
+                                                  operation: String = "Operation") -> String {
+        guard let error else { return "\(operation) failed." }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorCancelled:
+                return "\(operation) was cancelled."
+            case NSURLErrorTimedOut:
+                return "\(operation) timed out."
+            case NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost,
+                 NSURLErrorDNSLookupFailed, NSURLErrorNotConnectedToInternet:
+                return "\(operation) couldn't reach the server."
+            case NSURLErrorUserAuthenticationRequired:
+                return "\(operation) needs authentication."
+            default:
+                return "\(operation) failed (network code \(nsError.code))."
+            }
+        }
+
+        switch errorDomainFamily(nsError.domain) {
+        case "cocoa":
+            return "\(operation) failed (system code \(nsError.code))."
+        case "posix":
+            return "\(operation) failed (POSIX code \(nsError.code))."
+        case "avfoundation", "coremedia", "fig":
+            return "\(operation) failed (media code \(nsError.code))."
+        default:
+            return "\(operation) failed (error code \(nsError.code))."
+        }
+    }
+
+    /// Public-safe shape of a debug probe's media search query. Never includes the raw query.
+    public static func probeQuerySummary(_ raw: String?) -> String {
+        let normalized = normalizedProbeQuery(raw)
+        guard !normalized.isEmpty else {
+            return "present=false length_bucket=0 signature=none"
+        }
+        return "present=true length_bucket=\(probeQueryLengthBucket(normalized)) signature=\(stableIdentifier(for: normalized))"
+    }
+
+    /// Diagnostic fields for a debug probe query without storing media titles/search terms.
+    public static func probeQueryFields(_ raw: String?) -> [String: DiagnosticFieldValue] {
+        let normalized = normalizedProbeQuery(raw)
+        guard !normalized.isEmpty else {
+            return [
+                "query_present": .bool(false),
+                "query_length": .label("0"),
+                "query_signature": .label("none")
+            ]
+        }
+        return [
+            "query_present": .bool(true),
+            "query_length": .label(probeQueryLengthBucket(normalized)),
+            "query_signature": .label(stableIdentifier(for: normalized))
+        ]
+    }
+
     public static func byteBucket(_ bytes: Int) -> String {
         switch bytes {
         case 0..<1_000_000: return "<1MB"
@@ -266,6 +366,27 @@ public enum DiagnosticRedactor {
         case 100_000_000..<1_000_000_000: return "100MB-1GB"
         case 1_000_000_000..<10_000_000_000: return "1-10GB"
         default: return "10GB+"
+        }
+    }
+
+    private static func safeErrorTypeName(_ error: Error) -> String {
+        let raw = String(describing: type(of: error))
+        let leaf = raw.split(separator: ".").last.map(String.init) ?? raw
+        let safe = fieldKey(leaf)
+        return safe.count > 80 ? String(safe.prefix(80)) : safe
+    }
+
+    private static func normalizedProbeQuery(_ raw: String?) -> String {
+        (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func probeQueryLengthBucket(_ query: String) -> String {
+        switch query.count {
+        case 0: return "0"
+        case 1...8: return "1-8"
+        case 9...32: return "9-32"
+        case 33...80: return "33-80"
+        default: return "81+"
         }
     }
 

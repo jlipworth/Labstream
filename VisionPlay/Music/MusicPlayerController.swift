@@ -726,7 +726,8 @@ final class MusicPlayerController {
             "has_current_track": .bool(current != nil),
         ])
         if let error {
-            NSLog("MusicPlayerController: item failed (%@)", String(describing: error))
+            NSLog("MusicPlayerController: item failed (%@)",
+                  DiagnosticRedactor.safeErrorSummary(error))
         }
         playbackErrorMessage = "Couldn't play \u{201C}\(title)\u{201D}. Skipping to the next track."
         advance(auto: true, wrapOnEnd: false)
