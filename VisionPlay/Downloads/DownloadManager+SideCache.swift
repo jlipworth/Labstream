@@ -29,33 +29,36 @@ extension DownloadManager {
         guard let thumb, !thumb.isEmpty,
               let url = Self.posterTranscodeURL(thumb: thumb, server: server, token: token)
         else { return }
+        // Plex carries the token in-query, so a bare `URLRequest(url:)` authenticates the fetch.
+        cachePoster(ratingKey: ratingKey, request: URLRequest(url: url))
+    }
+
+    /// #135 Stage 7: shared poster-cache tail for all three backends. Fetch the (already
+    /// backend-authenticated) request OFF the main actor — mirrors `PlaybackController.fetchArtworkData`
+    /// — atomically write it to the row's poster destination, and on success record the relative path
+    /// + refresh on the main actor. Best-effort: a nil request or any fetch/write failure leaves the
+    /// row poster-less and never fails the download. The three public entry points differ ONLY in how
+    /// they build the request (Plex token-in-query URL vs Jellyfin/Emby authenticated header request
+    /// with a primary→backdrop ref fallback), so that is all they do before delegating here.
+    private func cachePoster(ratingKey: String, request: URLRequest?) {
+        guard let request else { return }
         let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
         let store = self.store
         Task { [weak self] in
-            // Fetch + atomic disk write happen OFF the main actor (mirrors
-            // PlaybackController.fetchArtworkData); only the store mutation hops back on.
-            guard await Self.fetchAndWritePoster(from: url, to: posterURL) else { return }
+            guard await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
             await MainActor.run {
-                store.setPosterRelativePath(ratingKey: ratingKey,
-                                            posterURL.lastPathComponent)
+                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
                 self?.refreshRecords()
             }
         }
     }
 
-    /// Best-effort poster fetch + atomic write, fully off the main actor. Returns `true`
-    /// only when a non-empty poster landed on disk at `destination`; any failure (HTTP
-    /// error, empty body, write failure) returns `false` and is never surfaced — a missing
-    /// poster is never a download error.
-    private nonisolated static func fetchAndWritePoster(from url: URL, to destination: URL) async -> Bool {
-        await fetchAndWritePoster(request: URLRequest(url: url), to: destination)
-    }
-
-    /// Same best-effort fetch + atomic write as the URL variant, but driven by a
-    /// pre-resolved `URLRequest`. The MediaBrowser (Jellyfin/Emby) image endpoints are
-    /// NOT satisfied by Plex-style token-in-query — they need the `Authorization` header
-    /// (Emby also `userId`) that `*.authenticatedRequest(...)` attaches — so those lanes
-    /// must come through here with an authenticated request.
+    /// Best-effort poster fetch + atomic write, fully off the main actor, driven by a pre-resolved
+    /// `URLRequest`. Returns `true` only when a non-empty poster landed on disk at `destination`; any
+    /// failure (HTTP error, empty body, write failure) returns `false` and is never surfaced — a
+    /// missing poster is never a download error. Plex authenticates via token-in-query (a bare
+    /// `URLRequest(url:)`); the MediaBrowser (Jellyfin/Emby) image endpoints instead need the
+    /// `Authorization` header (Emby also `userId`) that `*.authenticatedRequest(...)` attaches.
     private nonisolated static func fetchAndWritePoster(request: URLRequest, to destination: URL) async -> Bool {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -76,22 +79,12 @@ extension DownloadManager {
     /// leaves the row poster-less and never fails the download.
     func cacheJellyfinPoster(ratingKey: String, item: MediaItem, server: URL,
                                      token: String, identity: JellyfinClientIdentity) {
-        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
-        let store = self.store
         let primaryRef = Self.offlinePosterRef(for: item)
-        let backdropRef = item.art
-        Task { [weak self] in
-            let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
-                                                              token: token, identity: identity))
-                ?? (try? JellyfinLibrary.posterRequest(syntheticRef: backdropRef, server: server,
-                                                       token: token, identity: identity))
-            guard let request,
-                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
-            await MainActor.run {
-                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
-                self?.refreshRecords()
-            }
-        }
+        let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
+                                                          token: token, identity: identity))
+            ?? (try? JellyfinLibrary.posterRequest(syntheticRef: item.art, server: server,
+                                                   token: token, identity: identity))
+        cachePoster(ratingKey: ratingKey, request: request)
     }
 
     /// Best-effort cache of an Emby item's poster (#102). Same shape as
@@ -99,22 +92,12 @@ extension DownloadManager {
     /// the authenticated request.
     func cacheEmbyPoster(ratingKey: String, item: MediaItem, server: URL,
                                  token: String, identity: EmbyClientIdentity, userId: String) {
-        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
-        let store = self.store
         let primaryRef = Self.offlinePosterRef(for: item)
-        let backdropRef = item.art
-        Task { [weak self] in
-            let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,
-                                                          token: token, identity: identity, userId: userId))
-                ?? (try? EmbyLibrary.posterRequest(syntheticRef: backdropRef, server: server,
-                                                   token: token, identity: identity, userId: userId))
-            guard let request,
-                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
-            await MainActor.run {
-                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
-                self?.refreshRecords()
-            }
-        }
+        let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,
+                                                      token: token, identity: identity, userId: userId))
+            ?? (try? EmbyLibrary.posterRequest(syntheticRef: item.art, server: server,
+                                               token: token, identity: identity, userId: userId))
+        cachePoster(ratingKey: ratingKey, request: request)
     }
 
     /// Build the `/photo/:/transcode` URL for an image path via the shared `PlexPhotoTranscode`
@@ -125,28 +108,24 @@ extension DownloadManager {
     }
 
     func cachePlexTextSubtitles(ratingKey: String, part: Part, server: URL, token: String) {
-        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
-        guard !streams.isEmpty else { return }
-        let store = self.store
-        Task { [weak self] in
-            var tracks: [OfflineTextSubtitleTrack] = []
-            for (fallbackIndex, stream) in streams {
-                guard let key = stream.key, let url = Self.plexSubtitleURL(server: server, token: token, key: key) else { continue }
+        // Resolve each compatible subtitle stream into its request/destination/track on the main
+        // actor (`stream` stays inferred — the PMSKit `Stream` type can't be spelled here without
+        // colliding with `Foundation.Stream`). The `.track` is pure and its inputs are all known up
+        // front, so it is computed now and the shared tail just gates it on a successful fetch.
+        let pending: [PendingSubtitle] = part.subtitleStreams.enumerated()
+            .filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+            .compactMap { fallbackIndex, stream in
+                guard let key = stream.key,
+                      let url = Self.plexSubtitleURL(server: server, token: token, key: key) else { return nil }
                 let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
                 let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
-                guard await Self.fetchAndWriteTextSubtitle(request: URLRequest(url: url), to: destination) else { continue }
-                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
-                                                                     relativePath: destination.lastPathComponent,
-                                                                     fallbackIndex: fallbackIndex) {
-                    tracks.append(track)
-                }
+                return PendingSubtitle(
+                    request: URLRequest(url: url), destination: destination,
+                    track: OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                 relativePath: destination.lastPathComponent,
+                                                                 fallbackIndex: fallbackIndex))
             }
-            guard !tracks.isEmpty else { return }
-            await MainActor.run {
-                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
-                self?.refreshRecords()
-            }
-        }
+        cacheTextSubtitles(ratingKey: ratingKey, pending: pending)
     }
 
     func cacheJellyfinTextSubtitles(ratingKey: String,
@@ -157,28 +136,51 @@ extension DownloadManager {
                                            token: String,
                                            identity: JellyfinClientIdentity) {
         guard let mediaSourceId, !mediaSourceId.isEmpty, let part else { return }
-        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
-        guard !streams.isEmpty else { return }
+        let pending: [PendingSubtitle] = part.subtitleStreams.enumerated()
+            .filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+            .compactMap { fallbackIndex, stream in
+                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
+                let streamIndex = stream.index ?? stream.id
+                guard let request = try? JellyfinLibrary.textSubtitleRequest(server: server, token: token,
+                                                                             identity: identity, itemId: itemId,
+                                                                             mediaSourceId: mediaSourceId,
+                                                                             streamIndex: streamIndex, format: ext)
+                else { return nil }
+                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
+                return PendingSubtitle(
+                    request: request, destination: destination,
+                    track: OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                 relativePath: destination.lastPathComponent,
+                                                                 fallbackIndex: fallbackIndex))
+            }
+        cacheTextSubtitles(ratingKey: ratingKey, pending: pending)
+    }
+
+    /// One compatible text-subtitle stream resolved into the work needed to cache it offline: the
+    /// already-backend-authenticated request, the on-disk destination, and the pre-computed
+    /// `OfflineTextSubtitleTrack` (pure; its inputs are known before the fetch). Deliberately carries
+    /// no `Stream` so the shared tail names no PMSKit type that collides with `Foundation.Stream`.
+    private struct PendingSubtitle {
+        let request: URLRequest
+        let destination: URL
+        let track: OfflineTextSubtitleTrack?
+    }
+
+    /// #135 Stage 7: shared text-subtitle cache tail for Plex and Jellyfin. Fetch+write each
+    /// pre-resolved sidecar OFF the main actor; a stream that fails is skipped, and on success its
+    /// pre-computed track is accumulated. Persist the lot + refresh if any landed. Best-effort — the
+    /// whole cache failing never fails the media download. The two public entry points differ ONLY in
+    /// how each stream's request is built (Plex token-in-query URL from the stream key; Jellyfin
+    /// authenticated request by stream index), so that is all they resolve before delegating.
+    private func cacheTextSubtitles(ratingKey: String, pending: [PendingSubtitle]) {
+        guard !pending.isEmpty else { return }
         let store = self.store
         Task { [weak self] in
             var tracks: [OfflineTextSubtitleTrack] = []
-            for (fallbackIndex, stream) in streams {
-                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
-                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
-                let streamIndex = stream.index ?? stream.id
-                guard let request = try? JellyfinLibrary.textSubtitleRequest(server: server,
-                                                                             token: token,
-                                                                             identity: identity,
-                                                                             itemId: itemId,
-                                                                             mediaSourceId: mediaSourceId,
-                                                                             streamIndex: streamIndex,
-                                                                             format: ext),
-                      await Self.fetchAndWriteTextSubtitle(request: request, to: destination) else { continue }
-                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
-                                                                     relativePath: destination.lastPathComponent,
-                                                                     fallbackIndex: fallbackIndex) {
-                    tracks.append(track)
-                }
+            for item in pending {
+                guard await Self.fetchAndWriteTextSubtitle(request: item.request, to: item.destination)
+                else { continue }
+                if let track = item.track { tracks.append(track) }
             }
             guard !tracks.isEmpty else { return }
             await MainActor.run {
