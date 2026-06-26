@@ -1,6 +1,7 @@
 import AVFoundation
 import PMSKit
 import SwiftUI
+import UIKit
 
 /// Shared, observable selection state for the player menus (e.g. the active bitrate
 /// cap so the Quality menu shows the right checkmark even after a programmatic reload).
@@ -113,9 +114,10 @@ struct ChapterCard: View {
     let chapter: Chapter
     let index: Int
     let isCurrent: Bool
-    /// Prebuilt thumbnail URL (the Chapters tab is outside the SwiftUI environment
-    /// `PosterImage` relies on, so the URL is vended by `PlaybackController` instead).
-    let thumbnailURL: URL?
+    /// Prebuilt thumbnail request (the Chapters tab is outside the SwiftUI environment
+    /// `PosterImage` relies on, so the authenticated request is vended by
+    /// `PlaybackController` instead).
+    let thumbnailRequest: URLRequest?
     var onTap: (Int) -> Void
 
     // Large enough for the custom-player Chapters popover to feel like the old AVP rail while
@@ -161,23 +163,12 @@ struct ChapterCard: View {
 
     /// 16:9 chapter thumbnail: a shimmering skeleton while loading, a fade-in on
     /// success, and a film-glyph fallback when there's no art (or it fails). Echoes
-    /// `PosterImage`'s loading treatment but takes a prebuilt URL (see `thumbnailURL`)
+    /// `PosterImage`'s loading treatment but takes a prebuilt request (see `thumbnailRequest`)
     /// rather than reading the server URL + token from the SwiftUI environment.
     @ViewBuilder private var thumbnail: some View {
-        if let thumbnailURL {
-            AsyncImage(url: thumbnailURL,
-                       transaction: Transaction(animation: .easeOut(duration: 0.35))) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().aspectRatio(contentMode: .fill).transition(.opacity)
-                case .empty:
-                    Rectangle().fill(.regularMaterial).overlay { ShimmerView() }
-                case .failure:
-                    placeholder
-                @unknown default:
-                    placeholder
-                }
-            }
+        if let thumbnailRequest {
+            RequestBackedChapterImage(request: thumbnailRequest,
+                                      placeholder: AnyView(placeholder))
         } else {
             placeholder
         }
@@ -203,6 +194,74 @@ struct ChapterCard: View {
     }
 }
 
+/// AsyncImage cannot attach MediaBrowser auth headers, but Jellyfin/Emby chapter images
+/// require them. This tiny request-backed image loader keeps the Chapters tab outside
+/// `AppModel` while still supporting header-authenticated chapter thumbnails.
+private struct RequestBackedChapterImage: View {
+    let request: URLRequest
+    let placeholder: AnyView
+
+    @State private var image: UIImage?
+    @State private var didFail = false
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .transition(.opacity)
+            } else if didFail {
+                placeholder
+            } else {
+                Rectangle().fill(.regularMaterial).overlay { ShimmerView() }
+            }
+        }
+        .animation(.easeOut(duration: 0.35), value: image != nil)
+        .task(id: cacheKey) {
+            await load()
+        }
+    }
+
+    private var cacheKey: String {
+        [
+            request.httpMethod ?? "GET",
+            request.url?.absoluteString ?? "",
+            request.value(forHTTPHeaderField: "Authorization") == nil ? "no-auth" : "auth",
+            request.value(forHTTPHeaderField: "X-Emby-Token") == nil ? "no-emby-token" : "emby-token",
+        ].joined(separator: "|")
+    }
+
+    @MainActor
+    private func load() async {
+        image = nil
+        didFail = false
+        do {
+            let data = try await Self.data(for: request)
+            guard let decoded = UIImage(data: data) else {
+                didFail = true
+                return
+            }
+            image = decoded
+        } catch {
+            didFail = true
+        }
+    }
+
+    private nonisolated static func data(for request: URLRequest) async throws -> Data {
+        if let url = request.url, url.isFileURL {
+            return try Data(contentsOf: url)
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard !data.isEmpty else { throw URLError(.zeroByteResource) }
+        return data
+    }
+}
+
 /// Chapters menu: a Plex-style horizontal thumbnail rail. Tapping a
 /// card seeks the playhead to that chapter's start. On appear we read the live
 /// playhead once (`currentMs`), highlight the chapter it sits in, and auto-scroll
@@ -212,11 +271,11 @@ struct ChaptersTabView: View {
     let chapters: [Chapter]
     /// Reads the live playhead in milliseconds at appear time.
     var currentMs: () -> Int
-    /// Builds a thumbnail URL for a chapter, given its index + `thumb` key. Threaded in
+    /// Builds a thumbnail request for a chapter, given its index + `thumb` key. Threaded in
     /// from the controller because these info tabs are hosted outside the SwiftUI
     /// environment that would otherwise vend the server URL + token. Online this is a
-    /// transcoded server URL; offline it resolves to the cached local image by index (#88).
-    var thumbnailURL: (_ index: Int, _ thumb: String?) -> URL?
+    /// server image request; offline it resolves to the cached local image by index (#88).
+    var thumbnailRequest: (_ index: Int, _ thumb: String?) -> URLRequest?
     var onJump: (Int) -> Void
 
     @State private var currentIndex: Int?
@@ -239,7 +298,7 @@ struct ChaptersTabView: View {
                             ChapterCard(chapter: chapter,
                                         index: index,
                                         isCurrent: index == currentIndex,
-                                        thumbnailURL: thumbnailURL(index, chapter.thumb),
+                                        thumbnailRequest: thumbnailRequest(index, chapter.thumb),
                                         onTap: { startMs in
                                             // Immediate in-panel feedback: ring + center the
                                             // picked card (the panel may stay up — programmatic

@@ -130,7 +130,7 @@ final class PlaybackController {
     /// Persists local-file playback progress for offline downloads. nil for online streams.
     private let localPlaybackProgress: ((Int, Int?) -> Void)?
     /// Cached per-chapter image file URLs (chapter index → file), for offline playback only (#88).
-    /// Empty for online playback, where `chapterThumbnailURL` derives a live server URL instead.
+    /// Empty for online playback, where `chapterThumbnailRequest` derives a live server request instead.
     private let offlineChapterImageURLs: [Int: URL]
     private let offlineTextSubtitles: [OfflineTextSubtitleTrack]
     private let offlineSubtitleBaseURL: URL?
@@ -2375,20 +2375,21 @@ final class PlaybackController {
                                width: 600, height: 900)
     }
 
-    /// Builds a `/photo/:/transcode` URL for a chapter thumbnail key, sized 16:9
-    /// landscape. Returns nil when offline (no server/token) or the key is empty.
+    /// Builds a request for a chapter thumbnail key, sized 16:9 landscape. Plex images
+    /// authenticate in the transcode URL; MediaBrowser chapter images authenticate through the
+    /// same headers that opened the remote stream, so tokens stay out of image URLs.
     ///
     /// The Chapters info-tab rail can't use `PosterImage` (which reads `AppModel`
     /// from the SwiftUI environment): AVKit hosts each info tab in its own
     /// `UIHostingController`, outside that environment. The controller already
     /// holds the server + token, so it vends the URL directly instead.
-    func chapterThumbnailURL(for imagePath: String?, chapterIndex: Int) -> URL? {
+    func chapterThumbnailRequest(for imagePath: String?, chapterIndex: Int) -> URLRequest? {
         // Offline playback (#88): there is no server to transcode against, so resolve the chapter's
         // cached local image keyed by its index (the position in `chapters`, the same enumeration
         // the download-time cache used). A `file://` URL loads in `AsyncImage` exactly like a remote
         // one. Index-keying covers Plex too, whose chapter `thumb` key carries no index.
         if localFile != nil {
-            return offlineChapterImageURLs[chapterIndex]
+            return offlineChapterImageURLs[chapterIndex].map { URLRequest(url: $0) }
         }
 
         guard let imagePath, !imagePath.isEmpty else { return nil }
@@ -2397,68 +2398,44 @@ final class PlaybackController {
         // stable key. The player is the only place that has the resolved remote HLS URL, so it
         // derives the server base here and asks Jellyfin's native chapter-image endpoint for a
         // 16:9 thumbnail. Keep this purely an image URL translation; do not touch playback state.
-        if let jellyfin = parsedJellyfinChapterImagePath(imagePath),
+        if MediaBrowserSyntheticChapterImageRef.parse(imagePath, scheme: JellyfinFlavor.syntheticScheme) != nil,
            let base = remoteStreamURL.flatMap(jellyfinServerBaseURL(from:)) {
-            return try? JellyfinLibrary.chapterImageURL(server: base,
-                                                        itemId: jellyfin.itemId,
-                                                        chapterIndex: jellyfin.index,
-                                                        tag: jellyfin.tag,
-                                                        width: 480,
-                                                        height: 270)
+            guard let url = try? JellyfinLibrary.chapterImageRequestURL(syntheticRef: imagePath,
+                                                                        server: base,
+                                                                        width: 480,
+                                                                        height: 270) else { return nil }
+            return mediaBrowserChapterImageRequest(url: url)
         }
 
         // Emby mirrors the Jellyfin synthetic-chapter scheme (`emby://item/{id}/Chapter/{index}?tag=`).
         // Resolve it through Emby's native chapter-image endpoint, deriving the server base from the
         // resolved remote HLS URL exactly as the Jellyfin branch does (the /videos/ + /items/ split is
         // case-insensitive and already covers Emby's lowercase playable paths).
-        if let emby = parsedEmbyChapterImagePath(imagePath),
+        if MediaBrowserSyntheticChapterImageRef.parse(imagePath, scheme: EmbyFlavor.syntheticScheme) != nil,
            let base = remoteStreamURL.flatMap(jellyfinServerBaseURL(from:)) {
-            return try? EmbyLibrary.chapterImageURL(server: base,
-                                                    itemId: emby.itemId,
-                                                    chapterIndex: emby.index,
-                                                    tag: emby.tag,
-                                                    width: 480,
-                                                    height: 270)
+            guard let url = try? EmbyLibrary.chapterImageRequestURL(syntheticRef: imagePath,
+                                                                    server: base,
+                                                                    width: 480,
+                                                                    height: 270) else { return nil }
+            return mediaBrowserChapterImageRequest(url: url)
         }
 
         guard let server, let token else { return nil }
-        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: imagePath),
-            .init(name: "width", value: "480"),
-            .init(name: "height", value: "270"),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
+        return PlexPhotoTranscode.url(server: server,
+                                      token: token,
+                                      imagePath: imagePath,
+                                      width: 480,
+                                      height: 270).map { URLRequest(url: $0) }
     }
 
-    private func parsedJellyfinChapterImagePath(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
-        guard let url = URL(string: imagePath),
-              url.scheme == "jellyfin",
-              url.host == "item" else { return nil }
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
-        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first { $0.name == "tag" }?
-            .value
-        return (parts[0], index, tag)
-    }
-
-    private func parsedEmbyChapterImagePath(_ imagePath: String) -> (itemId: String, index: Int, tag: String?)? {
-        guard let url = URL(string: imagePath),
-              url.scheme == "emby",
-              url.host == "item" else { return nil }
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
-        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?
-            .first { $0.name == "tag" }?
-            .value
-        return (parts[0], index, tag)
+    private func mediaBrowserChapterImageRequest(url: URL?) -> URLRequest? {
+        guard let url else { return nil }
+        var req = URLRequest(url: url)
+        for (field, value) in remoteHTTPHeaders {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        req.setValue("image/jpeg,*/*", forHTTPHeaderField: "Accept")
+        return req
     }
 
     private func jellyfinServerBaseURL(from streamURL: URL) -> URL? {
