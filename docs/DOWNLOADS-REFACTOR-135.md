@@ -63,8 +63,47 @@ Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified 
     server-prep halves (+PlexOptimize/+EmbyConvert) + +SideCache. Each cut is a separate commit,
     behavior-preserving (a `@MainActor`-class extension inherits isolation; bodies moved verbatim,
     only shared `private` members promoted to `internal`), verified by a clean build + UUID-matched
-    install + launch. Remaining (optional): pull the Plex-optimize polling half into +PlexOptimize,
-    and the retry/resume drivers into per-backend files; Stages 4/6/7/8.
+    install + launch.
+
+- **✅ Stage 6 — persistence hardening (H8 + schemaVersion + H9).** `DownloadStore.load()` did an
+  all-or-nothing `decode([Row].self)`, so ONE corrupt/forward-incompatible row dropped the user's
+  whole offline library (H8). New `DownloadIndexCoding` (PMSKit, 8 tests — unit-testable without an
+  app test target, per the `OfflineDownloadModels` rationale) decodes the index row-by-row (a failed
+  row is skipped + counted + logged, never silently swallowed) and writes a versioned
+  `{ schemaVersion, rows }` envelope (legacy bare arrays still load as `schemaVersion 1`). Verified
+  live: an existing 6-row index spanning all three backends migrated bare-array → envelope
+  (`schemaVersion 2`) on launch with every row preserved. **H9**: `setResumeData` wrote its (large)
+  blob to disk *before* the metadata-nil `updateMetadata` no-op could record the path — now it bails
+  before writing when there is no metadata row to record on, removing the orphan (behavior-preserving;
+  resume was already unavailable for such a legacy row).
+
+- **✅ Stage 4 — server-prep duplication, reconsidered.** The Plex-optimize and Emby-convert lanes
+  were evaluated for a unified `ServerPrepEngine` and deliberately **kept separate**: they share only
+  conceptual structure (seed → poll → handoff), and every concrete step is load-bearingly different —
+  seed status (`.queued` vs `.preparing`), progress gating (Int `pct>=0` clearing vs Double `pct>0`
+  pinned-0), failure release (Plex defers to `refreshRecords`' terminal sweep; Emby releases
+  explicitly), cancel identity (queue-title assert-throw vs `activeJobs` guard + server `DELETE`), and
+  handoff target. A unified engine would be an `if-backend` mess or would flatten that nuance. What
+  *was* truly duplicated — the 4-line failure finalization repeated ~5× **within** the Emby lane — is
+  folded into one Emby-local `failEmbyConvert`, preserving the cross-backend release asymmetry. The
+  genuinely-shared progress/ETA plumbing (`optimizeProgress`/`optimizeState`/`updateOptimizeETA`) was
+  already deduped in `DownloadManager` core.
+
+- **✅ Stage 7 — side-cache poster + subtitle tails unified.** The three poster cachers
+  (Plex/Jellyfin/Emby) and two text-subtitle cachers (Plex/Jellyfin) each repeated the same
+  `Task → fetch-off-main → atomic-write → setRelativePath → refresh` tail, differing only in request
+  construction. One `cachePoster(ratingKey:request:)` and one `cacheTextSubtitles(ratingKey:pending:)`
+  now own those tails; the entry points just resolve their backend-authenticated request (and, for
+  subtitles, the pre-computed track) on the main actor and delegate. Dead URL-variant
+  `fetchAndWritePoster` removed. Verified live: a Plex download cached its poster to disk via the
+  unified path; Emby/Jellyfin rows retain persisted poster paths.
+
+- **✅ Stage 8 — download-probe scaffolding deduped.** The three `Debug*DownloadProbe`s carried
+  byte-identical arg parsers (`value`/`intValue`) and the record-snapshot type + reader; those
+  backend-agnostic primitives now live once in `DebugDownloadProbeSupport` (`#if DEBUG`). The per-probe
+  `observe` loops stay local (distinct diagnostic categories; Plex's `label`/`.done` shape). DEBUG-only
+  scaffolding; tooling re-verified (Plex observe-only probe reports `status=complete` via the shared
+  reader).
 
 **Cross-backend live verification results** (kubectl → live servers; candidates found server-side via
 the library APIs):
@@ -77,23 +116,23 @@ the library APIs):
   *false* even for a clean mp4/h264 converted file, so the handoff silently seeded NO download row.
   Fixed by gating `.existingVersion` on container+codec playability (commit, +3 tests); the converted
   mp4 now downloads `queued → complete` (150 MB).
-- **Jellyfin (priority 3) — probe written, login-gated.** Added `DebugJellyfinDownloadProbe`
-  (`--vp-probe-jellyfin-download`); builds + runs, but the sim is not signed in to Jellyfin, so a full
-  download run is **blocked on the user signing the sim into Jellyfin once** (the probe does not
-  authenticate — the documented user's-half gate).
+- **Jellyfin (priority 3) — fully verified E2E.** Added `DebugJellyfinDownloadProbe`
+  (`--vp-probe-jellyfin-download`, item targeted by explicit `--vp-probe-rating-key`). Once the user
+  signed the sim into Jellyfin, a 433 MB hevc/mp4 static `.original` download drove
+  `downloading → complete` (`status=complete progress=1.000000 bytes=432950124`, `probe.pass
+  progressed=true`). Note: Jellyfin static streams ship no Content-Length, so `progress` reads
+  `0.000000` while bytes climb — completion is detected by bytes reaching `MediaSource.Size` + the
+  AVPlayer finalize validation, exactly as designed.
 
-- **Remaining:** Stage 1f (record-key leaves — deferred; entangled with the `isJellyfinRecordKey`/
-  `isEmbyRecordKey` lane-routing predicates at 5 sites), **Stage 4** (`ServerPrepEngine` collapsing the
-  Plex-optimize / Emby-convert duplication + Jellyfin stale guard), **Stage 5c** (the headline
-  de-godding — relocate the Plex/Jellyfin/Emby request-resolution + side-cache bodies out of
-  `DownloadManager` into separate `DownloadStrategy` types behind a coordinator context; **note** the
-  blocker is Swift `private` visibility — a clean file/type split first requires downgrading the
-  ~25 shared `private` members `DownloadManager` exposes to its lanes to `internal`, so this is a
-  larger focused pass best done on its own), Stage 6 (persistence: schemaVersion + per-row decode
-  isolation, H8/H9), Stage 7 (side-cache unification + parity), Stage 8 (UI/probe dedup). Real DAG:
-  Stage 5c depends on the Stage 2/4 engines — ship in order.
-  - Stage 5a/5b have already taken the *safe* slices of Stage 5 (the route decision is now pure +
-    tested; the transfer-start tail is unified), shrinking the twins and de-risking 5c.
+- **Remaining (deferred, optional):** Stage 1f (record-key leaves — entangled with the
+  `isJellyfinRecordKey`/`isEmbyRecordKey` lane-routing predicates at 5 sites). The further
+  `DownloadStrategy`-type extraction once floated for "Stage 5c"/Stage 5 (relocate each backend's
+  request-resolution into separate strategy types behind a coordinator) is **not pursued**: the
+  file-level de-godding already split the lanes into cohesive per-backend files (−54%), and forcing a
+  protocol/coordinator over the three genuinely-different request flows would re-introduce the same
+  nuance-flattening risk the Stage 4 analysis rejected. The structural goal — kill the god-object,
+  keep per-backend nuance, make it readable/modular — is met; what is left is cosmetic and best judged
+  against a concrete future need rather than done speculatively.
 
 ---
 
