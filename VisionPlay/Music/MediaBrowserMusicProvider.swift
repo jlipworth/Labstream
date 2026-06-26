@@ -28,7 +28,14 @@ struct MediaBrowserMusicProvider: MusicProvider {
     }
 
     func artists(libraryID: String, sort: MusicBrowseSort, start: Int, size: Int) async throws -> MusicPage {
-        try await page(parentId: libraryID, includeItemTypes: "MusicArtist", sort: sort, start: start, size: size)
+        // Album artists come from the dedicated `/Artists/AlbumArtists` endpoint, not a
+        // `MusicArtist` items browse — the latter only surfaces folder-derived stubs (#111).
+        let result = try await browser.musicAlbumArtistsPage(parentId: libraryID,
+                                                            sortBy: sort.mediaBrowserSortBy,
+                                                            sortOrder: sort.mediaBrowserSortOrder,
+                                                            startIndex: start,
+                                                            limit: size)
+        return MusicPage(items: result.items, total: result.total ?? result.items.count)
     }
 
     func albums(libraryID: String, sort: MusicBrowseSort, start: Int, size: Int) async throws -> MusicPage {
@@ -41,29 +48,37 @@ struct MediaBrowserMusicProvider: MusicProvider {
                                                       includeItemTypes: "Audio",
                                                       sortBy: "ParentIndexNumber,IndexNumber,SortName",
                                                       sortOrder: "Ascending",
+                                                      albumArtistIds: nil,
+                                                      artistIds: nil,
                                                       startIndex: nil,
                                                       limit: nil)
         return result.items
     }
 
     func artistDetail(artist: MediaItem, libraryID: String?) async throws -> ArtistDetailContent {
-        // An artist's albums are its recursive MusicAlbum descendants, newest first.
-        let result = try await browser.musicItemsPage(parentId: artist.ratingKey,
+        // An album-artist entity is a tag aggregate, so its albums are filtered by
+        // `AlbumArtistIds`, not reached as folder children (#111). Newest first.
+        let result = try await browser.musicItemsPage(parentId: nil,
                                                       recursive: true,
                                                       includeItemTypes: "MusicAlbum",
                                                       sortBy: "ProductionYear,SortName",
                                                       sortOrder: "Descending",
+                                                      albumArtistIds: artist.ratingKey,
+                                                      artistIds: nil,
                                                       startIndex: nil,
                                                       limit: nil)
         return ArtistDetailContent(albums: result.items)
     }
 
     func discographyTracks(artist: MediaItem) async throws -> [MediaItem] {
-        let result = try await browser.musicItemsPage(parentId: artist.ratingKey,
+        // Every track crediting this artist (`ArtistIds` includes featured appearances).
+        let result = try await browser.musicItemsPage(parentId: nil,
                                                       recursive: true,
                                                       includeItemTypes: "Audio",
                                                       sortBy: "AlbumArtist,Album,ParentIndexNumber,IndexNumber,SortName",
                                                       sortOrder: "Ascending",
+                                                      albumArtistIds: nil,
+                                                      artistIds: artist.ratingKey,
                                                       startIndex: nil,
                                                       limit: nil)
         return result.items
@@ -79,6 +94,8 @@ struct MediaBrowserMusicProvider: MusicProvider {
                                                       includeItemTypes: includeItemTypes,
                                                       sortBy: sort.mediaBrowserSortBy,
                                                       sortOrder: sort.mediaBrowserSortOrder,
+                                                      albumArtistIds: nil,
+                                                      artistIds: nil,
                                                       startIndex: start,
                                                       limit: size)
         return MusicPage(items: result.items, total: result.total ?? result.items.count)
@@ -114,8 +131,17 @@ protocol MediaBrowserMusicBrowsing {
                         includeItemTypes: String,
                         sortBy: String,
                         sortOrder: String,
+                        albumArtistIds: String?,
+                        artistIds: String?,
                         startIndex: Int?,
                         limit: Int?) async throws -> (items: [MediaItem], total: Int?)
+    /// Real, tag-aggregated album artists (`/Artists/AlbumArtists`) — not the folder-derived
+    /// `MusicArtist` stubs a plain items browse returns (#111).
+    func musicAlbumArtistsPage(parentId: String?,
+                               sortBy: String,
+                               sortOrder: String,
+                               startIndex: Int?,
+                               limit: Int?) async throws -> (items: [MediaItem], total: Int?)
 }
 
 extension JellyfinBrowseService: MediaBrowserMusicBrowsing {
@@ -128,6 +154,8 @@ extension JellyfinBrowseService: MediaBrowserMusicBrowsing {
                         includeItemTypes: String,
                         sortBy: String,
                         sortOrder: String,
+                        albumArtistIds: String?,
+                        artistIds: String?,
                         startIndex: Int?,
                         limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
         try await itemsPage(parentId: parentId,
@@ -136,7 +164,21 @@ extension JellyfinBrowseService: MediaBrowserMusicBrowsing {
                             limit: limit,
                             sortBy: sortBy,
                             sortOrder: sortOrder,
-                            includeItemTypes: includeItemTypes)
+                            includeItemTypes: includeItemTypes,
+                            albumArtistIds: albumArtistIds,
+                            artistIds: artistIds)
+    }
+
+    func musicAlbumArtistsPage(parentId: String?,
+                               sortBy: String,
+                               sortOrder: String,
+                               startIndex: Int?,
+                               limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
+        try await albumArtistsPage(parentId: parentId,
+                                   startIndex: startIndex,
+                                   limit: limit,
+                                   sortBy: sortBy,
+                                   sortOrder: sortOrder)
     }
 }
 
@@ -150,6 +192,8 @@ extension EmbyBrowseService: MediaBrowserMusicBrowsing {
                         includeItemTypes: String,
                         sortBy: String,
                         sortOrder: String,
+                        albumArtistIds: String?,
+                        artistIds: String?,
                         startIndex: Int?,
                         limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
         try await itemsPage(parentId: parentId,
@@ -158,6 +202,20 @@ extension EmbyBrowseService: MediaBrowserMusicBrowsing {
                             limit: limit,
                             sortBy: sortBy,
                             sortOrder: sortOrder,
-                            includeItemTypes: includeItemTypes)
+                            includeItemTypes: includeItemTypes,
+                            albumArtistIds: albumArtistIds,
+                            artistIds: artistIds)
+    }
+
+    func musicAlbumArtistsPage(parentId: String?,
+                               sortBy: String,
+                               sortOrder: String,
+                               startIndex: Int?,
+                               limit: Int?) async throws -> (items: [MediaItem], total: Int?) {
+        try await albumArtistsPage(parentId: parentId,
+                                   startIndex: startIndex,
+                                   limit: limit,
+                                   sortBy: sortBy,
+                                   sortOrder: sortOrder)
     }
 }

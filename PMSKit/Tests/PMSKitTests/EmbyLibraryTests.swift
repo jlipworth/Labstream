@@ -51,6 +51,39 @@ struct EmbyLibraryTests {
         #expect(url.absoluteString.lowercased().contains("token") == false)
     }
 
+    @Test func albumArtistsRequestTargetsDedicatedEndpoint() throws {
+        let request = try EmbyLibrary.albumArtistsRequest(server: server,
+                                                          token: "token-abc",
+                                                          identity: identity,
+                                                          userId: "user-9",
+                                                          parentId: "music-lib",
+                                                          startIndex: 120,
+                                                          limit: 60)
+        let url = try #require(request.url)
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let q = try query(request)
+        #expect(comps.path == "/emby/Artists/AlbumArtists")
+        #expect(q["ParentId"] == "music-lib")
+        #expect(q["UserId"] == "user-9")
+        #expect(q["StartIndex"] == "120")
+        #expect(q["Limit"] == "60")
+        #expect(q["Recursive"] == "true")
+        #expect(q["EnableImages"] == "true")
+    }
+
+    @Test func itemsRequestCarriesAlbumArtistAndArtistFilters() throws {
+        let albums = try EmbyLibrary.itemsRequest(server: server, token: "t", identity: identity,
+                                                  userId: "user-9", recursive: true,
+                                                  includeItemTypes: "MusicAlbum",
+                                                  albumArtistIds: "artist-7")
+        #expect(try query(albums)["AlbumArtistIds"] == "artist-7")
+        let tracks = try EmbyLibrary.itemsRequest(server: server, token: "t", identity: identity,
+                                                  userId: "user-9", recursive: true,
+                                                  includeItemTypes: "Audio",
+                                                  artistIds: "artist-7")
+        #expect(try query(tracks)["ArtistIds"] == "artist-7")
+    }
+
     @Test func itemsRequestCarriesRecursiveIncludeItemTypesAndFields() throws {
         let request = try EmbyLibrary.itemsRequest(
             server: server,

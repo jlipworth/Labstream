@@ -51,6 +51,8 @@ public enum JellyfinLibrary {
                                     sortOrder: String = "Ascending",
                                     includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                                     fields: String = fullItemFields,
+                                    albumArtistIds: String? = nil,
+                                    artistIds: String? = nil,
                                     filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(userId: userId, fields: fields)
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
@@ -63,11 +65,51 @@ public enum JellyfinLibrary {
         if let nameStartsWith, !nameStartsWith.isEmpty {
             query.append(URLQueryItem(name: "nameStartsWith", value: nameStartsWith))
         }
+        // An album-artist entity is a tag aggregate, not a folder, so its albums/tracks are
+        // reached by these filters rather than `parentId` (#111).
+        if let albumArtistIds, !albumArtistIds.isEmpty {
+            query.append(URLQueryItem(name: "albumArtistIds", value: albumArtistIds))
+        }
+        if let artistIds, !artistIds.isEmpty {
+            query.append(URLQueryItem(name: "artistIds", value: artistIds))
+        }
         replaceQueryItem(named: "includeItemTypes", with: includeItemTypes, in: &query)
         if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: filters.joined(separator: ","))) }
         replaceQueryItem(named: "sortBy", with: sortBy, in: &query)
         replaceQueryItem(named: "sortOrder", with: sortOrder, in: &query)
         let url = try url(server: server, path: "/Items", queryItems: query)
+        return get(url: url, token: token, identity: identity)
+    }
+
+    /// Album artists for a music library (#111). A plain `/Items?IncludeItemTypes=MusicArtist`
+    /// browse returns only the folder-derived artist stubs Jellyfin synthesizes for loose
+    /// release folders (their names are whole release-folder strings, and they carry no art);
+    /// the dedicated `/Artists/AlbumArtists` endpoint returns the real, tag-aggregated
+    /// album-artist entities every official client lists. Same `{Items,TotalRecordCount}`
+    /// envelope, so it decodes as a normal items page.
+    public static func albumArtistsRequest(server: URL,
+                                           token: String,
+                                           identity: JellyfinClientIdentity,
+                                           userId: String,
+                                           parentId: String?,
+                                           startIndex: Int? = nil,
+                                           limit: Int? = nil,
+                                           sortBy: String = "SortName",
+                                           sortOrder: String = "Ascending",
+                                           fields: String = gridItemFields) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "userId", value: userId),
+            URLQueryItem(name: "fields", value: fields),
+            URLQueryItem(name: "enableUserData", value: "true"),
+            URLQueryItem(name: "enableImages", value: "true"),
+            URLQueryItem(name: "recursive", value: "true"),
+            URLQueryItem(name: "sortBy", value: sortBy),
+            URLQueryItem(name: "sortOrder", value: sortOrder),
+        ]
+        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
+        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
+        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        let url = try url(server: server, path: "/Artists/AlbumArtists", queryItems: query)
         return get(url: url, token: token, identity: identity)
     }
 

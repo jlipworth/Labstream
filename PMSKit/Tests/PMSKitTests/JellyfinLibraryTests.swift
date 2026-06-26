@@ -105,6 +105,55 @@ struct JellyfinLibraryTests {
         #expect(query["api_key"] == nil)
     }
 
+    @Test func albumArtistsRequestTargetsDedicatedEndpoint() throws {
+        // The folder-derived `MusicArtist` items browse is wrong for an Artists list (#111);
+        // album artists must come from `/Artists/AlbumArtists`.
+        let request = try JellyfinLibrary.albumArtistsRequest(server: server,
+                                                              token: "token-abc",
+                                                              identity: identity,
+                                                              userId: "user-1",
+                                                              parentId: "music-lib",
+                                                              startIndex: 120,
+                                                              limit: 60)
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Artists/AlbumArtists")
+        #expect(query["parentId"] == "music-lib")
+        #expect(query["userId"] == "user-1")
+        #expect(query["startIndex"] == "120")
+        #expect(query["limit"] == "60")
+        #expect(query["recursive"] == "true")
+        #expect(query["enableImages"] == "true")
+    }
+
+    @Test func itemsRequestCarriesAlbumArtistAndArtistFilters() throws {
+        // An album artist's albums (AlbumArtistIds) and full discography (ArtistIds) are
+        // reached by filter, not by `parentId` — those entities are tag aggregates (#111).
+        let albums = try JellyfinLibrary.itemsRequest(server: server, token: "t", identity: identity,
+                                                      userId: "user-1", recursive: true,
+                                                      includeItemTypes: "MusicAlbum",
+                                                      albumArtistIds: "artist-7")
+        let albumQuery = try queryMap(albums)
+        #expect(albumQuery["albumArtistIds"] == "artist-7")
+        #expect(albumQuery["artistIds"] == nil)
+
+        let tracks = try JellyfinLibrary.itemsRequest(server: server, token: "t", identity: identity,
+                                                      userId: "user-1", recursive: true,
+                                                      includeItemTypes: "Audio",
+                                                      artistIds: "artist-7")
+        let trackQuery = try queryMap(tracks)
+        #expect(trackQuery["artistIds"] == "artist-7")
+        #expect(trackQuery["albumArtistIds"] == nil)
+    }
+
+    private func queryMap(_ request: URLRequest) throws -> [String: String] {
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+    }
+
     @Test func audioStreamURLHonorsBitrateCap() throws {
         let url = try JellyfinLibrary.audioStreamURL(server: server,
                                                      identity: identity,
