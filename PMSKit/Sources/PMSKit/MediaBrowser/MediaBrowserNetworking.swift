@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // Shared low-level helpers for the Emby/Jellyfin (forked-API) backends. These return
 // optionals rather than throwing so each backend keeps its own error type at the call
@@ -105,5 +108,192 @@ public enum MediaBrowserAuth {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    /// Build a MediaBrowser-family authorization header from ordered, already semantic
+    /// parameters. Empty/nil values are omitted so callers keep the Jellyfin/Emby token
+    /// and user-id dialect differences explicit while sharing the fragile quoting rules.
+    public static func headerValue(scheme: String, parameters: [(name: String, value: String?)]) -> String {
+        let encoded = parameters.compactMap { parameter -> String? in
+            guard let value = parameter.value, !value.isEmpty else { return nil }
+            return "\(parameter.name)=\"\(quote(value))\""
+        }
+        return scheme + " " + encoded.joined(separator: ", ")
+    }
+}
+
+public enum MediaBrowserLibraryFields {
+    /// Parent/series image tags drive episode/season artwork fallback (#86). People,
+    /// Studios, and CriticRating drive cast/critic metadata (#76). Keep these canonical
+    /// field strings shared so Jellyfin and Emby browse requests cannot drift silently.
+    public static let gridItem = "Overview,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ProviderIds,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+    public static let fullItem = "Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+}
+
+public enum MediaBrowserLibraryQueryName: Sendable {
+    case userId
+    case includeExternalContent
+    case parentId
+    case recursive
+    case startIndex
+    case limit
+    case searchTerm
+    case nameStartsWith
+    case albumArtistIds
+    case artistIds
+    case includeItemTypes
+    case filters
+    case sortBy
+    case sortOrder
+    case fields
+    case enableUserData
+    case enableImages
+    case excludeActiveSessions
+    case enableResumable
+    case groupItems
+}
+
+public enum MediaBrowserLibraryPath: Sendable, Equatable {
+    case userViews(userId: String)
+    case items(userId: String)
+}
+
+public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
+    case jellyfin
+    case emby
+
+    public func path(_ path: MediaBrowserLibraryPath) -> String {
+        switch (self, path) {
+        case (.jellyfin, .userViews):
+            return "/UserViews"
+        case (.jellyfin, .items):
+            return "/Items"
+        case (.emby, .userViews(let userId)):
+            return "/Users/\(userId)/Views"
+        case (.emby, .items(let userId)):
+            return "/Users/\(userId)/Items"
+        }
+    }
+
+    public func queryName(_ name: MediaBrowserLibraryQueryName) -> String {
+        switch self {
+        case .jellyfin:
+            switch name {
+            case .userId: return "userId"
+            case .includeExternalContent: return "includeExternalContent"
+            case .parentId: return "parentId"
+            case .recursive: return "recursive"
+            case .startIndex: return "startIndex"
+            case .limit: return "limit"
+            case .searchTerm: return "searchTerm"
+            case .nameStartsWith: return "nameStartsWith"
+            case .albumArtistIds: return "albumArtistIds"
+            case .artistIds: return "artistIds"
+            case .includeItemTypes: return "includeItemTypes"
+            case .filters: return "filters"
+            case .sortBy: return "sortBy"
+            case .sortOrder: return "sortOrder"
+            case .fields: return "fields"
+            case .enableUserData: return "enableUserData"
+            case .enableImages: return "enableImages"
+            case .excludeActiveSessions: return "excludeActiveSessions"
+            case .enableResumable: return "enableResumable"
+            case .groupItems: return "groupItems"
+            }
+        case .emby:
+            switch name {
+            case .userId: return "UserId"
+            case .includeExternalContent: return "IncludeExternalContent"
+            case .parentId: return "ParentId"
+            case .recursive: return "Recursive"
+            case .startIndex: return "StartIndex"
+            case .limit: return "Limit"
+            case .searchTerm: return "SearchTerm"
+            case .nameStartsWith: return "NameStartsWith"
+            case .albumArtistIds: return "AlbumArtistIds"
+            case .artistIds: return "ArtistIds"
+            case .includeItemTypes: return "IncludeItemTypes"
+            case .filters: return "Filters"
+            case .sortBy: return "SortBy"
+            case .sortOrder: return "SortOrder"
+            case .fields: return "Fields"
+            case .enableUserData: return "EnableUserData"
+            case .enableImages: return "EnableImages"
+            case .excludeActiveSessions: return "ExcludeActiveSessions"
+            case .enableResumable: return "EnableResumable"
+            case .groupItems: return "GroupItems"
+            }
+        }
+    }
+
+    public func queryItem(_ name: MediaBrowserLibraryQueryName, value: String) -> URLQueryItem {
+        URLQueryItem(name: queryName(name), value: value)
+    }
+}
+
+public struct MediaBrowserRequest: Sendable {
+    public let urlRequest: URLRequest
+
+    public init(_ urlRequest: URLRequest) {
+        self.urlRequest = urlRequest
+    }
+}
+
+public enum MediaBrowserRequestError: Error, Equatable, LocalizedError {
+    case httpStatus(Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .httpStatus(let status): return "MediaBrowser server error (HTTP \(status))."
+        }
+    }
+}
+
+public struct MediaBrowserRequestExecutor: Sendable {
+    public typealias Transport = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    private let transport: Transport
+
+    public init(transport: @escaping Transport) {
+        self.transport = transport
+    }
+
+    public init(session: URLSession = .shared) {
+        self.init { request in
+            try await session.data(for: request)
+        }
+    }
+
+    @discardableResult
+    public func send(_ request: MediaBrowserRequest) async throws -> Data {
+        try await send(request.urlRequest)
+    }
+
+    @discardableResult
+    public func send(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await transport(request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw MediaBrowserRequestError.httpStatus(http.statusCode)
+        }
+        return data
+    }
+
+    public func send<T: Decodable>(_ request: MediaBrowserRequest,
+                                   as type: T.Type,
+                                   decoder: JSONDecoder = JSONDecoder()) async throws -> T {
+        try await send(request.urlRequest, as: type, decoder: decoder)
+    }
+
+    public func send<T: Decodable>(_ request: URLRequest,
+                                   as type: T.Type,
+                                   decoder: JSONDecoder = JSONDecoder()) async throws -> T {
+        let data = try await send(request)
+        return try Self.decode(data, as: type, decoder: decoder)
+    }
+
+    public static func decode<T: Decodable>(_ data: Data,
+                                            as type: T.Type,
+                                            decoder: JSONDecoder = JSONDecoder()) throws -> T {
+        try decoder.decode(type, from: data)
     }
 }

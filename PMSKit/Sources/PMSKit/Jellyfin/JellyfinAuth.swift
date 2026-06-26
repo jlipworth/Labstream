@@ -67,16 +67,13 @@ public struct JellyfinQuickConnectResult: Decodable, Sendable, Equatable {
 public enum JellyfinAuth {
     public static func authorizationHeader(identity: JellyfinClientIdentity,
                                            token: String? = nil) -> String {
-        var parts = [
-            "Client=\"\(quote(identity.client))\"",
-            "Device=\"\(quote(identity.device))\"",
-            "DeviceId=\"\(quote(identity.deviceId))\"",
-            "Version=\"\(quote(identity.version))\"",
-        ]
-        if let token, !token.isEmpty {
-            parts.append("Token=\"\(quote(token))\"")
-        }
-        return "MediaBrowser " + parts.joined(separator: ", ")
+        MediaBrowserAuth.headerValue(scheme: "MediaBrowser", parameters: [
+            ("Client", identity.client),
+            ("Device", identity.device),
+            ("DeviceId", identity.deviceId),
+            ("Version", identity.version),
+            ("Token", token),
+        ])
     }
 
     public static func authenticateByNameRequest(server: URL,

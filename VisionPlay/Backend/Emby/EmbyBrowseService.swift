@@ -390,16 +390,16 @@ struct EmbyBrowseService {
 
     private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
         let data = try await send(request)
-        return try JSONDecoder().decode(T.self, from: data)
+        return try MediaBrowserRequestExecutor.decode(data, as: type)
     }
 
     @discardableResult
     private func send(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ServiceError.http(http.statusCode)
+        do {
+            return try await MediaBrowserRequestExecutor(session: session).send(request)
+        } catch MediaBrowserRequestError.httpStatus(let status) {
+            throw ServiceError.http(status)
         }
-        return data
     }
 }
 
