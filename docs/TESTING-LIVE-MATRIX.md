@@ -72,7 +72,7 @@ on-device behavior (does AVPlayer render the burned pixels?) stays device-only.
 | Playback failure / fallback policy | `PlaybackFailurePolicyTests`, `PlaybackStateTests` | *(gap — failure injection)* | Checklist B |
 | Scrub / seek / chapter controls | `PlaybackScrubStateTests`, `PlaybackSeekControlTests`, `ChapterSelectionTests` | *(gap)* | Checklist B |
 | Timeline / progress reporting & resume | `PlaybackStateTests`, `QueueMutationTests` | `LiveEmbyProbe` (Emby progress); **`LivePlexTimelineProbe`** (`/:/timeline` report → `viewOffset` read-back round-trip) | Checklist B |
-| Queue mutation (play next / shuffle) | `QueueMutationTests` | *(gap)* | Checklist B/C |
+| Queue mutation (play next / shuffle) | `QueueMutationTests`, `PlaybackStateTests` | **`LivePlayQueueMutationProbe`** (create queue → play-next → shuffled create) | Checklist B/C |
 | Session stop / transcode cleanup | `MediaSessionProxyTests` | `LiveEmbyProbe` (active-encoding stop); **`LivePlexTimelineProbe`** (`TranscodeRequest.stop` ends a started session) | Checklist B |
 | Cinema/expanded routing | `CinemaExitRoutingTests`, `SystemEntryRoutingTests` | n/a (immersive space) | Checklist B (device-only) |
 
@@ -82,7 +82,7 @@ on-device behavior (does AVPlayer render the burned pixels?) stays device-only.
 |---|---|---|---|
 | Subtitle track discovery (per-part streams) | `DecodingTests` (Stream decode), `StreamSelectionTests` | discovery in **`LiveSubtitleBurnProbe`** | Checklist B |
 | **Subtitle burn-in honored by server ★** | `TranscodeRequestTests` (the `subtitles=burn` param shape) | **`LiveSubtitleBurnProbe`** — asserts PMS flips `videoDecision` to `transcode` for a burned image-based subtitle | Checklist B (does AVPlayer render the pixels) |
-| Offline / sidecar text subtitle parsing (SRT/VTT) | `OfflineTextSubtitleParserTests`, `OfflineTextSubtitles` | *(gap — live sidecar fetch)* | Checklist B |
+| Offline / sidecar text subtitle parsing (SRT/VTT) | `OfflineTextSubtitleParserTests`, `OfflineTextSubtitles` | **`LiveSidecarSubtitleProbe`** (`/library/streams/<id>` fetch + parser decode) | Checklist B |
 | Subtitle stream selection passthrough | `StreamSelectionTests` | *(gap)* | Checklist B |
 
 The **★ row is the representative end-to-end proof for #75**: a real nuance — "does the server
@@ -114,25 +114,21 @@ and [`scripts/live-subtitle-burn-probe.sh`](../scripts/live-subtitle-burn-probe.
 | Optimize playlist / rendered-part route | `OptimizePlaylistTests`, `OptimizeTests` | `LiveOptimizeProbe`, `LiveSegmentProbe` | Checklist B |
 | Download queue & progress | `DownloadProgressDisplayTests`, `BackgroundQueueTests`, `OfflineDownloadModelsTests` | **`LiveDownloadStatusProbe`** (read-only queue/progress snapshot) | Checklist B (background/off-head) |
 | Emby download path | `EmbyDownloadTests` | **`LiveEmbyDownloadProbe`** | Checklist B (device-only) |
-| Offline playback decision (use local copy) | `OfflineDownloadDecisionTests` | *(gap)* | Checklist B |
+| Offline playback decision (use local copy) | `OfflineDownloadDecisionTests` | **`LiveOfflinePlaybackDecisionProbe`** (real PMS item + completed local fixture routes to `.localFile`) | Checklist B |
 | Activities polling (server-side optimize jobs) | `ActivitiesTests` | `LiveOptimizeProbe` | Checklist B |
 
 ---
 
-## Coverage gaps worth filling next (not built here — YAGNI)
+## Coverage gaps and future additions
 
-The matrix names every *(gap)* explicitly so the backlog is visible rather than implied. The two
-highest-value Plex gaps are now built: **`LivePlexBrowseProbe`** (sections + grid + TV hierarchy)
-and **`LivePlexTimelineProbe`** (progress round-trip + session stop). Still missing, in rough
-priority:
+The matrix names every *(gap)* explicitly so the backlog is visible rather than implied. The
+highest-value Plex gaps are now built: **`LivePlexBrowseProbe`** (sections + grid + TV hierarchy),
+**`LivePlexTimelineProbe`** (progress round-trip + session stop), **`LiveSidecarSubtitleProbe`**
+(live `/library/streams/...` text-subtitle fetch + parse), **`LiveOfflinePlaybackDecisionProbe`**
+(downloaded local fixture wins over remote routing), and **`LivePlayQueueMutationProbe`**
+(play-next + shuffled-queue wire operations).
 
-1. **Live sidecar text-subtitle fetch** — the burn path is now live-proven (★); the *text/sidecar*
-   path (`/library/streams/...` SRT/VTT fetch + parse) is only unit-tested.
-2. **Offline playback decision live probe** — proving a downloaded copy is preferred over a live
-   stream when present.
-3. **Queue mutation live probe** — play-next / shuffle play-queue ops are unit-tested only.
-
-Each would follow the exact same opt-in, env-gated, no-secret pattern as the existing probes.
-Adding one is: a `Live<Name>ProbeTests.swift`, a `scripts/live-<name>-probe.sh`, any new env vars
-documented in `plex-live.env.example` + `TESTING-LIVE-REQUIREMENTS.md`, and a matrix row flipped
-from *(gap)* to the new probe name.
+New gaps should follow the exact same opt-in, env-gated, no-secret pattern as the existing probes:
+a `Live<Name>ProbeTests.swift`, a `scripts/live-<name>-probe.sh`, any new env vars documented in
+`plex-live.env.example` + `TESTING-LIVE-REQUIREMENTS.md`, and a matrix row flipped from *(gap)* to
+the new probe name.

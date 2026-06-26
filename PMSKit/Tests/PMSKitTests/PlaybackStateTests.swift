@@ -77,6 +77,26 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay", 
     #expect(v("X-Plex-Token") == "tok")
 }
 
+@Test func playQueuePlayNextShape() {
+    let r = PlayQueue.playNextRequest(server: server, token: "tok", identity: id,
+                                      playQueueID: 42, machineIdentifier: "MACHINE-ABC",
+                                      ratingKey: "202")
+    #expect(r.url.path == "/playQueues/42")
+    #expect(r.method == "PUT")
+    func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
+    #expect(v("next") == "1")
+    #expect(v("uri")?.contains("server://MACHINE-ABC") == true)
+    #expect(v("uri")?.contains("/library/metadata/202") == true)
+    #expect(v("X-Plex-Token") == "tok")
+}
+
+@Test func playQueueCreateCanRequestShuffle() {
+    let r = PlayQueue.createRequest(server: server, token: "tok", identity: id,
+                                    machineIdentifier: "M", ratingKey: "7",
+                                    shuffled: true)
+    #expect(r.queryItems.first { $0.name == "shuffle" }?.value == "1")
+}
+
 @Test func playQueueContinuousCanBeDisabled() {
     let r = PlayQueue.createRequest(server: server, token: "tok", identity: id,
                                     machineIdentifier: "M", ratingKey: "7", continuous: false)

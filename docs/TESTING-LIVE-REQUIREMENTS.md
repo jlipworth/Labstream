@@ -35,6 +35,9 @@ server-side jobs — see "Cleanup / reset" below.)
 | **A transcode-requiring video** at a deep duration (≥1h) | Deep-offset segment priming + cap-forced transcode. | `LiveSegmentProbe` |
 | **A video with an embedded image-based subtitle track** (PGS/VOBSUB — e.g. a Blu-ray rip) | Burn-in must re-encode; image subs can't be sidecar'd, so they cleanly force `transcode`. | `LiveSubtitleBurnProbe` (★ #75 proof) |
 | **A downloadable item** (compatible local container) + **a transcode-only item** | Original-vs-optimizer download route decision. | `LiveDownloadProbe`, `LiveOptimizeProbe`, `LiveDownloadStatusProbe` |
+| **A video with a keyed external text subtitle** (SRT/SubRip or WebVTT) | Fetches `/library/streams/<id>` and proves the offline subtitle parser accepts the live body. | `LiveSidecarSubtitleProbe` |
+| **A downloaded local fixture file for a stable PMS item** | Proves playback routing prefers a completed local copy over the server-stream branch. | `LiveOfflinePlaybackDecisionProbe` |
+| **Two stable video items on a throwaway/test account** | Creates an ephemeral play queue, adds play-next, and creates a shuffled queue. | `LivePlayQueueMutationProbe` |
 | **A library section key + a TV show** (show with seasons + episodes) | Sections list, item grid + paging, and the show→season→episode `/children` traversal with coherent parent/grandparent ids. | `LivePlexBrowseProbe` |
 | **A progress-tracking video item on a DEDICATED test account** | `/:/timeline` progress report → `viewOffset` read-back round-trip, and a startable transcode session to stop. Writes a resume point, so it must target a throwaway account. | `LivePlexTimelineProbe` |
 | **(Emby lane) an Emby server, user id, and item id** | Emby auth/browse/playback/download wire shape. | `LiveEmbyProbe`, `LiveEmbyDownloadProbe` |
@@ -58,9 +61,14 @@ inject the same names as masked secrets.
 | `PLEX_LIVE_METADATA_KEY` | decision/segment probes | Item key, e.g. `/library/metadata/12345`. |
 | `PLEX_LIVE_SUBTITLE_METADATA_KEY` | `LiveSubtitleBurnProbe` | Item with an embedded image-based subtitle track. Falls back to `PLEX_LIVE_METADATA_KEY`. |
 | `PLEX_LIVE_SUBTITLE_STREAM_ID` | `LiveSubtitleBurnProbe` (optional) | Pin a specific subtitle stream id; otherwise the probe auto-discovers the first image-based subtitle. |
+| `PLEX_LIVE_SIDECAR_SUBTITLE_METADATA_KEY` | `LiveSidecarSubtitleProbe` | Item with an external/keyed SRT/SubRip or WebVTT subtitle stream. Falls back to `PLEX_LIVE_METADATA_KEY`. |
+| `PLEX_LIVE_SIDECAR_SUBTITLE_STREAM_ID` | `LiveSidecarSubtitleProbe` (optional) | Pin a specific keyed text subtitle stream id; otherwise the probe auto-discovers the first compatible stream. |
 | `PLEX_LIVE_SECTION_KEY` | `LivePlexBrowseProbe` | A library section key (from `/library/sections`, e.g. `1`). |
 | `PLEX_LIVE_SHOW_METADATA_KEY` | `LivePlexBrowseProbe` | A TV show item — bare ratingKey or `/library/metadata/<id>`; the probe extracts the bare key for the `/children` traversal. |
 | `PLEX_LIVE_TIMELINE_OFFSET_SECONDS` | `LivePlexTimelineProbe` (optional) | Offset (s) to report and read back; default 120. |
+| `PLEX_LIVE_OFFLINE_METADATA_KEY`, `PLEX_LIVE_OFFLINE_FILE` | `LiveOfflinePlaybackDecisionProbe` | Stable item key plus a runner-local downloaded fixture path. The path is not logged and must not be committed. |
+| `PLEX_LIVE_PLAYQUEUE_METADATA_KEY`, `PLEX_LIVE_PLAYQUEUE_NEXT_METADATA_KEY` | `LivePlayQueueMutationProbe` | Two stable video item keys on a throwaway/test account. The first seeds the queue; the second is added as play-next. |
+| `PLEX_LIVE_MACHINE_IDENTIFIER` | `LivePlayQueueMutationProbe` (optional) | Plex machine identifier for `server://...` queue URIs; auto-discovered from server root when omitted. |
 | `PLEX_LIVE_TITLE` | `LiveOptimizeProbe` | Title for the optimize discovery probe. |
 | `PLEX_LIVE_MAX_KBPS`, `PLEX_LIVE_OFFSET_SECONDS`, `PLEX_LIVE_SEGMENTS`, `PLEX_LIVE_MEDIA_INDEX`, `PLEX_LIVE_PART_INDEX`, `PLEX_LIVE_CLIENT_ID`, `PLEX_LIVE_POLLS`, `PLEX_LIVE_POLL_INTERVAL_SECONDS` | various (optional) | Tunables; sensible defaults baked into each probe. |
 
@@ -77,10 +85,15 @@ point at an alternate env file path.
 ## Cleanup / reset expectations
 
 - **Read-only probes** (`LiveDecisionProbe`, `LiveSegmentProbe`, `LiveSubtitleBurnProbe`,
-  `LiveDownloadStatusProbe`, `LivePlexBrowseProbe`, browse/metadata reads): no server-side mutation.
+  `LiveSidecarSubtitleProbe`, `LiveOfflinePlaybackDecisionProbe`, `LiveDownloadStatusProbe`,
+  `LivePlexBrowseProbe`, browse/metadata reads): no server-side mutation.
   Nothing to clean up. The subtitle-burn and browse probes only read/ask the **decision** or
   metadata endpoints — they do not open a `start.m3u8` transcode session — so they leave no FFmpeg
   job behind.
+- **Queue-mutating probes** (`LivePlayQueueMutationProbe`): create ephemeral test-account play
+  queues and add a play-next item. The probe also creates a shuffled queue with `shuffle=1` on
+  `POST /playQueues`, which is the live-proven shuffle operation for this PMS version. Run only on
+  a throwaway/test account; these do not open media streams or transcode sessions.
 - **Job-starting probes** (`LiveDownloadProbe`, `LiveOptimizeProbe`, `LiveEmbyDownloadProbe`,
   `LivePlexTimelineProbe`, and any future probe that hits `start.m3u8`): may spawn a server-side
   transcode/optimize. The CI server should run a **periodic reaper** (or the suite a teardown step)

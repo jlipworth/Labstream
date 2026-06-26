@@ -86,3 +86,42 @@ import Foundation
     // Fail closed when the codec token is missing too (no preflight on this lane).
     #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: nil) == false)
 }
+
+// MARK: - #120 offline playback routing
+
+@Test func offlinePlaybackDecisionPrefersCompletedLocalFile() {
+    let item = MediaItem(ratingKey: "101", title: "Movie", type: "movie")
+    let local = URL(fileURLWithPath: "/tmp/visionplay-offline-101.mp4")
+    let record = DownloadRecord(ratingKey: "101", title: "Movie", localURL: local,
+                                progress: 1, status: .complete)
+
+    let route = OfflinePlaybackDecision.route(for: item, backend: .plex, records: [record]) { $0 == local }
+
+    #expect(route == .localFile(local))
+}
+
+@Test func offlinePlaybackDecisionFallsBackWhenFileIsMissing() {
+    let item = MediaItem(ratingKey: "101", title: "Movie", type: "movie")
+    let record = DownloadRecord(ratingKey: "101", title: "Movie",
+                                localURL: URL(fileURLWithPath: "/tmp/missing.mp4"),
+                                progress: 1, status: .complete)
+
+    let route = OfflinePlaybackDecision.route(for: item, backend: .plex, records: [record]) { _ in false }
+
+    #expect(route == .remoteStream)
+}
+
+@Test func offlinePlaybackDecisionUsesBackendScopedKeys() {
+    let item = MediaItem(ratingKey: "abc", title: "Movie", type: "movie")
+    let plexRecord = DownloadRecord(ratingKey: "abc", title: "Wrong backend",
+                                    localURL: URL(fileURLWithPath: "/tmp/plex.mp4"),
+                                    progress: 1, status: .complete)
+    let jfURL = URL(fileURLWithPath: "/tmp/jellyfin.mp4")
+    let jellyfinRecord = DownloadRecord(ratingKey: "jellyfin:abc", title: "Right backend",
+                                        localURL: jfURL, progress: 1, status: .complete)
+
+    let route = OfflinePlaybackDecision.route(for: item, backend: .jellyfin,
+                                              records: [plexRecord, jellyfinRecord]) { $0 == jfURL }
+
+    #expect(route == .localFile(jfURL))
+}
