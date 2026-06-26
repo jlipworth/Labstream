@@ -7,7 +7,7 @@ Backend-agnostic dedup + robustness + de-godding plan for `VisionPlay/Downloads/
 ## Implementation status
 
 Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified by `swift test`
-+ an app build + a sim/headless smoke). PMSKit test count 672 → 690.
++ an app build + a sim/headless smoke). PMSKit `@Test` count 672 → 705.
 
 - **✅ Stage 2 — unify the completion/validation pipeline.** Both the opaque
   (`didFinishDownloadingTo`) and byte-range (`didCompleteWithError`) completion paths now funnel
@@ -28,18 +28,37 @@ Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified 
   **H5**: delete the poisoned partial on a non-2xx range response so a resume can't append after the
   error-page body. Verified live: a simulated mid-transfer drop produces a clean `.paused` with the
   partial + offset preserved.
+- **✅ Stage 1e — `BackendURLIdentity` / persisted-server matching.** `BackendSession.matchesPersistedServer`
+  + the scheme/host/port/path identity moved to PMSKit with 5 tests; the two `backendSessionMatchesPersistedServer`
+  call sites delegate to it.
+- **✅ Stage 5a — `EmbyDownloadRouter`.** The three-way Emby route decision (#112/#126 existing-version
+  + #83 compatible-remux, all against the authoritative negotiated verdict) moved out of `downloadEmby`
+  into a pure PMSKit unit + 9 branch-exhaustive tests, pinning the routing semantics before the larger
+  Stage 5 move. Behavior-preserving; verified by `swift test` + an app build + a Plex browse smoke.
+- **✅ Stage 5b — transfer-start tail unified.** The repeated `downloads.start` diagnostic +
+  `session.start` + start-failure triad across all three `download*` twins collapsed into one
+  `beginBackgroundTransfer(…, start:)` helper (the lane's own `session.start` overload + pre-start side
+  effects pass as a closure). The one real per-lane difference (JF/Emby release the in-flight slot on a
+  start failure; Plex static relies on the terminal `.failed`) is carried by `releaseInFlightOnFailure`.
+  `DownloadManager.swift` 4939 → 4779 lines across the landed stages.
 
 **Cross-backend verification harness** (kubectl port-forwards → live Plex/Emby/Jellyfin): Plex via
 the headless `swift test` route probe + the in-process sim download probe (E2E to `.complete`); Emby
 via the in-process dry-run probe (`route=transcode`, #133 refresh + existing-source enumeration both
 green). Jellyfin has no dedicated download probe yet (shares the Emby lane code) — a follow-up.
 
-- **Remaining:** Stage 1e/1f (BackendSession URL-identity + record-key leaves), **Stage 4**
-  (`ServerPrepEngine` collapsing the Plex-optimize / Emby-convert duplication + Jellyfin stale guard),
-  **Stage 5** (`DownloadStrategy` — collapse the ~300-line `download`/`downloadJellyfin`/`downloadEmby`
-  twins into `JobCoordinator.start(strategy:)`; the big de-godding), Stage 6 (persistence: schemaVersion
-  + per-row decode isolation, H8/H9), Stage 7 (side-cache unification + parity), Stage 8 (UI/probe
-  dedup). Real DAG: Stage 5 depends on the Stage 2/4 engines — ship in order.
+- **Remaining:** Stage 1f (record-key leaves — deferred; entangled with the `isJellyfinRecordKey`/
+  `isEmbyRecordKey` lane-routing predicates at 5 sites), **Stage 4** (`ServerPrepEngine` collapsing the
+  Plex-optimize / Emby-convert duplication + Jellyfin stale guard), **Stage 5c** (the headline
+  de-godding — relocate the Plex/Jellyfin/Emby request-resolution + side-cache bodies out of
+  `DownloadManager` into separate `DownloadStrategy` types behind a coordinator context; **note** the
+  blocker is Swift `private` visibility — a clean file/type split first requires downgrading the
+  ~25 shared `private` members `DownloadManager` exposes to its lanes to `internal`, so this is a
+  larger focused pass best done on its own), Stage 6 (persistence: schemaVersion + per-row decode
+  isolation, H8/H9), Stage 7 (side-cache unification + parity), Stage 8 (UI/probe dedup). Real DAG:
+  Stage 5c depends on the Stage 2/4 engines — ship in order.
+  - Stage 5a/5b have already taken the *safe* slices of Stage 5 (the route decision is now pure +
+    tested; the transfer-start tail is unified), shrinking the twins and de-risking 5c.
 
 ---
 
