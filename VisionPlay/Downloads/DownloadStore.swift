@@ -580,16 +580,26 @@ final class DownloadStore: @unchecked Sendable {
 
     private func load() {
         lock.lock(); defer { lock.unlock() }
-        guard let data = try? Data(contentsOf: indexURL),
-              let decoded = try? JSONDecoder().decode([Row].self, from: data) else { return }
-        rows = Dictionary(uniqueKeysWithValues: decoded.map { ($0.ratingKey, $0) })
+        guard let data = try? Data(contentsOf: indexURL) else { return }
+        // #135 H8: decode the index row-by-row so a single corrupt/forward-incompatible
+        // row can't drop the user's whole offline library (the old all-or-nothing
+        // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
+        // swallowed — silent truncation is the failure mode this guards against.
+        let result = DownloadIndexCoding.decode(Row.self, from: data)
+        if result.skippedRowCount > 0 {
+            NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
+                  result.skippedRowCount, result.schemaVersion, result.rows.count)
+        }
+        rows = Dictionary(uniqueKeysWithValues: result.rows.map { ($0.ratingKey, $0) })
     }
 
     private func persist() {
         lock.lock()
         let snapshot = Array(rows.values)
         lock.unlock()
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        // #135 Stage 6: write the versioned envelope so a future on-disk migration can
+        // branch on the schema version it reads back.
+        guard let data = try? DownloadIndexCoding.encode(snapshot) else { return }
         try? data.write(to: indexURL, options: .atomic)
     }
 }
