@@ -305,6 +305,26 @@ metadata, and review-specific release automation can be handled in a later publi
     output height (`convertPresetOutputHeight`) already exists, hand off to the resumable
     `.existingVersion` lane (#126) instead of creating a new job. This is what stops duplicate `- tv (N)`
     pile-up and keeps Emby from ever having a derived source to mis-convert.
+  - **`profile:"custom"` is the true-4K path (#128), and the criteria that make it work are CODEC +
+    CONTAINER — NOT a resolution field.** Reverse-engineered from the server's own web client
+    (`/web/modules/sync/sync.js` `setJobValues`, zero-side-effect source read) and confirmed live
+    (Emby 4.9.3, create→`Queued`→immediate `DELETE 204`, nothing transcoded): the "Convert → Custom"
+    dialog sends exactly `Container` (`mkv`/`mp4`/`ts`), `VideoCodec` (`h264`/`hevc`), `AudioCodec`
+    (`aac`/`mp3`/`ac3`) — all marked `required` — plus `Quality`/`Bitrate`. There is **no** resolution /
+    MaxHeight / BitDepth / Framerate field anywhere in the dialog. `custom` preserves source 4K simply
+    by lacking `tv`'s downscale-to-1080p rule; supplying the codec criteria is what creates work items.
+    Verified shapes against the test 4K HEVC source (`originalmediafolder` target):
+    - `profile:"custom"` + `container:"mp4"` + `videoCodec:"h264"` + `audioCodec:"aac"` → `ItemCount=1`
+      (work item created). camelCase keys bind fine (PMSKit's existing convention — `videoCodec` etc.).
+    - `profile:"custom"` WITHOUT the codec criteria → **HTTP 400** (rejected; the required fields are
+      genuinely required).
+    - `profile:"tv"` control → `ItemCount=1` (downscales, per the bullet above).
+    So `convertQuality(forPresetLabel:)` routes the `4K …` and `Original …` presets through
+    `profile:"custom"` + `mp4`/`h264`/`aac`; the 1080p/720p/480p presets keep `profile:"tv"` (those
+    explicitly request a downscale the `tv` ceiling already gives). h264 is chosen over hevc for the
+    target because the convert lane only ever runs for sources that CAN'T direct-play, so a universally
+    playable codec is the safe pick. (Caveat per #128: 4K→4K H264 files are large and slow to transcode
+    server-side — the picker preset IS the explicit user opt-in.)
 
 ## Conventions
 

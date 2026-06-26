@@ -4343,7 +4343,8 @@ public final class DownloadManager {
             let req = try EmbyConvertRequest.createJobRequest(
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
                 quality: quality.quality, profile: quality.profile, bitrate: quality.bitrate,
-                name: jobName)
+                name: jobName,
+                container: quality.container, videoCodec: quality.videoCodec, audioCodec: quality.audioCodec)
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
@@ -4758,17 +4759,19 @@ public final class DownloadManager {
     /// convert fresh).
     static func convertPresetOutputHeight(forLabel label: String) -> Int? {
         let token = label.split(separator: " ").first.map { $0.lowercased() } ?? ""
-        let raw: Int?
         switch token {
-        case "4k", "2160p": raw = 2160
-        case "1080p":       raw = 1080
-        case "720p":        raw = 720
-        case "480p":        raw = 480
+        // 4K and "Original" now route through `profile:"custom"` (#128), which preserves the source
+        // resolution — they are NO LONGER capped at the `tv` profile's 1080p ceiling. Use 2160 as the
+        // high-water tier hint; `reusableConvertedSource` falls back to the most-recent converted
+        // sibling when no exact tier matches, so a sub-4K source still reuses correctly.
+        case "4k", "2160p": return 2160
+        case "1080p":       return 1080
+        case "720p":        return 720
+        case "480p":        return 480
         default:
-            // "Original video quality" keeps source quality but the `tv` profile still caps at 1080p.
-            raw = label.lowercased().hasPrefix("original") ? 1080 : nil
+            // "Original video quality" — custom-profile, resolution-preserving (#128).
+            return label.lowercased().hasPrefix("original") ? 2160 : nil
         }
-        return raw.map { min($0, 1080) }
     }
 
     /// Pick an already-existing server-prepared (converted) `File` source to REUSE for a convert

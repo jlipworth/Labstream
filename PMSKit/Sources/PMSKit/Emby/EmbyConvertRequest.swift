@@ -88,12 +88,31 @@ public enum EmbyConvertRequest {
         public let quality: String
         public let profile: String
         public let bitrate: Int?
+        /// Custom-profile target criteria (#128). Non-nil ONLY for `profile:"custom"`: Emby's
+        /// "Convert → Custom" path REQUIRES `Container`/`VideoCodec`/`AudioCodec` (a bare custom job is
+        /// rejected HTTP 400) and, unlike `tv`, applies no 1080p downscale — so this is the true-4K lane.
+        public let container: String?
+        public let videoCodec: String?
+        public let audioCodec: String?
 
-        public init(quality: String, profile: String, bitrate: Int?) {
+        public init(quality: String, profile: String, bitrate: Int?,
+                    container: String? = nil, videoCodec: String? = nil, audioCodec: String? = nil) {
             self.quality = quality
             self.profile = profile
             self.bitrate = bitrate
+            self.container = container
+            self.videoCodec = videoCodec
+            self.audioCodec = audioCodec
         }
+    }
+
+    /// True-4K custom-profile criteria (#128). h264/mp4/aac: the convert lane only ever runs for
+    /// sources that CAN'T direct-play, so a universally playable target codec is the safe pick.
+    /// `profile:"custom"` preserves the source resolution (no `tv` downscale) → genuine 4K output.
+    /// The codec/container triple is REQUIRED — Emby rejects a bare custom job with HTTP 400.
+    public static func customFourKQuality(bitrate: Int) -> ConvertQuality {
+        ConvertQuality(quality: "custom", profile: "custom", bitrate: bitrate,
+                       container: "mp4", videoCodec: "h264", audioCodec: "aac")
     }
 
     /// Keep-quality stand-in bitrate for "Original video quality". The `originalmediafolder` target
@@ -101,27 +120,35 @@ public enum EmbyConvertRequest {
     /// that preserves quality instead. Live-verified that arbitrary high bitrates are honored.
     public static let keepQualityBitrate = 80_000_000
 
-    /// Map a download-picker preset label to an Emby convert `(quality, profile, bitrate)`.
+    /// Map a download-picker preset label to an Emby convert `(quality, profile, bitrate[, criteria])`.
     ///
-    /// - "Original video quality" → `keepQualityBitrate` (80 Mbps) + `profile:"tv"`
-    ///   (the literal `"original"` token 500s on `originalmediafolder`).
-    /// - A bitrate preset (e.g. "4K 40 Mbps", "1080p 8 Mbps", "480p 1.5 Mbps") →
-    ///   `quality:"custom"`, `bitrate:<its true bps>`, `profile:"tv"` (no cap — Emby honors it).
-    /// - Unrecognized label → falls back to `keepQualityBitrate` (custom/tv).
+    /// Resolution-preserving presets route through `profile:"custom"` (the true-4K lane, #128); the
+    /// rest keep `profile:"tv"` (whose 1080p ceiling is exactly what a sub-1080p preset wants):
+    /// - "Original video quality" → `profile:"custom"` + mp4/h264/aac at `keepQualityBitrate` (80 Mbps).
+    ///   Preserves the source resolution; `tv` would silently downscale a 4K "Original" to 1080p.
+    /// - A 4K/2160 preset (e.g. "4K 40 Mbps") → `profile:"custom"` + mp4/h264/aac at its labelled bps.
+    /// - A 1080p/720p/480p preset → `quality:"custom"`, `bitrate:<bps>`, `profile:"tv"` (the `tv`
+    ///   ceiling delivers the requested downscale; no cap on bitrate — Emby honors it).
+    /// - Unrecognized label → keep-quality fallback via the resolution-preserving custom path.
     public static func convertQuality(forPresetLabel label: String) -> ConvertQuality {
         let normalized = label.lowercased()
 
-        // "Original video quality" — never the literal "original" token (500s on this target).
+        // "Original video quality" — preserve the source resolution via custom (tv downscales 4K→1080p).
         if normalized.contains("original") {
-            return ConvertQuality(quality: "custom", profile: "tv", bitrate: keepQualityBitrate)
+            return customFourKQuality(bitrate: keepQualityBitrate)
         }
 
         if let bps = bitrate(forPresetLabel: normalized) {
+            // 4K / 2160p presets need custom to escape the tv profile's 1080p ceiling (#128); the
+            // lower tiers explicitly want a downscale, which tv already provides.
+            if normalized.contains("4k") || normalized.contains("2160") {
+                return customFourKQuality(bitrate: bps)
+            }
             return ConvertQuality(quality: "custom", profile: "tv", bitrate: bps)
         }
 
-        // Unknown preset → keep-quality fallback.
-        return ConvertQuality(quality: "custom", profile: "tv", bitrate: keepQualityBitrate)
+        // Unknown preset → keep-quality fallback (resolution-preserving custom path).
+        return customFourKQuality(bitrate: keepQualityBitrate)
     }
 
     /// Extract a bits-per-second value from a picker preset label (e.g. "4K · 40 Mbps" → 40_000_000,
@@ -152,7 +179,12 @@ public enum EmbyConvertRequest {
 
     /// `POST {server}/Sync/Jobs` — create an Emby "Convert Media" job for `itemId` targeting
     /// `originalmediafolder` (persistent "next to original files"). Body is **lowercase camelCase**
-    /// (PascalCase returns HTTP 500). Standard Emby auth via `EmbyAuth.applyAuth`.
+    /// (the existing convention; live-verified that camelCase keys bind). Standard Emby auth via
+    /// `EmbyAuth.applyAuth`.
+    ///
+    /// `container`/`videoCodec`/`audioCodec` are the `profile:"custom"` target criteria (#128) and
+    /// MUST be supplied together for a custom job (Emby rejects a bare custom job HTTP 400); they are
+    /// omitted entirely for the `tv`/`mobile` profiles, which carry their own built-in targets.
     public static func createJobRequest(server: URL,
                                         token: String,
                                         identity: EmbyClientIdentity,
@@ -161,7 +193,10 @@ public enum EmbyConvertRequest {
                                         quality: String,
                                         profile: String,
                                         bitrate: Int?,
-                                        name: String) throws -> URLRequest {
+                                        name: String,
+                                        container: String? = nil,
+                                        videoCodec: String? = nil,
+                                        audioCodec: String? = nil) throws -> URLRequest {
         let url = try EmbyPlayback.embyURL(server: server, path: "/Sync/Jobs")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -169,7 +204,7 @@ public enum EmbyConvertRequest {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "userId": userId,
             "itemIds": [itemId],
             "category": NSNull(),
@@ -183,6 +218,10 @@ public enum EmbyConvertRequest {
             "syncNewContent": false,
             "itemLimit": NSNull(),
         ]
+        // Custom-profile criteria (#128) — only present for the true-4K path.
+        if let container { body["container"] = container }
+        if let videoCodec { body["videoCodec"] = videoCodec }
+        if let audioCodec { body["audioCodec"] = audioCodec }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req
     }
