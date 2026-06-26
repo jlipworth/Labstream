@@ -17,11 +17,8 @@ extension LibraryPagingSource {
     static func plex(section: PlexSection, appModel: AppModel) -> LibraryPagingSource {
         LibraryPagingSource(
             title: section.title,
-            identity: libraryPagingIdentity(backend: "plex",
-                                            libraryID: section.key,
-                                            serverID: appModel.selectedServer?.clientIdentifier,
-                                            baseURL: appModel.serverBaseURL,
-                                            userID: nil),
+            identity: libraryPagingIdentity(libraryID: section.key,
+                                            sessionKey: appModel.browseSessionKey(for: .plex)),
             backendLabel: "Plex",
             cacheEmptyFirstPage: true,
             awaitAlphabetBeforeInitialLoad: true,
@@ -59,11 +56,8 @@ extension LibraryPagingSource {
     static func jellyfin(view: JellyfinLibraryLink, appModel: AppModel) -> LibraryPagingSource {
         LibraryPagingSource(
             title: view.title,
-            identity: libraryPagingIdentity(backend: "jellyfin",
-                                            libraryID: view.id,
-                                            serverID: appModel.jellyfinServerID,
-                                            baseURL: appModel.jellyfinServerBaseURL,
-                                            userID: appModel.jellyfinUserID),
+            identity: libraryPagingIdentity(libraryID: view.id,
+                                            sessionKey: appModel.browseSessionKey(for: .jellyfin)),
             backendLabel: "Jellyfin",
             cacheEmptyFirstPage: false,
             awaitAlphabetBeforeInitialLoad: false,
@@ -100,11 +94,8 @@ extension LibraryPagingSource {
     static func emby(view: EmbyLibraryLink, appModel: AppModel) -> LibraryPagingSource {
         LibraryPagingSource(
             title: view.title,
-            identity: libraryPagingIdentity(backend: "emby",
-                                            libraryID: view.id,
-                                            serverID: appModel.embyServerID,
-                                            baseURL: appModel.embyServerBaseURL,
-                                            userID: appModel.embyUserID),
+            identity: libraryPagingIdentity(libraryID: view.id,
+                                            sessionKey: appModel.browseSessionKey(for: .emby)),
             backendLabel: "Emby",
             cacheEmptyFirstPage: false,
             awaitAlphabetBeforeInitialLoad: false,
@@ -139,19 +130,11 @@ extension LibraryPagingSource {
     }
 }
 
-private func libraryPagingIdentity(backend: String,
-                                   libraryID: String,
-                                   serverID: String?,
-                                   baseURL: URL?,
-                                   userID: String?) -> String {
-    // Identity is only a UI cache/stale-result guard. Keep raw access tokens and full
-    // URLs out of it; server/user IDs plus origin host are enough to invalidate on
-    // backend, account, server, or library switches.
-    let origin = [baseURL?.scheme, baseURL?.host, baseURL?.port.map(String.init)]
-        .compactMap { $0 }
-        .joined(separator: ":")
-    return [backend, libraryID, serverID ?? "nil", origin, userID ?? "nil"]
-        .joined(separator: ":")
+@MainActor
+private func libraryPagingIdentity(libraryID: String, sessionKey: String) -> String {
+    // UI cache/stale-result guard. The centralized browse key is token-free, host-free,
+    // server/user scoped, and includes a non-secret auth revision for same-server re-auth (#136).
+    "\(sessionKey):library:\(libraryID)"
 }
 
 private func recordGridPageDiagnostics(_ items: [MediaItem],

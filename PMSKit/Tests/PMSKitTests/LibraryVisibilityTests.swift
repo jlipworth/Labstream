@@ -18,16 +18,30 @@ struct LibraryVisibilityTests {
     // MARK: Backend key derivation
 
     @Test func backendKeyUsesServerIDWhenPresent() {
-        #expect(LibraryVisibility.backendKey(backend: .plex, serverID: "ABC", baseURLHost: "host") == "plex:ABC")
-        #expect(LibraryVisibility.backendKey(backend: .jellyfin, serverID: "S1", baseURLHost: nil) == "jellyfin:S1")
-        #expect(LibraryVisibility.backendKey(backend: .emby, serverID: "E9", baseURLHost: nil) == "emby:E9")
+        let key = LibraryVisibility.backendKey(backend: .plex, serverID: "ABC", baseURLHost: "host")
+        #expect(key != nil)
+        #expect(key?.hasPrefix("plex:sid#") == true)
+        #expect(key?.contains("ABC") == false)
+        #expect(key?.contains("host") == false)
+
+        #expect(LibraryVisibility.backendKey(backend: .jellyfin, serverID: "S1", baseURLHost: nil)?
+            .hasPrefix("jellyfin:sid#") == true)
+        #expect(LibraryVisibility.backendKey(backend: .emby, serverID: "E9", baseURLHost: nil)?
+            .hasPrefix("emby:sid#") == true)
     }
 
-    @Test func backendKeyFallsBackToHostForLegacySessions() {
-        #expect(LibraryVisibility.backendKey(backend: .jellyfin, serverID: nil, baseURLHost: "jelly.example.internal")
-                == "jellyfin:jelly.example.internal")
-        #expect(LibraryVisibility.backendKey(backend: .emby, serverID: "  ", baseURLHost: "emby.example.internal")
-                == "emby:emby.example.internal")
+    @Test func backendKeyFallsBackToHashedHostForLegacySessions() {
+        let jellyfinKey = LibraryVisibility.backendKey(backend: .jellyfin,
+                                                       serverID: nil,
+                                                       baseURLHost: "jelly.example.internal")
+        #expect(jellyfinKey?.hasPrefix("jellyfin:url#") == true)
+        #expect(jellyfinKey?.contains("jelly.example.internal") == false)
+
+        let embyKey = LibraryVisibility.backendKey(backend: .emby,
+                                                   serverID: "  ",
+                                                   baseURLHost: "emby.example.internal")
+        #expect(embyKey?.hasPrefix("emby:url#") == true)
+        #expect(embyKey?.contains("emby.example.internal") == false)
     }
 
     @Test func backendKeyIsNilWhenIdentityUnresolvable() {
@@ -39,6 +53,24 @@ struct LibraryVisibilityTests {
         // Guards per-backend isolation at the key level.
         #expect(LibraryVisibility.backendKey(backend: .plex, serverID: "X", baseURLHost: nil)
                 != LibraryVisibility.backendKey(backend: .jellyfin, serverID: "X", baseURLHost: nil))
+    }
+
+    @Test func legacyRawHostKeyMigratesToHashedBackendKey() throws {
+        let (store, defaults) = makeStore()
+        let legacy = "jellyfin:jelly.example.internal"
+        let current = try #require(LibraryVisibility.backendKey(backend: .jellyfin,
+                                                                serverID: nil,
+                                                                baseURLHost: "jelly.example.internal"))
+        store.setHiddenIDs(["music", "trailers"], forBackendKey: legacy)
+        defaults.set(true, forKey: "libraryVisibility.promptShown.\(legacy)")
+
+        store.migrateLegacyBackendKeys([legacy], toBackendKey: current)
+
+        #expect(store.hiddenIDs(forBackendKey: current) == ["music", "trailers"])
+        #expect(defaults.data(forKey: "libraryVisibility.hidden.\(legacy)") == nil)
+        #expect(defaults.object(forKey: "libraryVisibility.promptShown.\(legacy)") == nil)
+        #expect(store.hasShownPrompt(forBackendKey: current))
+        #expect(!current.contains("jelly.example.internal"))
     }
 
     // MARK: Visibility filter

@@ -137,6 +137,7 @@ struct LibraryVisibilityEditor: View {
     }
 
     private func load() async {
+        appModel.migrateLibraryVisibilityKeysIfNeeded(store: store)
         let backendKey = appModel.libraryVisibilityBackendKey
         guard backendKey != nil else { loadState = .unavailable; return }
         hidden = store.hiddenIDs(forBackendKey: backendKey)

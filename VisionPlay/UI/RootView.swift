@@ -53,31 +53,31 @@ struct RootView: View {
 
     var body: some View {
         TabView(selection: $selection) {
-            // Browse tabs are keyed on `appModel.activeBackend` so a backend switch
-            // tears down and rebuilds each stack — dropping any pushed DetailView and
-            // resetting the root — instead of leaving a stale item from the previous
-            // backend mounted (#100). `.onChange` below also clears the lifted paths so
-            // the rebuilt stack does not re-push the old snapshots. Offline/Settings are
-            // deliberately NOT keyed: Downloads is cross-backend by design (each
-            // DownloadRecord carries its own backendKind) and must persist across switches.
+            // Browse tabs are keyed on `appModel.activeBrowseSessionKey` so a backend/server/user
+            // change or same-server re-auth tears down and rebuilds each stack — dropping any
+            // pushed DetailView and resetting the root — instead of leaving a stale item from the
+            // previous session mounted (#100/#136). `.onChange` below also clears the lifted paths
+            // so the rebuilt stack does not re-push old snapshots. Offline/Settings are deliberately
+            // NOT keyed: Downloads is cross-backend by design (each DownloadRecord carries its own
+            // backendKind) and must persist across switches.
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack(path: $homePath) { HomeView() }
                     .environment(\.cinemaOriginTab, .home)
-                    .id(appModel.activeBackend)
+                    .id(appModel.activeBrowseSessionKey)
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
                 NavigationStack(path: $librariesPath) { LibrariesView() }
                     .environment(\.cinemaOriginTab, .libraries)
-                    .id(appModel.activeBackend)
+                    .id(appModel.activeBrowseSessionKey)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack(path: $searchPath) { SearchView() }
                     .environment(\.cinemaOriginTab, .search)
-                    .id(appModel.activeBackend)
+                    .id(appModel.activeBrowseSessionKey)
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
                 NavigationStack(path: $musicPath) { MusicLibraryView() }
-                    .id(appModel.activeBackend)
+                    .id(appModel.activeBrowseSessionKey)
             }
             Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
                 NavigationStack {
@@ -97,13 +97,13 @@ struct RootView: View {
         .ornament(attachmentAnchor: .scene(.bottom)) {
             MiniPlayerBar()
         }
-        // Backend switch (#100): clear every lifted browse path so the rebuilt,
-        // backend-keyed NavigationStacks (see `.id(appModel.activeBackend)` above) do
-        // not re-push a stale DetailView from the previous backend. The `.id()` change
-        // tears the stack views down; clearing the external path bindings here prevents
-        // the fresh stacks from immediately re-appending the old snapshots. Offline's
-        // path is intentionally left alone — Downloads is cross-backend (#100).
-        .onChange(of: appModel.activeBackend) { _, _ in
+        // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
+        // session-keyed NavigationStacks (see `.id(appModel.activeBrowseSessionKey)` above) do
+        // not re-push a stale DetailView from the previous backend/server/user/session. The
+        // `.id()` change tears the stack views down; clearing the external path bindings here
+        // prevents the fresh stacks from immediately re-appending old snapshots. Offline's path is
+        // intentionally left alone — Downloads is cross-backend (#100).
+        .onChange(of: appModel.activeBrowseSessionKey) { _, _ in
             homePath = NavigationPath()
             librariesPath = NavigationPath()
             searchPath = NavigationPath()

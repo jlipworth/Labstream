@@ -41,12 +41,20 @@ final class AppModel {
     var identity: ClientIdentity
 
     /// Current Plex auth token; `nil` means signed out.
-    var token: String?
+    var token: String? {
+        didSet {
+            if token != oldValue { plexAuthSessionRevision += 1 }
+        }
+    }
 
     /// Token to use against the selected PMS resource. Plex discovery can return
     /// a resource-specific access token for shared/token-scoped servers; fall
     /// back to the account token when discovery does not provide one.
-    var serverToken: String?
+    var serverToken: String? {
+        didSet {
+            if serverToken != oldValue { plexAuthSessionRevision += 1 }
+        }
+    }
 
     /// The server the user has selected from discovery.
     var selectedServer: PlexDevice?
@@ -68,7 +76,11 @@ final class AppModel {
     /// Jellyfin session state. These mirror the Plex fields above but are intentionally
     /// separate so a Jellyfin sign-in never clobbers Plex credentials.
     var jellyfinServerBaseURL: URL?
-    var jellyfinAccessToken: String?
+    var jellyfinAccessToken: String? {
+        didSet {
+            if jellyfinAccessToken != oldValue { jellyfinAuthSessionRevision += 1 }
+        }
+    }
     var jellyfinUserID: String?
     var jellyfinServerID: String?
 
@@ -76,9 +88,19 @@ final class AppModel {
     /// scheme, base-path preservation, PlaybackInfo semantics) so the two never clobber
     /// each other.
     var embyServerBaseURL: URL?
-    var embyAccessToken: String?
+    var embyAccessToken: String? {
+        didSet {
+            if embyAccessToken != oldValue { embyAuthSessionRevision += 1 }
+        }
+    }
     var embyUserID: String?
     var embyServerID: String?
+
+    /// Per-backend, process-local non-secret auth/session revisions. These let runtime
+    /// SwiftUI identities refresh after same-server re-auth without ever embedding raw tokens.
+    private var plexAuthSessionRevision = 0
+    private var jellyfinAuthSessionRevision = 0
+    private var embyAuthSessionRevision = 0
 
     /// Shared live executor for all Plex API requests.
     let client: PlexClient
@@ -125,25 +147,44 @@ final class AppModel {
         }
     }
 
+    /// Stable, token-free identity used for preferences that should survive re-authentication.
+    /// `nil` for an unresolvable identity, which callers treat as "all libraries visible".
+    var activeStableServerUserKey: String? {
+        stableServerUserKey(for: activeBackend)
+    }
+
+    /// Runtime, token-free identity for browse UI, search, and music state. It changes with
+    /// backend/server/user changes and with the per-backend non-secret auth/session revision.
+    var activeBrowseSessionKey: String {
+        browseSessionKey(for: activeBackend)
+    }
+
     /// Token-free, per-backend identity used to scope library-visibility persistence (#104).
-    /// Survives re-auth (the token changes, the server/user identity does not) — deliberately
-    /// NOT the token-bearing `loadIdentity` cache keys. `nil` for an unresolvable identity, which
-    /// callers treat as "all libraries visible".
+    /// Survives re-auth (the auth revision changes, the server/user identity does not).
     var libraryVisibilityBackendKey: String? {
+        activeStableServerUserKey
+    }
+
+    var libraryVisibilityLegacyBackendKeys: [String] {
         switch activeBackend {
         case .plex:
-            return LibraryVisibility.backendKey(backend: .plex,
-                                                serverID: selectedServer?.clientIdentifier,
-                                                baseURLHost: serverBaseURL?.host)
+            return LibraryVisibility.legacyRawBackendKeys(backend: .plex,
+                                                          serverID: selectedServer?.clientIdentifier,
+                                                          baseURLHost: serverBaseURL?.host)
         case .jellyfin:
-            return LibraryVisibility.backendKey(backend: .jellyfin,
-                                                serverID: jellyfinServerID,
-                                                baseURLHost: jellyfinServerBaseURL?.host)
+            return LibraryVisibility.legacyRawBackendKeys(backend: .jellyfin,
+                                                          serverID: jellyfinServerID,
+                                                          baseURLHost: jellyfinServerBaseURL?.host)
         case .emby:
-            return LibraryVisibility.backendKey(backend: .emby,
-                                                serverID: embyServerID,
-                                                baseURLHost: embyServerBaseURL?.host)
+            return LibraryVisibility.legacyRawBackendKeys(backend: .emby,
+                                                          serverID: embyServerID,
+                                                          baseURLHost: embyServerBaseURL?.host)
         }
+    }
+
+    func migrateLibraryVisibilityKeysIfNeeded(store: LibraryVisibilityStore = LibraryVisibilityStore()) {
+        store.migrateLegacyBackendKeys(libraryVisibilityLegacyBackendKeys,
+                                       toBackendKey: libraryVisibilityBackendKey)
     }
 
     var isBrowseReady: Bool {
@@ -194,6 +235,46 @@ final class AppModel {
         self.identity = identity
         self.token = token
         self.client = client ?? PlexClient(identity: identity)
+    }
+
+    func stableServerUserKey(for kind: MediaBackendKind) -> String? {
+        let input = sessionIdentityInput(for: kind)
+        return SessionIdentity.stableServerUserKey(backend: kind.backendChoice,
+                                                   serverID: input.serverID,
+                                                   baseURL: input.baseURL,
+                                                   userID: input.userID)
+    }
+
+    func browseSessionKey(for kind: MediaBackendKind) -> String {
+        let input = sessionIdentityInput(for: kind)
+        return SessionIdentity.browseSessionKey(backend: kind.backendChoice,
+                                                serverID: input.serverID,
+                                                baseURL: input.baseURL,
+                                                userID: input.userID,
+                                                authRevision: input.authRevision)
+    }
+
+    private func sessionIdentityInput(for kind: MediaBackendKind) -> (serverID: String?,
+                                                                      baseURL: URL?,
+                                                                      userID: String?,
+                                                                      authRevision: Int) {
+        switch kind {
+        case .plex:
+            return (selectedServer?.clientIdentifier,
+                    serverBaseURL,
+                    plexAccountProfile?.stableUserID,
+                    plexAuthSessionRevision)
+        case .jellyfin:
+            return (jellyfinServerID,
+                    jellyfinServerBaseURL,
+                    jellyfinUserID,
+                    jellyfinAuthSessionRevision)
+        case .emby:
+            return (embyServerID,
+                    embyServerBaseURL,
+                    embyUserID,
+                    embyAuthSessionRevision)
+        }
     }
 }
 

@@ -25,8 +25,7 @@ struct MediaBrowserMusicView: View {
 
     /// Reload when the backend or its server changes (switching Jellyfin ⇄ Emby).
     private var backendIdentity: String {
-        let host = (appModel.jellyfinServerBaseURL ?? appModel.embyServerBaseURL)?.host ?? "nil"
-        return "\(appModel.activeBackend.rawValue):\(host)"
+        appModel.activeBrowseSessionKey
     }
 
     var body: some View {

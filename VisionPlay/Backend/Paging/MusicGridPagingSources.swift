@@ -71,34 +71,9 @@ private func musicPagingIdentity(kind: MusicGridKind,
                                  libraryID: String,
                                  sort: MusicBrowseSort,
                                  appModel: AppModel) -> String {
-    let backend = appModel.activeBackend.rawValue
-    let baseURL: URL? = {
-        switch appModel.activeBackend {
-        case .plex:     return appModel.serverBaseURL
-        case .jellyfin: return appModel.jellyfinServerBaseURL
-        case .emby:     return appModel.embyServerBaseURL
-        }
-    }()
-    let serverID: String? = {
-        switch appModel.activeBackend {
-        case .plex:     return appModel.selectedServer?.clientIdentifier
-        case .jellyfin: return appModel.jellyfinServerID
-        case .emby:     return appModel.embyServerID
-        }
-    }()
-    let userID: String? = {
-        switch appModel.activeBackend {
-        case .plex:     return nil
-        case .jellyfin: return appModel.jellyfinUserID
-        case .emby:     return appModel.embyUserID
-        }
-    }()
-    let origin = [baseURL?.scheme, baseURL?.host, baseURL?.port.map(String.init)]
-        .compactMap { $0 }
-        .joined(separator: ":")
     let kindToken = kind == .artists ? "artists" : "albums"
-    return ["music", backend, kindToken, libraryID, sort.rawValue,
-            serverID ?? "nil", origin, userID ?? "nil"].joined(separator: ":")
+    return ["music", appModel.activeBrowseSessionKey, kindToken, libraryID, sort.rawValue]
+        .joined(separator: ":")
 }
 
 // MARK: - A–Z rail count probes

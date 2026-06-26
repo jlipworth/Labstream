@@ -110,6 +110,13 @@ struct ContentView: View {
                 downloadManager.resumePendingServerPrepDownloads()
             }
         }
+        // #136: queued music `MediaItem`s are only meaningful for the backend/server/user/session
+        // that produced them. Clear playback when the active browse session changes so Next/remote
+        // controls never resolve a stale queue against a different server or backend.
+        .onChange(of: appModel.activeBrowseSessionKey) { oldKey, newKey in
+            guard oldKey != newKey else { return }
+            musicPlayer.stop()
+        }
         // #84: a backend switch just re-restored another lane's saved session, so a job
         // that couldn't resume earlier (its lane was inactive) can now run. `switchBackend`'s
         // restore path raises `isSwitchingBackend` while it re-resolves the target lane and

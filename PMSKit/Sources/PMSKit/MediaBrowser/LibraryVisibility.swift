@@ -6,27 +6,60 @@ import Foundation
 /// defaults to visible without re-prompting) keyed by a token-free backend identity. Lives in
 /// PMSKit so the store/filter/key/preselection/prompt-gating are unit-testable without a simulator.
 ///
-/// The store deliberately does NOT reuse the app's load-cache keys (`loadIdentity`), which include
-/// the auth token on purpose to bust on re-auth. Re-auth changes the token but not the server/user
-/// identity, so this persistence must survive it — hence the token-free key below.
+/// The store deliberately does NOT reuse the app's runtime browse-session keys, which include a
+/// non-secret auth/session revision to bust on re-auth. Re-auth changes that revision but not the
+/// server/user identity, so this persistence must survive it — hence the stable token-free key below.
 public enum LibraryVisibility {
 
     // MARK: - Backend key
 
     /// The stable, token-free backend identity used to scope hidden-set persistence.
     ///
-    /// `id` falls back to the server base-URL host for legacy sessions that never recorded a
+    /// Falls back to a hashed canonical base URL for legacy sessions that never recorded a
     /// server id; a fully unresolvable identity yields `nil`, which callers treat as "all visible".
     public static func backendKey(backend: MediaBackendChoice,
                                   serverID: String?,
+                                  baseURL: URL?,
+                                  userID: String?) -> String? {
+        SessionIdentity.stableServerUserKey(backend: backend,
+                                            serverID: serverID,
+                                            baseURL: baseURL,
+                                            userID: userID)
+    }
+
+    /// Compatibility overload for older call sites/tests that only have a host string.
+    /// Host fallback is still hashed, never persisted raw.
+    public static func backendKey(backend: MediaBackendChoice,
+                                  serverID: String?,
                                   baseURLHost: String?) -> String? {
-        let resolved = nonEmpty(serverID) ?? nonEmpty(baseURLHost)
-        guard let resolved else { return nil }
-        switch backend {
-        case .plex:     return "plex:\(resolved)"
-        case .jellyfin: return "jellyfin:\(resolved)"
-        case .emby:     return "emby:\(resolved)"
+        let baseURL = nonEmpty(baseURLHost).flatMap { URL(string: "http://\($0)") }
+        return backendKey(backend: backend, serverID: serverID, baseURL: baseURL, userID: nil)
+    }
+
+    /// Old raw-host/raw-id key used before session identity was centralized. New code should not
+    /// write this, but app callers can ask the store to migrate it to the hashed key.
+    public static func legacyRawBackendKey(backend: MediaBackendChoice,
+                                           serverID: String?,
+                                           baseURLHost: String?) -> String? {
+        SessionIdentity.legacyRawBackendKey(backend: backend,
+                                            serverID: serverID,
+                                            baseURLHost: baseURLHost)
+    }
+
+    /// Convenience set of old keys to try when migrating preferences. If a server id exists, older
+    /// versions ignored the host and wrote only `backend:serverID`; otherwise they wrote
+    /// `backend:host`.
+    public static func legacyRawBackendKeys(backend: MediaBackendChoice,
+                                            serverID: String?,
+                                            baseURLHost: String?) -> [String] {
+        var keys: [String] = []
+        if let serverKey = legacyRawBackendKey(backend: backend, serverID: serverID, baseURLHost: nil) {
+            keys.append(serverKey)
         }
+        if let hostKey = legacyRawBackendKey(backend: backend, serverID: nil, baseURLHost: baseURLHost) {
+            keys.append(hostKey)
+        }
+        return Array(Set(keys))
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -110,6 +143,32 @@ public struct LibraryVisibilityStore {
 
     private func hiddenKey(_ backendKey: String) -> String { "libraryVisibility.hidden.\(backendKey)" }
     private func promptKey(_ backendKey: String) -> String { "libraryVisibility.promptShown.\(backendKey)" }
+
+    /// Move old raw-host/raw-id preference keys to the current token-free hashed key. The current
+    /// key wins if both exist; stale legacy keys are removed so raw hostnames do not remain in
+    /// UserDefaults after the app touches this backend.
+    public func migrateLegacyBackendKeys(_ legacyBackendKeys: [String],
+                                         toBackendKey backendKey: String?) {
+        guard let backendKey else { return }
+        for legacyKey in Set(legacyBackendKeys) where legacyKey != backendKey {
+            let oldHiddenKey = hiddenKey(legacyKey)
+            let newHiddenKey = hiddenKey(backendKey)
+            if defaults.object(forKey: newHiddenKey) == nil,
+               let legacyHidden = defaults.data(forKey: oldHiddenKey) {
+                defaults.set(legacyHidden, forKey: newHiddenKey)
+            }
+
+            let oldPromptKey = promptKey(legacyKey)
+            let newPromptKey = promptKey(backendKey)
+            if defaults.object(forKey: newPromptKey) == nil,
+               defaults.object(forKey: oldPromptKey) != nil {
+                defaults.set(defaults.bool(forKey: oldPromptKey), forKey: newPromptKey)
+            }
+
+            defaults.removeObject(forKey: oldHiddenKey)
+            defaults.removeObject(forKey: oldPromptKey)
+        }
+    }
 
     /// The hidden-id set for a backend key. A nil key (unresolved identity) is "nothing hidden".
     public func hiddenIDs(forBackendKey backendKey: String?) -> Set<String> {
