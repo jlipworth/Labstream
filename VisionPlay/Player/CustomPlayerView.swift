@@ -59,6 +59,7 @@ struct CustomPlayerView: View {
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
          cinemaOrigin: CinemaOrigin? = nil,
+         onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
          onClose: (() -> Void)? = nil) {
         // Version comes from the bundle (#26) so the offline X-Plex-Version can't drift
         // from the marketing version — same source of truth as the main identity.
@@ -74,7 +75,8 @@ struct CustomPlayerView: View {
                                          identity: identity,
                                          client: client,
                                          offlineTextSubtitles: offlineTextSubtitles,
-                                         offlineChapterImageURLs: offlineChapterImageURLs)
+                                         offlineChapterImageURLs: offlineChapterImageURLs,
+                                         onLocalPlaybackProgress: onLocalPlaybackProgress)
                   },
                   trickPlayProvider: trickPlayProvider,
                   // A local file is always an offline origin; default to the item's own ratingKey

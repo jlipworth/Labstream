@@ -88,6 +88,11 @@ public struct OfflineLibraryView: View {
                              offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
                              offlineChapterImageURLs: record.chapterImageURLs,
                              cinemaOrigin: .offline(ratingKey: record.ratingKey),
+                             onLocalPlaybackProgress: { positionMs, durationMs in
+                                 manager.updateLocalPlaybackPosition(ratingKey: record.ratingKey,
+                                                                     positionMs: positionMs,
+                                                                     durationMs: durationMs)
+                             },
                              onClose: { playing = nil })
         }
     }
