@@ -250,6 +250,53 @@ public enum DownloadResumeMode: String, Codable, Sendable, Equatable {
     }
 }
 
+
+/// Pure persistence policy for local offline playback resume positions.
+///
+/// Online streaming continues to report timeline to the server; this policy is only for
+/// completed downloads whose local-file player has no server/token. Positions are persisted
+/// per download row and clamped to the known media duration when available. A playhead very
+/// close to EOF is treated as complete enough to restart at the beginning instead of reopening
+/// on credits/a final frame.
+public struct OfflinePlaybackPositionPolicy: Sendable, Equatable {
+    public let minimumSavePositionMs: Int
+    public let nearEndRestartThresholdMs: Int
+
+    public init(minimumSavePositionMs: Int = 1_000,
+                nearEndRestartThresholdMs: Int = 30_000) {
+        self.minimumSavePositionMs = minimumSavePositionMs
+        self.nearEndRestartThresholdMs = nearEndRestartThresholdMs
+    }
+
+    public static let standard = OfflinePlaybackPositionPolicy()
+
+    public func persistedPositionMs(currentMs: Int, durationMs: Int?) -> Int {
+        let nonNegative = max(0, currentMs)
+        let clamped: Int
+        if let durationMs, durationMs > 0 {
+            clamped = min(nonNegative, durationMs)
+            if durationMs > nearEndRestartThresholdMs,
+               clamped >= max(0, durationMs - nearEndRestartThresholdMs) {
+                return 0
+            }
+        } else {
+            clamped = nonNegative
+        }
+        return clamped < minimumSavePositionMs ? 0 : clamped
+    }
+
+    public static func resolvedResumeOffsetMs(localPlaybackPositionMs: Int?,
+                                              capturedViewOffsetMs: Int?,
+                                              durationMs: Int?,
+                                              policy: OfflinePlaybackPositionPolicy = .standard) -> Int? {
+        if let localPlaybackPositionMs {
+            return policy.persistedPositionMs(currentMs: localPlaybackPositionMs, durationMs: durationMs)
+        }
+        guard let capturedViewOffsetMs else { return nil }
+        return policy.persistedPositionMs(currentMs: capturedViewOffsetMs, durationMs: durationMs)
+    }
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -258,6 +305,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var year: Int?
     public var duration: Int?
     public var viewOffset: Int?
+    /// Last locally-observed playhead for this completed offline row. Distinct from
+    /// `viewOffset`, which is the server snapshot captured when the download was enqueued.
+    public var localPlaybackPositionMs: Int?
     public var viewCount: Int?
     public var summary: String?
     public var contentRating: String?
@@ -386,6 +436,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 year: Int? = nil,
                 duration: Int? = nil,
                 viewOffset: Int? = nil,
+                localPlaybackPositionMs: Int? = nil,
                 viewCount: Int? = nil,
                 summary: String? = nil,
                 contentRating: String? = nil,
@@ -436,6 +487,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.year = year
         self.duration = duration
         self.viewOffset = viewOffset
+        self.localPlaybackPositionMs = localPlaybackPositionMs
         self.viewCount = viewCount
         self.summary = summary
         self.contentRating = contentRating
@@ -490,6 +542,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         year = try c.decodeIfPresent(Int.self, forKey: .year)
         duration = try c.decodeIfPresent(Int.self, forKey: .duration)
         viewOffset = try c.decodeIfPresent(Int.self, forKey: .viewOffset)
+        localPlaybackPositionMs = try c.decodeIfPresent(Int.self, forKey: .localPlaybackPositionMs)
         viewCount = try c.decodeIfPresent(Int.self, forKey: .viewCount)
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         contentRating = try c.decodeIfPresent(String.self, forKey: .contentRating)
@@ -565,6 +618,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         backendKind ?? DownloadBackendKind(ratingKeyPrefix: ratingKey)
     }
 
+    public var offlineResumeOffsetMs: Int? {
+        OfflinePlaybackPositionPolicy.resolvedResumeOffsetMs(localPlaybackPositionMs: localPlaybackPositionMs,
+                                                            capturedViewOffsetMs: viewOffset,
+                                                            durationMs: duration)
+    }
+
     /// Reconstruct a faithful `MediaItem` for offline playback + retry. Only the
     /// fields we captured are populated; stream-level metadata isn't needed offline.
     public func makeMediaItem() -> MediaItem {
@@ -573,7 +632,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                   title: title,
                   type: type,
                   duration: duration,
-                  viewOffset: viewOffset,
+                  viewOffset: offlineResumeOffsetMs,
                   viewCount: viewCount,
                   year: year,
                   summary: summary,

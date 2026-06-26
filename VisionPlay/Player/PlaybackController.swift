@@ -127,6 +127,8 @@ final class PlaybackController {
 
     /// The local file URL, when playing offline content.
     private let localFile: URL?
+    /// Persists local-file playback progress for offline downloads. nil for online streams.
+    private let localPlaybackProgress: ((Int, Int?) -> Void)?
     /// Cached per-chapter image file URLs (chapter index → file), for offline playback only (#88).
     /// Empty for online playback, where `chapterThumbnailURL` derives a live server URL instead.
     private let offlineChapterImageURLs: [Int: URL]
@@ -632,6 +634,7 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
+        self.localPlaybackProgress = nil
         self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
         self.offlineSubtitleBaseURL = nil
@@ -660,10 +663,12 @@ final class PlaybackController {
          client: PlexClient,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
+         onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
          maxVideoBitrateKbps: Int = 8000,
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = localFile
+        self.localPlaybackProgress = onLocalPlaybackProgress
         self.offlineChapterImageURLs = offlineChapterImageURLs
         self.offlineTextSubtitles = offlineTextSubtitles
         self.offlineSubtitleBaseURL = localFile.deletingLastPathComponent()
@@ -710,6 +715,7 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = nil
+        self.localPlaybackProgress = nil
         self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
         self.offlineSubtitleBaseURL = nil
@@ -800,6 +806,7 @@ final class PlaybackController {
             jellyfinHLSProxyGeneration = nil
         }
         timeline.report(state: .stopped, force: true)
+        recordLocalPlaybackPosition()
         sendTranscodeStop()
         stopRemoteSessionIfNeeded()
         cancelPendingFinalTargetRebuild()
@@ -815,6 +822,11 @@ final class PlaybackController {
         // resume (#17).
         audioSession.removeObservers()
         audioSession.deactivate()
+    }
+
+    private func recordLocalPlaybackPosition() {
+        guard let localPlaybackProgress else { return }
+        localPlaybackProgress(currentResumeMs, item.duration)
     }
 
     private func stopRemoteSessionIfNeeded() {
@@ -2709,6 +2721,7 @@ final class PlaybackController {
                 guard let self else { return }
                 let state: TimelineRequest.State = self.player.timeControlStatus == .paused ? .paused : .playing
                 self.timeline.report(state: state, force: false)
+                self.recordLocalPlaybackPosition()
                 // Progress-based scrobble (P9 #11): capped-HLS viewers often stop short of
                 // EOF, so didPlayToEnd never fires and the item stays "unwatched." Mark it
                 // watched once we cross ~90%; didPlayToEnd remains the backstop.
@@ -2774,6 +2787,7 @@ final class PlaybackController {
                     "resume": .millisecondsBucket(self.currentResumeMs),
                 ])
                 self.timeline.report(state: .stopped, force: true)
+                self.recordLocalPlaybackPosition()
                 self.timeline.scrobble()
                 // Play-to-end with a resolved, un-cancelled next item: autoplay it (#15).
                 // `advanceToNextItem` re-flushes timeline/scrobble idempotently.
@@ -2808,6 +2822,7 @@ final class PlaybackController {
         }
         let paused = status == .paused || self.userWantsPaused
         self.timeline.report(state: paused ? .paused : .playing, force: true)
+        if paused || status == .playing { self.recordLocalPlaybackPosition() }
         self.transport.set(paused: paused)
         if paused || status == .playing {
             self.transport.setPauseRequested(false)

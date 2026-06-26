@@ -328,6 +328,20 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.offlineTextSubtitles = tracks }
     }
 
+    /// Persist the last local-file playback position for a completed offline row (#146).
+    ///
+    /// This intentionally updates `localPlaybackPositionMs`, not the captured server `viewOffset`,
+    /// so offline progress stays per downloaded row/version and online timeline semantics remain
+    /// untouched. The pure policy clamps negatives/over-duration values and resets near-EOF
+    /// positions to 0 so reopening does not land on a final frame.
+    func setLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
+        updateMetadata(ratingKey: ratingKey) { meta in
+            let effectiveDuration = durationMs ?? meta.duration
+            meta.localPlaybackPositionMs = OfflinePlaybackPositionPolicy.standard
+                .persistedPositionMs(currentMs: positionMs, durationMs: effectiveDuration)
+        }
+    }
+
     /// #84: persist the server-minted `PlaySessionId` for a transcoded JF/Emby (or Plex optimize)
     /// job so a hard app kill can still tear the encoder down on next launch. Status-change-grade:
     /// persists immediately (not throttled). No-op if the row/metadata is gone.

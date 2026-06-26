@@ -565,6 +565,15 @@ public final class DownloadManager {
             retryEmby(record: record)
             return
         }
+        // #131/#146 live check: paused static-byte-range rows may have only the durable partial
+        // file as their checkpoint (no URLSession resume blob). Promote them out of `.paused`
+        // before the async retry body reaches `retryAttemptCanContinue`; otherwise the guard sees
+        // the unchanged paused row and silently drops the user's Resume tap before `download(...)`
+        // can reissue the Range request from the partial-file size.
+        if record.status == .paused, Self.hasIncompleteStaticPartial(record) {
+            store.setStatus(ratingKey: ratingKey, .queued)
+            refreshRecords()
+        }
         let metadata = record.metadata
         let item = metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
@@ -1369,6 +1378,11 @@ public final class DownloadManager {
     static func isServerPreparedVersion(for choice: DownloadChoice) -> Bool {
         if case .existingVersion = choice { return true }
         return false
+    }
+
+    func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
+        store.setLocalPlaybackPosition(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)
+        refreshRecords()
     }
 
     func refreshRecords() {

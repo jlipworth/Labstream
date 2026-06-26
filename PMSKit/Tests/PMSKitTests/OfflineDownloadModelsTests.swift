@@ -60,6 +60,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.offlineTextSubtitles == nil)
         #expect(meta.markers == nil)
         #expect(meta.resolutionLabel == nil)
+        #expect(meta.localPlaybackPositionMs == nil)
     }
 
     @Test("resolvedBackendKind falls back to the ratingKey prefix for legacy rows")
@@ -133,6 +134,31 @@ struct OfflineDownloadModelsTests {
         #expect(record.posterURL == nil)
     }
 
+    @Test("offline playback policy clamps, floors, and resets near EOF")
+    func offlinePlaybackPositionPolicyClamps() {
+        let policy = OfflinePlaybackPositionPolicy(minimumSavePositionMs: 1_000,
+                                                   nearEndRestartThresholdMs: 30_000)
+        #expect(policy.persistedPositionMs(currentMs: -500, durationMs: 3_600_000) == 0)
+        #expect(policy.persistedPositionMs(currentMs: 500, durationMs: 3_600_000) == 0)
+        #expect(policy.persistedPositionMs(currentMs: 1_200_000, durationMs: 3_600_000) == 1_200_000)
+        #expect(policy.persistedPositionMs(currentMs: 3_700_000, durationMs: 3_600_000) == 0)
+        #expect(policy.persistedPositionMs(currentMs: 3_575_000, durationMs: 3_600_000) == 0)
+        #expect(policy.persistedPositionMs(currentMs: 42_000, durationMs: nil) == 42_000)
+    }
+
+    @Test("offline resume prefers local position over captured server offset")
+    func offlineResumePrefersLocalPosition() {
+        #expect(OfflinePlaybackPositionPolicy.resolvedResumeOffsetMs(localPlaybackPositionMs: 1_200_000,
+                                                                     capturedViewOffsetMs: 12_000,
+                                                                     durationMs: 3_600_000) == 1_200_000)
+        #expect(OfflinePlaybackPositionPolicy.resolvedResumeOffsetMs(localPlaybackPositionMs: nil,
+                                                                     capturedViewOffsetMs: 12_000,
+                                                                     durationMs: 3_600_000) == 12_000)
+        #expect(OfflinePlaybackPositionPolicy.resolvedResumeOffsetMs(localPlaybackPositionMs: nil,
+                                                                     capturedViewOffsetMs: nil,
+                                                                     durationMs: 3_600_000) == nil)
+    }
+
     // MARK: - round-trip
 
     @Test("OfflineMetadata round-trips through encode/decode")
@@ -145,6 +171,7 @@ struct OfflineDownloadModelsTests {
             year: 2021,
             duration: 3_600_000,
             viewOffset: 12_000,
+            localPlaybackPositionMs: 1_200_000,
             viewCount: 2,
             summary: "A summary.",
             contentRating: "TV-14",
@@ -219,6 +246,7 @@ struct OfflineDownloadModelsTests {
             year: 1999,
             duration: 7_200_000,
             viewOffset: 60_000,
+            localPlaybackPositionMs: 1_500_000,
             viewCount: 1,
             summary: "S",
             contentRating: "R",
@@ -255,7 +283,7 @@ struct OfflineDownloadModelsTests {
         #expect(item.type == "episode")
         #expect(item.year == 1999)
         #expect(item.duration == 7_200_000)
-        #expect(item.viewOffset == 60_000)
+        #expect(item.viewOffset == 1_500_000)
         #expect(item.viewCount == 1)
         #expect(item.summary == "S")
         #expect(item.contentRating == "R")
