@@ -351,6 +351,19 @@ final class DownloadStore: @unchecked Sendable {
     /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
     /// a sibling `.resume` file (it can be large). No-op if the row/metadata is gone.
     func setResumeData(ratingKey: String, _ data: Data) {
+        // H9: `updateMetadata` is a no-op when a row carries no metadata snapshot (a
+        // legacy pre-D5 row). Writing the blob first and only then discovering the path
+        // can't be recorded would orphan a potentially large `.resume` file on disk. Bail
+        // BEFORE writing when there's nothing to record it on — resume was already
+        // unavailable for such a row, so this only avoids the leak, it changes no behavior.
+        lock.lock()
+        let canRecordPath = rows[ratingKey]?.metadata != nil
+        lock.unlock()
+        guard canRecordPath else {
+            NSLog("DownloadStore: skipping resume-data persist for %@ — row has no metadata to record its path on",
+                  ratingKey)
+            return
+        }
         let url = resumeDataDestinationURL(ratingKey: ratingKey)
         do { try data.write(to: url, options: .atomic) }
         catch {
