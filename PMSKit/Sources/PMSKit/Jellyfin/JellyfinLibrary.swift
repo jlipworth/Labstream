@@ -26,13 +26,15 @@ public struct JellyfinAuthenticatedUser: Decodable, Sendable, Equatable {
 }
 
 public enum JellyfinLibrary {
+    private static let dialect = MediaBrowserLibraryQueryDialect.jellyfin
+
     public static func userViewsRequest(server: URL,
                                         token: String,
                                         identity: JellyfinClientIdentity,
                                         userId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/UserViews", queryItems: [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "includeExternalContent", value: "false"),
+        let url = try url(server: server, path: dialect.path(.userViews(userId: userId)), queryItems: [
+            dialect.queryItem(.userId, value: userId),
+            dialect.queryItem(.includeExternalContent, value: "false"),
         ])
         return get(url: url, token: token, identity: identity)
     }
@@ -55,29 +57,29 @@ public enum JellyfinLibrary {
                                     artistIds: String? = nil,
                                     filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(userId: userId, fields: fields)
-        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
-        query.append(URLQueryItem(name: "recursive", value: recursive ? "true" : "false"))
-        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
-        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        if let parentId { query.append(dialect.queryItem(.parentId, value: parentId)) }
+        query.append(dialect.queryItem(.recursive, value: recursive ? "true" : "false"))
+        if let startIndex { query.append(dialect.queryItem(.startIndex, value: String(startIndex))) }
+        if let limit { query.append(dialect.queryItem(.limit, value: String(limit))) }
         if let searchTerm, !searchTerm.isEmpty {
-            query.append(URLQueryItem(name: "searchTerm", value: searchTerm))
+            query.append(dialect.queryItem(.searchTerm, value: searchTerm))
         }
         if let nameStartsWith, !nameStartsWith.isEmpty {
-            query.append(URLQueryItem(name: "nameStartsWith", value: nameStartsWith))
+            query.append(dialect.queryItem(.nameStartsWith, value: nameStartsWith))
         }
         // An album-artist entity is a tag aggregate, not a folder, so its albums/tracks are
         // reached by these filters rather than `parentId` (#111).
         if let albumArtistIds, !albumArtistIds.isEmpty {
-            query.append(URLQueryItem(name: "albumArtistIds", value: albumArtistIds))
+            query.append(dialect.queryItem(.albumArtistIds, value: albumArtistIds))
         }
         if let artistIds, !artistIds.isEmpty {
-            query.append(URLQueryItem(name: "artistIds", value: artistIds))
+            query.append(dialect.queryItem(.artistIds, value: artistIds))
         }
-        replaceQueryItem(named: "includeItemTypes", with: includeItemTypes, in: &query)
-        if !filters.isEmpty { query.append(URLQueryItem(name: "filters", value: filters.joined(separator: ","))) }
-        replaceQueryItem(named: "sortBy", with: sortBy, in: &query)
-        replaceQueryItem(named: "sortOrder", with: sortOrder, in: &query)
-        let url = try url(server: server, path: "/Items", queryItems: query)
+        replaceQueryItem(named: dialect.queryName(.includeItemTypes), with: includeItemTypes, in: &query)
+        if !filters.isEmpty { query.append(dialect.queryItem(.filters, value: filters.joined(separator: ","))) }
+        replaceQueryItem(named: dialect.queryName(.sortBy), with: sortBy, in: &query)
+        replaceQueryItem(named: dialect.queryName(.sortOrder), with: sortOrder, in: &query)
+        let url = try url(server: server, path: dialect.path(.items(userId: userId)), queryItems: query)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -513,20 +515,17 @@ public enum JellyfinLibrary {
 
     private static func baseItemsQuery(userId: String, fields: String = fullItemFields) -> [URLQueryItem] {
         [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "includeItemTypes", value: "Movie,Series,Season,Episode,Video"),
-            URLQueryItem(name: "fields", value: fields),
-            URLQueryItem(name: "enableUserData", value: "true"),
-            URLQueryItem(name: "sortBy", value: "SortName"),
-            URLQueryItem(name: "sortOrder", value: "Ascending"),
+            dialect.queryItem(.userId, value: userId),
+            dialect.queryItem(.includeItemTypes, value: "Movie,Series,Season,Episode,Video"),
+            dialect.queryItem(.fields, value: fields),
+            dialect.queryItem(.enableUserData, value: "true"),
+            dialect.queryItem(.sortBy, value: "SortName"),
+            dialect.queryItem(.sortOrder, value: "Ascending"),
         ]
     }
 
-    // `ParentThumbImageTag`/`SeriesPrimaryImageTag` etc. drive the episode/season artwork
-    // fallback (#86); `Studios`/`CriticRating` drive the cast/critic metadata (#76). Both
-    // field strings must stay in sync with EmbyLibrary's.
-    public static let gridItemFields = "Overview,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ProviderIds,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
-    public static let fullItemFields = "Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+    public static let gridItemFields = MediaBrowserLibraryFields.gridItem
+    public static let fullItemFields = MediaBrowserLibraryFields.fullItem
     private static let itemFields = fullItemFields
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {

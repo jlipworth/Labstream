@@ -4,13 +4,15 @@ import FoundationNetworking
 #endif
 
 public enum EmbyLibrary {
+    private static let dialect = MediaBrowserLibraryQueryDialect.emby
+
     /// `GET /Users/{UserId}/Views` — the user's libraries/views.
     public static func userViewsRequest(server: URL,
                                         token: String,
                                         identity: EmbyClientIdentity,
                                         userId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/Users/\(userId)/Views", queryItems: [
-            URLQueryItem(name: "IncludeExternalContent", value: "false"),
+        let url = try url(server: server, path: dialect.path(.userViews(userId: userId)), queryItems: [
+            dialect.queryItem(.includeExternalContent, value: "false"),
         ])
         return get(url: url, token: token, identity: identity, userId: userId)
     }
@@ -34,29 +36,29 @@ public enum EmbyLibrary {
                                     artistIds: String? = nil,
                                     filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(fields: fields)
-        if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
-        query.append(URLQueryItem(name: "Recursive", value: recursive ? "true" : "false"))
-        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
-        if let limit { query.append(URLQueryItem(name: "Limit", value: String(limit))) }
+        if let parentId { query.append(dialect.queryItem(.parentId, value: parentId)) }
+        query.append(dialect.queryItem(.recursive, value: recursive ? "true" : "false"))
+        if let startIndex { query.append(dialect.queryItem(.startIndex, value: String(startIndex))) }
+        if let limit { query.append(dialect.queryItem(.limit, value: String(limit))) }
         if let searchTerm, !searchTerm.isEmpty {
-            query.append(URLQueryItem(name: "SearchTerm", value: searchTerm))
+            query.append(dialect.queryItem(.searchTerm, value: searchTerm))
         }
         if let nameStartsWith, !nameStartsWith.isEmpty {
-            query.append(URLQueryItem(name: "NameStartsWith", value: nameStartsWith))
+            query.append(dialect.queryItem(.nameStartsWith, value: nameStartsWith))
         }
         // An album-artist entity is a tag aggregate, not a folder, so its albums/tracks are
         // reached by these filters rather than `ParentId` (#111).
         if let albumArtistIds, !albumArtistIds.isEmpty {
-            query.append(URLQueryItem(name: "AlbumArtistIds", value: albumArtistIds))
+            query.append(dialect.queryItem(.albumArtistIds, value: albumArtistIds))
         }
         if let artistIds, !artistIds.isEmpty {
-            query.append(URLQueryItem(name: "ArtistIds", value: artistIds))
+            query.append(dialect.queryItem(.artistIds, value: artistIds))
         }
-        replaceQueryItem(named: "IncludeItemTypes", with: includeItemTypes, in: &query)
-        if !filters.isEmpty { query.append(URLQueryItem(name: "Filters", value: filters.joined(separator: ","))) }
-        replaceQueryItem(named: "SortBy", with: sortBy, in: &query)
-        replaceQueryItem(named: "SortOrder", with: sortOrder, in: &query)
-        let url = try url(server: server, path: "/Users/\(userId)/Items", queryItems: query)
+        replaceQueryItem(named: dialect.queryName(.includeItemTypes), with: includeItemTypes, in: &query)
+        if !filters.isEmpty { query.append(dialect.queryItem(.filters, value: filters.joined(separator: ","))) }
+        replaceQueryItem(named: dialect.queryName(.sortBy), with: sortBy, in: &query)
+        replaceQueryItem(named: dialect.queryName(.sortOrder), with: sortOrder, in: &query)
+        let url = try url(server: server, path: dialect.path(.items(userId: userId)), queryItems: query)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -427,19 +429,16 @@ public enum EmbyLibrary {
 
     private static func baseItemsQuery(fields: String = fullItemFields) -> [URLQueryItem] {
         [
-            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Series,Season,Episode,Video"),
-            URLQueryItem(name: "Fields", value: fields),
-            URLQueryItem(name: "EnableUserData", value: "true"),
-            URLQueryItem(name: "SortBy", value: "SortName"),
-            URLQueryItem(name: "SortOrder", value: "Ascending"),
+            dialect.queryItem(.includeItemTypes, value: "Movie,Series,Season,Episode,Video"),
+            dialect.queryItem(.fields, value: fields),
+            dialect.queryItem(.enableUserData, value: "true"),
+            dialect.queryItem(.sortBy, value: "SortName"),
+            dialect.queryItem(.sortOrder, value: "Ascending"),
         ]
     }
 
-    // Kept in sync with JellyfinLibrary's field strings — parent/series image tags drive
-    // the episode/season artwork fallback (#86); People,Studios,CriticRating drive the
-    // cast/critic metadata (#76) (Emby previously requested neither People nor Studios).
-    public static let gridItemFields = "Overview,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ProviderIds,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
-    public static let fullItemFields = "MediaSources,Overview,Chapters,Genres,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+    public static let gridItemFields = MediaBrowserLibraryFields.gridItem
+    public static let fullItemFields = MediaBrowserLibraryFields.fullItem
 
     private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
         query.removeAll { $0.name == name }

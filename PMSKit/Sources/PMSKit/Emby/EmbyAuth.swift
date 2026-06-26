@@ -61,18 +61,14 @@ public enum EmbyAuth {
     public static func authorizationHeader(identity: EmbyClientIdentity,
                                            userId: String? = nil,
                                            token: String? = nil) -> String {
-        var parts: [String] = []
-        if let userId, !userId.isEmpty {
-            parts.append("UserId=\"\(quote(userId))\"")
-        }
-        parts.append("Client=\"\(quote(identity.client))\"")
-        parts.append("Device=\"\(quote(identity.device))\"")
-        parts.append("DeviceId=\"\(quote(identity.deviceId))\"")
-        parts.append("Version=\"\(quote(identity.version))\"")
-        if let token, !token.isEmpty {
-            parts.append("Token=\"\(quote(token))\"")
-        }
-        return "Emby " + parts.joined(separator: ", ")
+        MediaBrowserAuth.headerValue(scheme: "Emby", parameters: [
+            ("UserId", userId),
+            ("Client", identity.client),
+            ("Device", identity.device),
+            ("DeviceId", identity.deviceId),
+            ("Version", identity.version),
+            ("Token", token),
+        ])
     }
 
     /// Apply BOTH the identity `Authorization` header AND, when a token is present, the

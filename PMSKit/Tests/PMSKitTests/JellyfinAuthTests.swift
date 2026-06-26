@@ -16,6 +16,20 @@ struct JellyfinAuthTests {
         #expect(header == "MediaBrowser Client=\"VisionPlay\", Device=\"Apple Vision Pro\", DeviceId=\"device-123\", Version=\"0.1.0\", Token=\"token-abc\"")
     }
 
+
+    @Test func authorizationHeaderEscapesValuesAndOmitsEmptyToken() throws {
+        let identity = JellyfinClientIdentity(
+            client: "Vision\"Play",
+            device: "Back\\Slash",
+            deviceId: "device-123",
+            version: "0.1.0")
+
+        let header = JellyfinAuth.authorizationHeader(identity: identity, token: "")
+
+        #expect(header == "MediaBrowser Client=\"Vision\\\"Play\", Device=\"Back\\\\Slash\", DeviceId=\"device-123\", Version=\"0.1.0\"")
+        #expect(!header.contains("Token="))
+    }
+
     @Test func authenticateByNameRequestPostsExpectedJSON() throws {
         let server = try #require(URL(string: "https://jellyfin.example.test"))
         let identity = JellyfinClientIdentity(

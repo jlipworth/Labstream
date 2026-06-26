@@ -49,6 +49,24 @@ struct EmbyAuthTests {
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == nil)
     }
 
+
+    @Test func authorizationHeaderEscapesUserIdTokenAndOmitsEmptyTokenHeader() {
+        let escapedIdentity = EmbyClientIdentity(
+            client: "Vision\"Play",
+            device: "Back\\Slash",
+            deviceId: "device-123",
+            version: "0.1.0")
+        var request = URLRequest(url: URL(string: "https://emby.example.test/Sessions")!)
+
+        EmbyAuth.applyAuth(to: &request,
+                           identity: escapedIdentity,
+                           userId: "user\"9",
+                           token: "")
+
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Emby UserId=\"user\\\"9\", Client=\"Vision\\\"Play\", Device=\"Back\\\\Slash\", DeviceId=\"device-123\", Version=\"0.1.0\"")
+        #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == nil)
+    }
+
     @Test func serverInfoRequestIsUnauthenticatedGET() throws {
         let server = try #require(URL(string: "https://emby.example.test/emby"))
         let request = try EmbyAuth.serverInfoRequest(server: server)
