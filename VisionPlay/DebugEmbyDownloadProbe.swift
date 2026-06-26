@@ -45,6 +45,10 @@ enum DebugEmbyDownloadProbe {
         let startDownload = arguments.contains("--vp-probe-start-download")
         let startOptimize = arguments.contains("--vp-probe-start-optimize")
         let refreshExisting = arguments.contains("--vp-probe-refresh-existing")
+        let observeOnly = arguments.contains("--vp-probe-observe-record")
+        let resumeObserved = arguments.contains("--vp-probe-resume-observed")
+        let keepRecord = arguments.contains("--vp-probe-keep-record")
+        let deleteExisting = arguments.contains("--vp-probe-delete-existing")
         let preset = value(after: "--vp-probe-download-preset", in: arguments) ?? "1080p 8 Mbps"
         let observeSeconds = intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? 30
 
@@ -53,6 +57,7 @@ enum DebugEmbyDownloadProbe {
             "start": .bool(startDownload),
             "start_optimize": .bool(startOptimize),
             "refresh_existing": .bool(refreshExisting),
+            "observe_only": .bool(observeOnly),
         ])
 
         guard let backendSession = appModel.backendSession(for: .emby),
@@ -70,6 +75,42 @@ enum DebugEmbyDownloadProbe {
         do {
             let resolved = try await resolveItem(query: query, service: service)
             let item = (try? await service.metadata(itemId: resolved.ratingKey)) ?? resolved
+            // The record key is the documented Emby lane format.
+            let recordKey = "emby:\(item.ratingKey)"
+            if deleteExisting {
+                downloadManager.delete(ratingKey: recordKey)
+                log.notice("probe.deleted record=\(recordKey, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.emby_download.deleted", fields: [
+                    "download_id": .identifier(recordKey),
+                ])
+                return
+            }
+            if observeOnly {
+                let before = await observeDetailed(recordKey: recordKey, manager: downloadManager,
+                                                   seconds: resumeObserved ? 1 : observeSeconds)
+                if resumeObserved {
+                    downloadManager.retry(ratingKey: recordKey)
+                    try? await Task.sleep(for: .milliseconds(500))
+                    let resumeStart = currentProgress(recordKey: recordKey, manager: downloadManager)
+                    let after = await observeDetailed(recordKey: recordKey, manager: downloadManager,
+                                                      seconds: observeSeconds)
+                    let resumedAtCheckpoint = before.bytes > 0 && resumeStart.bytes >= before.bytes
+                    let keptProgress = resumedAtCheckpoint
+                        && after.bytes >= before.bytes
+                        && after.progress >= max(0, before.progress * 0.95)
+                    log.notice("probe.resume_check keptProgress=\(keptProgress, privacy: .public) resumedAtCheckpoint=\(resumedAtCheckpoint, privacy: .public) paused=\(before.progress, privacy: .public) after=\(after.progress, privacy: .public) bytes=\(after.bytes, privacy: .public)")
+                    AppDiagnostics.record(.downloads, "probe.emby_download.resume_check", fields: [
+                        "download_id": .identifier(recordKey),
+                        "kept_progress": .bool(keptProgress),
+                        "resumed_at_checkpoint": .bool(resumedAtCheckpoint),
+                        "paused_bytes": .int(before.bytes),
+                        "resume_start_bytes": .int(resumeStart.bytes),
+                        "bytes": .int(after.bytes),
+                    ])
+                }
+                return
+            }
+
             // partIndex 0 / mediaIndex 0 is the probe's scope — Emby items carry a single source.
             let part = item.media?.first?.part.first
 
@@ -126,13 +167,11 @@ enum DebugEmbyDownloadProbe {
                 return
             }
 
-            // The record key is the documented Emby lane format.
-            let recordKey = "emby:\(item.ratingKey)"
             await downloadManager.downloadEmby(item, choice: startOptimize ? .optimize(targetName: preset) : .original)
             let progressed = await observe(recordKey: recordKey, manager: downloadManager, seconds: observeSeconds)
-            // Never let the (large, non-resumable) transcode run to completion on the sim. Deleting
-            // also exercises encoder teardown for a transcode-sourced download.
-            downloadManager.delete(ratingKey: recordKey)
+            // Never let the (large, non-resumable) transcode run to completion on the sim unless an
+            // interruption/resume probe explicitly asks to keep the paused checkpoint for relaunch.
+            if !keepRecord { downloadManager.delete(ratingKey: recordKey) }
 
             log.notice("probe.pass dry_run=false route=\(route, privacy: .public) optimize=\(startOptimize, privacy: .public) progressed=\(progressed, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.emby_download.pass", fields: [
@@ -166,26 +205,43 @@ enum DebugEmbyDownloadProbe {
         throw ProbeError.itemNotFound(query)
     }
 
+    private struct Observation {
+        let progress: Double
+        let bytes: Int
+        let status: String
+    }
+
     /// Observe the download record until it makes progress, completes, or fails. Returns whether the
     /// transfer demonstrably moved (status reached `.downloading` or bytes advanced) — the on-device
     /// signal that the app glue actually kicked off the transfer.
     private static func observe(recordKey: String, manager: DownloadManager, seconds: Int) async -> Bool {
+        let result = await observeDetailed(recordKey: recordKey, manager: manager, seconds: seconds)
+        return result.status == "downloading" || result.bytes > 0 || result.progress > 0
+    }
+
+    private static func observeDetailed(recordKey: String, manager: DownloadManager, seconds: Int) async -> Observation {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
-        var progressed = false
+        var latest = currentProgress(recordKey: recordKey, manager: manager)
         while ContinuousClock.now < deadline {
-            let record = manager.records.first { $0.ratingKey == recordKey }
-            let status = record.map { String(describing: $0.status) } ?? "missing"
-            let progress = record?.progress ?? 0
-            if record?.status == .downloading || progress > 0 { progressed = true }
-            log.notice("probe.observe status=\(status, privacy: .public) progress=\(progress, privacy: .public)")
+            latest = currentProgress(recordKey: recordKey, manager: manager)
+            log.notice("probe.observe status=\(latest.status, privacy: .public) progress=\(latest.progress, privacy: .public) bytes=\(latest.bytes, privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.emby_download.observe", fields: [
-                "status": .label(status),
-                "progress_pct": .int(Int((progress * 100).rounded())),
+                "status": .label(latest.status),
+                "progress_pct": .int(Int((latest.progress * 100).rounded())),
+                "bytes": .int(latest.bytes),
             ])
+            let record = manager.records.first { $0.ratingKey == recordKey }
             if record?.isComplete == true || record?.status == .failed { break }
             try? await Task.sleep(for: .seconds(5))
         }
-        return progressed
+        return latest
+    }
+
+    private static func currentProgress(recordKey: String, manager: DownloadManager) -> Observation {
+        let record = manager.records.first { $0.ratingKey == recordKey }
+        return Observation(progress: record?.progress ?? 0,
+                           bytes: record?.bytes ?? 0,
+                           status: record.map { String(describing: $0.status) } ?? "missing")
     }
 
     /// Safe #133 live probe: trigger the same item-refresh request used by the convert reuse path,
