@@ -60,10 +60,21 @@ Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified 
     metadata-polling half, the Emby `downloadEmby` entry point + retry/resume drivers, and the
     side-cache cluster (overlaps Stage 7).
 
-**Cross-backend verification harness** (kubectl port-forwards → live Plex/Emby/Jellyfin): Plex via
-the headless `swift test` route probe + the in-process sim download probe (E2E to `.complete`); Emby
-via the in-process dry-run probe (`route=transcode`, #133 refresh + existing-source enumeration both
-green). Jellyfin has no dedicated download probe yet (shares the Emby lane code) — a follow-up.
+**Cross-backend live verification results** (kubectl → live servers; candidates found server-side via
+the library APIs):
+- **Plex (priority 1) — fully verified E2E.** Route classification (`original`/`optimize`/
+  `existing_version`); the moved `+PlexOptimize` code submits + polls a real optimize job live; and a
+  small mp4 original drove `queued → complete` (the refactored static path → Stage-2 finalize).
+- **Emby (priority 2) — fully verified E2E + a real bug fixed.** Router + convert kickoff
+  (`triggerConvertAndDownload` rendered a real converted mp4 server-side). Found a **pre-existing bug**:
+  the convert→download reuse handoff required Emby's streaming `supportsDirectPlay`, which Emby returns
+  *false* even for a clean mp4/h264 converted file, so the handoff silently seeded NO download row.
+  Fixed by gating `.existingVersion` on container+codec playability (commit, +3 tests); the converted
+  mp4 now downloads `queued → complete` (150 MB).
+- **Jellyfin (priority 3) — probe written, login-gated.** Added `DebugJellyfinDownloadProbe`
+  (`--vp-probe-jellyfin-download`); builds + runs, but the sim is not signed in to Jellyfin, so a full
+  download run is **blocked on the user signing the sim into Jellyfin once** (the probe does not
+  authenticate — the documented user's-half gate).
 
 - **Remaining:** Stage 1f (record-key leaves — deferred; entangled with the `isJellyfinRecordKey`/
   `isEmbyRecordKey` lane-routing predicates at 5 sites), **Stage 4** (`ServerPrepEngine` collapsing the
