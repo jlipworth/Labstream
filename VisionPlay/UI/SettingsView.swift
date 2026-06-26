@@ -30,7 +30,7 @@ struct SettingsView: View {
     @State private var copiedDiagnostics = false
     @State private var copiedDiagnosticsResetID: UUID?
     @State private var exportingDiagnostics = false
-    @State private var diagnosticExportDocument = DiagnosticReportDocument()
+    @State private var diagnosticExportDocument = DiagnosticReportArtifact.Document()
     @State private var presentingFeedback = false
     @State private var switchingBackend: MediaBackendKind?
 
@@ -74,7 +74,7 @@ struct SettingsView: View {
         .fileExporter(isPresented: $exportingDiagnostics,
                       document: diagnosticExportDocument,
                       contentType: .plainText,
-                      defaultFilename: "VisionPlay-Diagnostic-Report") { result in
+                      defaultFilename: DiagnosticReportArtifact.exportFilename) { result in
             switch result {
             case .success:
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_export_completed", fields: [
@@ -706,7 +706,7 @@ struct SettingsView: View {
                     "events_in_buffer": .int(AppDiagnostics.events().count),
                     "logging_enabled": .bool(diagnosticLoggingEnabled),
                 ])
-                diagnosticExportDocument = DiagnosticReportDocument(text: diagnosticReportText)
+                diagnosticExportDocument = DiagnosticReportArtifact.Document(text: diagnosticReportText)
                 exportingDiagnostics = true
             } label: {
                 Label("Export diagnostic report file", systemImage: "square.and.arrow.up")
@@ -924,23 +924,5 @@ struct SettingsView: View {
                 Text(signOutConfirmationMessage)
             }
         }
-    }
-}
-
-private struct DiagnosticReportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.plainText] }
-
-    var text: String = ""
-
-    init(text: String = "") {
-        self.text = text
-    }
-
-    init(configuration: ReadConfiguration) throws {
-        text = ""
-    }
-
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }
