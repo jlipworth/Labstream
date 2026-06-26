@@ -51,9 +51,13 @@ Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified 
   - **`DownloadManager+PlexOptimize.swift`** — the Plex server-side optimize kickoff/render/queue
     half (triggerOptimizeAndDownload → triggerOptimize → startOptimizedPartDownload + queue hygiene).
     ~550 lines.
-  - Net: `DownloadManager.swift` **4939 → 3612 lines (−27%)**. Each cut is a separate commit, verified
-    by a clean build + a UUID-matched install + launch (no crash, Plex browse UI). Remaining 5c cuts
-    (same pattern): the Jellyfin download lane, the Plex-optimize metadata-polling half, and the
+  - **`DownloadManager+Jellyfin.swift`** — the Jellyfin download entry points (downloadJellyfin's
+    static-original + server-rendered optimize/compatible lanes + downloadJellyfinOriginal + the
+    trickplay cache). ~340 lines.
+  - Net: `DownloadManager.swift` **4939 → 3271 lines (−34%)**; all three backends now own a dedicated
+    lane file. Each cut is a separate commit, verified by a clean build + a UUID-matched install +
+    launch (no crash, Plex browse UI). Remaining 5c cuts (same pattern): the Plex-optimize
+    metadata-polling half, the Emby `downloadEmby` entry point + retry/resume drivers, and the
     side-cache cluster (overlaps Stage 7).
 
 **Cross-backend verification harness** (kubectl port-forwards → live Plex/Emby/Jellyfin): Plex via
