@@ -861,9 +861,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
+        // H4 (GH #135): the opaque background session and the app-range session have INDEPENDENT
+        // taskIdentifier spaces, so a range id can equal a background id. Evict from only the map
+        // that owns this session — removing from both by bare id could silently drop the other
+        // session's in-flight entry and lose its completion.
+        let isRange = (session === rangeURLSession)
         lock.lock()
-        let rangeEntry = rangeInflight.removeValue(forKey: task.taskIdentifier)
-        let entry = inflight.removeValue(forKey: task.taskIdentifier)
+        let rangeEntry = isRange ? rangeInflight.removeValue(forKey: task.taskIdentifier) : nil
+        let entry = isRange ? nil : inflight.removeValue(forKey: task.taskIdentifier)
         loggedExpectation.remove(task.taskIdentifier)
         loggedProgressMilestones.removeValue(forKey: task.taskIdentifier)
         lock.unlock()
@@ -899,6 +904,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                     "status_code": .int(status),
                     "bytes": .bytes(rangeEntry.totalBytes),
                 ])
+                // H5 (GH #135): the data-task wrote the server's error-page body into the FINAL
+                // partial file. Delete it (the opaque pipeline already deletes a bad body) so the
+                // next start() computes a clean 0 offset instead of issuing a Range request that
+                // appends real bytes AFTER the garbage and produces a corrupt, unplayable file.
+                try? fileManager.removeItem(at: rangeEntry.destination)
                 store.setStatus(ratingKey: rangeEntry.ratingKey, .failed)
                 onError?(rangeEntry.ratingKey, .transferFailed("Server returned HTTP \(status)."))
                 onChange?()
