@@ -6,6 +6,10 @@ import Foundation
 /// continuous playback / "up next". The `uri` points at the source metadata via
 /// the server's machine identifier.
 public enum PlayQueue {
+    /// Canonical Plex library item URI used by play-queue create/add mutations.
+    public static func itemURI(machineIdentifier: String, ratingKey: String) -> String {
+        "server://\(machineIdentifier)/com.plexapp.plugins.library/library/metadata/\(ratingKey)"
+    }
 
     /// `POST /playQueues` — create a play queue for a single item.
     ///
@@ -18,25 +22,58 @@ public enum PlayQueue {
     ///   - ratingKey: bare numeric rating key of the item to enqueue.
     ///   - type: queue media type. Defaults to `"video"`.
     ///   - continuous: whether to auto-continue to the next item. Defaults to `true` (`1`).
+    ///   - shuffled: whether PMS should create the queue in shuffled traversal order.
     public static func createRequest(server: URL,
                                      token: String,
                                      identity: ClientIdentity,
                                      machineIdentifier: String,
                                      ratingKey: String,
                                      type: String = "video",
-                                     continuous: Bool = true) -> PlexRequest {
+                                     continuous: Bool = true,
+                                     shuffled: Bool = false) -> PlexRequest {
         let url = server.appendingPathComponent("/playQueues")
-        let sourceURI = "server://\(machineIdentifier)/com.plexapp.plugins.library/library/metadata/\(ratingKey)"
+        let sourceURI = itemURI(machineIdentifier: machineIdentifier, ratingKey: ratingKey)
         var items: [URLQueryItem] = [
             .init(name: "type", value: type),
             .init(name: "uri", value: sourceURI),
             .init(name: "continuous", value: continuous ? "1" : "0"),
             .init(name: "X-Plex-Token", value: token),
         ]
+        if shuffled {
+            items.append(.init(name: "shuffle", value: "1"))
+        }
         items.append(contentsOf: TimelineRequest.identityQueryItems(identity))
         return PlexRequest(url: url, method: "POST",
                            queryItems: items,
                            headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `GET /playQueues/{id}` — refresh the server-side queue window.
+    public static func getRequest(server: URL,
+                                  token: String,
+                                  identity: ClientIdentity,
+                                  playQueueID: Int) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/playQueues/\(playQueueID)"),
+                    method: "GET",
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// `PUT /playQueues/{id}?uri=...&next=1` — add an item immediately after the selected item.
+    public static func playNextRequest(server: URL,
+                                       token: String,
+                                       identity: ClientIdentity,
+                                       playQueueID: Int,
+                                       machineIdentifier: String,
+                                       ratingKey: String) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/playQueues/\(playQueueID)"),
+                    method: "PUT",
+                    queryItems: [
+                        .init(name: "uri", value: itemURI(machineIdentifier: machineIdentifier,
+                                                          ratingKey: ratingKey)),
+                        .init(name: "next", value: "1"),
+                        .init(name: "X-Plex-Token", value: token),
+                    ] + TimelineRequest.identityQueryItems(identity),
+                    headers: PlexHeaders.standard(identity: identity, token: token))
     }
 }
 
