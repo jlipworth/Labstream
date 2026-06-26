@@ -335,8 +335,19 @@ private struct SearchSongsSection: View {
     /// Context-menu queue action: hydrate the skinny search row into a full
     /// track (Media/Part) with one metadata request, then hand it to the player.
     private func enqueue(_ track: MediaItem, _ action: QueueAction) async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         playError = nil
+
+        // MediaBrowser rows are already playable by id — enqueue directly.
+        guard appModel.activeBackend == .plex else {
+            switch action {
+            case .playNext: player.playNext([track])
+            case .addToQueue: player.addToQueue([track])
+            }
+            return
+        }
+
+        // Plex: hydrate the skinny search row into a full track (Media/Part) first.
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         let req = BrowseAPI.metadata(server: server, token: token,
                                      identity: appModel.identity,
                                      ratingKey: track.ratingKey)
@@ -356,10 +367,23 @@ private struct SearchSongsSection: View {
     }
 
     private func play(from tapped: MediaItem) async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         isStarting = true
         playError = nil
         defer { isStarting = false }
+
+        // MediaBrowser audio rows are already playable by id (the universal stream
+        // endpoint needs only the item id), so queue them directly.
+        guard appModel.activeBackend == .plex else {
+            let queue = Array(tracks.prefix(songsQueueCap))
+            guard !queue.isEmpty else { return }
+            let index = queue.firstIndex { $0.ratingKey == tapped.ratingKey } ?? 0
+            player.play(tracks: queue, startingAt: index)
+            return
+        }
+
+        // Plex search rows are skinny (no Media/Part) — re-fetch full metadata so the
+        // tracks carry a playable part key.
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
         // Queue = the song results (capped), starting at the tapped one; if the
         // tapped track somehow falls outside the cap, play it alone.
         var keys = tracks.prefix(songsQueueCap).map(\.ratingKey)

@@ -38,7 +38,7 @@ struct PosterImage: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .transition(.opacity)
-            } else if failed || transcodeURL == nil {
+            } else if failed || imageRequest == nil {
                 placeholder
             } else {
                 skeleton
@@ -113,8 +113,7 @@ struct PosterImage: View {
     }
 
     private var artworkBackendLabel: String {
-        if parsedEmbyImagePath != nil { return "Emby" }
-        return parsedJellyfinImagePath == nil ? "Plex" : "Jellyfin"
+        MediaArtwork.backendLabel(for: path)
     }
 
     /// Neutral fallback when there's no artwork or it fails to load.
@@ -141,80 +140,13 @@ struct PosterImage: View {
         imageRequest?.url?.absoluteString
     }
 
+    /// Authenticated request for `path` at the requested pixel size, resolved by the
+    /// shared `MediaArtwork` helper (Plex transcode / Jellyfin / Emby by ref scheme).
     private var imageRequest: URLRequest? {
-        if let emby = embyImageRequest { return emby }
-        if let jellyfin = jellyfinImageRequest { return jellyfin }
-        guard let url = transcodeURL else { return nil }
-        return URLRequest(url: url)
-    }
-
-    private var transcodeURL: URL? {
-        guard let base = appModel.serverBaseURL,
-              let token = appModel.serverToken,
-              let path, !path.isEmpty
-        else { return nil }
-
-        // The image path is itself relative to the server; the transcoder wants it
-        // as the `url` query value (it may be an absolute path on the same server).
-        let scale = requestScale
-        guard var comps = URLComponents(url: base.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: path),
-            .init(name: "width", value: String(Int(width * scale))),
-            .init(name: "height", value: String(Int(height * scale))),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
-    }
-
-    private var jellyfinImageRequest: URLRequest? {
-        guard let parsed = parsedJellyfinImagePath,
-              let base = appModel.jellyfinServerBaseURL,
-              let token = appModel.jellyfinAccessToken else { return nil }
-        let scale = requestScale
-        guard let url = try? JellyfinLibrary.imageURL(server: base,
-                                                      itemId: parsed.itemId,
-                                                      imageType: parsed.type,
-                                                      tag: parsed.tag,
-                                                      width: Int(width * scale),
-                                                      height: Int(height * scale)) else { return nil }
-        let identity = appModel.identity.jellyfin
-        return JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity)
-    }
-
-    /// Resolve an `emby://item/{id}/{Type}?tag=` synthetic ref to a live, authenticated
-    /// image request. The token rides only on the live request (via the Emby auth header),
-    /// never in the stored ref, and is never logged.
-    private var embyImageRequest: URLRequest? {
-        guard let parsed = parsedEmbyImagePath,
-              let base = appModel.embyServerBaseURL,
-              let token = appModel.embyAccessToken else { return nil }
-        let scale = requestScale
-        guard let url = try? EmbyLibrary.imageURL(server: base,
-                                                  itemId: parsed.itemId,
-                                                  imageType: parsed.type,
-                                                  tag: parsed.tag,
-                                                  width: Int(width * scale),
-                                                  height: Int(height * scale)) else { return nil }
-        let identity = appModel.identity.emby
-        return EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity, userId: appModel.embyUserID)
-    }
-
-    private var parsedEmbyImagePath: (itemId: String, type: EmbyImageType, tag: String?)? {
-        guard let parsed = MediaBrowserSyntheticImageRef.parse(path, scheme: EmbyFlavor.syntheticScheme) else {
-            return nil
-        }
-        return (parsed.itemId, parsed.type, parsed.tag)
-    }
-
-    private var parsedJellyfinImagePath: (itemId: String, type: JellyfinImageType, tag: String?)? {
-        guard let parsed = MediaBrowserSyntheticImageRef.parse(path, scheme: JellyfinFlavor.syntheticScheme) else {
-            return nil
-        }
-        return (parsed.itemId, parsed.type, parsed.tag)
+        MediaArtwork.imageRequest(path: path,
+                                  appModel: appModel,
+                                  pixelWidth: Int(width * requestScale),
+                                  pixelHeight: Int(height * requestScale))
     }
 }
 

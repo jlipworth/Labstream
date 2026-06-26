@@ -83,6 +83,39 @@ struct JellyfinLibraryTests {
         #expect(query["fields"] == JellyfinLibrary.gridItemFields)
     }
 
+    @Test func audioStreamURLTargetsUniversalEndpointTokenless() throws {
+        let url = try JellyfinLibrary.audioStreamURL(server: server,
+                                                     identity: identity,
+                                                     userId: "user-1",
+                                                     itemId: "track-9")
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.path == "/base/Audio/track-9/universal")
+        #expect(query["UserId"] == "user-1")
+        #expect(query["DeviceId"] == "device-123")
+        // Default bitrate keeps lossless sources direct-playing.
+        #expect(query["MaxStreamingBitrate"] == "140000000")
+        #expect(query["AudioCodec"] == "aac")
+        #expect(query["TranscodingProtocol"] == "hls")
+        #expect(query["Container"]?.contains("flac") == true)
+        #expect(query["Container"]?.contains("mp3") == true)
+        // Token must NOT be baked into the stream URL — auth rides in the asset header.
+        #expect(url.absoluteString.contains("token") == false)
+        #expect(query["api_key"] == nil)
+    }
+
+    @Test func audioStreamURLHonorsBitrateCap() throws {
+        let url = try JellyfinLibrary.audioStreamURL(server: server,
+                                                     identity: identity,
+                                                     userId: "user-1",
+                                                     itemId: "track-9",
+                                                     maxStreamingBitrate: 256_000)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(query["MaxStreamingBitrate"] == "256000")
+    }
+
     @Test func resumeItemsRequestTargetsContinueWatching() throws {
         let request = try JellyfinLibrary.resumeItemsRequest(server: server,
                                                              token: "token-abc",
