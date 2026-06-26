@@ -1,0 +1,357 @@
+import Foundation
+import PMSKit
+import os
+
+// GH #135 Stage 5c: the offline SIDE-ASSET caching cluster, split out of the DownloadManager
+// god-object into its own file. Behavior-unchanged — the same @MainActor methods (an extension of a
+// @MainActor class inherits its isolation), relocated verbatim: poster art (Plex/Jellyfin/Emby),
+// text subtitles (Plex/Jellyfin), the Plex BIF trick-play index, and per-chapter images — each a
+// best-effort cache that never fails the media download. (Stage 7 will further unify these into one
+// fetch→write→persist→refresh helper; this is the file-level separation.)
+
+extension DownloadManager {
+
+    /// Artwork reference to cache for the Offline tab's small portrait tile. For episodes,
+    /// prefer the show poster, then season poster, before the episode still/backdrop; forcing a
+    /// landscape still into the portrait row tile was visibly distorted during b8 live testing.
+    static func offlinePosterRef(for item: MediaItem) -> String? {
+        if item.kind == .episode {
+            return item.grandparentThumb ?? item.parentThumb ?? item.thumb ?? item.art
+        }
+        return item.thumb ?? item.art
+    }
+
+    /// Download + cache the item's poster locally so the offline library shows artwork
+    /// without the server (D5). Best-effort: any failure leaves the row poster-less and
+    /// never fails the download. Fetches via the same `/photo/:/transcode` path the
+    /// online `PosterImage` uses, with the same server + token as the media download.
+    func cachePoster(ratingKey: String, thumb: String?, server: URL, token: String) {
+        guard let thumb, !thumb.isEmpty,
+              let url = Self.posterTranscodeURL(thumb: thumb, server: server, token: token)
+        else { return }
+        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
+        let store = self.store
+        Task { [weak self] in
+            // Fetch + atomic disk write happen OFF the main actor (mirrors
+            // PlaybackController.fetchArtworkData); only the store mutation hops back on.
+            guard await Self.fetchAndWritePoster(from: url, to: posterURL) else { return }
+            await MainActor.run {
+                store.setPosterRelativePath(ratingKey: ratingKey,
+                                            posterURL.lastPathComponent)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    /// Best-effort poster fetch + atomic write, fully off the main actor. Returns `true`
+    /// only when a non-empty poster landed on disk at `destination`; any failure (HTTP
+    /// error, empty body, write failure) returns `false` and is never surfaced — a missing
+    /// poster is never a download error.
+    private nonisolated static func fetchAndWritePoster(from url: URL, to destination: URL) async -> Bool {
+        await fetchAndWritePoster(request: URLRequest(url: url), to: destination)
+    }
+
+    /// Same best-effort fetch + atomic write as the URL variant, but driven by a
+    /// pre-resolved `URLRequest`. The MediaBrowser (Jellyfin/Emby) image endpoints are
+    /// NOT satisfied by Plex-style token-in-query — they need the `Authorization` header
+    /// (Emby also `userId`) that `*.authenticatedRequest(...)` attaches — so those lanes
+    /// must come through here with an authenticated request.
+    private nonisolated static func fetchAndWritePoster(request: URLRequest, to destination: URL) async -> Bool {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse,
+               !(200...299).contains(http.statusCode) { return false }
+            guard !data.isEmpty else { return false }
+            try data.write(to: destination, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Best-effort cache of a Jellyfin item's poster so the offline library shows artwork
+    /// without the server (#102). Mirrors `cacheJellyfinTrickPlay` (authenticated,
+    /// off-main-actor side-asset cache). Resolves the item's inline synthetic Primary ref
+    /// (`item.thumb`), falling back to the Backdrop ref (`item.art`); a fetch failure
+    /// leaves the row poster-less and never fails the download.
+    func cacheJellyfinPoster(ratingKey: String, item: MediaItem, server: URL,
+                                     token: String, identity: JellyfinClientIdentity) {
+        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
+        let store = self.store
+        let primaryRef = Self.offlinePosterRef(for: item)
+        let backdropRef = item.art
+        Task { [weak self] in
+            let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
+                                                              token: token, identity: identity))
+                ?? (try? JellyfinLibrary.posterRequest(syntheticRef: backdropRef, server: server,
+                                                       token: token, identity: identity))
+            guard let request,
+                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
+            await MainActor.run {
+                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    /// Best-effort cache of an Emby item's poster (#102). Same shape as
+    /// `cacheJellyfinPoster`, but the Emby image endpoint additionally needs `userId` on
+    /// the authenticated request.
+    func cacheEmbyPoster(ratingKey: String, item: MediaItem, server: URL,
+                                 token: String, identity: EmbyClientIdentity, userId: String) {
+        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
+        let store = self.store
+        let primaryRef = Self.offlinePosterRef(for: item)
+        let backdropRef = item.art
+        Task { [weak self] in
+            let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,
+                                                          token: token, identity: identity, userId: userId))
+                ?? (try? EmbyLibrary.posterRequest(syntheticRef: backdropRef, server: server,
+                                                   token: token, identity: identity, userId: userId))
+            guard let request,
+                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
+            await MainActor.run {
+                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    /// Build the `/photo/:/transcode` URL for an image path via the shared `PlexPhotoTranscode`
+    /// builder. Requests a poster-sized image so the cached file stays small.
+    private static func posterTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
+        PlexPhotoTranscode.url(server: server, token: token, imagePath: thumb,
+                               width: 400, height: 600)
+    }
+
+    func cachePlexTextSubtitles(ratingKey: String, part: Part, server: URL, token: String) {
+        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+        guard !streams.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            var tracks: [OfflineTextSubtitleTrack] = []
+            for (fallbackIndex, stream) in streams {
+                guard let key = stream.key, let url = Self.plexSubtitleURL(server: server, token: token, key: key) else { continue }
+                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
+                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
+                guard await Self.fetchAndWriteTextSubtitle(request: URLRequest(url: url), to: destination) else { continue }
+                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                     relativePath: destination.lastPathComponent,
+                                                                     fallbackIndex: fallbackIndex) {
+                    tracks.append(track)
+                }
+            }
+            guard !tracks.isEmpty else { return }
+            await MainActor.run {
+                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    func cacheJellyfinTextSubtitles(ratingKey: String,
+                                           itemId: String,
+                                           mediaSourceId: String?,
+                                           part: Part?,
+                                           server: URL,
+                                           token: String,
+                                           identity: JellyfinClientIdentity) {
+        guard let mediaSourceId, !mediaSourceId.isEmpty, let part else { return }
+        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+        guard !streams.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            var tracks: [OfflineTextSubtitleTrack] = []
+            for (fallbackIndex, stream) in streams {
+                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
+                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
+                let streamIndex = stream.index ?? stream.id
+                guard let request = try? JellyfinLibrary.textSubtitleRequest(server: server,
+                                                                             token: token,
+                                                                             identity: identity,
+                                                                             itemId: itemId,
+                                                                             mediaSourceId: mediaSourceId,
+                                                                             streamIndex: streamIndex,
+                                                                             format: ext),
+                      await Self.fetchAndWriteTextSubtitle(request: request, to: destination) else { continue }
+                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                     relativePath: destination.lastPathComponent,
+                                                                     fallbackIndex: fallbackIndex) {
+                    tracks.append(track)
+                }
+            }
+            guard !tracks.isEmpty else { return }
+            await MainActor.run {
+                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    private nonisolated static func plexSubtitleURL(server: URL, token: String, key: String) -> URL? {
+        let raw = key.hasPrefix("/") ? key : "/\(key)"
+        guard var comps = URLComponents(url: server.appendingPathComponent(raw), resolvingAgainstBaseURL: false) else { return nil }
+        // Drop any token the key already carried, then append the token through the project's strict
+        // encoder so it is percent-encoded consistently with every other Plex URL builder.
+        if var items = comps.queryItems {
+            items.removeAll { $0.name.caseInsensitiveCompare("X-Plex-Token") == .orderedSame }
+            comps.queryItems = items.isEmpty ? nil : items
+        }
+        PlexURLQueryEncoder.appendQueryItems([.init(name: "X-Plex-Token", value: token)], to: &comps)
+        return comps.url
+    }
+
+    private nonisolated static func fetchAndWriteTextSubtitle(request: URLRequest, to destination: URL) async -> Bool {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
+            guard let text = String(data: data, encoding: .utf8),
+                  !OfflineTextSubtitleParser.parse(text).isEmpty else { return false }
+            try data.write(to: destination, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Download + cache Plex's BIF trick-play index for the selected source Part so the
+    /// local custom player can keep showing scrub previews fully offline (#78). Best-effort:
+    /// a missing/invalid BIF never fails the media download. The request carries the token in
+    /// query, so do not log the URL or surfaced error.
+    func cachePlexBIF(ratingKey: String, item: MediaItem, mediaIndex: Int,
+                              server: URL, token: String) {
+        guard let part = Self.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
+        let destination = store.plexBIFDestinationURL(ratingKey: ratingKey)
+        let request = TrickPlayRequest.plexBIFIndex(server: server,
+                                                    token: token,
+                                                    identity: appModel.identity,
+                                                    partID: part.id,
+                                                    quality: "sd")
+        let client = appModel.client
+        let store = self.store
+        Task { [weak self] in
+            do {
+                let data = try await client.send(request)
+                guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
+                try data.write(to: destination, options: .atomic)
+                await MainActor.run {
+                    store.setPlexBIFRelativePath(ratingKey: ratingKey, destination.lastPathComponent)
+                    self?.refreshRecords()
+                }
+            } catch {
+                // Expected for items/servers without BIFs, auth churn, or cache races.
+                // Keep silent and never log token-bearing URLs.
+            }
+        }
+    }
+
+    private static func selectedPlexBIFPart(from item: MediaItem, mediaIndex: Int) -> Part? {
+        guard let media = item.media, !media.isEmpty else { return nil }
+        let selectedMedia = media.indices.contains(mediaIndex) ? media[mediaIndex] : media[0]
+        guard let part = selectedMedia.part.first, part.hasStandardDefinitionBIFIndex else { return nil }
+        return part
+    }
+
+    /// Download + cache each chapter's image at download time so the offline Chapters menu rail
+    /// shows real per-chapter thumbnails (#88) and the Emby offline scrubber has a coarse preview
+    /// source (#89). One shared index-keyed cache feeds both consumers.
+    ///
+    /// Best-effort, exactly like `cachePlexBIF`/`cacheJellyfinTrickPlay`: a failed image is simply
+    /// dropped (that chapter shows the online-equivalent placeholder offline), and the whole cache
+    /// failing never fails the media download. Each backend builds the same image URL its online
+    /// chapter resolver uses (Plex `/photo/:/transcode`; Jellyfin/Emby chapter-image endpoint). The
+    /// requests carry tokens (Plex in query, JF/Emby in headers) so URLs are never logged.
+    func cacheChapterImages(ratingKey: String, item: MediaItem, backend: DownloadBackendKind,
+                                    server: URL, token: String) {
+        let chapters = item.chapters ?? []
+        guard !chapters.isEmpty else { return }
+        // Build (chapter index, request) for every chapter that carries an image key. The index is
+        // the chapter's position in `chapters` — the same enumeration the Chapters rail and the
+        // offline scrub provider use, so it is the stable join key offline.
+        let identity = appModel.identity
+        var requests: [(index: Int, request: URLRequest)] = []
+        for (index, chapter) in chapters.enumerated() {
+            guard let thumb = chapter.thumb, !thumb.isEmpty else { continue }
+            switch backend {
+            case .plex:
+                guard let url = Self.chapterImageTranscodeURL(thumb: thumb, server: server, token: token) else { continue }
+                requests.append((index, URLRequest(url: url)))
+            case .jellyfin:
+                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "jellyfin"),
+                      let url = try? JellyfinLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
+                                                                    chapterIndex: parsed.index, tag: parsed.tag,
+                                                                    width: 480, height: 270) else { continue }
+                var req = JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity.jellyfin)
+                req.setValue("*/*", forHTTPHeaderField: "Accept")
+                requests.append((index, req))
+            case .emby:
+                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "emby"),
+                      let url = try? EmbyLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
+                                                               chapterIndex: parsed.index, tag: parsed.tag,
+                                                               width: 480, height: 270) else { continue }
+                let userId = appModel.backendSession(for: .emby)?.userID
+                var req = EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity.emby, userId: userId)
+                req.setValue("*/*", forHTTPHeaderField: "Accept")
+                requests.append((index, req))
+            }
+        }
+        guard !requests.isEmpty else { return }
+        let store = self.store
+        Task { [weak self] in
+            // Fetch concurrently — chapters are independent and a long film has many. A failed/empty
+            // image is dropped; only chapters that landed on disk go into the map.
+            let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
+                for entry in requests {
+                    group.addTask {
+                        guard let (data, response) = try? await URLSession.shared.data(for: entry.request),
+                              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                              !data.isEmpty else { return nil }
+                        return (entry.index, data)
+                    }
+                }
+                var out: [(index: Int, data: Data)] = []
+                for await result in group { if let result { out.append(result) } }
+                return out
+            }
+            guard !fetched.isEmpty else { return }
+            var relativesByIndex: [Int: String] = [:]
+            for entry in fetched {
+                let destination = store.chapterImageDestinationURL(ratingKey: ratingKey, index: entry.index)
+                guard (try? entry.data.write(to: destination, options: .atomic)) != nil else { continue }
+                relativesByIndex[entry.index] = destination.lastPathComponent
+            }
+            guard !relativesByIndex.isEmpty else { return }
+            await MainActor.run {
+                store.setChapterImageRelativePaths(ratingKey: ratingKey, relativesByIndex)
+                self?.refreshRecords()
+            }
+        }
+    }
+
+    /// `/photo/:/transcode` URL for a Plex chapter `thumb` key, 16:9 landscape — the same shape the
+    /// online `PlaybackController.chapterThumbnailURL` builds for the Chapters rail.
+    private static func chapterImageTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
+        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
+                                        resolvingAgainstBaseURL: false) else { return nil }
+        PlexURLQueryEncoder.replaceQueryItems([
+            .init(name: "url", value: thumb),
+            .init(name: "width", value: "480"),
+            .init(name: "height", value: "270"),
+            .init(name: "minSize", value: "1"),
+            .init(name: "upscale", value: "1"),
+            .init(name: "X-Plex-Token", value: token),
+        ], in: &comps)
+        return comps.url
+    }
+
+    /// Parse a synthetic `<scheme>://item/{itemId}/Chapter/{index}?tag=` chapter-image key (Jellyfin
+    /// or Emby). Mirrors the private parsers in `PlaybackController` / `EmbyChapterTrickPlayThumbnailProvider`.
+    static func parsedSyntheticChapterImageKey(_ imagePath: String, scheme: String) -> (itemId: String, index: Int, tag: String?)? {
+        guard let url = URL(string: imagePath), url.scheme == scheme, url.host == "item" else { return nil }
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
+        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "tag" }?.value
+        return (parts[0], index, tag)
+    }
+}
