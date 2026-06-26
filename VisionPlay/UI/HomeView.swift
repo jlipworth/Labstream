@@ -7,10 +7,8 @@ struct HomeView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var hubs: [Hub] = []
-    @State private var jellyfinViews: [JellyfinLibraryLink] = []
-    @State private var jellyfinRails: [JellyfinHomeRail] = []
-    @State private var embyViews: [EmbyLibraryLink] = []
-    @State private var embyRails: [EmbyHomeRail] = []
+    @State private var mediaBrowserLibraries: [MediaBrowserHomeLibraryLink] = []
+    @State private var mediaBrowserRails: [MediaBrowserHomeRail] = []
     @State private var loadState: BrowseLoadState = .idle
     /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can resolve through the same URL.
@@ -31,10 +29,8 @@ struct HomeView: View {
                                        description: Text(message))
                 .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
-                if appModel.activeBackend == .jellyfin {
-                    jellyfinHome
-                } else if appModel.activeBackend == .emby {
-                    embyHome
+                if appModel.activeBackend.isMediaBrowser {
+                    mediaBrowserHome
                 } else if hubs.isEmpty {
                     ContentUnavailableView("Nothing here yet",
                                            systemImage: "house",
@@ -87,49 +83,23 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private var embyHome: some View {
-        if embyViews.isEmpty {
-            ContentUnavailableView("No Emby libraries",
+    private var mediaBrowserHome: some View {
+        if mediaBrowserLibraries.isEmpty {
+            ContentUnavailableView("No \(appModel.activeBackend.displayName) libraries",
                                    systemImage: "rectangle.stack",
-                                   description: Text("This Emby user has no visible libraries."))
+                                   description: Text("This \(appModel.activeBackend.displayName) user has no visible libraries."))
             .frame(maxWidth: .infinity, minHeight: 360)
         } else {
             LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                if embyRails.isEmpty {
+                if mediaBrowserRails.isEmpty {
                     ContentUnavailableView("Open a library to browse",
                                            systemImage: "rectangle.stack",
-                                           description: Text("Emby did not return preview items for these libraries."))
+                                           description: Text("\(appModel.activeBackend.displayName) did not return preview items for these libraries."))
                     .frame(maxWidth: .infinity, minHeight: 260)
                 } else {
-                    ForEach(embyRails) { rail in
+                    ForEach(mediaBrowserRails) { rail in
                         HubRail(hub: Hub(title: rail.title,
-                                         hubIdentifier: "emby-\(rail.id)",
-                                         metadata: rail.items))
-                    }
-                }
-            }
-            .padding(.vertical, DS.Space.xl)
-        }
-    }
-
-    @ViewBuilder
-    private var jellyfinHome: some View {
-        if jellyfinViews.isEmpty {
-            ContentUnavailableView("No Jellyfin libraries",
-                                   systemImage: "rectangle.stack",
-                                   description: Text("This Jellyfin user has no visible libraries."))
-            .frame(maxWidth: .infinity, minHeight: 360)
-        } else {
-            LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                if jellyfinRails.isEmpty {
-                    ContentUnavailableView("Open a library to browse",
-                                           systemImage: "rectangle.stack",
-                                           description: Text("Jellyfin did not return preview items for these libraries."))
-                    .frame(maxWidth: .infinity, minHeight: 260)
-                } else {
-                    ForEach(jellyfinRails) { rail in
-                        HubRail(hub: Hub(title: rail.title,
-                                         hubIdentifier: "jellyfin-\(rail.id)",
+                                         hubIdentifier: "\(appModel.activeBackend.rawValue)-\(rail.id)",
                                          metadata: rail.items))
                     }
                 }
@@ -150,65 +120,27 @@ struct HomeView: View {
         let span = PerformanceInstrumentation.begin(.homeLoad,
                                                      backend: appModel.activeBackend.performanceLabel,
                                                      fields: ["force": force ? 1 : 0])
-        if appModel.activeBackend == .jellyfin {
+        if appModel.activeBackend.isMediaBrowser {
             loadState = .loading
             do {
-                let service = JellyfinBrowseService(appModel: appModel)
-                let allViews = try await service.userViewLinks()
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 // Mirror the Libraries screen: hide library rails the user has hidden (#104).
                 // Jellyfin/Emby Home rails are library-scoped (built from `views`), so filtering
                 // `views` here keeps Home consistent. (Plex Home uses non-library `/hubs` and is
                 // deferred — see #104.)
-                let visibilityStore = LibraryVisibilityStore()
-                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
-                let hidden = visibilityStore.hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
-                let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
-                jellyfinViews = views
-                let load = try await service.homeRails(for: views)
+                let content = try await MediaBrowserHomeProvider(appModel: appModel).loadHome()
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                jellyfinRails = load.rails
+                mediaBrowserLibraries = content.libraries
+                mediaBrowserRails = content.rails
                 // Only pin the loaded identity for a clean load. A degraded load (some rails
                 // errored) is shown but left unpinned so pop-back / the next `.task` re-fetches
                 // and can recover the missing rails without a manual pull-to-refresh (#93).
-                loadedIdentity = load.isDegraded ? nil : activeIdentity
+                loadedIdentity = content.isDegraded ? nil : activeIdentity
                 loadState = .loaded
                 span.end(fields: [
-                    "view_count": views.count,
-                    "rail_count": jellyfinRails.count,
-                    "item_count": jellyfinRails.reduce(0) { $0 + $1.items.count },
-                    "degraded": load.isDegraded ? 1 : 0,
-                ])
-            } catch {
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                loadState = .failed(friendlyMessage(error))
-            }
-            return
-        }
-
-        if appModel.activeBackend == .emby {
-            loadState = .loading
-            do {
-                let service = EmbyBrowseService(appModel: appModel)
-                let allViews = try await service.userViewLinks()
-                // See the Jellyfin branch: hide hidden-library rails (#104). Plex Home deferred.
-                let visibilityStore = LibraryVisibilityStore()
-                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
-                let hidden = visibilityStore.hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
-                let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
-                embyViews = views
-                let load = try await service.homeRails(for: views)
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                embyRails = load.rails
-                // See the Jellyfin branch: a degraded load is shown but not pinned (#93).
-                loadedIdentity = load.isDegraded ? nil : activeIdentity
-                loadState = .loaded
-                span.end(fields: [
-                    "view_count": views.count,
-                    "rail_count": embyRails.count,
-                    "item_count": embyRails.reduce(0) { $0 + $1.items.count },
-                    "degraded": load.isDegraded ? 1 : 0,
+                    "view_count": content.libraries.count,
+                    "rail_count": mediaBrowserRails.count,
+                    "item_count": mediaBrowserRails.reduce(0) { $0 + $1.items.count },
+                    "degraded": content.isDegraded ? 1 : 0,
                 ])
             } catch {
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }

@@ -173,47 +173,6 @@ struct EmbyBrowseService {
         return SearchResults(groups: groups)
     }
 
-    func homeRails(for views: [EmbyLibraryLink]) async throws -> HomeRailsLoad<EmbyHomeRail> {
-        _ = try context()
-        var rails: [EmbyHomeRail] = []
-        // Mirrors Jellyfin (#93): record per-rail errors so a degraded load is not cached
-        // as authoritative by the Home view.
-        var tracker = HomeRailsLoadTracker()
-
-        async let continueWatchingResult = HomeRailsLoadTracker.resultOf { try await resumeItems(limit: 20) }
-        async let nextUpResult = HomeRailsLoadTracker.resultOf { try await nextUp(limit: 20) }
-
-        if let continueWatching = tracker.record(await continueWatchingResult), !continueWatching.isEmpty {
-            rails.append(EmbyHomeRail(id: "continue-watching",
-                                      title: "Continue Watching",
-                                      items: continueWatching))
-        }
-
-        if let nextUpItems = tracker.record(await nextUpResult), !nextUpItems.isEmpty {
-            rails.append(EmbyHomeRail(id: "next-up",
-                                      title: "Next Up",
-                                      items: nextUpItems))
-        }
-
-        for view in views.prefix(8) {
-            let items = await tracker.attempt {
-                try await latestItems(parentId: view.id,
-                                      includeItemTypes: latestItemTypes(for: view),
-                                      limit: 20)
-            } ?? []
-            if !items.isEmpty {
-                rails.append(EmbyHomeRail(id: "latest-\(view.id)",
-                                          title: "Recently Added \(view.title)",
-                                          items: items))
-            }
-        }
-        if tracker.isDegraded {
-            NSLog("[#93] Emby homeRails degraded: %d of up to %d rails returned; will not pin loaded identity",
-                  rails.count, views.prefix(8).count + 2)
-        }
-        return HomeRailsLoad(rails: rails, isDegraded: tracker.isDegraded)
-    }
-
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
         let context = try context()
         let req = try EmbyLibrary.resumeItemsRequest(server: context.server,
@@ -378,27 +337,8 @@ struct EmbyBrowseService {
     }
 }
 
-private func latestItemTypes(for view: EmbyLibraryLink) -> String {
-    switch view.collectionType?.lowercased() {
-    case "movies":
-        return "Movie"
-    case "tvshows":
-        return "Episode"
-    case "homevideos", "livetv":
-        return "Video"
-    default:
-        return "Movie,Episode,Video"
-    }
-}
-
 struct EmbyLibraryLink: Identifiable, Hashable {
     let id: String
     let title: String
     let collectionType: String?
-}
-
-struct EmbyHomeRail: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let items: [MediaItem]
 }
