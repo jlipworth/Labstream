@@ -12,8 +12,9 @@ struct LibraryPagingPage: Sendable {
     }
 }
 
-// TODO(#96): Search, Detail child lists, and Music keep their existing paging/search paths
-// for later phases; this first pass intentionally scopes the shared model to video LibraryGridView.
+// Shared page-fetch contract for browse grids. Search, Detail child lists, and Music
+// now use the same browse load-state/paging primitives where useful, while each
+// screen keeps its own backend-specific request source.
 @MainActor
 struct LibraryPagingSource {
     static let defaultPageSize = 200

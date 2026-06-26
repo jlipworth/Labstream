@@ -12,7 +12,7 @@ struct AlbumDetailView: View {
     @Environment(MusicPlayerController.self) private var player
 
     @State private var tracks: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
 
     /// Hero cover size, matching the detail-screen poster width.
     private let coverSize: CGFloat = 300

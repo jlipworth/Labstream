@@ -33,7 +33,7 @@ struct ArtistDetailView: View {
     @State private var categorized: [ArtistShelf] = []
     @State private var appearsOn: [MediaItem] = []
     @State private var similar: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     /// Play/Shuffle Artist in flight (the allLeaves fetch) — disables both buttons.
     @State private var isStartingPlayback = false
     @State private var playError: String?

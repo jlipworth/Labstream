@@ -7,7 +7,7 @@ import PMSKit
 final class LibraryPagingModel {
     private(set) var slots: [MediaItem?] = []
     private(set) var alphabetBuckets: [AlphabetBucket] = []
-    private(set) var loadState: HomeView.LoadState = .idle
+    private(set) var loadState: BrowseLoadState = .idle
     private(set) var total = 0
     private(set) var pageSize = LibraryPagingSource.defaultPageSize
 

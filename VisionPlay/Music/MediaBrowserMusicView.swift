@@ -12,7 +12,7 @@ struct MediaBrowserMusicView: View {
 
     @State private var libraries: [MusicLibrary] = []
     @State private var selectedLibraryID: String?
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     /// The `backendIdentity` the currently-loaded `libraries` belong to. Mirrors
     /// `MusicLibraryView.loadedIdentity`: without it, the `.task(id: backendIdentity)` reload
     /// fires on a backend switch but `load()` early-returns (still `.loaded`) and keeps showing
@@ -155,7 +155,7 @@ private struct MediaBrowserMusicHome: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var rails: [MusicHomeRail] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
 
     var body: some View {
         ScrollView {
@@ -255,7 +255,7 @@ private struct MediaBrowserMusicPlaylists: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var playlists: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
 
     var body: some View {
         ScrollView {

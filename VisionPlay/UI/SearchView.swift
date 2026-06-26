@@ -12,7 +12,7 @@ struct SearchView: View {
 
     @State private var query = ""
     @State private var results: SearchResults = .empty
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     /// The query the current results were fetched for (pop-back no-op guard).
     @State private var loadedQuery: String?
 

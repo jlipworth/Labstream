@@ -11,15 +11,12 @@ struct HomeView: View {
     @State private var jellyfinRails: [JellyfinHomeRail] = []
     @State private var embyViews: [EmbyLibraryLink] = []
     @State private var embyRails: [EmbyHomeRail] = []
-    @State private var loadState: LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can resolve through the same URL.
     @State private var loadedIdentity: String?
     @State private var loadGeneration = 0
 
-    enum LoadState: Equatable {
-        case idle, loading, loaded, failed(String)
-    }
 
     var body: some View {
         ScrollView {
