@@ -845,11 +845,11 @@ public enum EmbyPlayback {
         return url
     }
 
-    /// Join a server-relative path (or pass through an absolute URL) onto the server base
+    /// Join a server-relative path (or same-origin absolute URL) onto the server base
     /// URL, PRESERVING the server's base path (for example `/emby`). Mirrors Jellyfin's
-    /// join helper.
+    /// trusted join helper.
     static func embyURL(server: URL, pathOrURLString: String) throws -> URL {
-        guard let url = MediaBrowserURL.join(server: server, pathOrURLString: pathOrURLString) else {
+        guard let url = MediaBrowserURL.joinTrustedServerURL(server: server, pathOrURLString: pathOrURLString) else {
             throw EmbyPlaybackError.invalidURL
         }
         return url

@@ -346,6 +346,42 @@ struct JellyfinLibraryTests {
         #expect(request.value(forHTTPHeaderField: "Accept")?.contains("image/jpeg") == true)
     }
 
+    @Test func trickPlayTileRequestAcceptsSameOriginAbsoluteTileAndStripsApiKey() throws {
+        let request = try JellyfinLibrary.trickPlayTileRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            itemId: "item-1",
+            mediaSourceId: "source-1",
+            width: 320,
+            tileURI: "https://jellyfin.example.test:443/proxy/trickplay/4.jpg?ApiKey=secret&MediaSourceId=source-1")
+        let url = try #require(request.url)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        #expect(components.scheme == "https")
+        #expect(components.host == "jellyfin.example.test")
+        #expect(components.port == 443)
+        #expect(components.path == "/proxy/trickplay/4.jpg")
+        #expect(query["MediaSourceId"] == "source-1")
+        #expect(query["ApiKey"] == nil)
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+        #expect(request.value(forHTTPHeaderField: "Accept")?.contains("image/jpeg") == true)
+    }
+
+    @Test func trickPlayTileRequestRejectsCrossOriginAbsoluteTileBeforeAuthHeader() {
+        #expect(throws: JellyfinPlaybackError.invalidURL) {
+            _ = try JellyfinLibrary.trickPlayTileRequest(
+                server: server,
+                token: "token-abc",
+                identity: identity,
+                itemId: "item-1",
+                mediaSourceId: "source-1",
+                width: 320,
+                tileURI: "https://evil.example.test/proxy/trickplay/4.jpg?ApiKey=secret")
+        }
+    }
+
     @Test func parsesJellyfinTrickPlayPlaylistAndFindsFrame() throws {
         let playlist = try JellyfinTrickPlayPlaylistParser.parse(#"""
         #EXTM3U

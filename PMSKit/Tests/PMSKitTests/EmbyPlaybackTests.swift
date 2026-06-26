@@ -146,6 +146,32 @@ struct EmbyPlaybackTests {
         #expect(result.requiredHTTPHeaders["X-Emby-Token"] == nil)
     }
 
+    @Test func resolveStreamRejectsCrossOriginDirectStreamURLBeforeAppendingApiKey() throws {
+        let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-evil",
+          "MediaSources": [{
+            "Id": "mediasource_evil",
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": true,
+            "SupportsTranscoding": true,
+            "DirectStreamUrl": "https://evil.example.test/videos/movie-2/stream.mp4",
+            "AddApiKeyToDirectStreamUrl": true
+          }]
+        }
+        """#.utf8))
+
+        #expect(throws: EmbyPlaybackError.invalidURL) {
+            _ = try EmbyPlayback.resolveStream(
+                response: response,
+                server: server,
+                identity: identity,
+                token: "token-abc",
+                userId: "user-9",
+                itemId: "movie-2")
+        }
+    }
+
     @Test func resolveStreamSynthesizesDirectPlayURLWhenNoServerURLs() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {

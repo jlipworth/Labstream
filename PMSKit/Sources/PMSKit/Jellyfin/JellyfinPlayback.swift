@@ -627,7 +627,7 @@ public enum JellyfinPlayback {
     }
 
     static func jellyfinURL(server: URL, pathOrURLString: String) throws -> URL {
-        guard let url = MediaBrowserURL.join(server: server, pathOrURLString: pathOrURLString) else {
+        guard let url = MediaBrowserURL.joinTrustedServerURL(server: server, pathOrURLString: pathOrURLString) else {
             throw JellyfinPlaybackError.invalidURL
         }
         return url
