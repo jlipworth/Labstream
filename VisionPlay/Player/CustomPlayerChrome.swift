@@ -253,6 +253,9 @@ struct CustomPlayerChrome: View {
                 cinemaButton
                     .fixedSize(horizontal: true, vertical: false)
 
+                cinemaScreenButton
+                    .fixedSize(horizontal: true, vertical: false)
+
                 realityTheaterDeveloperButton
                     .fixedSize(horizontal: true, vertical: false)
 
@@ -407,6 +410,25 @@ struct CustomPlayerChrome: View {
     }
 
 
+    @ViewBuilder private var cinemaScreenButton: some View {
+        if CustomCinemaMode.isUserVisible && cinemaSession.presentationState == .open {
+            Button {
+                openMenu(.screen)
+            } label: {
+                Label("Screen position", systemImage: "rectangle.arrowtriangle.2.outward")
+                    .labelStyle(.iconOnly)
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 38, height: 32)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
+            .accessibilityLabel("Screen position")
+            .help("Adjust Cinema screen position")
+        }
+    }
+
+
     @ViewBuilder private var realityTheaterDeveloperButton: some View {
         if allowsRealityTheater
             && (RealityTheaterFeature.isDeviceTestingEntryPointVisible
@@ -457,6 +479,8 @@ struct CustomPlayerChrome: View {
     private var availableMenus: [CustomPlayerMenuKind] {
         CustomPlayerMenuKind.allCases.filter { menu in
             switch menu {
+            case .screen:
+                return false
             case .quality:
                 return controller.supportsQualityReload
             case .subtitles, .audio, .chapters, .speed, .stats:
@@ -681,6 +705,7 @@ struct CustomPlayerChrome: View {
 }
 
 private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
+    case screen
     case quality
     case subtitles
     case audio
@@ -692,6 +717,7 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .screen: "Screen Position"
         case .quality: "Quality"
         case .subtitles: "Subtitles"
         case .audio: "Audio"
@@ -703,6 +729,7 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var shortTitle: String {
         switch self {
+        case .screen: "Screen"
         case .quality: "Quality"
         case .subtitles: "Subs"
         case .audio: "Audio"
@@ -714,6 +741,7 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .screen: "rectangle"
         case .quality: "slider.horizontal.3"
         case .subtitles: "captions.bubble"
         case .audio: "waveform"
@@ -726,12 +754,14 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     var minChromeWidth: CGFloat {
         switch self {
         case .quality, .subtitles, .audio, .speed, .stats: 72
+        case .screen: 82
         case .chapters: 94
         }
     }
 
     var popoverSize: CGSize {
         switch self {
+        case .screen: CGSize(width: 430, height: 390)
         case .quality: CGSize(width: 340, height: 315)
         case .speed: CGSize(width: 300, height: 245)
         case .subtitles, .audio: CGSize(width: 390, height: 275)
@@ -743,12 +773,14 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     var popoverAlignment: Alignment {
         switch self {
         case .quality, .subtitles, .audio, .chapters: .center
-        case .speed, .stats: .trailing
+        case .screen, .speed, .stats: .trailing
         }
     }
 }
 
 private struct CustomPlayerMenuPopover: View {
+    @Environment(CustomCinemaSessionStore.self) private var cinemaSession
+
     let menu: CustomPlayerMenuKind
     let controller: PlaybackController
     @Bindable var menuState: PlayerMenuState
@@ -789,6 +821,8 @@ private struct CustomPlayerMenuPopover: View {
 
     @ViewBuilder private var menuContent: some View {
         switch menu {
+        case .screen:
+            CinemaScreenAdjustmentView(session: cinemaSession)
         case .quality:
             QualityTabView(state: menuState) { kbps in
                 controller.reload(bitrateKbps: kbps)
@@ -831,6 +865,150 @@ private struct CustomPlayerMenuPopover: View {
         case .stats:
             StatsTabView(diagnostics: controller.diagnostics)
         }
+    }
+}
+
+
+private struct CinemaScreenAdjustmentView: View {
+    let session: CustomCinemaSessionStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Button { session.applyReclinedScreenPreset() } label: {
+                    Label("I'm reclined", systemImage: "chair.lounge")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button { session.resetScreenAdjustment() } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            adjustmentRow(title: "Tilt",
+                          valueText: formatDegrees(session.screenAdjustment.pitchDegrees),
+                          lowerLabel: "Top away",
+                          lowerSystemImage: "arrow.up.backward",
+                          upperLabel: "Top toward",
+                          upperSystemImage: "arrow.down.forward",
+                          lowerAction: { session.nudgeScreenAdjustment(pitchDegrees: -2) },
+                          upperAction: { session.nudgeScreenAdjustment(pitchDegrees: 2) }) {
+                Slider(value: pitchBinding,
+                       in: Double(CustomCinemaScreenAdjustment.pitchDegreesRange.lowerBound)...Double(CustomCinemaScreenAdjustment.pitchDegreesRange.upperBound),
+                       step: 1)
+            }
+
+            adjustmentRow(title: "Height",
+                          valueText: formatMeters(session.screenAdjustment.verticalDeltaMeters),
+                          lowerLabel: "Lower",
+                          lowerSystemImage: "arrow.down",
+                          upperLabel: "Raise",
+                          upperSystemImage: "arrow.up",
+                          lowerAction: { session.nudgeScreenAdjustment(verticalDeltaMeters: -0.10) },
+                          upperAction: { session.nudgeScreenAdjustment(verticalDeltaMeters: 0.10) }) {
+                Slider(value: heightBinding,
+                       in: Double(CustomCinemaScreenAdjustment.verticalDeltaRange.lowerBound)...Double(CustomCinemaScreenAdjustment.verticalDeltaRange.upperBound),
+                       step: 0.05)
+            }
+
+            adjustmentRow(title: "Distance",
+                          valueText: formatMeters(session.screenAdjustment.distanceDeltaMeters),
+                          lowerLabel: "Closer",
+                          lowerSystemImage: "minus.magnifyingglass",
+                          upperLabel: "Farther",
+                          upperSystemImage: "plus.magnifyingglass",
+                          lowerAction: { session.nudgeScreenAdjustment(distanceDeltaMeters: -0.25) },
+                          upperAction: { session.nudgeScreenAdjustment(distanceDeltaMeters: 0.25) }) {
+                Slider(value: distanceBinding,
+                       in: Double(CustomCinemaScreenAdjustment.distanceDeltaRange.lowerBound)...Double(CustomCinemaScreenAdjustment.distanceDeltaRange.upperBound),
+                       step: 0.05)
+            }
+
+            Text("Use small nudges like a remote, or drag a slider for larger posture changes. Reclined tilts the top toward you and lifts the screen. Values apply immediately and are remembered for the next Cinema session.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var pitchBinding: Binding<Double> {
+        Binding {
+            Double(session.screenAdjustment.pitchDegrees)
+        } set: { newValue in
+            var next = session.screenAdjustment
+            next.pitchDegrees = Float(newValue)
+            session.updateScreenAdjustment(next)
+        }
+    }
+
+    private var heightBinding: Binding<Double> {
+        Binding {
+            Double(session.screenAdjustment.verticalDeltaMeters)
+        } set: { newValue in
+            var next = session.screenAdjustment
+            next.verticalDeltaMeters = Float(newValue)
+            session.updateScreenAdjustment(next)
+        }
+    }
+
+    private var distanceBinding: Binding<Double> {
+        Binding {
+            Double(session.screenAdjustment.distanceDeltaMeters)
+        } set: { newValue in
+            var next = session.screenAdjustment
+            next.distanceDeltaMeters = Float(newValue)
+            session.updateScreenAdjustment(next)
+        }
+    }
+
+    private func adjustmentRow<Control: View>(title: String,
+                                              valueText: String,
+                                              lowerLabel: String,
+                                              lowerSystemImage: String,
+                                              upperLabel: String,
+                                              upperSystemImage: String,
+                                              lowerAction: @escaping () -> Void,
+                                              upperAction: @escaping () -> Void,
+                                              @ViewBuilder control: () -> Control) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Text(valueText)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button(action: lowerAction) {
+                    Label(lowerLabel, systemImage: lowerSystemImage)
+                        .labelStyle(.iconOnly)
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(lowerLabel)
+
+                control()
+
+                Button(action: upperAction) {
+                    Label(upperLabel, systemImage: upperSystemImage)
+                        .labelStyle(.iconOnly)
+                        .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel(upperLabel)
+            }
+        }
+    }
+
+    private func formatDegrees(_ value: Float) -> String {
+        String(format: "%+.0f°", value)
+    }
+
+    private func formatMeters(_ value: Float) -> String {
+        String(format: "%+.2fm", value)
     }
 }
 
