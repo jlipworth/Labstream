@@ -351,6 +351,19 @@ final class DownloadStore: @unchecked Sendable {
     /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
     /// a sibling `.resume` file (it can be large). No-op if the row/metadata is gone.
     func setResumeData(ratingKey: String, _ data: Data) {
+        // H9: `updateMetadata` is a no-op when a row carries no metadata snapshot (a
+        // legacy pre-D5 row). Writing the blob first and only then discovering the path
+        // can't be recorded would orphan a potentially large `.resume` file on disk. Bail
+        // BEFORE writing when there's nothing to record it on — resume was already
+        // unavailable for such a row, so this only avoids the leak, it changes no behavior.
+        lock.lock()
+        let canRecordPath = rows[ratingKey]?.metadata != nil
+        lock.unlock()
+        guard canRecordPath else {
+            NSLog("DownloadStore: skipping resume-data persist for %@ — row has no metadata to record its path on",
+                  ratingKey)
+            return
+        }
         let url = resumeDataDestinationURL(ratingKey: ratingKey)
         do { try data.write(to: url, options: .atomic) }
         catch {
@@ -580,16 +593,26 @@ final class DownloadStore: @unchecked Sendable {
 
     private func load() {
         lock.lock(); defer { lock.unlock() }
-        guard let data = try? Data(contentsOf: indexURL),
-              let decoded = try? JSONDecoder().decode([Row].self, from: data) else { return }
-        rows = Dictionary(uniqueKeysWithValues: decoded.map { ($0.ratingKey, $0) })
+        guard let data = try? Data(contentsOf: indexURL) else { return }
+        // #135 H8: decode the index row-by-row so a single corrupt/forward-incompatible
+        // row can't drop the user's whole offline library (the old all-or-nothing
+        // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
+        // swallowed — silent truncation is the failure mode this guards against.
+        let result = DownloadIndexCoding.decode(Row.self, from: data)
+        if result.skippedRowCount > 0 {
+            NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
+                  result.skippedRowCount, result.schemaVersion, result.rows.count)
+        }
+        rows = Dictionary(uniqueKeysWithValues: result.rows.map { ($0.ratingKey, $0) })
     }
 
     private func persist() {
         lock.lock()
         let snapshot = Array(rows.values)
         lock.unlock()
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        // #135 Stage 6: write the versioned envelope so a future on-disk migration can
+        // branch on the schema version it reads back.
+        guard let data = try? DownloadIndexCoding.encode(snapshot) else { return }
         try? data.write(to: indexURL, options: .atomic)
     }
 }

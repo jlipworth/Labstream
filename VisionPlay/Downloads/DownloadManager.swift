@@ -76,7 +76,7 @@ public final class DownloadManager {
     /// replacement with a new queue title. The old async poller is not a URLSession task, so it may
     /// wake up later after Plex has produced a Part. Treat that as a no-op, not as a user-visible
     /// failure, and never let it overwrite the newer row or start a duplicate transfer.
-    private enum DownloadLifecycleCancellation: Error {
+    enum DownloadLifecycleCancellation: Error {
         case staleOptimizeAttempt
     }
 
@@ -84,7 +84,7 @@ public final class DownloadManager {
     public private(set) var records: [DownloadRecord] = []
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
-    public private(set) var activeJobs: Set<String> = []
+    public internal(set) var activeJobs: Set<String> = []
     private var retryingRows: Set<String> = []
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
@@ -95,7 +95,7 @@ public final class DownloadManager {
 
     /// Full optimize-queue titles (`"<title> [VisionPlay <hex>]"`) of in-flight jobs. Used to
     /// protect them from `cleanStaleOptimizeJobs`, which only removes abandoned items.
-    private var activeQueueTitles: Set<String> = []
+    var activeQueueTitles: Set<String> = []
 
     /// ratingKey -> the optimize-queue title we submitted for its in-flight download. Lets the
     /// download-completion/failure path release the right `activeQueueTitles` entry. CRITICAL:
@@ -104,10 +104,10 @@ public final class DownloadManager {
     /// KICKS OFF the URLSession transfer, so releasing it when `triggerOptimizeAndDownload`
     /// returns would leave the rendered Part unprotected while it is still downloading, and
     /// a concurrent job's `cleanStaleOptimizeJobs` could then delete that Part out from under it.
-    private var queueTitleByRatingKey: [String: String] = [:]
+    var queueTitleByRatingKey: [String: String] = [:]
 
     /// Last error per ratingKey, for UI surfacing.
-    public private(set) var lastError: [String: DownloadError] = [:]
+    public internal(set) var lastError: [String: DownloadError] = [:]
 
     /// Smoothed transfer rate (bytes/sec) per actively-downloading ratingKey, derived
     /// in `refreshRecords` by diffing cumulative bytes between progress callbacks.
@@ -132,7 +132,7 @@ public final class DownloadManager {
     /// `GET /activities` during the "Preparing on server…" phase. Absent when the server
     /// reports no matching activity (caller falls back to the indeterminate caption).
     /// Ephemeral (never persisted); drives the "Transcoding… 37%" readout.
-    public private(set) var optimizeProgress: [String: Double] = [:]
+    public internal(set) var optimizeProgress: [String: Double] = [:]
 
     /// Estimated seconds remaining for the server-side optimize, derived from an EMA over
     /// the moving percent. Present only when the rate is stable enough to be meaningful;
@@ -141,7 +141,7 @@ public final class DownloadManager {
 
     /// Coarse optimize state label per ratingKey: "queued" (job seen but no progress yet)
     /// or "transcoding" (progress reported). Absent when no matching activity is found.
-    public private(set) var optimizeState: [String: String] = [:]
+    public internal(set) var optimizeState: [String: String] = [:]
 
     /// Active downloads whose byte stream is gated by the server's transcoder rather than by
     /// the network — i.e. the file is being served AS it renders, so a slow rate means "the
@@ -150,7 +150,7 @@ public final class DownloadManager {
     /// network problem. Ephemeral; never persisted. Membership alone marks a download as
     /// transcode-sourced; `isDownloadTranscodeLimited` adds the "running well below realtime"
     /// test so a fast-rendering job isn't mislabelled.
-    private var transcodeSourcedDownloads: Set<String> = []
+    var transcodeSourcedDownloads: Set<String> = []
 
     /// ratingKey -> the server `PlaySessionId` minted/assigned for a TRANSCODED download.
     /// Required for encoder teardown: active server encoders must be killed with
@@ -162,8 +162,8 @@ public final class DownloadManager {
     /// row is seeded. Normal terminal transitions tear down from this in-memory map and clear the
     /// persisted copy on success; hard-kill/relaunch cleanup uses the persisted copy in
     /// `teardownOrphanedEncodersOnLaunch()`.
-    private var embyPlaySessionByRatingKey: [String: String] = [:]
-    private var jellyfinPlaySessionByRatingKey: [String: String] = [:]
+    var embyPlaySessionByRatingKey: [String: String] = [:]
+    var jellyfinPlaySessionByRatingKey: [String: String] = [:]
     /// Jellyfin kills idle transcodes when no session progress/ping arrives. Offline downloads
     /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
     /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
@@ -174,14 +174,16 @@ public final class DownloadManager {
     /// Smoothed %/sec rate per ratingKey (EMA), used to derive `optimizeETA`.
     private var optimizeRate: [String: Double] = [:]
 
-    private let appModel: AppModel
-    private let store: DownloadStore
-    private let session: BackgroundDownloadSession
+    // #135 Stage 5c: `internal` (not `private`) so the per-backend lane subsystems split into their
+    // own files (e.g. DownloadManager+EmbyConvert.swift) can reach the shared download services.
+    let appModel: AppModel
+    let store: DownloadStore
+    let session: BackgroundDownloadSession
 
     /// Poll cadence for Plex server-side optimize jobs. Deliberately no wall-clock timeout:
     /// long 4K/HDR software transcodes can legitimately run for hours, and the app must base
     /// failure only on server truth (metadata/background queue status), not elapsed time.
-    private let optimizePollInterval: TimeInterval = 5
+    let optimizePollInterval: TimeInterval = 5
 
     init(appModel: AppModel) {
         self.appModel = appModel
@@ -247,7 +249,7 @@ public final class DownloadManager {
             // at a different server (re-login elsewhere), firing the DELETE there would hit the
             // wrong server and leak the original encoder — skip and keep the psid so a later
             // launch on the matching server retries.
-            guard Self.backendSessionMatchesPersistedServer(metadata: md, live: live) else { continue }
+            guard live.matchesPersistedServer(md) else { continue }
             let key = record.ratingKey
             switch kind {
             case .jellyfin:
@@ -275,43 +277,6 @@ public final class DownloadManager {
     /// Confirm a persisted encoder handle belongs to the currently-restored backend lane before
     /// sending `DELETE /Videos/ActiveEncodings`. Prefer stable server ids; fall back to the saved
     /// base URL for servers that did not provide one.
-    private static func backendSessionMatchesPersistedServer(metadata: OfflineMetadata,
-                                                             live: BackendSession) -> Bool {
-        if let persistedID = metadata.backendServerID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !persistedID.isEmpty {
-            return live.serverID == persistedID
-        }
-        guard let persistedURLString = metadata.backendBaseURLString,
-              let persistedURL = URL(string: persistedURLString) else {
-            // Legacy/partial metadata has no server identity to compare. Allow the best-effort
-            // cleanup rather than permanently leaking a known PlaySessionId.
-            return true
-        }
-        return sameBackendBaseURL(persistedURL, live.baseURL)
-    }
-
-    private static func sameBackendBaseURL(_ lhs: URL, _ rhs: URL) -> Bool {
-        let lhsScheme = lhs.scheme?.lowercased()
-        let rhsScheme = rhs.scheme?.lowercased()
-        guard lhsScheme == rhsScheme,
-              lhs.host?.lowercased() == rhs.host?.lowercased(),
-              effectivePort(lhs) == effectivePort(rhs) else { return false }
-        return normalizedBasePath(lhs.path) == normalizedBasePath(rhs.path)
-    }
-
-    private static func effectivePort(_ url: URL) -> Int? {
-        if let port = url.port { return port }
-        switch url.scheme?.lowercased() {
-        case "http": return 80
-        case "https": return 443
-        default: return nil
-        }
-    }
-
-    private static func normalizedBasePath(_ path: String) -> String {
-        path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    }
-
     /// Absolute local URL for a completed download, if present on disk.
     public func localURL(for ratingKey: String) -> URL? {
         store.localURL(for: ratingKey)
@@ -343,35 +308,9 @@ public final class DownloadManager {
     public func isDownloadTranscodeLimited(_ ratingKey: String) -> Bool {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }),
               record.status == .downloading else { return false }
-        return Self.isLiveTranscoderSourced(record)
-    }
-
-    /// #123: whether a row's byte stream comes from a LIVE server transcoder rather than the wire —
-    /// so its byte cadence is transcoder OUTPUT, not network speed, and a "/s" readout would mislead.
-    /// Keyed on the PERSISTED lane (`resolvedDownloadLane`), so the suppression survives relaunch —
-    /// the old in-memory `transcodeSourcedDownloads` set + 500 KB/s heuristic did not, and a resumed
-    /// transcoded row would then show its output rate as MB/s unconditionally. Lanes:
-    /// - `.original` (incl. existing-version): static, range-resumable → genuine wire speed → false.
-    /// - `.optimize`: Plex phase-2 downloads a rendered static Part; Jellyfin/Emby optimize is live.
-    /// - `.compatibleRemux`: a live remux stream with NO Content-Length is transcoder-gated → true;
-    ///   but once the server reports a size (`progress > 0`) the transfer is effectively static and
-    ///   network-bound, so show the real rate → false.
-    static func isLiveTranscoderSourced(_ record: DownloadRecord) -> Bool {
-        let lane = record.metadata?.resolvedDownloadLane() ?? .original
-        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-        switch lane {
-        case .original:
-            return false
-        case .optimize:
-            // Plex optimize has a separate server-side render phase; once the optimized Part exists,
-            // the app downloads that rendered static file with a real Content-Length/range support.
-            // Jellyfin/Emby optimize lanes are live encoder streams, so their byte cadence remains
-            // transcoder-gated for the whole transfer.
-            return backend == .plex ? record.progress <= 0 : true
-        case .compatibleRemux:
-            return record.progress <= 0
-        }
+        // #123 / #135 Stage 1c: the lane × backend × progress classification lives in the pure,
+        // tested `DownloadDisplayClassifier`.
+        return DownloadDisplayClassifier.isLiveTranscoderSourced(record)
     }
 
     /// #84: whether the backend lane a row needs is currently configured/authenticated. The
@@ -401,7 +340,7 @@ public final class DownloadManager {
         }
     }
 
-    fileprivate static func jellyfinRecordKey(_ itemId: String) -> String {
+    static func jellyfinRecordKey(_ itemId: String) -> String {
         "jellyfin:\(itemId)"
     }
 
@@ -415,7 +354,7 @@ public final class DownloadManager {
             : ratingKey
     }
 
-    fileprivate static func embyRecordKey(_ itemId: String) -> String {
+    static func embyRecordKey(_ itemId: String) -> String {
         "emby:\(itemId)"
     }
 
@@ -491,1071 +430,6 @@ public final class DownloadManager {
             .filter { !$0.isEmpty }
     }
 
-    /// Probe-driven download entry point (offline-download redesign). `choice` comes from the
-    /// sheet, which already ran the direct-play probe: `.original` direct-downloads the source
-    /// file; `.optimize` renders a compatible MP4 server-side then downloads it. Both converge
-    /// on the same background-`URLSession` + validation pipeline. Records state rather than
-    /// throwing.
-    public func download(_ item: MediaItem, choice: DownloadChoice,
-                         mediaIndex: Int = 0, partIndex: Int = 0) async {
-        let ratingKey = item.ratingKey
-        // #84: resolve the Plex session ONCE from its own lane (never `appModel.activeBackend`),
-        // then never re-read a per-lane credential field for the rest of this job.
-        // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
-        guard let backendSession = appModel.backendSession(for: .plex) else {
-            recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
-                "backend": .label("Plex"),
-                "reason": .label("not_authenticated"),
-            ])
-            lastError[ratingKey] = .notAuthenticated
-            return
-        }
-        let token = backendSession.token
-        let server = backendSession.baseURL
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Plex") else { return }
-        lastError[ratingKey] = nil
-        // NOTE: no `defer { activeJobs.remove }` here — that fired when this function returned,
-        // which (for both choices) is right after `session.start` merely KICKS OFF the transfer,
-        // dropping in-flight protection while the file was still downloading. The protection is
-        // now released terminally from `refreshRecords` (on `.complete`/`.failed`) and explicitly
-        // on the exit paths below that never start a transfer.
-
-        if case .optimize = choice,
-           rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex",
-                                    expectedBytes: estimatedBytes(for: item, choice: choice,
-                                                                  mediaIndex: mediaIndex,
-                                                                  partIndex: partIndex,
-                                                                  backend: .plex)) {
-            releaseInFlight(ratingKey: ratingKey)
-            return
-        }
-
-        let chosenMedia = item.media?[safe: mediaIndex]
-        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: chosenMedia)
-        let optimizeTargetName: String?
-        if case .optimize(let targetName) = choice {
-            optimizeTargetName = targetName
-        } else {
-            optimizeTargetName = nil
-        }
-        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
-                                            mediaIndex: mediaIndex, partIndex: partIndex,
-                                            optimizeTargetName: optimizeTargetName,
-                                            session: backendSession,
-                                            downloadLane: Self.downloadLane(for: choice),
-                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
-        recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
-            item: item,
-            choice: choice,
-            backend: "Plex",
-            backendKind: .plex,
-            mediaIndex: mediaIndex,
-            partIndex: partIndex
-        ))
-        // D5/#102: cache poster-shaped artwork locally so artwork shows offline. Episodes
-        // often expose a landscape still as `thumb`, which looks wrong in the Offline tab's
-        // small portrait tile; prefer the show/season poster when TV hierarchy provides it.
-        cachePoster(ratingKey: ratingKey, thumb: Self.offlinePosterRef(for: item),
-                    server: server, token: token)
-        cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
-                     server: server, token: token)
-
-        switch choice {
-        case .original:
-            guard let part = chosenMedia?.part[safe: partIndex] else {
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "reason": .label("no_media_part"),
-                ])
-                lastError[ratingKey] = .transferFailed("No media part to download.")
-                releaseInFlight(ratingKey: ratingKey)
-                return
-            }
-            // The original file is a STATIC GET with a real Content-Length + valid moov atom.
-            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            let preflight = await preflightOriginalPlayback(ratingKey: ratingKey, url: url,
-                                                            token: token, expectedBytes: part.size,
-                                                            durationMs: part.duration ?? item.duration)
-            guard preflight else {
-                let fallback = Self.originalFallbackOptimizeTarget()
-                recordDownloadDiagnostic("downloads.original_preflight_fallback", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(fallback),
-                ])
-                await triggerOptimizeAndDownload(item: item, targetName: fallback,
-                                                 metadata: metadata, session: backendSession)
-                return
-            }
-
-            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
-                                        metadata: metadata, choiceLabel: "original",
-                                        choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
-                                        server: server, token: token)
-
-        case .existingVersion:
-            // #112: download an EXISTING server-generated Plex Version exactly as-is. Same static
-            // byte-for-byte transfer as `.original`, but the user explicitly picked a pre-rendered
-            // server version, so we DELIBERATELY skip the original direct-play preflight (the
-            // version is already a server-prepared file) and NEVER touch the optimize queue.
-            guard let part = chosenMedia?.part[safe: partIndex] else {
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "reason": .label("no_existing_version_part"),
-                ])
-                lastError[ratingKey] = .transferFailed("No server version part to download.")
-                releaseInFlight(ratingKey: ratingKey)
-                return
-            }
-            let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
-                                        metadata: metadata, choiceLabel: "existing_version",
-                                        choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
-                                        server: server, token: token)
-
-        case .optimize(let targetName):
-            await triggerOptimizeAndDownload(item: item, targetName: targetName,
-                                             metadata: metadata, session: backendSession)
-
-        case .optimizeCompatible:
-            // #83 is a Jellyfin/Emby-only lane. Plex's optimized-version model already produces a
-            // compatible file at original video quality via its "Original video quality" target, so
-            // map the choice onto that target rather than introducing a no-op Plex path.
-            await triggerOptimizeAndDownload(item: item, targetName: Self.originalFallbackOptimizeTarget(),
-                                             metadata: metadata, session: backendSession)
-        }
-    }
-
-    /// Shared tail for the two Plex STATIC part-download lanes (`.original` after its preflight, and
-    /// `.existingVersion`): storage check, seed the row, cache side assets, then kick off the
-    /// background transfer of a single `Part` byte-for-byte. Neither lane renders server-side, so
-    /// the optimize queue is untouched. `choiceLabel` only tags diagnostics.
-    private func startStaticPlexPartDownload(ratingKey: String, item: MediaItem, part: Part, url: URL,
-                                             metadata: OfflineMetadata, choiceLabel: String,
-                                             choice: DownloadChoice, mediaIndex: Int, partIndex: Int,
-                                             server: URL, token: String) {
-        let expectedBytes = estimatedBytes(for: item, choice: choice,
-                                           mediaIndex: mediaIndex,
-                                           partIndex: partIndex,
-                                           backend: .plex) ?? part.size
-        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: expectedBytes) {
-            releaseInFlight(ratingKey: ratingKey)
-            return
-        }
-        let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
-        let destination = store.destinationURL(ratingKey: ratingKey,
-                                               ext: ext.isEmpty ? "mp4" : ext)
-        // Seed a 0% record so the UI shows the job immediately.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
-        refreshRecords()
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
-                           server: server, token: token)
-        cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
-        do {
-            recordDownloadDiagnostic("downloads.start", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Plex"),
-                "choice": .label(choiceLabel),
-                "url_shape": .urlShape(url),
-                "expected_bytes": .bytes(part.size),
-            ])
-            try session.start(ratingKey: ratingKey, from: url, to: destination,
-                              expectedBytes: part.size,
-                              byteRangeCheckpoint: true)
-            refreshRecords()
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Plex"),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Plex"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            refreshRecords()
-        }
-    }
-
-    private func fallbackOriginalValidationFailureIfPossible(ratingKey: String) async {
-        // If this was already an optimizer/transcode-sourced file, do not loop. The fallback is
-        // only for a true-original transfer that downloaded successfully but failed the final
-        // local AVPlayer startup validation.
-        //
-        // #84: gate on the ROW's own backend (via the migration fallback), not `activeBackend`,
-        // and resolve the Plex session from its lane — so the original→optimize fallback fires
-        // even if the user has since switched to Jellyfin/Emby, as long as the Plex lane is still
-        // configured (lanes persist independently).
-        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }),
-              let metadata = record.metadata,
-              metadata.resolvedBackendKind(ratingKey: ratingKey) == .plex,
-              !transcodeSourcedDownloads.contains(ratingKey),
-              queueTitleByRatingKey[ratingKey] == nil,
-              metadata.optimizeTargetName?.isEmpty != false,
-              let backendSession = appModel.backendSession(for: .plex) else { return }
-        let item = metadata.makeMediaItem()
-        let target = Self.originalFallbackOptimizeTarget()
-        recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
-            "download_id": .identifier(ratingKey),
-            "target": .label(target),
-        ])
-        activeJobs.insert(ratingKey)
-        lastError[ratingKey] = nil
-        await triggerOptimizeAndDownload(item: item, targetName: target,
-                                         metadata: metadata, session: backendSession)
-    }
-
-    private static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {
-        let stored = defaults.string(forKey: PlaybackPreferences.Keys.defaultDownloadQuality)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let stored, isExplicitDownloadPresetName(stored) { return stored }
-        return PlaybackPreferences.defaultDownloadQuality
-    }
-
-    private static func isExplicitDownloadPresetName(_ name: String) -> Bool {
-        isPlexOriginalQualityTarget(name) || customDownloadProfile(named: name) != nil
-    }
-
-    private static func isVisibleDownloadPresetName(_ name: String) -> Bool {
-        ![
-            "Original Quality",
-            "Optimized for TV",
-            "Optimized for Mobile",
-        ].contains { hidden in
-            name.localizedCaseInsensitiveCompare(hidden) == .orderedSame
-        }
-    }
-
-    /// Second-stage safety gate for user-selected Plex original downloads. The decision endpoint
-    /// can say "direct play" but still not prove AVFoundation will open the static source URL as
-    /// a local/offline-style file. Before committing a potentially huge transfer, briefly start
-    /// the source in a muted `AVPlayer`. Passing means the original path continues; failing means
-    /// we transparently fall back to the server optimizer.
-    private func preflightOriginalPlayback(ratingKey: String, url: URL, token: String,
-                                           expectedBytes: Int?, durationMs: Int?) async -> Bool {
-        let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs, isRemotePreflight: true)
-        recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
-            "download_id": .identifier(ratingKey),
-            "phase": .label("start"),
-            "url_shape": .urlShape(url),
-            "expected_bytes": .bytes(expectedBytes),
-            "required_playback_seconds": .secondsBucket(policy.requiredPlaybackSeconds),
-            "timeout_seconds": .secondsBucket(policy.timeoutSeconds),
-        ])
-
-        let asset = AVURLAsset(url: url, options: [
-            "AVURLAssetHTTPHeaderFieldsKey": PlexHeaders.media(identity: appModel.identity, token: token),
-        ])
-        let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
-        guard assetPlayable else {
-            recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
-                "download_id": .identifier(ratingKey),
-                "phase": .label("failed"),
-                "reason": .label("asset_not_playable"),
-            ])
-            return false
-        }
-
-        let item = AVPlayerItem(asset: asset)
-        let player = AVPlayer(playerItem: item)
-        player.isMuted = true
-        player.volume = 0
-        player.automaticallyWaitsToMinimizeStalling = true
-        player.play()
-        defer {
-            player.pause()
-            player.replaceCurrentItem(with: nil)
-        }
-
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(policy.timeoutSeconds * 1000)))
-        var sawReady = false
-        while ContinuousClock.now < deadline {
-            switch item.status {
-            case .failed:
-                recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "phase": .label("failed"),
-                    "reason": .label("item_failed"),
-                    "error": .error(item.error),
-                ])
-                return false
-            case .readyToPlay:
-                sawReady = true
-            case .unknown:
-                break
-            @unknown default:
-                break
-            }
-
-            let seconds = player.currentTime().seconds
-            if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
-                recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "phase": .label("passed"),
-                    "played": .secondsBucket(seconds),
-                ])
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
-        }
-
-        recordDownloadDiagnostic("downloads.original_playback_preflight", fields: [
-            "download_id": .identifier(ratingKey),
-            "phase": .label("failed"),
-            "reason": .label(sawReady ? "no_playback_progress" : "timeout_not_ready"),
-        ])
-        return false
-    }
-
-    /// Jellyfin download entry point. Original downloads use Jellyfin's static video stream
-    /// endpoint; optimized choices stream a server-rendered MP4 from the
-    /// video transcoder with auth in headers. Both paths use the same background transfer +
-    /// validation pipeline as Plex downloads.
-    public func downloadJellyfin(_ item: MediaItem, choice: DownloadChoice,
-                                 mediaIndex: Int = 0,
-                                 partIndex: Int = 0,
-                                 mediaSourceIDOverride: String? = nil) async {
-        let itemId = item.ratingKey
-        let ratingKey = Self.jellyfinRecordKey(itemId)
-        // #84: capture the Jellyfin session from its own lane; never re-read `appModel.jellyfin*`
-        // or `activeBackend` for the rest of this job.
-        // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
-        guard let backendSession = appModel.backendSession(for: .jellyfin) else {
-            recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
-                "backend": .label("Jellyfin"),
-                "reason": .label("not_authenticated"),
-            ])
-            lastError[ratingKey] = .notAuthenticated
-            return
-        }
-        let server = backendSession.baseURL
-        let token = backendSession.token
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Jellyfin") else { return }
-        lastError[ratingKey] = nil
-        // No `defer { activeJobs.remove }` — same in-flight-lifetime fix as the Plex path:
-        // `session.start` only kicks off the transfer, so protection is released terminally
-        // from `refreshRecords` (on `.complete`/`.failed`) plus the explicit no-start exits.
-
-        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Jellyfin",
-                                    expectedBytes: estimatedBytes(for: item, choice: choice,
-                                                                  mediaIndex: mediaIndex,
-                                                                  partIndex: partIndex,
-                                                                  backend: .jellyfin)) {
-            releaseInFlight(ratingKey: ratingKey)
-            return
-        }
-
-        let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
-        let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
-        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
-        let jellyfinMediaSourceID = mediaSourceIDOverride ?? Self.jellyfinMediaSourceID(media: media, part: part)
-        var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
-        var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
-                                            mediaIndex: mediaIndex, partIndex: partIndex,
-                                            optimizeTargetName: {
-                                                if case .optimize(let targetName) = choice { return targetName }
-                                                return nil
-                                            }(),
-                                            session: backendSession,
-                                            mediaSourceID: jellyfinMediaSourceID,
-                                            downloadLane: Self.downloadLane(for: choice),
-                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
-        recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
-            item: item,
-            choice: choice,
-            backend: "Jellyfin",
-            backendKind: .jellyfin,
-            mediaIndex: mediaIndex,
-            partIndex: partIndex
-        ))
-        let identity = appModel.identity.jellyfin
-        var request: URLRequest
-        var destination: URL
-        var expectedBytes: Int?
-        // #84: captured here so the minted PlaySessionId can be PERSISTED after the row is seeded
-        // (below), enabling encoder teardown after a hard app kill — not just in-memory teardown.
-        var mintedPlaySessionId: String?
-        do {
-            switch choice {
-            case .original, .existingVersion:
-                // #112: `.existingVersion` is a Plex-only lane (server-generated Plex Versions). It
-                // is never produced for Jellyfin, but the switch must be exhaustive — treat it as a
-                // plain original static download here.
-                let ext = part?.container ?? media?.container ?? "mp4"
-                destination = store.destinationURL(ratingKey: ratingKey,
-                                                   ext: ext.isEmpty ? "mp4" : ext)
-                request = try JellyfinLibrary.downloadRequest(server: server,
-                                                              token: token,
-                                                              identity: identity,
-                                                              itemId: itemId,
-                                                              mediaSourceId: jellyfinMediaSourceID,
-                                                              container: ext)
-                expectedBytes = part?.size
-
-            case .optimize(let targetName):
-                // Ask Jellyfin for a real PlaybackInfo session before starting the progressive
-                // transcode. A locally-minted/random PlaySessionId can make some Jellyfin
-                // servers return an immediate HTTP 500 from /Videos/{id}/stream.mp4 even though
-                // the item is otherwise streamable. The compatible-remux lane already does this;
-                // keep the bitrate-preset lane on the same server-minted session path.
-                guard let userId = backendSession.userID, !userId.isEmpty else {
-                    throw DownloadError.notAuthenticated
-                }
-                let profile = Self.jellyfinTranscodeProfile(named: targetName)
-                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
-                                                             videoBitrateBps: profile.videoBitrateBps)
-                let infoReq = try JellyfinPlayback.downloadPlaybackInfoRequest(
-                    server: server, token: token, identity: identity,
-                    itemId: itemId, userId: userId,
-                    mediaSourceId: jellyfinMediaSourceID,
-                    maxStaticBitrate: max(profile.videoBitrateBps, 200_000_000))
-                let (data, response) = try await URLSession.shared.data(for: infoReq)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-                }
-                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
-                let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
-                resolvedJellyfinMediaSourceID = decision.mediaSourceId
-                let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
-                    server, token, identity, itemId, decision.mediaSourceId, decision.playSessionId, profile)
-                request = transcodedRequest
-                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                mintedPlaySessionId = decision.playSessionId
-                recordDownloadDiagnostic("downloads.jellyfin_transcode_decision", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "route": .label("transcode"),
-                    "container": .label(decision.container ?? "unknown"),
-                    "source_video_codec": .label(decision.videoCodec ?? "unknown"),
-                    "source_audio_codec": .label(decision.audioCodec ?? "unknown"),
-                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-                ])
-
-            case .optimizeCompatible:
-                // #83: original-quality compatible remux. Re-probe PlaybackInfo here instead of
-                // trusting the in-memory `Part` streams: retry after relaunch reconstructs a lean
-                // `MediaItem` without stream arrays, and the server's codec/container verdict
-                // is the authoritative remux gate.
-                guard let userId = backendSession.userID, !userId.isEmpty else {
-                    throw DownloadError.notAuthenticated
-                }
-                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                let infoReq = try JellyfinPlayback.downloadPlaybackInfoRequest(
-                    server: server, token: token, identity: identity,
-                    itemId: itemId, userId: userId,
-                    mediaSourceId: jellyfinMediaSourceID,
-                    maxStaticBitrate: 200_000_000)
-                let (data, response) = try await URLSession.shared.data(for: infoReq)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-                }
-                let info = try JellyfinPlaybackInfoResponse.decode(from: data)
-                let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                     preferredMediaSourceId: jellyfinMediaSourceID)
-                resolvedJellyfinMediaSourceID = decision.mediaSourceId
-                let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-                    videoCodec: decision.videoCodec,
-                    audioCodec: decision.audioCodec,
-                    sourceContainer: decision.container)
-                let routeIsRemux = eligibility.isEligible
-                recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "negotiated_direct_play": .bool(decision.supportsDirectPlay),
-                    "negotiated_direct_stream": .bool(decision.supportsDirectStream),
-                    "container": .label(decision.container ?? "unknown"),
-                    "route": .label(routeIsRemux ? "compatible_remux" : "transcode"),
-                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-                ])
-                if routeIsRemux, let videoCodec = eligibility.videoCodec {
-                    // Output keeps original video bytes → expected size ≈ original source size.
-                    expectedBytes = decision.size ?? part?.size
-                    request = try JellyfinLibrary.compatibleRemuxDownloadRequest(
-                        server: server, token: token, identity: identity, itemId: itemId,
-                        mediaSourceId: decision.mediaSourceId,
-                        videoCodec: videoCodec, copyAudio: eligibility.copiesAudio,
-                        playSessionId: decision.playSessionId)
-                } else {
-                    // Stale UI/retry fallback: keep the download safe and playable when the
-                    // source video cannot be copied into the compatible MP4 lane. Persist the
-                    // ACTUAL transfer route as `.optimize` so the offline UI says Transcode (not
-                    // Remux) and retry follows the same non-resumable transcode lane.
-                    metadata.downloadLane = .optimize
-                    metadata.optimizeTargetName = Self.jellyfinDefaultDownloadPreset
-                    let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
-                    expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
-                                                                 videoBitrateBps: profile.videoBitrateBps)
-                    request = Self.jellyfinTranscodedDownloadRequest(
-                        server, token, identity, itemId, decision.mediaSourceId,
-                        decision.playSessionId, profile)
-                }
-                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                mintedPlaySessionId = decision.playSessionId
-            }
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
-        // #84: persist the minted PlaySessionId onto the now-seeded row so a hard app kill can
-        // still tear the encoder down on next launch (was in-memory only).
-        if let mintedPlaySessionId {
-            store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
-            if let mediaSourceID = resolvedJellyfinMediaSourceID,
-               let userID = backendSession.userID, !userID.isEmpty {
-                startJellyfinDownloadKeepalive(ratingKey: ratingKey,
-                                               itemId: itemId,
-                                               mediaSourceId: mediaSourceID,
-                                               playSessionId: mintedPlaySessionId,
-                                               session: backendSession,
-                                               userId: userID,
-                                               durationMs: item.duration)
-            }
-        }
-        if let resolvedJellyfinMediaSourceID,
-           resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
-            store.setMediaSourceID(ratingKey: ratingKey, resolvedJellyfinMediaSourceID)
-        }
-        refreshRecords()
-        // #102: cache the poster locally (best-effort) so artwork shows offline. Unlike the
-        // Plex lane this MUST use the authenticated MediaBrowser image request.
-        cacheJellyfinPoster(ratingKey: ratingKey, item: item, server: server,
-                            token: token, identity: identity)
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
-                               server: server, token: token, identity: identity)
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
-                           server: server, token: token)
-        if case .original = choice {
-            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
-                                       part: part, server: server, token: token, identity: identity)
-        }
-
-        do {
-            recordDownloadDiagnostic("downloads.start", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "choice": .label(Self.diagnosticChoiceLabel(choice)),
-                "url_shape": .urlShape(request.url),
-                "expected_bytes": .bytes(expectedBytes),
-            ])
-            // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
-            // the transcoder/remuxer — there is no separate "render then static download" phase, so
-            // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
-            // Mark it so the rate isn't misread as a network problem. `.original` is a static file
-            // stream → network-bound, range-resumable, not marked.
-            switch choice {
-            case .optimize, .optimizeCompatible: transcodeSourcedDownloads.insert(ratingKey)
-            case .original, .existingVersion: break
-            }
-            try session.start(ratingKey: ratingKey,
-                              with: request,
-                              to: destination,
-                              expectedBytes: expectedBytes,
-                              byteRangeCheckpoint: {
-                                  switch choice {
-                                  case .original, .existingVersion: return true
-                                  case .optimize, .optimizeCompatible: return false
-                                  }
-                              }())
-            refreshRecords()
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Jellyfin"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-        }
-    }
-
-    public func downloadJellyfinOriginal(_ item: MediaItem,
-                                         mediaIndex: Int = 0,
-                                         partIndex: Int = 0) async {
-        await downloadJellyfin(item, choice: .original, mediaIndex: mediaIndex, partIndex: partIndex)
-    }
-
-    /// Best-effort cache of Jellyfin trickplay assets for offline scrubbing (#79). Fetches the
-    /// playlist, downloads each referenced tile through header auth (stripping ApiKey from tile
-    /// URLs in the request builder), then writes a sanitized local playlist whose tile lines are
-    /// only local filenames. A miss/corrupt playlist never fails the media download.
-    private func cacheJellyfinTrickPlay(ratingKey: String,
-                                        itemId: String,
-                                        mediaSourceId: String?,
-                                        server: URL,
-                                        token: String,
-                                        identity: JellyfinClientIdentity,
-                                        width: Int = 320) {
-        guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
-        let store = self.store
-        Task { [weak self] in
-            do {
-                let playlistReq = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
-                                                                               token: token,
-                                                                               identity: identity,
-                                                                               itemId: itemId,
-                                                                               mediaSourceId: mediaSourceId,
-                                                                               width: width)
-                let (playlistData, playlistResponse) = try await URLSession.shared.data(for: playlistReq)
-                guard let playlistHTTP = playlistResponse as? HTTPURLResponse,
-                      (200..<300).contains(playlistHTTP.statusCode),
-                      let playlistText = String(data: playlistData, encoding: .utf8) else { return }
-                let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
-                // Fetch the tile sheets CONCURRENTLY — they are independent and a long movie has many
-                // sheets, so serial round-trips dominate the cache time. Disk writes + the URI→filename
-                // map are then built deterministically in tile order. A tile that fails to fetch is
-                // simply dropped (its frame just has no offline thumbnail).
-                let fetched: [(index: Int, uri: String, data: Data)] = await withTaskGroup(of: (Int, String, Data)?.self) { group in
-                    for (index, tile) in playlist.tiles.enumerated() {
-                        guard let tileReq = try? JellyfinLibrary.trickPlayTileRequest(server: server,
-                                                                                      token: token,
-                                                                                      identity: identity,
-                                                                                      itemId: itemId,
-                                                                                      mediaSourceId: mediaSourceId,
-                                                                                      width: width,
-                                                                                      tileURI: tile.uri) else { continue }
-                        let uri = tile.uri
-                        group.addTask {
-                            guard let (tileData, tileResponse) = try? await URLSession.shared.data(for: tileReq),
-                                  let tileHTTP = tileResponse as? HTTPURLResponse,
-                                  (200..<300).contains(tileHTTP.statusCode),
-                                  !tileData.isEmpty else { return nil }
-                            return (index, uri, tileData)
-                        }
-                    }
-                    var out: [(index: Int, uri: String, data: Data)] = []
-                    for await result in group { if let result { out.append(result) } }
-                    return out.sorted { $0.index < $1.index }
-                }
-                var tileRelatives: [String] = []
-                var tileFilenamesByURI: [String: String] = [:]
-                for entry in fetched {
-                    let destination = store.jellyfinTrickPlayTileDestinationURL(ratingKey: ratingKey, index: entry.index)
-                    try entry.data.write(to: destination, options: .atomic)
-                    tileFilenamesByURI[entry.uri] = destination.lastPathComponent
-                    tileRelatives.append(destination.lastPathComponent)
-                }
-                guard !tileRelatives.isEmpty else { return }
-                let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlistText, tileFilenamesByURI: tileFilenamesByURI)
-                guard !sanitized.localizedCaseInsensitiveContains("apikey=") else { return }
-                let playlistURL = store.jellyfinTrickPlayPlaylistDestinationURL(ratingKey: ratingKey)
-                try sanitized.data(using: .utf8)?.write(to: playlistURL, options: .atomic)
-                await MainActor.run {
-                    store.setJellyfinTrickPlayRelativePaths(ratingKey: ratingKey,
-                                                            playlist: playlistURL.lastPathComponent,
-                                                            tiles: tileRelatives)
-                    self?.refreshRecords()
-                }
-            } catch {
-                // Optional asset cache. Never log token-bearing playlist/tile URLs.
-            }
-        }
-    }
-
-    /// Emby download entry point. Mirrors `downloadJellyfin`'s structure, with the Emby-specific
-    /// corrections proven live against the worst-case MKV item:
-    ///
-    /// - The route is decided by an AUTHORITATIVE download PlaybackInfo POST (the naked-item
-    ///   `SupportsDirectPlay` is optimistic garbage). We advertise a Static-mp4 DOWNLOAD device
-    ///   profile (NOT the HLS playback profile) so the negotiated transcode URL is a single
-    ///   downloadable file rather than a `.m3u8` playlist.
-    /// - Original ⇔ negotiated `SupportsDirectPlay && isLocallyPlayableOriginal(container)`.
-    ///   Original uses the static `stream.{container}?static=true` GET (HTTP 206, resumable);
-    ///   expected bytes = `MediaSource.Size` (Emby's `Part.size` is always nil).
-    /// - Everything else downloads the SERVER-MINTED `TranscodingUrl` (you cannot hand-build it —
-    ///   Emby requires the PlaybackInfo-minted `PlaySessionId`). Transcoded streams are not
-    ///   range-resumable, so they restart on failure (like Jellyfin), expected bytes are the
-    ///   quality×runtime estimate, and the minted `PlaySessionId` is persisted so the FFmpeg
-    ///   encoder is torn down on every terminal transition (`releaseInFlight`).
-    public func downloadEmby(_ item: MediaItem, choice: DownloadChoice,
-                             mediaIndex: Int = 0,
-                             partIndex: Int = 0,
-                             mediaSourceIDOverride: String? = nil) async {
-        let itemId = item.ratingKey
-        let ratingKey = Self.embyRecordKey(itemId)
-        // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
-        // `activeBackend` for the rest of this job.
-        // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
-        guard let backendSession = appModel.backendSession(for: .emby),
-              let userId = backendSession.userID else {
-            recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
-                "backend": .label("Emby"),
-                "reason": .label("not_authenticated"),
-            ])
-            lastError[ratingKey] = .notAuthenticated
-            return
-        }
-        let server = backendSession.baseURL
-        let token = backendSession.token
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Emby") else { return }
-        lastError[ratingKey] = nil
-        // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
-        // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
-        // PlaySessionId) is released terminally from `refreshRecords`/`releaseInFlight`.
-
-        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Emby",
-                                    expectedBytes: estimatedBytes(for: item, choice: choice,
-                                                                  mediaIndex: mediaIndex,
-                                                                  partIndex: partIndex,
-                                                                  backend: .emby)) {
-            releaseInFlight(ratingKey: ratingKey)
-            return
-        }
-
-        let media = item.media?[safe: mediaIndex]
-        let part = media?.part[safe: partIndex]
-        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
-        // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
-        // onto the row after the decision is known (see below).
-        let embyMediaSourceHint = mediaSourceIDOverride ?? Self.embyMediaSourceID(media: media, part: part)
-        var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
-                                            mediaIndex: mediaIndex, partIndex: partIndex,
-                                            optimizeTargetName: {
-                                                if case .optimize(let targetName) = choice { return targetName }
-                                                return nil
-                                            }(),
-                                            session: backendSession,
-                                            mediaSourceID: embyMediaSourceHint,
-                                            downloadLane: Self.downloadLane(for: choice),
-                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
-        recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
-            item: item,
-            choice: choice,
-            backend: "Emby",
-            backendKind: .emby,
-            mediaIndex: mediaIndex,
-            partIndex: partIndex
-        ))
-        let identity = appModel.identity.emby
-        // Authoritative negotiation: POST the DOWNLOAD device profile and read the negotiated
-        // verdict. ~200 Mbps ceiling so a high-bitrate-but-compatible file still qualifies for an
-        // original download — a bitrate cap must NEVER force a transcode verdict for a download.
-        let decision: EmbyPlayback.EmbyDownloadPlaybackDecision
-        do {
-            let infoReq: URLRequest
-            if case .optimizeCompatible = choice {
-                // #83: keep the normal download profile conservative for the forced-transcode lane,
-                // but use a remux profile here so HEVC stream-copy eligibility is visible.
-                infoReq = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
-                    server: server, token: token, identity: identity,
-                    userId: userId, itemId: itemId,
-                    mediaSourceId: embyMediaSourceHint,
-                    maxStaticBitrate: 200_000_000)
-            } else {
-                infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
-                    server: server, token: token, identity: identity,
-                    userId: userId, itemId: itemId,
-                    mediaSourceId: embyMediaSourceHint,
-                    maxStaticBitrate: 200_000_000)
-            }
-            let (data, response) = try await URLSession.shared.data(for: infoReq)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-            }
-            let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            decision = try EmbyPlayback.downloadDecision(response: info,
-                                                         preferredMediaSourceId: embyMediaSourceHint)
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "phase": .label("playback_info"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        // The resolution label built above came from the item's PRIMARY media — wrong for a
-        // server-prepared version, which downloads the CONVERTED source (e.g. a 720p copy of a 4K
-        // original). Re-label from the negotiated source's real height so the caption shows the
-        // ACTUAL downloaded resolution, not the original's. Only for server-prepared/existing
-        // versions; a genuine original keeps its primary-media label.
-        if Self.isServerPreparedVersion(for: choice),
-           let correctedResolution = Self.resolutionLabel(forHeight: decision.height) {
-            metadata.resolutionLabel = correctedResolution
-        }
-
-        // Three-way route detection against the AUTHORITATIVE negotiated verdict:
-        //   .original          ⇔ negotiated DirectPlay AND locally playable container
-        //   .compatibleRemux   ⇔ user chose it AND source video copyable (#83)
-        //   .transcode         ⇔ otherwise (forced h264/aac re-encode)
-        // The user's `.optimize` choice always forces the transcode lane.
-        let containerGate = Self.isLocallyPlayableOriginal(part: part)
-            || ["mp4", "m4v", "mov"].contains((decision.container ?? "").lowercased())
-        let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-            videoCodec: decision.videoCodec, audioCodec: decision.audioCodec,
-            sourceContainer: decision.container)
-        enum EmbyDownloadRoute { case original, compatibleRemux, transcode }
-        let route: EmbyDownloadRoute
-        switch choice {
-        case .original, .existingVersion:
-            // #126: `.existingVersion` IS produced for Emby now — the UI passes the chosen converted
-            // MediaSource id as `mediaSourceIDOverride`, so `embyMediaSourceHint`/PlaybackInfo already
-            // resolved `decision` to THAT source. Both lanes then negotiate identically: a directly
-            // playable file in a local container downloads byte-for-byte (.original) via
-            // `downloadOriginalRequest`; anything else falls to transcode. (For an existing version the
-            // override-selected converted source is mp4/h264 → .original, the intended byte-for-byte path.)
-            route = (decision.supportsDirectPlay && containerGate) ? .original : .transcode
-        case .optimizeCompatible:
-            // Honour the compatible lane when the source video is stream-copy eligible. The
-            // negotiated DirectStream flag may be false for audio-only transcode cases (for
-            // example HEVC + DTS -> MP4 + AAC), which still preserve original video quality.
-            route = remuxEligibility.isEligible ? .compatibleRemux : .transcode
-        case .optimize:
-            route = .transcode
-        }
-        recordDownloadDiagnostic("downloads.emby_decision", fields: [
-            "download_id": .identifier(ratingKey),
-            "negotiated_direct_play": .bool(decision.supportsDirectPlay),
-            "negotiated_direct_stream": .bool(decision.supportsDirectStream),
-            "container": .label(decision.container ?? "unknown"),
-            "container_gate": .bool(containerGate),
-            "route": .label(route == .original ? "original" : route == .compatibleRemux ? "compatible_remux" : "transcode"),
-            "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-        ])
-
-        // Emby convert-then-download (default for non-direct downloads): ANY choice that negotiated
-        // `.transcode` would otherwise be a LIVE streaming transcode — ephemeral, no stable byte
-        // range, so a dropped connection restarts from scratch (multi-GB never finishes). Instead,
-        // redirect to the server-side "Convert Media" job: render a persistent file, then download it
-        // via the resumable `.original` static lane (and KEEP it, so #126's reuse serves the next
-        // download for free). This covers BOTH `.optimize` AND `.optimizeCompatible`: the compatible
-        // lane only stays a remux when the source video is stream-copy eligible (route == .original/
-        // .compatibleRemux); when it falls through to `route == .transcode` (video not copyable) it
-        // is exactly the non-resumable live transcode this feature removes. Direct-play (.original),
-        // compatible-remux (route == .compatibleRemux), and #126 reuse (the `.existingVersion`/
-        // override handoff, which negotiates `.original`) are untouched — `.existingVersion` is
-        // intentionally excluded here so the convert handoff never re-triggers this reroute (no
-        // recursion). A would-be transcode of an `.existingVersion` source is failed, not rerouted,
-        // by the eligibility guard below.
-        if route == .transcode {
-            switch choice {
-            case .optimize(let targetName):
-                await triggerConvertAndDownload(item: item, targetName: targetName,
-                                                metadata: metadata, session: backendSession)
-                return
-            case .optimizeCompatible:
-                // No explicit preset for the compatible lane — derive one from the user's stored
-                // default download quality so the converted bitrate matches their intent.
-                let targetName = Self.jellyfinDefaultDownloadPreset
-                await triggerConvertAndDownload(item: item, targetName: targetName,
-                                                metadata: metadata, session: backendSession)
-                return
-            case .existingVersion:
-                // The convert handoff (.existingVersion + override) must land on the resumable
-                // `.original` lane; if the converted source still negotiates a transcode (e.g. an
-                // audio codec the device profile re-encodes), silently streaming it would be a
-                // non-resumable live transcode of the just-converted file. Fail loudly instead.
-                recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "phase": .label("converted_not_directly_downloadable"),
-                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-                ])
-                lastError[ratingKey] = .transferFailed("Converted source not directly downloadable.")
-                store.setStatus(ratingKey: ratingKey, .failed)
-                releaseInFlight(ratingKey: ratingKey)
-                refreshRecords()
-                return
-            case .original:
-                // A user/source `.original` row is only range-resumable when PlaybackInfo still
-                // negotiates a static direct download. Do not silently fall into the live encoder
-                // path while leaving the row stamped `.original`, or URLSession resume blobs can
-                // later be accepted for a forward-only stream. The user can delete/re-download via
-                // an optimize/convert choice if the server no longer exposes a direct file route.
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Emby"),
-                    "phase": .label("original_not_directly_downloadable"),
-                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-                ])
-                lastError[ratingKey] = .transferFailed("Original source no longer directly downloadable.")
-                store.setStatus(ratingKey: ratingKey, .failed)
-                releaseInFlight(ratingKey: ratingKey)
-                refreshRecords()
-                return
-            }
-        }
-
-        var request: URLRequest
-        var destination: URL
-        var expectedBytes: Int?
-        // Both the transcode and compatible-remux lanes are encoder-served, forward-only, and mint a
-        // server-side session that MUST be torn down on a terminal transition.
-        let useServerSession = (route != .original)
-        do {
-            switch route {
-            case .original:
-                let ext = decision.container ?? part?.container ?? media?.container ?? "mp4"
-                destination = store.destinationURL(ratingKey: ratingKey,
-                                                   ext: ext.isEmpty ? "mp4" : ext)
-                request = try EmbyLibrary.downloadOriginalRequest(
-                    server: server, token: token, identity: identity, userId: userId,
-                    itemId: itemId, mediaSourceId: decision.mediaSourceId, container: ext)
-                // Emby's Part.size is nil — MediaSource.Size is the only storage signal.
-                expectedBytes = decision.size
-
-            case .compatibleRemux:
-                // #83: copy the original video into MP4, transcode audio→AAC as needed. Output keeps
-                // original video bytes → expected size ≈ source size (the AVPlayer probe + HEVC tag
-                // fixup are the correctness gate; a server copy failure falls to a retry, not silent
-                // corruption).
-                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                request = try EmbyLibrary.compatibleRemuxDownloadRequest(
-                    server: server, token: token, identity: identity, userId: userId,
-                    itemId: itemId, mediaSourceId: decision.mediaSourceId,
-                    playSessionId: decision.playSessionId,
-                    videoCodec: remuxEligibility.videoCodec ?? "h264",
-                    copyAudio: remuxEligibility.copiesAudio,
-                    audioBitrate: 192_000)
-                expectedBytes = decision.size
-
-            case .transcode:
-                // Emby mints a codecless `/videos/{id}/stream` URL that ffmpeg stream-COPIES and
-                // fails on (HTTP 500) for HEVC/DTS sources; build the EXPLICIT static `stream.mp4`
-                // transcode URL with the minted PlaySessionId instead (see transcodedDownloadRequest).
-                destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                // Transcode is rendered as it downloads → estimate, no Content-Length.
-                let profile = Self.jellyfinTranscodeProfile(named: {
-                    if case .optimize(let targetName) = choice { return targetName }
-                    return Self.jellyfinDefaultDownloadPreset
-                }())
-                request = try EmbyLibrary.transcodedDownloadRequest(
-                    server: server, token: token, identity: identity, userId: userId,
-                    itemId: itemId, mediaSourceId: decision.mediaSourceId,
-                    playSessionId: decision.playSessionId,
-                    videoBitrate: profile.videoBitrateBps,
-                    audioBitrate: 192_000)
-                expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
-                                                             videoBitrateBps: profile.videoBitrateBps)
-            }
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
-        // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it
-        // (replacing the pre-decision hint) so a retry can re-issue without re-deriving.
-        if !decision.mediaSourceId.isEmpty, decision.mediaSourceId != embyMediaSourceHint {
-            store.setMediaSourceID(ratingKey: ratingKey, decision.mediaSourceId)
-        }
-        refreshRecords()
-        // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
-        // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
-        cacheEmbyPoster(ratingKey: ratingKey, item: item, server: server,
-                        token: token, identity: identity, userId: userId)
-        // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
-        // scrubber. This is a static `/Items/{id}/Images/Chapter/{index}` GET — no PlaySessionId /
-        // encoder negotiation — so it is safe to fire here independent of the media transfer.
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .emby,
-                           server: server, token: token)
-
-        do {
-            recordDownloadDiagnostic("downloads.start", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "choice": .label(route == .original ? "original" : route == .compatibleRemux ? "optimize_compatible" : Self.diagnosticChoiceLabel(choice)),
-                "url_shape": .urlShape(request.url),
-                "expected_bytes": .bytes(expectedBytes),
-            ])
-            if useServerSession {
-                // Transcode/remux download: rate is encoder-gated (served as it renders), forward-only
-                // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
-                // transition. #84: persist it onto the row so a hard app kill can still tear the
-                // encoder down on next launch.
-                transcodeSourcedDownloads.insert(ratingKey)
-                embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                store.setPlaySessionID(ratingKey: ratingKey, decision.playSessionId)
-            }
-            try session.start(ratingKey: ratingKey,
-                              with: request,
-                              to: destination,
-                              expectedBytes: expectedBytes,
-                              byteRangeCheckpoint: route == .original)
-            refreshRecords()
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label("Emby"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-        }
-    }
-
-    /// Extract an Emby `mediaSourceId` from a `MediaItem`'s synthesized part keys
-    /// (`emby://item/{itemId}/media/{mediaSourceId}`). The authoritative id comes from the
-    /// download PlaybackInfo decision; this only seeds the PlaybackInfo `MediaSourceId` hint.
-    private static func embyMediaSourceID(media: Media?, part: Part?) -> String? {
-        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
-        for key in keys.compactMap({ $0 }) {
-            guard let marker = key.range(of: "/media/") else { continue }
-            let source = String(key[marker.upperBound...])
-            if !source.isEmpty { return source }
-        }
-        return nil
-    }
-
     /// Whether a download already exists (completed or in-flight) for `ratingKey`.
     /// Lets the options sheet show "Downloaded" / disable re-download.
     public func hasDownload(for ratingKey: String) -> Bool {
@@ -1569,7 +443,7 @@ public final class DownloadManager {
     /// unwinding. If that leaves `activeJobs` set but no store row, future starts would be
     /// ignored as "already active" and the item would never appear in Downloads. Treat that
     /// combination as stale bookkeeping and clear it before accepting the new start.
-    private func acquireInFlightSlotForStart(ratingKey: String, backend: String) -> Bool {
+    func acquireInFlightSlotForStart(ratingKey: String, backend: String) -> Bool {
         if activeJobs.contains(ratingKey) {
             if store.records.contains(where: { $0.ratingKey == ratingKey }) {
                 recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
@@ -2212,11 +1086,11 @@ public final class DownloadManager {
             return Set(baseline)
         }
         return Set((item.media ?? []).flatMap { media in
-            media.part.filter { !isServerOptimizedPart($0) }.map(\.id)
+            media.part.filter { !OptimizedVersionMatch.isServerOptimizedPart($0) }.map(\.id)
         })
     }
 
-    private static func optimizeSourcePartIDs(item: MediaItem,
+    static func optimizeSourcePartIDs(item: MediaItem,
                                               fallbackItem: MediaItem,
                                               mediaIndex: Int,
                                               partIndex: Int) -> [Int] {
@@ -2224,7 +1098,7 @@ public final class DownloadManager {
         if let selected = media?.part[safe: partIndex]?.id { return [selected] }
         if let ids = media?.part.map(\.id), !ids.isEmpty { return ids }
         return (item.media ?? fallbackItem.media ?? [])
-            .flatMap { media in media.part.filter { !isServerOptimizedPart($0) }.map(\.id) }
+            .flatMap { media in media.part.filter { !OptimizedVersionMatch.isServerOptimizedPart($0) }.map(\.id) }
     }
 
     public var totalDownloadedBytes: Int {
@@ -2271,13 +1145,13 @@ public final class DownloadManager {
                 mediaBytes = part?.size
             } else if let profile = Self.customDownloadProfile(named: targetName) {
                 if let kbps = profile.settings.maxVideoBitrateKbps {
-                    mediaBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                    mediaBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                              videoBitrateBps: kbps * 1_000)
                 } else {
                     mediaBytes = part?.size
                 }
             } else {
-                mediaBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                mediaBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                           videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
             }
         }
@@ -2316,7 +1190,7 @@ public final class DownloadManager {
         max(0, chapterImageCount) * 30_000
     }
 
-    private func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
+    func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
         guard let message = storageLimitMessage(adding: expectedBytes) else { return false }
         recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
             "download_id": .identifier(ratingKey),
@@ -2375,12 +1249,58 @@ public final class DownloadManager {
         refreshRecords()
     }
 
-    private func recordDownloadDiagnostic(_ name: String,
+    func recordDownloadDiagnostic(_ name: String,
                                           fields: [String: DiagnosticFieldValue] = [:]) {
         AppDiagnostics.record(.downloads, name, fields: fields)
     }
 
-    private func downloadDiagnosticFields(item: MediaItem,
+    /// Shared terminal step for every download lane (#135 Stage 5b): record `downloads.start`, kick
+    /// off the background transfer via `start`, and on failure record `downloads.start_failed`,
+    /// surface the error, fail the row, and refresh. `start` performs the lane's own
+    /// `session.start(...)` call plus any pre-start side effects (transcode-sourced marking,
+    /// PlaySessionId persistence) so the two `session.start` overloads stay at their call sites.
+    ///
+    /// `releaseInFlightOnFailure` preserves a real per-lane difference: the JF/Emby encoder lanes
+    /// release the in-flight slot explicitly on a start failure, while the Plex static lane lets the
+    /// terminal `.failed`/`refreshRecords` release it (its caller never released here).
+    func beginBackgroundTransfer(ratingKey: String, backendLabel: String, choiceLabel: String,
+                                         urlShape: URL?, expectedBytes: Int?,
+                                         releaseInFlightOnFailure: Bool,
+                                         start: () throws -> Void) {
+        recordDownloadDiagnostic("downloads.start", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backendLabel),
+            "choice": .label(choiceLabel),
+            "url_shape": .urlShape(urlShape),
+            "expected_bytes": .bytes(expectedBytes),
+        ])
+        do {
+            try start()
+            refreshRecords()
+        } catch let error as DownloadError {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backendLabel),
+                "error": .label(String(describing: error)),
+            ])
+            lastError[ratingKey] = error
+            store.setStatus(ratingKey: ratingKey, .failed)
+            if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
+            refreshRecords()
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backendLabel),
+                "error": .error(error),
+            ])
+            lastError[ratingKey] = .transferFailed(String(describing: error))
+            store.setStatus(ratingKey: ratingKey, .failed)
+            if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
+            refreshRecords()
+        }
+    }
+
+    func downloadDiagnosticFields(item: MediaItem,
                                           choice: DownloadChoice,
                                           backend: String,
                                           backendKind: DownloadBackendKind,
@@ -2410,7 +1330,7 @@ public final class DownloadManager {
         return fields
     }
 
-    private static func diagnosticChoiceLabel(_ choice: DownloadChoice) -> String {
+    static func diagnosticChoiceLabel(_ choice: DownloadChoice) -> String {
         switch choice {
         case .original:
             return "original"
@@ -2426,7 +1346,7 @@ public final class DownloadManager {
     /// #83: the persisted lane discriminator for a choice. Stored on the row so a retry/resume after
     /// an app kill preserves the user's intent — original and compatible-remux both lack an
     /// `optimizeTargetName`, so the legacy inference can't tell them apart.
-    private static func downloadLane(for choice: DownloadChoice) -> DownloadLane {
+    static func downloadLane(for choice: DownloadChoice) -> DownloadLane {
         switch choice {
         case .original: return .original
         // #112: an existing server version downloads as a static, range-resumable part — the same
@@ -2444,12 +1364,12 @@ public final class DownloadManager {
     /// converted version, and the Plex #112 existing-version download. They all ride the `.original`
     /// static lane (resumable), so this flag — not the lane — is what lets the UI badge them
     /// "Transcode" instead of "Original". See `OfflineMetadata.serverPreparedVersion`.
-    private static func isServerPreparedVersion(for choice: DownloadChoice) -> Bool {
+    static func isServerPreparedVersion(for choice: DownloadChoice) -> Bool {
         if case .existingVersion = choice { return true }
         return false
     }
 
-    private func refreshRecords() {
+    func refreshRecords() {
         let now = Date()
         let fresh = store.records
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
@@ -2511,7 +1431,7 @@ public final class DownloadManager {
                   !mediaSourceId.isEmpty,
                   let session = appModel.backendSession(for: .jellyfin),
                   let userId = session.userID,
-                  Self.backendSessionMatchesPersistedServer(metadata: metadata, live: session)
+                  session.matchesPersistedServer(metadata)
             else { continue }
 
             startJellyfinDownloadKeepalive(
@@ -2525,7 +1445,7 @@ public final class DownloadManager {
         }
     }
 
-    private func startJellyfinDownloadKeepalive(ratingKey: String,
+    func startJellyfinDownloadKeepalive(ratingKey: String,
                                                  itemId: String,
                                                  mediaSourceId: String,
                                                  playSessionId: String,
@@ -2602,7 +1522,7 @@ public final class DownloadManager {
     /// ratingKey once its download is no longer in flight (completed, failed, cancelled, or
     /// deleted). Idempotent. Keeping the queue title protected past this point would block the
     /// clean-slate cleanup from ever removing the now-abandoned completed optimize item.
-    private func releaseInFlight(ratingKey: String) {
+    func releaseInFlight(ratingKey: String) {
         retryingRows.remove(ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
@@ -2653,7 +1573,7 @@ public final class DownloadManager {
     /// Captures only the fields the offline UI/player/retry actually read. `resolutionLabel`
     /// is descriptive ("1080p"/"4K") for the offline-library caption — it is NOT a transcode
     /// cap (the redesign downloads either the original file or a server-rendered MP4).
-    private static func offlineMetadata(from item: MediaItem,
+    static func offlineMetadata(from item: MediaItem,
                                         resolutionLabel: String?,
                                         mediaIndex: Int,
                                         partIndex: Int,
@@ -2764,917 +1684,21 @@ public final class DownloadManager {
         OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
     }
 
-    /// Artwork reference to cache for the Offline tab's small portrait tile. For episodes,
-    /// prefer the show poster, then season poster, before the episode still/backdrop; forcing a
-    /// landscape still into the portrait row tile was visibly distorted during b8 live testing.
-    private static func offlinePosterRef(for item: MediaItem) -> String? {
-        if item.kind == .episode {
-            return item.grandparentThumb ?? item.parentThumb ?? item.thumb ?? item.art
-        }
-        return item.thumb ?? item.art
-    }
-
-    /// Download + cache the item's poster locally so the offline library shows artwork
-    /// without the server (D5). Best-effort: any failure leaves the row poster-less and
-    /// never fails the download. Fetches via the same `/photo/:/transcode` path the
-    /// online `PosterImage` uses, with the same server + token as the media download.
-    private func cachePoster(ratingKey: String, thumb: String?, server: URL, token: String) {
-        guard let thumb, !thumb.isEmpty,
-              let url = Self.posterTranscodeURL(thumb: thumb, server: server, token: token)
-        else { return }
-        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
-        let store = self.store
-        Task { [weak self] in
-            // Fetch + atomic disk write happen OFF the main actor (mirrors
-            // PlaybackController.fetchArtworkData); only the store mutation hops back on.
-            guard await Self.fetchAndWritePoster(from: url, to: posterURL) else { return }
-            await MainActor.run {
-                store.setPosterRelativePath(ratingKey: ratingKey,
-                                            posterURL.lastPathComponent)
-                self?.refreshRecords()
-            }
-        }
-    }
-
-    /// Best-effort poster fetch + atomic write, fully off the main actor. Returns `true`
-    /// only when a non-empty poster landed on disk at `destination`; any failure (HTTP
-    /// error, empty body, write failure) returns `false` and is never surfaced — a missing
-    /// poster is never a download error.
-    private nonisolated static func fetchAndWritePoster(from url: URL, to destination: URL) async -> Bool {
-        await fetchAndWritePoster(request: URLRequest(url: url), to: destination)
-    }
-
-    /// Same best-effort fetch + atomic write as the URL variant, but driven by a
-    /// pre-resolved `URLRequest`. The MediaBrowser (Jellyfin/Emby) image endpoints are
-    /// NOT satisfied by Plex-style token-in-query — they need the `Authorization` header
-    /// (Emby also `userId`) that `*.authenticatedRequest(...)` attaches — so those lanes
-    /// must come through here with an authenticated request.
-    private nonisolated static func fetchAndWritePoster(request: URLRequest, to destination: URL) async -> Bool {
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse,
-               !(200...299).contains(http.statusCode) { return false }
-            guard !data.isEmpty else { return false }
-            try data.write(to: destination, options: .atomic)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Best-effort cache of a Jellyfin item's poster so the offline library shows artwork
-    /// without the server (#102). Mirrors `cacheJellyfinTrickPlay` (authenticated,
-    /// off-main-actor side-asset cache). Resolves the item's inline synthetic Primary ref
-    /// (`item.thumb`), falling back to the Backdrop ref (`item.art`); a fetch failure
-    /// leaves the row poster-less and never fails the download.
-    private func cacheJellyfinPoster(ratingKey: String, item: MediaItem, server: URL,
-                                     token: String, identity: JellyfinClientIdentity) {
-        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
-        let store = self.store
-        let primaryRef = Self.offlinePosterRef(for: item)
-        let backdropRef = item.art
-        Task { [weak self] in
-            let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
-                                                              token: token, identity: identity))
-                ?? (try? JellyfinLibrary.posterRequest(syntheticRef: backdropRef, server: server,
-                                                       token: token, identity: identity))
-            guard let request,
-                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
-            await MainActor.run {
-                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
-                self?.refreshRecords()
-            }
-        }
-    }
-
-    /// Best-effort cache of an Emby item's poster (#102). Same shape as
-    /// `cacheJellyfinPoster`, but the Emby image endpoint additionally needs `userId` on
-    /// the authenticated request.
-    private func cacheEmbyPoster(ratingKey: String, item: MediaItem, server: URL,
-                                 token: String, identity: EmbyClientIdentity, userId: String) {
-        let posterURL = store.posterDestinationURL(ratingKey: ratingKey)
-        let store = self.store
-        let primaryRef = Self.offlinePosterRef(for: item)
-        let backdropRef = item.art
-        Task { [weak self] in
-            let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,
-                                                          token: token, identity: identity, userId: userId))
-                ?? (try? EmbyLibrary.posterRequest(syntheticRef: backdropRef, server: server,
-                                                   token: token, identity: identity, userId: userId))
-            guard let request,
-                  await Self.fetchAndWritePoster(request: request, to: posterURL) else { return }
-            await MainActor.run {
-                store.setPosterRelativePath(ratingKey: ratingKey, posterURL.lastPathComponent)
-                self?.refreshRecords()
-            }
-        }
-    }
-
-    /// Build the `/photo/:/transcode` URL for an image path via the shared `PlexPhotoTranscode`
-    /// builder. Requests a poster-sized image so the cached file stays small.
-    private static func posterTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
-        PlexPhotoTranscode.url(server: server, token: token, imagePath: thumb,
-                               width: 400, height: 600)
-    }
-
-    private func cachePlexTextSubtitles(ratingKey: String, part: Part, server: URL, token: String) {
-        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
-        guard !streams.isEmpty else { return }
-        let store = self.store
-        Task { [weak self] in
-            var tracks: [OfflineTextSubtitleTrack] = []
-            for (fallbackIndex, stream) in streams {
-                guard let key = stream.key, let url = Self.plexSubtitleURL(server: server, token: token, key: key) else { continue }
-                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
-                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
-                guard await Self.fetchAndWriteTextSubtitle(request: URLRequest(url: url), to: destination) else { continue }
-                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
-                                                                     relativePath: destination.lastPathComponent,
-                                                                     fallbackIndex: fallbackIndex) {
-                    tracks.append(track)
-                }
-            }
-            guard !tracks.isEmpty else { return }
-            await MainActor.run {
-                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
-                self?.refreshRecords()
-            }
-        }
-    }
-
-    private func cacheJellyfinTextSubtitles(ratingKey: String,
-                                           itemId: String,
-                                           mediaSourceId: String?,
-                                           part: Part?,
-                                           server: URL,
-                                           token: String,
-                                           identity: JellyfinClientIdentity) {
-        guard let mediaSourceId, !mediaSourceId.isEmpty, let part else { return }
-        let streams = part.subtitleStreams.enumerated().filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
-        guard !streams.isEmpty else { return }
-        let store = self.store
-        Task { [weak self] in
-            var tracks: [OfflineTextSubtitleTrack] = []
-            for (fallbackIndex, stream) in streams {
-                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
-                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
-                let streamIndex = stream.index ?? stream.id
-                guard let request = try? JellyfinLibrary.textSubtitleRequest(server: server,
-                                                                             token: token,
-                                                                             identity: identity,
-                                                                             itemId: itemId,
-                                                                             mediaSourceId: mediaSourceId,
-                                                                             streamIndex: streamIndex,
-                                                                             format: ext),
-                      await Self.fetchAndWriteTextSubtitle(request: request, to: destination) else { continue }
-                if let track = OfflineTextSubtitleCachePlanner.track(for: stream,
-                                                                     relativePath: destination.lastPathComponent,
-                                                                     fallbackIndex: fallbackIndex) {
-                    tracks.append(track)
-                }
-            }
-            guard !tracks.isEmpty else { return }
-            await MainActor.run {
-                store.setOfflineTextSubtitles(ratingKey: ratingKey, tracks)
-                self?.refreshRecords()
-            }
-        }
-    }
-
-    private nonisolated static func plexSubtitleURL(server: URL, token: String, key: String) -> URL? {
-        let raw = key.hasPrefix("/") ? key : "/\(key)"
-        guard var comps = URLComponents(url: server.appendingPathComponent(raw), resolvingAgainstBaseURL: false) else { return nil }
-        // Drop any token the key already carried, then append the token through the project's strict
-        // encoder so it is percent-encoded consistently with every other Plex URL builder.
-        if var items = comps.queryItems {
-            items.removeAll { $0.name.caseInsensitiveCompare("X-Plex-Token") == .orderedSame }
-            comps.queryItems = items.isEmpty ? nil : items
-        }
-        PlexURLQueryEncoder.appendQueryItems([.init(name: "X-Plex-Token", value: token)], to: &comps)
-        return comps.url
-    }
-
-    private nonisolated static func fetchAndWriteTextSubtitle(request: URLRequest, to destination: URL) async -> Bool {
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
-            guard let text = String(data: data, encoding: .utf8),
-                  !OfflineTextSubtitleParser.parse(text).isEmpty else { return false }
-            try data.write(to: destination, options: .atomic)
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Download + cache Plex's BIF trick-play index for the selected source Part so the
-    /// local custom player can keep showing scrub previews fully offline (#78). Best-effort:
-    /// a missing/invalid BIF never fails the media download. The request carries the token in
-    /// query, so do not log the URL or surfaced error.
-    private func cachePlexBIF(ratingKey: String, item: MediaItem, mediaIndex: Int,
-                              server: URL, token: String) {
-        guard let part = Self.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
-        let destination = store.plexBIFDestinationURL(ratingKey: ratingKey)
-        let request = TrickPlayRequest.plexBIFIndex(server: server,
-                                                    token: token,
-                                                    identity: appModel.identity,
-                                                    partID: part.id,
-                                                    quality: "sd")
-        let client = appModel.client
-        let store = self.store
-        Task { [weak self] in
-            do {
-                let data = try await client.send(request)
-                guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
-                try data.write(to: destination, options: .atomic)
-                await MainActor.run {
-                    store.setPlexBIFRelativePath(ratingKey: ratingKey, destination.lastPathComponent)
-                    self?.refreshRecords()
-                }
-            } catch {
-                // Expected for items/servers without BIFs, auth churn, or cache races.
-                // Keep silent and never log token-bearing URLs.
-            }
-        }
-    }
-
-    private static func selectedPlexBIFPart(from item: MediaItem, mediaIndex: Int) -> Part? {
-        guard let media = item.media, !media.isEmpty else { return nil }
-        let selectedMedia = media.indices.contains(mediaIndex) ? media[mediaIndex] : media[0]
-        guard let part = selectedMedia.part.first, part.hasStandardDefinitionBIFIndex else { return nil }
-        return part
-    }
-
-    /// Download + cache each chapter's image at download time so the offline Chapters menu rail
-    /// shows real per-chapter thumbnails (#88) and the Emby offline scrubber has a coarse preview
-    /// source (#89). One shared index-keyed cache feeds both consumers.
-    ///
-    /// Best-effort, exactly like `cachePlexBIF`/`cacheJellyfinTrickPlay`: a failed image is simply
-    /// dropped (that chapter shows the online-equivalent placeholder offline), and the whole cache
-    /// failing never fails the media download. Each backend builds the same image URL its online
-    /// chapter resolver uses (Plex `/photo/:/transcode`; Jellyfin/Emby chapter-image endpoint). The
-    /// requests carry tokens (Plex in query, JF/Emby in headers) so URLs are never logged.
-    private func cacheChapterImages(ratingKey: String, item: MediaItem, backend: DownloadBackendKind,
-                                    server: URL, token: String) {
-        let chapters = item.chapters ?? []
-        guard !chapters.isEmpty else { return }
-        // Build (chapter index, request) for every chapter that carries an image key. The index is
-        // the chapter's position in `chapters` — the same enumeration the Chapters rail and the
-        // offline scrub provider use, so it is the stable join key offline.
-        let identity = appModel.identity
-        var requests: [(index: Int, request: URLRequest)] = []
-        for (index, chapter) in chapters.enumerated() {
-            guard let thumb = chapter.thumb, !thumb.isEmpty else { continue }
-            switch backend {
-            case .plex:
-                guard let url = Self.chapterImageTranscodeURL(thumb: thumb, server: server, token: token) else { continue }
-                requests.append((index, URLRequest(url: url)))
-            case .jellyfin:
-                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "jellyfin"),
-                      let url = try? JellyfinLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
-                                                                    chapterIndex: parsed.index, tag: parsed.tag,
-                                                                    width: 480, height: 270) else { continue }
-                var req = JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity.jellyfin)
-                req.setValue("*/*", forHTTPHeaderField: "Accept")
-                requests.append((index, req))
-            case .emby:
-                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "emby"),
-                      let url = try? EmbyLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
-                                                               chapterIndex: parsed.index, tag: parsed.tag,
-                                                               width: 480, height: 270) else { continue }
-                let userId = appModel.backendSession(for: .emby)?.userID
-                var req = EmbyLibrary.authenticatedRequest(url: url, token: token, identity: identity.emby, userId: userId)
-                req.setValue("*/*", forHTTPHeaderField: "Accept")
-                requests.append((index, req))
-            }
-        }
-        guard !requests.isEmpty else { return }
-        let store = self.store
-        Task { [weak self] in
-            // Fetch concurrently — chapters are independent and a long film has many. A failed/empty
-            // image is dropped; only chapters that landed on disk go into the map.
-            let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
-                for entry in requests {
-                    group.addTask {
-                        guard let (data, response) = try? await URLSession.shared.data(for: entry.request),
-                              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                              !data.isEmpty else { return nil }
-                        return (entry.index, data)
-                    }
-                }
-                var out: [(index: Int, data: Data)] = []
-                for await result in group { if let result { out.append(result) } }
-                return out
-            }
-            guard !fetched.isEmpty else { return }
-            var relativesByIndex: [Int: String] = [:]
-            for entry in fetched {
-                let destination = store.chapterImageDestinationURL(ratingKey: ratingKey, index: entry.index)
-                guard (try? entry.data.write(to: destination, options: .atomic)) != nil else { continue }
-                relativesByIndex[entry.index] = destination.lastPathComponent
-            }
-            guard !relativesByIndex.isEmpty else { return }
-            await MainActor.run {
-                store.setChapterImageRelativePaths(ratingKey: ratingKey, relativesByIndex)
-                self?.refreshRecords()
-            }
-        }
-    }
-
-    /// `/photo/:/transcode` URL for a Plex chapter `thumb` key, 16:9 landscape — the same shape the
-    /// online `PlaybackController.chapterThumbnailURL` builds for the Chapters rail.
-    private static func chapterImageTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
-        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: thumb),
-            .init(name: "width", value: "480"),
-            .init(name: "height", value: "270"),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
-    }
-
-    /// Parse a synthetic `<scheme>://item/{itemId}/Chapter/{index}?tag=` chapter-image key (Jellyfin
-    /// or Emby). Mirrors the private parsers in `PlaybackController` / `EmbyChapterTrickPlayThumbnailProvider`.
-    static func parsedSyntheticChapterImageKey(_ imagePath: String, scheme: String) -> (itemId: String, index: Int, tag: String?)? {
-        guard let url = URL(string: imagePath), url.scheme == scheme, url.host == "item" else { return nil }
-        let parts = url.path.split(separator: "/").map(String.init)
-        guard parts.count >= 3, parts[1] == "Chapter", let index = Int(parts[2]) else { return nil }
-        let tag = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?.first { $0.name == "tag" }?.value
-        return (parts[0], index, tag)
-    }
-
-    // MARK: - Optimize path (HIGH UNCERTAINTY — isolated; Phase 0 confirms the contract)
-
-    /// Render a compatible MP4 server-side, poll for the rendered Part, then download it.
-    ///
-    /// Real contract (python-plexapi `Video.optimize`), implemented to the best-known shape:
-    ///   1. GET /playlists?type=42  → read `backgroundProcessing.key` (e.g. /playlists/9/items)
-    ///   2. GET /media/processing/targets → resolve the chosen preset NAME to its server
-    ///      `targetTagID` (NOT a hardcoded 2/1/3; those are version-specific)
-    ///   3. POST {key}  with the Item[...] grammar
-    ///   4. poll item metadata for the new Part, then download it (static file, real size).
-    ///
-    /// // TODO(live, Phase 0): the background-processing key, the targets endpoint/shape, and
-    /// the accepted POST grammar are confirmed by `scripts/live-optimize-probe.sh`. Until then
-    /// this is the best-known contract and is NOT live-verified. Failures are recorded as
-    /// `.optimizeFailed`; we still poll metadata so an out-of-band optimized part is picked up.
-    private func triggerOptimizeAndDownload(item: MediaItem, targetName: String,
-                                            metadata: OfflineMetadata,
-                                            session: BackendSession) async {
-        let ratingKey = item.ratingKey
-        // #84: the whole optimize/poll/download chain runs off the captured Plex session — the
-        // server/token come from it, not from any `appModel.active*` re-read.
-        let server = session.baseURL
-        let token = session.token
-        let identity = appModel.identity
-        let queueTitle = metadata.optimizeQueueTitle
-            ?? "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
-        var optimizeMetadata = metadata
-        optimizeMetadata.optimizeTargetName = targetName
-        optimizeMetadata.optimizeQueueTitle = queueTitle
-        recordDownloadDiagnostic("downloads.optimize_start", fields: [
-            "download_id": .identifier(ratingKey),
-            "target": .label(targetName),
-        ])
-        // Seed a 0% record so the UI shows the job immediately while we set up the optimize.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, metadata: optimizeMetadata))
-        refreshRecords()
-
-        do {
-            // Protect this job's queue item from the stale-job cleanup (and any concurrent
-            // download's), so cleanup only ever removes abandoned items. CRITICAL: do NOT
-            // release this with a `defer` — that fired when this function returned, i.e. right
-            // after `session.start` KICKS OFF the URLSession transfer (it does not await the
-            // file finishing), leaving the rendered Part unprotected mid-download so a
-            // concurrent job's `cleanStaleOptimizeJobs` could delete the very Part being
-            // downloaded. Protection is instead released terminally (on `.complete`/`.failed`)
-            // via `releaseInFlight`, driven from `refreshRecords`, plus the explicit
-            // error-path release below.
-            activeQueueTitles.insert(queueTitle)
-            queueTitleByRatingKey[ratingKey] = queueTitle
-            let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
-                                                         token: token, identity: identity) ?? item
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                             metadata: optimizeMetadata,
-                                             targetName: targetName)
-            let sourceMediaIndex = metadata.mediaIndex ?? 0
-            let sourcePartIndex = metadata.partIndex ?? 0
-            let refreshedResolutionLabel = Self.displayResolutionLabel(
-                choice: .optimize(targetName: targetName),
-                chosenMedia: sourceItem.media?[safe: sourceMediaIndex])
-            let existingMetadata = records.first { $0.ratingKey == ratingKey }?.metadata
-            optimizeMetadata = Self.offlineMetadata(from: sourceItem,
-                                                    resolutionLabel: refreshedResolutionLabel,
-                                                    mediaIndex: sourceMediaIndex,
-                                                    partIndex: sourcePartIndex,
-                                                    optimizeTargetName: targetName,
-                                                    optimizeQueueTitle: queueTitle,
-                                                    session: session)
-            optimizeMetadata.posterRelativePath = existingMetadata?.posterRelativePath
-            optimizeMetadata.plexBIFRelativePath = existingMetadata?.plexBIFRelativePath
-            // #88: carry forward already-cached chapter images so an optimize re-fetch doesn't drop
-            // the offline Chapters rail thumbnails.
-            optimizeMetadata.chapterImageRelativePaths = existingMetadata?.chapterImageRelativePaths
-            optimizeMetadata.optimizeBaselinePartIDs = Self.optimizeSourcePartIDs(
-                item: sourceItem,
-                fallbackItem: item,
-                mediaIndex: sourceMediaIndex,
-                partIndex: sourcePartIndex
-            )
-            store.upsert(DownloadRecord(ratingKey: ratingKey, title: sourceItem.title,
-                                        localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                        bytes: 0, progress: 0, metadata: optimizeMetadata))
-            refreshRecords()
-            cacheChapterImages(ratingKey: ratingKey, item: sourceItem, backend: .plex,
-                               server: server, token: token)
-            if let sourcePart = sourceItem.media?[safe: sourceMediaIndex]?.part[safe: sourcePartIndex] {
-                cachePlexTextSubtitles(ratingKey: ratingKey, part: sourcePart,
-                                       server: server, token: token)
-            }
-            let originalPartIDs = Set(optimizeMetadata.optimizeBaselinePartIDs ?? [])
-            guard !originalPartIDs.isEmpty else {
-                throw DownloadError.optimizeFailed("No source media parts found before optimize.")
-            }
-            // Do not silently reuse older Plex Versions for a newly-requested transcode. Existing
-            // server-rendered versions may have a lower resolution/bitrate than the user's selected
-            // preset (notably Original video quality on a 4K source). If we surface reuse later, it
-            // should be an explicit menu item, not an implicit substitute for this request.
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                             metadata: optimizeMetadata,
-                                             targetName: targetName)
-            let backgroundProcessingKey = await bgKeyForPolling(server: server,
-                                                                       token: token,
-                                                                       identity: identity)
-            do {
-                try await triggerOptimize(item: sourceItem, targetName: targetName,
-                                          queueTitle: queueTitle,
-                                          server: server, token: token, identity: identity)
-            } catch {
-                // Do not flash a terminal failed row here. Plex may reject duplicate/odd optimize
-                // creates (HTTP 400) while an already-rendered Plex Version is still discoverable
-                // from metadata. Keep the visible row in server-prep state and let the metadata/
-                // queue polling path decide whether a downloadable Part appears or the server job
-                // truly failed.
-                recordDownloadDiagnostic("downloads.optimize_create_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "target": .label(targetName),
-                    "error": .error(error),
-                ])
-            }
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                             metadata: optimizeMetadata,
-                                             targetName: targetName)
-            let sourceHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
-            let part = try await pollForOptimizedPart(ratingKey: ratingKey,
-                                                      originalPartIDs: originalPartIDs,
-                                                      targetName: targetName,
-                                                      sourceHeight: sourceHeight,
-                                                      backgroundProcessingKey: backgroundProcessingKey,
-                                                      queueTitle: queueTitle,
-                                                      mediaTitle: item.title,
-                                                      server: server, token: token,
-                                                      identity: identity)
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                             metadata: optimizeMetadata,
-                                             targetName: targetName)
-            try startOptimizedPartDownload(ratingKey: ratingKey,
-                                           title: item.title,
-                                           part: part,
-                                           metadata: optimizeMetadata,
-                                           server: server,
-                                           token: token)
-        } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
-            recordDownloadDiagnostic("downloads.optimize_stale", fields: [
-                "download_id": .identifier(ratingKey),
-                "target": .label(targetName),
-            ])
-        } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.optimize_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "target": .label(targetName),
-                "error": .label(String(describing: error)),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            refreshRecords()
-        } catch is CancellationError {
-            releaseInFlight(ratingKey: ratingKey)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            refreshRecords()
-        } catch {
-            recordDownloadDiagnostic("downloads.optimize_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "target": .label(targetName),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            refreshRecords()
-        }
-    }
-
-    private func startOptimizedPartDownload(ratingKey: String,
-                                            title: String,
-                                            part: Part,
-                                            metadata: OfflineMetadata,
-                                            server: URL,
-                                            token: String) throws {
-        let targetName = metadata.optimizeTargetName ?? "unknown"
-        let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
-        let destination = store.destinationURL(ratingKey: ratingKey,
-                                               ext: ext.isEmpty ? "mp4" : ext)
-        if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            throw lastError[ratingKey] ?? DownloadError.storageLimitExceeded("Storage limit exceeded.")
-        }
-        try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                         metadata: metadata,
-                                         targetName: targetName)
-        var downloadMetadata = metadata
-        // Once server prep has handed off to a concrete static Plex Part, retry/relaunch should
-        // resume the file bytes with Range rather than restart the optimize workflow. Persist the
-        // final Part id as the static retry target.
-        downloadMetadata.sourcePartID = part.id
-        downloadMetadata.resumeMode = .staticByteRange
-        downloadMetadata.serverPreparedVersion = true
-        // If the #88 chapter-image cache landed while the Plex optimize job was rendering, preserve
-        // it across this final "start the rendered Part" upsert instead of racing it back to nil.
-        if downloadMetadata.chapterImageRelativePaths == nil {
-            downloadMetadata.chapterImageRelativePaths = store.records.first { $0.ratingKey == ratingKey }?
-                .metadata?.chapterImageRelativePaths
-        }
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: downloadMetadata))
-        refreshRecords()
-        try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
-                                         metadata: downloadMetadata,
-                                         targetName: targetName)
-        let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-        recordDownloadDiagnostic("downloads.start", fields: [
-            "download_id": .identifier(ratingKey),
-            "backend": .label("Plex"),
-            "choice": .label("optimize"),
-            "target": .label(targetName),
-            "url_shape": .urlShape(url),
-            "expected_bytes": .bytes(part.size),
-        ])
-        // Plex often exposes downloadable text subtitle streams only on the rendered optimized
-        // Part, not on the original source Part (where subtitle `key` can be nil). Cache from the
-        // exact Part we are downloading so optimized offline playback has the same sidecars.
-        cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
-        // The rendered Part is a static file by this point (the poll waited for it to
-        // appear), so a Plex optimize download is usually network-bound — but the server
-        // can still be finalizing/serving it as it writes, so mark it transcode-sourced and
-        // let `isDownloadTranscodeLimited` decide from the live rate.
-        transcodeSourcedDownloads.insert(ratingKey)
-        try session.start(ratingKey: ratingKey, from: url, to: destination,
-                          expectedBytes: part.size,
-                          byteRangeCheckpoint: true)
-        refreshRecords()
-    }
-
-    /// Ensure an async Plex optimize poller still owns the visible row before it mutates the store
-    /// or starts a file transfer.
-    ///
-    /// This closes the delete/retry race where an old poller survives row deletion, later observes a
-    /// completed Plex Part, and overwrites a newer retry's row or downloads to the same destination.
-    /// The queue title is the per-attempt identity; the target check catches stale rows from older
-    /// builds that may not have a queue-title mapping.
-    private func assertCurrentOptimizeAttempt(ratingKey: String,
-                                              metadata: OfflineMetadata,
-                                              targetName: String) throws {
-        guard activeJobs.contains(ratingKey) else {
-            throw DownloadLifecycleCancellation.staleOptimizeAttempt
-        }
-        if let queueTitle = metadata.optimizeQueueTitle {
-            guard queueTitleByRatingKey[ratingKey] == queueTitle else {
-                throw DownloadLifecycleCancellation.staleOptimizeAttempt
-            }
-        }
-        guard let current = store.records.first(where: { $0.ratingKey == ratingKey }),
-              current.status == .queued,
-              current.bytes == 0,
-              current.progress == 0 else {
-            throw DownloadLifecycleCancellation.staleOptimizeAttempt
-        }
-        let currentMetadata = current.metadata
-        if let queueTitle = metadata.optimizeQueueTitle,
-           currentMetadata?.optimizeQueueTitle != queueTitle {
-            throw DownloadLifecycleCancellation.staleOptimizeAttempt
-        }
-        guard currentMetadata?.optimizeTargetName == targetName else {
-            throw DownloadLifecycleCancellation.staleOptimizeAttempt
-        }
-    }
-
-    /// Steps 1–3 of the optimize contract: fetch the background-processing key, resolve the
-    /// target tag id from the server's targets, POST the optimize job. Isolated so the live
-    /// (server-specific) path is the only thing Phase 0 needs to confirm.
-    private func triggerOptimize(item: MediaItem, targetName: String,
-                                 queueTitle: String,
-                                 server: URL, token: String,
-                                 identity: ClientIdentity) async throws {
-        // 1. Background-processing playlist key.
-        let bgKey: String
-        do {
-            let pl = try await appModel.client.send(
-                OptimizeRequest.backgroundProcessingRequest(server: server, token: token, identity: identity),
-                as: BackgroundProcessingPlaylist.self)
-            guard let key = pl.key else {
-                throw DownloadError.optimizeFailed("No background-processing playlist key.")
-            }
-            bgKey = key
-        } catch let e as DownloadError {
-            throw e
-        } catch {
-            throw DownloadError.optimizeFailed("playlists?type=42: \(String(describing: error))")
-        }
-
-        // Clear our own abandoned optimize jobs first so this new one isn't stuck waiting
-        // behind a backlog of dead items in the server's background-processing queue.
-        await cleanStaleOptimizeJobs(backgroundProcessingKey: bgKey, server: server,
-                                     token: token, identity: identity)
-
-        // The real candidate fix: if the server's background conversion queue is idle-PAUSED,
-        // queued optimize jobs never run while the user is connected (the queue sits, no
-        // `media.download` activity ever appears). Mirror python-plexapi `conversions(pause=False)`
-        // and clear it — but only when a read confirms it IS paused (conditional write, so we
-        // never needlessly mutate a server that's already fine).
-        await unpauseBackgroundQueueIfNeeded(server: server, token: token, identity: identity)
-
-        // 2. Resolve built-in PMS target tags from the server. Custom iPad-style
-        //    quality rows intentionally leave targetTagID empty and instead send
-        //    Item[Device][profile] + Item[MediaSettings], matching python-plexapi.
-        let originalQuality = Self.isPlexOriginalQualityTarget(targetName)
-        let custom = originalQuality ? nil : Self.customDownloadProfile(named: targetName)
-        let serverTargetName = originalQuality ? Self.plexOriginalQualityTargetName : targetName
-        var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: serverTargetName) : nil
-        if custom == nil,
-           let targets = try? await appModel.client.send(
-            OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token, identity: identity),
-            as: MediaProcessingTargets.self),
-           let resolved = targets.tagID(forName: serverTargetName) {
-            targetTagID = resolved
-        }
-
-        let source = await optimizerSource(for: item, server: server, token: token, identity: identity)
-
-        // 3. PUT the optimize job to the background-processing playlist.
-        let settings = custom?.settings ?? Self.mediaSettings(forTargetName: serverTargetName)
-        let create = OptimizeRequest.createOnPlaylist(
-            server: server, token: token, identity: identity,
-            backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,
-            sourceURI: source?.uri, locationID: source?.locationID ?? -1,
-            title: queueTitle, targetTagID: targetTagID,
-            targetName: custom == nil ? serverTargetName : "Custom: \(custom!.deviceProfile)",
-            deviceProfile: custom?.deviceProfile, mediaSettings: settings)
-        do {
-            try await appModel.client.send(create)
-        } catch {
-            throw DownloadError.optimizeFailed("optimize POST: \(String(describing: error))")
-        }
-
-        // 4. Optionally jump this just-enqueued conversion ahead of the PENDING items (but never
-        //    the one currently transcoding). Opt-in via Settings; best-effort — never fails the
-        //    download. The optimize POST above must have run first so our item already exists in
-        //    the conversion queue when we re-fetch it.
-        await prioritizeConversionIfEnabled(ratingKey: item.ratingKey, server: server,
-                                            token: token, identity: identity)
-    }
-
-    /// When the "Prioritize quick downloads" setting is on, move OUR just-enqueued conversion to
-    /// immediately AFTER the active conversion (so it is next up), never displacing the in-flight
-    /// transcode — mirroring python-plexapi `Conversion.move(after:)`. If no conversion is active,
-    /// move to the front (`after=-1`). Strictly scoped: only acts on the conversion whose
-    /// `ratingKey` matches the item we just created; unrelated jobs are never reordered. Any
-    /// failure (setting off, perms, shape mismatch, item not found) degrades to a no-op and is
-    /// recorded via `downloads.conversion_prioritized`. NEVER throws.
-    private func prioritizeConversionIfEnabled(ratingKey: String, server: URL, token: String,
-                                               identity: ClientIdentity) async {
-        guard PlaybackPreferences.prioritizeQuickDownloads() else {
-            recordDownloadDiagnostic("downloads.conversion_prioritized", fields: [
-                "download_id": .identifier(ratingKey),
-                "moved": .bool(false),
-                "reason": .label("disabled"),
-            ])
-            return
-        }
-
-        // Re-fetch the ordered conversion queue so our newly-created item is present.
-        guard let queue = try? await appModel.client.send(
-            BackgroundQueueRequest.conversionQueueRequest(server: server, token: token, identity: identity),
-            as: ConversionQueue.self) else {
-            recordDownloadDiagnostic("downloads.conversion_prioritized", fields: [
-                "download_id": .identifier(ratingKey),
-                "moved": .bool(false),
-                "reason": .label("queue_fetch_failed"),
-            ])
-            return
-        }
-
-        let active = queue.activeItem
-        let wasActivePresent = active != nil
-
-        // Locate OUR item by ratingKey. Gate hard: only ever reorder this one.
-        guard let mine = queue.items.first(where: { $0.ratingKey == ratingKey }),
-              let mineItemID = mine.playQueueItemID else {
-            recordDownloadDiagnostic("downloads.conversion_prioritized", fields: [
-                "download_id": .identifier(ratingKey),
-                "moved": .bool(false),
-                "was_active_present": .bool(wasActivePresent),
-                "queue_count": .int(queue.count),
-                "reason": .label("item_not_found"),
-            ])
-            return
-        }
-
-        // If our item IS the active conversion, there is nothing to do — never preempt/restart it.
-        if active?.playQueueItemID == mineItemID {
-            recordDownloadDiagnostic("downloads.conversion_prioritized", fields: [
-                "download_id": .identifier(ratingKey),
-                "moved": .bool(false),
-                "was_active_present": .bool(wasActivePresent),
-                "queue_count": .int(queue.count),
-                "reason": .label("already_active"),
-            ])
-            return
-        }
-
-        // Move target: immediately after the active conversion (next up, no preemption); if no
-        // active conversion, move to absolute front via python-plexapi's `-1` marker.
-        let afterItemID = active?.playQueueItemID ?? "-1"
-        let ok = (try? await appModel.client.send(
-            BackgroundQueueRequest.moveConversionRequest(
-                server: server, token: token, identity: identity,
-                playQueueItemID: mineItemID, afterItemID: afterItemID))) != nil
-
-        recordDownloadDiagnostic("downloads.conversion_prioritized", fields: [
-            "download_id": .identifier(ratingKey),
-            "moved": .bool(ok),
-            "was_active_present": .bool(wasActivePresent),
-            "queue_count": .int(queue.count),
-            "reason": .label(ok ? "moved" : "move_put_failed"),
-        ])
-    }
-
-    /// Delete this client's abandoned, non-completed items from the server's type-42
-    /// background-processing queue. Completed optimize items are server-side artifacts that may
-    /// contain the rendered file a relaunched app still needs to discover/download; deleting the
-    /// queue item deletes that optimized version in Plex. Scoped hard: only items carrying our
-    /// `[VisionPlay …]` title marker, not currently in-flight (`activeQueueTitles`), and not in a
-    /// completed state are removed — never another client's jobs or completed server renders.
-    private func cleanStaleOptimizeJobs(backgroundProcessingKey: String, server: URL,
-                                        token: String, identity: ClientIdentity) async {
-        let trimmed = backgroundProcessingKey.hasPrefix("/")
-            ? String(backgroundProcessingKey.dropFirst()) : backgroundProcessingKey
-        let listReq = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
-                                  queryItems: [],
-                                  headers: PlexHeaders.standard(identity: identity, token: token))
-        guard let queue = try? await appModel.client.send(listReq, as: BackgroundProcessingItems.self)
-        else {
-            recordDownloadDiagnostic("downloads.optimize_queue_cleaned", fields: [
-                "queue_items": .int(-1), "fetch": .string("failed"),
-            ])
-            return
-        }
-        let marker = "[VisionPlay "
-        let persistedProtectedTitles = Set(records.compactMap { record -> String? in
-            guard record.status != .complete else { return nil }
-            return record.metadata?.optimizeQueueTitle
-        })
-        let protectedTitles = activeQueueTitles.union(persistedProtectedTitles)
-        // Server-truth policy: remove only our marked pending/failed clutter. NEVER delete a
-        // completed optimized item here — Plex removes the rendered server-side version when the
-        // type-42 item is deleted, and a completed item may be the exact Part a relaunched app
-        // still needs to discover and download. Also protect persisted queue titles so relaunches
-        // do not briefly expose still-valid server work before activeQueueTitles is rebuilt.
-        let stale = queue.staleItemIDs(marker: marker, protectedTitles: protectedTitles)
-        var removed = 0
-        for id in stale {
-            let del = OptimizeRequest.removeBackgroundItem(server: server, token: token,
-                                                           identity: identity,
-                                                           backgroundProcessingKey: backgroundProcessingKey,
-                                                           itemID: id)
-            if (try? await appModel.client.send(del)) != nil { removed += 1 }
-        }
-        // Always record — including the zero-match case — so we can tell "server didn't keep our
-        // marker" (marked_count 0 while pending_count high) from "matched but all protected".
-        recordDownloadDiagnostic("downloads.optimize_queue_cleaned", fields: [
-            "queue_items": .int(queue.items.count),
-            "marked_count": .int(queue.markedCount(marker: marker)),
-            "pending_count": .int(queue.pendingCount),
-            "protected": .int(protectedTitles.count),
-            "stale_found": .int(stale.count),
-            "removed": .int(removed),
-        ])
-    }
-
-    /// If the server's background conversion queue is idle-paused, clear it so queued optimize
-    /// jobs actually run. Conditional write: reads `BackgroundQueueIdlePaused` via `GET /:/prefs`
-    /// first and only issues the `PUT /:/prefs?BackgroundQueueIdlePaused=0` when it is truthy —
-    /// an unknown/absent setting or an already-unpaused queue is left untouched. Mirrors
-    /// python-plexapi `PlexServer.conversions(pause=False)`. Emits `downloads.background_queue_unpaused`
-    /// only when we actually attempted the toggle (so the human can see was_paused + whether the
-    /// PUT succeeded). Best-effort: a failed read or PUT never fails the download.
-    private func unpauseBackgroundQueueIfNeeded(server: URL, token: String,
-                                                identity: ClientIdentity) async {
-        guard let prefs = try? await appModel.client.send(
-            BackgroundQueueRequest.prefsRequest(server: server, token: token, identity: identity),
-            as: ServerPrefs.self),
-              prefs.backgroundQueueIdlePaused == true else {
-            return
-        }
-        let ok = (try? await appModel.client.send(
-            BackgroundQueueRequest.setBackgroundQueueIdlePausedRequest(
-                server: server, token: token, identity: identity, paused: false))) != nil
-        recordDownloadDiagnostic("downloads.background_queue_unpaused", fields: [
-            "was_paused": .bool(true),
-            "ok": .bool(ok),
-        ])
-    }
-
-    private struct LibrarySectionsResponse: Decodable {
-        struct Container: Decodable {
-            let directory: [Directory]
-            enum CodingKeys: String, CodingKey { case directory = "Directory" }
-        }
-        struct Directory: Decodable {
-            struct Location: Decodable { let id: Int; let path: String }
-            let key: String
-            let uuid: String?
-            let location: [Location]
-            enum CodingKeys: String, CodingKey {
-                case key
-                case uuid
-                case location = "Location"
-            }
-            init(from decoder: Decoder) throws {
-                let container = try decoder.container(keyedBy: CodingKeys.self)
-                key = try container.decode(String.self, forKey: .key)
-                uuid = try container.decodeIfPresent(String.self, forKey: .uuid)
-                location = try container.decodeIfPresent([Location].self, forKey: .location) ?? []
-            }
-        }
-        let mediaContainer: Container
-        enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
-    }
-
-    private struct OptimizerSource {
-        let uri: String
-        let locationID: Int
-    }
-
-    private func optimizerSource(for item: MediaItem, server: URL, token: String,
-                                 identity: ClientIdentity) async -> OptimizerSource? {
-        let sectionID = item.librarySectionID.map(String.init)
-            ?? item.librarySectionKey?.split(separator: "/").last.map(String.init)
-        guard let sectionID else { return nil }
-        let request = PlexRequest(url: server.appendingPathComponent("library/sections"),
-                                  method: "GET", queryItems: [],
-                                  headers: PlexHeaders.standard(identity: identity, token: token))
-        guard let response = try? await appModel.client.send(request, as: LibrarySectionsResponse.self),
-              let section = response.mediaContainer.directory.first(where: { $0.key == sectionID }),
-              let uuid = section.uuid,
-              let metadataKey = item.key ?? Optional("/library/metadata/\(item.ratingKey)")
-        else { return nil }
-
-        let sourceFiles = (item.media ?? []).flatMap { $0.part.compactMap(\.file) }
-        let sourceLocationIDs = Set(section.location.compactMap { location -> Int? in
-            sourceFiles.contains { Self.filePath($0, isUnder: location.path) } ? location.id : nil
-        })
-        // PlexAPI's `locationID = -1` means "beside the original file". If the library has
-        // an extra location (for example a writable optimized-version mount), prefer that so
-        // read-only media libraries do not force optimizer failures.
-        let alternateLocationID = section.location.first { !sourceLocationIDs.contains($0.id) }?.id
-
-        return OptimizerSource(uri: "library://\(uuid)/item/\(metadataKey.urlQueryEscapedForPlexPath)",
-                               locationID: alternateLocationID ?? -1)
-    }
-
-    private static func filePath(_ file: String, isUnder directory: String) -> Bool {
+    static func filePath(_ file: String, isUnder directory: String) -> Bool {
         let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
         return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")
     }
 
-    private struct CustomDownloadProfile {
+    // #135 Stage 5c: `internal` so DownloadManager+PlexOptimize.swift can read a resolved custom
+    // preset's device profile + media settings when PUTting the optimize job.
+    struct CustomDownloadProfile {
         let name: String
         let deviceProfile: String
         let settings: OptimizeRequest.MediaSettings
     }
 
     private static let compatibleOriginalQualityName = "Original video quality"
-    private static let plexOriginalQualityTargetName = "Original Quality"
+    static let plexOriginalQualityTargetName = "Original Quality"
 
     private static let customDownloadProfiles: [CustomDownloadProfile] = [
         .init(name: "4K 40 Mbps", deviceProfile: "Universal TV",
@@ -3701,24 +1725,26 @@ public final class DownloadManager {
         [compatibleOriginalQualityName] + customDownloadProfiles.map(\.name)
     }
 
-    private static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
+    static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
         customDownloadProfiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
     }
 
-    private static func isPlexOriginalQualityTarget(_ name: String) -> Bool {
+    static func isPlexOriginalQualityTarget(_ name: String) -> Bool {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
             .localizedCaseInsensitiveCompare(compatibleOriginalQualityName) == .orderedSame
         || name.trimmingCharacters(in: .whitespacesAndNewlines)
             .localizedCaseInsensitiveCompare(plexOriginalQualityTargetName) == .orderedSame
     }
 
-    private struct JellyfinTranscodeProfile {
+    // #135 Stage 5c: `internal` so DownloadManager+Jellyfin.swift can read the resolved preset's
+    // bitrate/dimension caps when building the transcoded-download request + size estimate.
+    struct JellyfinTranscodeProfile {
         let videoBitrateBps: Int
         let maxWidth: Int?
         let maxHeight: Int?
     }
 
-    private static let jellyfinDefaultDownloadPreset = "1080p 8 Mbps"
+    static let jellyfinDefaultDownloadPreset = "1080p 8 Mbps"
 
     private static func jellyfinDownloadPreset(named name: String) -> String {
         // Jellyfin does not have Plex's server-side "Original video quality" optimize queue.
@@ -3729,7 +1755,7 @@ public final class DownloadManager {
             : name
     }
 
-    private static func jellyfinTranscodeProfile(named name: String) -> JellyfinTranscodeProfile {
+    static func jellyfinTranscodeProfile(named name: String) -> JellyfinTranscodeProfile {
         let settings = customDownloadProfile(named: jellyfinDownloadPreset(named: name))?.settings
         let bitrateKbps = settings?.maxVideoBitrateKbps ?? 8_000
         let resolution = settings?.videoResolution
@@ -3744,21 +1770,14 @@ public final class DownloadManager {
                                         maxHeight: height)
     }
 
-    private static func estimatedTranscodeBytes(durationMs: Int?, videoBitrateBps: Int) -> Int? {
-        guard let durationMs, durationMs > 0 else { return nil }
-        // Add a modest audio/container allowance to the selected video bitrate so the storage
-        // preflight is conservative without requiring a Content-Length from Jellyfin's stream.
-        let totalBitrate = videoBitrateBps + 256_000
-        return Int((Double(durationMs) / 1000.0) * Double(totalBitrate) / 8.0)
-    }
-
     private static func estimatedTranscodeBytes(for record: DownloadRecord) -> Int? {
         guard let targetName = record.metadata?.optimizeTargetName, !targetName.isEmpty else {
             return nil
         }
         let profile = jellyfinTranscodeProfile(named: targetName)
-        return estimatedTranscodeBytes(durationMs: record.metadata?.duration,
-                                       videoBitrateBps: profile.videoBitrateBps)
+        // #135 Stage 1b: the pure duration × bitrate estimate lives in `TranscodeSizeEstimator`.
+        return TranscodeSizeEstimator.bytes(durationMs: record.metadata?.duration,
+                                            videoBitrateBps: profile.videoBitrateBps)
     }
 
     /// Unified download fraction for a row's bar + caption (#97), so Plex/Jellyfin/Emby
@@ -3776,7 +1795,7 @@ public final class DownloadManager {
                                          estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
     }
 
-    private static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
+    static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
         let keys = [part?.key] + (media?.part.map(\.key) ?? [])
         for key in keys.compactMap({ $0 }) {
             guard let marker = key.range(of: "/media/") else { continue }
@@ -3786,7 +1805,7 @@ public final class DownloadManager {
         return nil
     }
 
-    private static func jellyfinTranscodedDownloadRequest(_ server: URL,
+    static func jellyfinTranscodedDownloadRequest(_ server: URL,
                                                           _ token: String,
                                                           _ identity: JellyfinClientIdentity,
                                                           _ itemId: String,
@@ -3842,7 +1861,7 @@ public final class DownloadManager {
 
     /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
     /// targets endpoint resolves them). Phase 0 confirms the real ids.
-    private static func conventionalTagID(forName name: String) -> Int {
+    static func conventionalTagID(forName name: String) -> Int {
         switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "optimized for mobile": return 1
         case "original quality", "original video quality": return 3
@@ -3851,7 +1870,7 @@ public final class DownloadManager {
     }
 
     /// Best-known render settings per preset name (fallback caps; the server preset governs).
-    private static func mediaSettings(forTargetName name: String) -> OptimizeRequest.MediaSettings {
+    static func mediaSettings(forTargetName name: String) -> OptimizeRequest.MediaSettings {
         switch name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "optimized for mobile":
             return .init(videoQuality: 100, maxVideoBitrateKbps: 2000, videoResolution: "1280x720")
@@ -3870,7 +1889,7 @@ public final class DownloadManager {
     /// alongside the original. We snapshot the original part ids first, then poll;
     /// the first part whose id is NOT in that original set is the optimized output.
     /// If the item had no media at all, we take the highest-id new part.
-    private func pollForOptimizedPart(ratingKey: String,
+    func pollForOptimizedPart(ratingKey: String,
                                       originalPartIDs: Set<Int>,
                                       targetName: String,
                                       sourceHeight: Int?,
@@ -3931,88 +1950,27 @@ public final class DownloadManager {
     }
 
     /// Pick only a NEW Plex server-optimized output that the local/offline player can open.
-    /// Multi-version libraries can have several pre-existing compatible source parts; excluding
-    /// just the selected source part is not enough, and any concurrent/manual version creation for
-    /// the same item should not win unless it has Plex's optimized-version path shape.
+    ///
+    /// GH #135 Stage 1a: the bounding-box / bitrate matching now lives in the pure, unit-tested
+    /// `OptimizedVersionMatch`. This thin shim keeps the app-side target-name → settings resolution
+    /// and injects the already-resolved tier into the matcher.
     private static func optimizedDownloadCandidate(from media: [Media],
                                                    baselinePartIDs: Set<Int>,
                                                    targetName: String,
                                                    sourceHeight: Int?) -> Part? {
-        for mediaItem in media where serverOptimizedMedia(mediaItem, matchesTargetName: targetName,
-                                                          sourceHeight: sourceHeight) {
-            if let part = mediaItem.part.first(where: { part in
-                !baselinePartIDs.contains(part.id)
-                    && isServerOptimizedPart(part)
-                    && isLocallyPlayableOriginal(part: part)
-            }) {
-                return part
-            }
-        }
-        return nil
-    }
-
-    /// Decide whether an already-rendered Plex Version is the same effective target the current
-    /// attempt requested. Plex metadata does not preserve our queue title on the rendered Part, so
-    /// match on the durable media attributes PMS exposes: resolution and approximate bitrate. This
-    /// prevents a retry from asking for 1080p 8 Mbps and silently reusing an old 720p 3 Mbps file.
-    private static func serverOptimizedMedia(_ media: Media,
-                                             matchesTargetName targetName: String,
-                                             sourceHeight: Int?) -> Bool {
         let settings = customDownloadProfile(named: targetName)?.settings ?? mediaSettings(forTargetName: targetName)
-        if isPlexOriginalQualityTarget(targetName),
-           let sourceHeight, let actualHeight = media.height,
-           abs(actualHeight - sourceHeight) > 16 {
-            return false
-        }
-        if let targetResolution = settings.videoResolution,
-           let targetDimensions = resolutionDimensions(targetResolution) {
-            // Treat Plex target resolution as a bounding box, not an exact output height. Wide
-            // CinemaScope-ish sources rendered by a 1080p Universal TV profile can legitimately
-            // come back as e.g. 1920x802: width hits the 1080p target while height preserves
-            // aspect ratio. Reject only outputs that exceed the box or do not land near either
-            // target edge (so an old 720p version is not reused for a 1080p request).
-            let actualWidth = media.width
-            let actualHeight = media.height
-            if let actualWidth, actualWidth > targetDimensions.width + 16 { return false }
-            if let actualHeight, actualHeight > targetDimensions.height + 16 { return false }
-            if let actualWidth, let actualHeight {
-                let nearWidth = abs(actualWidth - targetDimensions.width) <= 16
-                let nearHeight = abs(actualHeight - targetDimensions.height) <= 16
-                if !nearWidth && !nearHeight { return false }
-            } else if let actualHeight {
-                // Legacy metadata may omit width; keep the old height-only behavior in that case.
-                if abs(actualHeight - targetDimensions.height) > 16 { return false }
-            }
-        }
-        if let targetKbps = settings.maxVideoBitrateKbps,
-           let actualKbps = media.bitrate {
-            // `media.bitrate` is the whole-container rate (video + audio), while `targetKbps` caps
-            // VIDEO only. Allow the video variance (×1.10) plus a realistic ceiling for a rendered
-            // surround track (~640 kbps AC3/AAC 5.1 + margin) so a valid optimized Part isn't judged
-            // a mismatch and needlessly re-rendered. The slop stays well under the gap between bitrate
-            // ladder rungs, so an 8 vs 10 Mbps render is still distinguished.
-            let allowedKbps = Int(Double(targetKbps) * 1.10) + 768
-            if actualKbps > allowedKbps { return false }
-        }
-        return true
+        let targetDimensions = settings.videoResolution
+            .flatMap(DownloadResolutionLabel.dimensions(forVideoResolution:))
+        return OptimizedVersionMatch.candidate(
+            from: media,
+            baselinePartIDs: baselinePartIDs,
+            targetDimensions: targetDimensions,
+            targetVideoKbps: settings.maxVideoBitrateKbps,
+            isOriginalQuality: isPlexOriginalQualityTarget(targetName),
+            sourceHeight: sourceHeight)
     }
 
-    private static func resolutionHeight(_ value: String) -> Int? {
-        resolutionDimensions(value)?.height
-    }
-
-    private static func resolutionDimensions(_ value: String) -> (width: Int, height: Int)? {
-        let parts = value.split(separator: "x").compactMap { Int($0) }
-        guard parts.count == 2 else { return nil }
-        return (width: parts[0], height: parts[1])
-    }
-
-    private static func isServerOptimizedPart(_ part: Part) -> Bool {
-        guard let file = part.file?.lowercased() else { return false }
-        return file.contains("/plex versions/")
-    }
-
-    private func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
+    func fetchCurrentMediaItem(ratingKey: String, server: URL, token: String,
                                        identity: ClientIdentity) async -> MediaItem? {
         // Use the full detail shape, not the lean optimize status shape, so any offline
         // snapshot refreshed from this item carries chapters and part/stream metadata.
@@ -4032,7 +1990,7 @@ public final class DownloadManager {
     }
 
 
-    private func bgKeyForPolling(server: URL, token: String, identity: ClientIdentity) async -> String? {
+    func bgKeyForPolling(server: URL, token: String, identity: ClientIdentity) async -> String? {
         guard let pl = try? await appModel.client.send(
             OptimizeRequest.backgroundProcessingRequest(server: server, token: token, identity: identity),
             as: BackgroundProcessingPlaylist.self)
@@ -4147,7 +2105,7 @@ public final class DownloadManager {
     /// Fold the moving optimize percent into an EMA (same 0.75/0.25 weights as the transfer
     /// speed EMA) to derive a smooth `~N min left`. Suppress the ETA when the instantaneous
     /// rate is non-positive (progress stalled or went backwards) or implausibly large.
-    private func updateOptimizeETA(ratingKey: String, progress p: Double) {
+    func updateOptimizeETA(ratingKey: String, progress p: Double) {
         let now = Date()
         guard let prev = optimizeProgressSamples[ratingKey] else {
             optimizeProgressSamples[ratingKey] = (p, now)
@@ -4200,631 +2158,12 @@ public final class DownloadManager {
 
     /// Drop all server-optimize progress state for a ratingKey (part found / job ended).
     /// Mirrors the `downloadSpeed` prune idiom in `refreshRecords`.
-    private func clearOptimizeProgress(ratingKey: String) {
+    func clearOptimizeProgress(ratingKey: String) {
         optimizeProgress[ratingKey] = nil
         optimizeETA[ratingKey] = nil
         optimizeState[ratingKey] = nil
         optimizeProgressSamples[ratingKey] = nil
         optimizeRate[ratingKey] = nil
-    }
-
-    // MARK: - Emby convert-then-download (server-side prepare → resumable download)
-
-    /// Emby parity with the Plex optimize lane: create a server-side "Convert Media" Sync job that
-    /// renders a PERSISTENT converted file (next-to-original, `targetId:"originalmediafolder"`),
-    /// poll it to completion surfacing "Preparing on server… N%", then hand the freshly-converted
-    /// MediaSource off to the resumable `.original` static lane via `downloadEmby(…override:)`.
-    ///
-    /// Why this exists: a live streaming transcode is ephemeral (no stable byte range), so a dropped
-    /// connection restarts a multi-GB download from zero. The converted file IS range-resumable, and
-    /// we KEEP it (deleting the Sync job never deletes the file) so #126's existing-version reuse
-    /// serves the next download/resume for free.
-    ///
-    /// Mirrors `triggerOptimizeAndDownload`: the whole chain runs off the captured `session`
-    /// (server/token/userId/identity), seeds a 0% `.preparing` row, and surfaces progress through the
-    /// SAME `optimizeProgress`/`optimizeState` plumbing the UI already reads. The caller
-    /// (`downloadEmby`) already holds the `activeJobs` slot; the relaunch resume path inserts it
-    /// before calling. Failures are retry-only (NO streaming fallback — that would silently
-    /// reintroduce the non-resumable behavior this feature removes).
-    private func triggerConvertAndDownload(item: MediaItem, targetName: String,
-                                           metadata: OfflineMetadata,
-                                           session: BackendSession) async {
-        let itemId = item.ratingKey
-        let ratingKey = Self.embyRecordKey(itemId)
-        let server = session.baseURL
-        let token = session.token
-        let identity = appModel.identity.emby
-        guard let userId = session.userID else {
-            lastError[ratingKey] = .notAuthenticated
-            store.setStatus(ratingKey: ratingKey, .failed)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
-        // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
-        var convertMetadata = metadata
-        convertMetadata.optimizeTargetName = targetName
-        convertMetadata.downloadLane = .optimize
-        convertMetadata.resumeMode = .serverPrepThenStatic
-
-        // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
-        // instead of re-converting, and (b) identify the freshly-converted source once a new job
-        // completes (a second `File` source appears on the same item).
-        let fileSources = await embyFileSources(server: server, token: token, identity: identity,
-                                                userId: userId, itemId: itemId)
-        let snapshotIds = Set(fileSources.compactMap { $0.id })
-
-        // REUSE PREFLIGHT (#126 on the auto-convert path): if a server-prepared converted version that
-        // satisfies this preset's output resolution ALREADY exists, download THAT via the resumable
-        // `.existingVersion` lane instead of creating another Sync convert job. Without this, every
-        // repeat download of the same item piles up duplicate `- tv (N)` conversions in the library —
-        // and, worse, Emby's per-item Sync job can then transcode a DERIVED source (a duplicate whose
-        // file was since removed surfaces as ffmpeg "No such file" → the job Fails → the row shows
-        // "Server conversion failed"). Reusing the kept converted file avoids both.
-        let requestedHeight = Self.convertPresetOutputHeight(forLabel: targetName)
-        if let reuse = Self.reusableConvertedSource(fileSources, requestedHeight: requestedHeight,
-                                                    primaryMediaSourceId: metadata.mediaSourceID),
-           let reuseId = reuse.id {
-            recordDownloadDiagnostic("downloads.convert_reuse", fields: [
-                "download_id": .identifier(ratingKey),
-                "target": .label(targetName),
-                "source_count": .int(fileSources.count),
-            ])
-            // We hold the in-flight slot from `downloadEmby`; release it so the `.existingVersion`
-            // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). No
-            // `.preparing` row was seeded yet, so there is nothing to remove.
-            releaseInFlight(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
-            return
-        }
-
-        // #133 intent: if a prior Emby Sync convert already copied an MP4 next to the original but
-        // PlaybackInfo has not exposed it yet, make a bounded, targeted library refresh before
-        // starting a duplicate conversion. This is safe/read-only with respect to media bytes: it
-        // only asks Emby to re-index this one item, then polls for an existing reusable File source.
-        if let refreshedReuse = await refreshAndPollReusableEmbyConvertedSource(
-            server: server, token: token, identity: identity, userId: userId, itemId: itemId,
-            ratingKey: ratingKey, requestedHeight: requestedHeight,
-            primaryMediaSourceId: metadata.mediaSourceID,
-            initialSourceCount: fileSources.count,
-            phase: "pre_create"),
-           let reuseId = refreshedReuse.id {
-            recordDownloadDiagnostic("downloads.convert_reuse", fields: [
-                "download_id": .identifier(ratingKey),
-                "target": .label(targetName),
-                "phase": .label("post_refresh"),
-            ])
-            releaseInFlight(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
-            return
-        }
-
-        // Persist the FULL pre-conversion id set (not just the original) so a relaunch-resume still
-        // excludes any PRIOR converted version — otherwise a stale version could be mistaken for the new one.
-        convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
-
-        // NOTE: Emby IGNORES the submitted job `name` and stores the item's own title instead
-        // (verified live, Emby 4.9.3 — a "<title> [VisionPlay <hex>]" submission comes back stored
-        // as just "<title>"). So unlike Plex's `[VisionPlay …]` queue-title marker discipline, an
-        // Emby convert job CANNOT be tagged/identified by name. We instead identify and cancel our
-        // jobs by the persisted `embyConvertJobID` (set immediately after create, below). The name
-        // is still sent (harmless, matches the Emby web client) but is purely cosmetic.
-        let jobName = "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
-        let quality = EmbyConvertRequest.convertQuality(forPresetLabel: targetName)
-
-        recordDownloadDiagnostic("downloads.convert_start", fields: [
-            "download_id": .identifier(ratingKey),
-            "target": .label(targetName),
-            "bitrate": .int(quality.bitrate ?? 0),
-            "snapshot_count": .int(snapshotIds.count),
-        ])
-
-        // Seed the 0% `.preparing` row immediately so the UI shows the job while we create it.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
-        optimizeState[ratingKey] = "queued"
-        refreshRecords()
-
-        // 1. Create the convert job.
-        let job: EmbyConvertJob
-        do {
-            let req = try EmbyConvertRequest.createJobRequest(
-                server: server, token: token, identity: identity, userId: userId, itemId: itemId,
-                quality: quality.quality, profile: quality.profile, bitrate: quality.bitrate,
-                name: jobName,
-                container: quality.container, videoCodec: quality.videoCodec, audioCodec: quality.audioCodec)
-            let (data, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
-            }
-            // The CREATE response nests the job under "Job" (SyncJobCreationResult) — decode the
-            // envelope, NOT the bare top-level shape the single-job poll GET returns.
-            job = try EmbyConvertRequest.decodeCreatedJob(from: data)
-        } catch {
-            recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "phase": .label("create"),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        // Persist the job id so a relaunch resumes polling (not restarts) and a row delete can
-        // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted/cancelled the
-        // row while `POST /Sync/Jobs` was in flight, do NOT upsert it back into existence; cancel the
-        // server job best-effort and leave the row gone.
-        guard activeJobs.contains(ratingKey),
-              store.records.first(where: { $0.ratingKey == ratingKey })?.status == .preparing else {
-            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(job.id),
-                "phase": .label("post_create"),
-            ])
-            cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
-                                 server: server, token: token, identity: identity)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-        convertMetadata.embyConvertJobID = job.id
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
-        refreshRecords()
-
-        await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
-                                            snapshotIds: snapshotIds, targetName: targetName,
-                                            server: server, token: token, identity: identity,
-                                            userId: userId)
-    }
-
-    /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
-    /// plumbing ("Preparing on server… N%"), then hand the converted source to the resumable
-    /// `.original` lane. Shared by the initial trigger and the relaunch-resume path.
-    private func pollAndDownloadEmbyConvertJob(item: MediaItem, ratingKey: String, jobId: Int,
-                                               snapshotIds: Set<String>, targetName: String,
-                                               server: URL, token: String,
-                                               identity: EmbyClientIdentity, userId: String) async {
-        // 2. Poll (reuse `optimizePollInterval`; no wall-clock timeout — the conversion is
-        //    server-side and may legitimately take a long time for large media).
-        while true {
-            // Bail if the row was deleted/cancelled out from under us (delete() also fires the
-            // server-side DELETE /Sync/Jobs).
-            guard activeJobs.contains(ratingKey),
-                  store.records.first(where: { $0.ratingKey == ratingKey })?.status == .preparing else {
-                recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "job_id": .int(jobId),
-                ])
-                return
-            }
-
-            let job: EmbyConvertJob
-            do {
-                let req = try EmbyConvertRequest.jobStatusRequest(server: server, token: token,
-                                                                  identity: identity, jobId: jobId)
-                let (data, response) = try await URLSession.shared.data(for: req)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    if Self.isTerminalEmbyConvertPollStatus(http.statusCode) {
-                        recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                            "download_id": .identifier(ratingKey),
-                            "job_id": .int(jobId),
-                            "phase": .label("poll_http"),
-                            "status_code": .int(http.statusCode),
-                        ])
-                        lastError[ratingKey] = .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode)).")
-                        store.setStatus(ratingKey: ratingKey, .failed)
-                        clearOptimizeProgress(ratingKey: ratingKey)
-                        releaseInFlight(ratingKey: ratingKey)
-                        refreshRecords()
-                        return
-                    }
-                    throw DownloadError.transferFailed("Convert poll HTTP \(http.statusCode)")
-                }
-                job = try EmbyConvertRequest.decodeJob(from: data)
-            } catch {
-                // A transient poll error shouldn't fail the whole job; keep polling. (The job runs
-                // server-side regardless of our connectivity.)
-                recordDownloadDiagnostic("downloads.convert_poll_error", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "job_id": .int(jobId),
-                    "error": .error(error),
-                ])
-                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
-                continue
-            }
-
-            // Surface progress through the shared optimize plumbing the UI already renders. Emby does
-            // NOT report incremental convert progress — `Progress` stays pinned at 0 throughout
-            // Converting and only jumps to 100 at completion. So gate on `pct > 0` (NOT `>= 0`): a
-            // pinned-0 must leave `optimizeProgress` unset so the UI shows the indeterminate
-            // "Preparing on server…" rather than a misleading "Preparing on server… 0%" (and so we
-            // never compute a bogus ETA from a non-moving 0). Only a real >0 value drives the %/ETA.
-            if let pct = job.progress, pct > 0 {
-                let p = min(1.0, pct / 100.0)
-                optimizeProgress[ratingKey] = p
-                optimizeState[ratingKey] = "transcoding"
-                updateOptimizeETA(ratingKey: ratingKey, progress: p)
-            } else {
-                optimizeState[ratingKey] = "queued"
-            }
-            refreshRecords()
-
-            if job.status.isTerminal {
-                if job.status.didSucceed {
-                    // Cancel race: the user may have deleted the row during the status `await` above.
-                    // delete() removes the row and releases the in-flight slot; if it did, do NOT
-                    // proceed to finishEmbyConvert (which re-seeds a download row and re-inserts the
-                    // activeJobs slot, resurrecting a cancelled download). All these methods are
-                    // @MainActor, so a plain guard is sufficient — no TOCTOU between this check and
-                    // finishEmbyConvert's own top-of-method guard.
-                    guard activeJobs.contains(ratingKey) else {
-                        recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                            "download_id": .identifier(ratingKey),
-                            "job_id": .int(jobId),
-                            "phase": .label("post_status_completed"),
-                        ])
-                        return
-                    }
-                    await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
-                                            snapshotIds: snapshotIds, targetName: targetName,
-                                            server: server, token: token, identity: identity,
-                                            userId: userId)
-                } else {
-                    // Server-side Failed/Cancelled → fail the row (retry-only; keep the marker job
-                    // for diagnostics — deleting it wouldn't delete a partial file anyway).
-                    recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "job_id": .int(jobId),
-                        "phase": .label("server"),
-                        "status": .label(job.status.rawValue),
-                    ])
-                    lastError[ratingKey] = .transferFailed("Server conversion \(job.status.rawValue.lowercased()).")
-                    store.setStatus(ratingKey: ratingKey, .failed)
-                    clearOptimizeProgress(ratingKey: ratingKey)
-                    releaseInFlight(ratingKey: ratingKey)
-                    refreshRecords()
-                }
-                return
-            }
-
-            try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
-        }
-    }
-
-
-    private static func isTerminalEmbyConvertPollStatus(_ statusCode: Int) -> Bool {
-        switch statusCode {
-        case 401, 403, 404, 410:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func cancelEmbyConvertJob(jobId: Int, ratingKey: String,
-                                      server: URL, token: String,
-                                      identity: EmbyClientIdentity) {
-        recordDownloadDiagnostic("downloads.convert_cancel", fields: [
-            "download_id": .identifier(ratingKey),
-            "job_id": .int(jobId),
-        ])
-        Task {
-            if let req = try? EmbyConvertRequest.deleteJobRequest(
-                server: server, token: token, identity: identity, jobId: jobId) {
-                _ = try? await URLSession.shared.data(for: req)
-            }
-        }
-    }
-
-    /// On a Completed convert job: fetch UNFILTERED PlaybackInfo (`mediaSourceId:nil`), pick the
-    /// `File` source NOT in the pre-conversion snapshot (fallback: an h264/mp4 non-primary source),
-    /// then hand off to the resumable `.original` static lane via `downloadEmby(…override:)`. The
-    /// converted file is KEPT (no Sync-job cleanup) so #126's reuse serves the next download.
-    private func finishEmbyConvert(item: MediaItem, ratingKey: String, jobId: Int,
-                                   snapshotIds: Set<String>, targetName: String,
-                                   server: URL, token: String,
-                                   identity: EmbyClientIdentity, userId: String) async {
-        // Cancel race (entry guard): bail if the row was deleted/cancelled before we got here.
-        guard activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "phase": .label("finish_entry"),
-            ])
-            return
-        }
-        let itemId = item.ratingKey
-        func looksConverted(_ source: EmbyMediaSourceInfo) -> Bool {
-            source.videoCodec?.caseInsensitiveCompare("h264") == .orderedSame
-                || (source.container ?? "").lowercased().contains("mp4")
-        }
-        // When several candidates qualify, prefer the most-recently-added so a stale converted
-        // version is never chosen over the fresh one. Emby mediasource ids are numeric (string-typed);
-        // the freshly converted source gets the highest id. Non-numeric ids sort to the back (-1).
-        func recency(_ source: EmbyMediaSourceInfo) -> Int { Int(source.id ?? "") ?? -1 }
-        func mostRecent(_ sources: [EmbyMediaSourceInfo]) -> EmbyMediaSourceInfo? {
-            sources.max(by: { recency($0) < recency($1) })
-        }
-
-        // POLL for the freshly-converted source. Emby reports the Sync job `Completed` BEFORE it has
-        // indexed the converted file as a downloadable MediaSource: the file is copied into the
-        // library folder, then a LibraryMonitor refresh + ffprobe must run before PlaybackInfo lists
-        // it (measured live: ~3 min lag). A single immediate fetch therefore misses it and the row
-        // would fail with "Converted source not found". Poll unfiltered PlaybackInfo (best-effort;
-        // transient errors just retry) until the NEW (post-snapshot) h264/mp4 `File` source appears.
-        let maxAttempts = 72   // ~6 min at the 5s optimizePollInterval — comfortably past the index lag.
-        var fileSources: [EmbyMediaSourceInfo] = []
-        var newSource: EmbyMediaSourceInfo?
-        await requestEmbyItemRefresh(server: server, token: token, identity: identity, userId: userId,
-                                     itemId: itemId, ratingKey: ratingKey, phase: "post_completed")
-        for attempt in 0..<maxAttempts {
-            // Cancel race: the user may delete the row during the wait (delete() also fires the
-            // server-side DELETE /Sync/Jobs and releases the slot).
-            guard activeJobs.contains(ratingKey) else {
-                recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "job_id": .int(jobId),
-                    "phase": .label("finish_poll"),
-                ])
-                return
-            }
-            // `embyFileSources` returns only on-disk (`File`) sources with a non-empty id, unfiltered
-            // by MediaSourceId, and is best-effort (empty on any error → this attempt simply retries).
-            fileSources = await embyFileSources(server: server, token: token, identity: identity,
-                                                userId: userId, itemId: itemId)
-            let notInSnapshot = fileSources.filter { !snapshotIds.contains($0.id ?? "") }
-            // The convert profile always yields h264/mp4, so a NEW h264/mp4 File source is exactly the
-            // converted output — never the original HEVC/MKV source.
-            if let fresh = mostRecent(notInSnapshot.filter(looksConverted)) {
-                newSource = fresh
-                break
-            }
-            if attempt < maxAttempts - 1 {
-                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
-            }
-        }
-        // Final fallback for an empty/ambiguous snapshot (the strict NEW-h264/mp4 match never landed):
-        // most-recent new File source, then most-recent h264/mp4 File source.
-        if newSource == nil {
-            let notInSnapshot = fileSources.filter { !snapshotIds.contains($0.id ?? "") }
-            newSource = mostRecent(notInSnapshot) ?? mostRecent(fileSources.filter(looksConverted))
-        }
-
-        guard let newSourceId = newSource?.id, !newSourceId.isEmpty else {
-            recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "phase": .label("no_converted_source"),
-                "source_count": .int(fileSources.count),
-            ])
-            lastError[ratingKey] = .transferFailed("Converted source not found after completion.")
-            store.setStatus(ratingKey: ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
-            refreshRecords()
-            return
-        }
-
-        // Cancel race (final guard): the unfiltered PlaybackInfo fetch above is an `await`, so the
-        // user could have deleted the row during it. If they did (slot released, row gone), do NOT
-        // re-seed a download via the handoff below — that would resurrect a cancelled download.
-        guard activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "phase": .label("finish_pre_handoff"),
-            ])
-            return
-        }
-
-        recordDownloadDiagnostic("downloads.convert_completed", fields: [
-            "download_id": .identifier(ratingKey),
-            "job_id": .int(jobId),
-            "target": .label(targetName),
-        ])
-        // Clear the prep progress + release THIS lane's bookkeeping so the handoff `downloadEmby`
-        // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
-        clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(ratingKey: ratingKey)
-        // Remove the seeded `.preparing` row so the handoff re-seeds a fresh download row at the
-        // converted source (its own size, route, container).
-        store.remove(ratingKey: ratingKey)
-        // Hand off to the existing resumable `.original` static lane. `.existingVersion` addresses a
-        // specific converted MediaSource id (the #126 byte-for-byte reuse path) — it negotiates the
-        // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
-        // `.optimize` reroutes). The KEPT converted file is what reuse serves next time.
-        await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId)
-    }
-
-    /// Enumerate the current `File` MediaSources for an Emby item (unfiltered PlaybackInfo). Used to
-    /// snapshot the pre-conversion sources so the freshly-converted one can be identified later, AND
-    /// for the convert-lane reuse preflight (an already-converted version is reused instead of
-    /// re-converting). Only on-disk (`Protocol == File`, or absent on older servers) sources with a
-    /// non-empty id are returned. Best-effort: empty array on any error.
-    private func embyFileSources(server: URL, token: String, identity: EmbyClientIdentity,
-                                 userId: String, itemId: String) async -> [EmbyMediaSourceInfo] {
-        do {
-            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity, userId: userId, itemId: itemId,
-                mediaSourceId: nil, maxStaticBitrate: 200_000_000)
-            let (data, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                return []
-            }
-            let sources = try EmbyPlaybackInfoResponse.decode(from: data).mediaSources
-            return sources.filter { source in
-                guard let id = source.id, !id.isEmpty else { return false }
-                if let proto = source.mediaProtocol, proto.caseInsensitiveCompare("File") != .orderedSame {
-                    return false
-                }
-                return true
-            }
-        } catch {
-            return []
-        }
-    }
-
-    /// Ask Emby to re-index one item after a convert job copied a persistent file next to the
-    /// original. Best-effort by design: a refresh failure should not fail the download path because
-    /// Emby's background library monitor may still discover the file during normal polling.
-    private func requestEmbyItemRefresh(server: URL, token: String, identity: EmbyClientIdentity,
-                                        userId: String, itemId: String,
-                                        ratingKey: String, phase: String) async {
-        do {
-            let req = try EmbyConvertRequest.itemRefreshRequest(server: server, token: token,
-                                                                identity: identity, userId: userId,
-                                                                itemId: itemId)
-            let (_, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                recordDownloadDiagnostic("downloads.convert_refresh_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "phase": .label(phase),
-                    "status_code": .int(http.statusCode),
-                ])
-                return
-            }
-            recordDownloadDiagnostic("downloads.convert_refresh", fields: [
-                "download_id": .identifier(ratingKey),
-                "phase": .label(phase),
-            ])
-        } catch {
-            recordDownloadDiagnostic("downloads.convert_refresh_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "phase": .label(phase),
-                "error": .error(error),
-            ])
-        }
-    }
-
-    /// Bounded #133 reuse probe: refresh one Emby item and poll briefly for an already-optimized
-    /// copy before creating a new conversion. This catches the common case where the MP4 exists on
-    /// disk but PlaybackInfo is stale; it also makes a resumed server-prep row able to transition to
-    /// the static byte-range lane once Emby exposes the copied file.
-    private func refreshAndPollReusableEmbyConvertedSource(server: URL, token: String,
-                                                           identity: EmbyClientIdentity,
-                                                           userId: String, itemId: String,
-                                                           ratingKey: String,
-                                                           requestedHeight: Int?,
-                                                           primaryMediaSourceId: String?,
-                                                           initialSourceCount: Int,
-                                                           phase: String) async -> EmbyMediaSourceInfo? {
-        await requestEmbyItemRefresh(server: server, token: token, identity: identity, userId: userId,
-                                     itemId: itemId, ratingKey: ratingKey, phase: phase)
-
-        let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
-        for attempt in 0..<maxAttempts {
-            guard activeJobs.contains(ratingKey) else { return nil }
-            let sources = await embyFileSources(server: server, token: token, identity: identity,
-                                                userId: userId, itemId: itemId)
-            if let reuse = Self.reusableConvertedSource(sources, requestedHeight: requestedHeight,
-                                                        primaryMediaSourceId: primaryMediaSourceId) {
-                recordDownloadDiagnostic("downloads.convert_reuse_refresh", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "phase": .label(phase),
-                    "attempt": .int(attempt + 1),
-                    "initial_source_count": .int(initialSourceCount),
-                    "source_count": .int(sources.count),
-                ])
-                return reuse
-            }
-            if attempt < maxAttempts - 1 {
-                try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
-            }
-        }
-        return nil
-    }
-
-    /// The video height a convert preset is expected to OUTPUT, after the `tv`-profile 1080p cap
-    /// (live-verified: 4 Mbps → 720p, 20 Mbps → 1080p, and "4K 40 Mbps" clamps to 1080p). Parsed from
-    /// the preset label's leading resolution token. Used by the reuse preflight to decide whether an
-    /// already-existing converted version satisfies the request. nil → unknown label (don't reuse;
-    /// convert fresh).
-    static func convertPresetOutputHeight(forLabel label: String) -> Int? {
-        let token = label.split(separator: " ").first.map { $0.lowercased() } ?? ""
-        switch token {
-        // 4K and "Original" now route through `profile:"custom"` (#128), which preserves the source
-        // resolution — they are NO LONGER capped at the `tv` profile's 1080p ceiling. Use 2160 as the
-        // high-water tier hint; `reusableConvertedSource` falls back to the most-recent converted
-        // sibling when no exact tier matches, so a sub-4K source still reuses correctly.
-        case "4k", "2160p": return 2160
-        case "1080p":       return 1080
-        case "720p":        return 720
-        case "480p":        return 480
-        default:
-            // "Original video quality" — custom-profile, resolution-preserving (#128).
-            return label.lowercased().hasPrefix("original") ? 2160 : nil
-        }
-    }
-
-    /// Pick an already-existing server-prepared (converted) `File` source to REUSE for a convert
-    /// request, or nil if none satisfies it. A reusable candidate is a non-primary h264/mp4 File
-    /// source (the convert profile's output — never the HEVC/MKV original). Prefer a converted
-    /// source whose resolution tier matches the requested preset. For the resolution-capping `tv`
-    /// tiers (≤1080p) only, fall back to the most-recent converted source no larger than the
-    /// requested tier, because Emby's `tv` profile can produce a non-ladder size (live #133 example:
-    /// a "1080p 8 Mbps" Sync copy exposed as 720×404). The custom 4K/Original profile (#128)
-    /// preserves source resolution and has no non-ladder case, so it requires an exact tier match
-    /// (no fallback) — otherwise a 4K request could silently reuse a stale 1080p convert, or a sub-4K
-    /// request could be handed a multi-GB 4K file. Reusing an API-visible converted file is better
-    /// than starting a duplicate server conversion; users can still choose specific visible versions
-    /// from the picker.
-    static func reusableConvertedSource(_ sources: [EmbyMediaSourceInfo],
-                                        requestedHeight: Int?,
-                                        primaryMediaSourceId: String?) -> EmbyMediaSourceInfo? {
-        guard let requestedHeight,
-              let wantedTier = resolutionLabel(forHeight: requestedHeight) else { return nil }
-        func resolution(_ s: EmbyMediaSourceInfo) -> String? {
-            let video = s.mediaStreams.first { $0.type == "Video" }
-            return DownloadResolutionLabel.label(width: s.width ?? video?.width,
-                                                 height: s.height ?? video?.height)
-        }
-        // mp4 container = the convert profile's output (`-f mp4`). The pre-conversion original in the
-        // convert lane is always HEVC/MKV (an mp4/h264 original would direct-play and never reach this
-        // lane), and even an mp4 original is excluded by `primaryMediaSourceId` below — so container
-        // alone is a reliable discriminator. We do NOT also require `videoCodec == h264`: PlaybackInfo
-        // reports VideoCodec as null at the source level (the codec is in MediaStreams), so an AND
-        // would never match a real converted source.
-        func looksConverted(_ s: EmbyMediaSourceInfo) -> Bool {
-            (s.container ?? "").lowercased().contains("mp4")
-        }
-        func recency(_ s: EmbyMediaSourceInfo) -> Int { Int(s.id ?? "") ?? -1 }
-        let converted = sources.filter { $0.id != primaryMediaSourceId && looksConverted($0) }
-        if let exact = converted
-            .filter({ resolution($0) == wantedTier })
-            .max(by: { recency($0) < recency($1) }) {
-            return exact
-        }
-        // No exact-tier match. Fall back to the most-recent converted sibling ONLY for the
-        // resolution-capping `tv` profile tiers (≤1080p), where Emby can emit a non-ladder size
-        // SMALLER than the nominal tier (live #133: a "1080p 8 Mbps" copy came back 720×404) — and
-        // even then never reuse a source in a HIGHER tier than requested. The custom profile (#128
-        // 4K/Original) preserves source resolution and has no non-ladder case, so reusing a smaller/
-        // older convert there would silently downgrade a 4K request (deliver 1080p), and a sub-4K
-        // request must never be handed back a multi-GB 4K file. For 4K/Original we therefore require
-        // the exact tier above and otherwise convert fresh.
-        guard requestedHeight <= 1080 else { return nil }
-        func tierRank(_ label: String?) -> Int {
-            switch label {
-            case "4K":    return 4
-            case "1080p": return 3
-            case "720p":  return 2
-            case "480p":  return 1
-            default:      return 0   // sub-480 non-ladder (e.g. "720×404") or unknown
-            }
-        }
-        let requestedRank = tierRank(wantedTier)
-        return converted
-            .filter { tierRank(resolution($0)) <= requestedRank }
-            .max { recency($0) < recency($1) }
     }
 
     // MARK: - Server conversion queue probe
@@ -4932,7 +2271,9 @@ public final class DownloadManager {
 
 }
 
-private extension String {
+// #135 Stage 5c: `internal` (not `private`) so DownloadManager+PlexOptimize.swift can percent-encode
+// metadata keys when building the optimize `library://…/item/…` source URI.
+extension String {
     var urlQueryEscapedForPlexPath: String {
         addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? self
     }

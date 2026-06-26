@@ -82,6 +82,7 @@ struct ContentView: View {
             await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugPlexDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
             await DebugEmbyDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
+            await DebugJellyfinDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
 #endif
         }
         // A Spotlight result was tapped: stash the ratingKey with the router. If
