@@ -32,8 +32,7 @@ builds green against the renamed package.
 ### Minor polish (optional, non-blocking)
 
 - GitHub repo `description` and `homepageUrl` are empty (topics already set).
-- Test fixtures use `192.168.1.10` (harmless RFC1918); could normalize to the documented
-  `192.0.2.10` placeholder for consistency. Optional.
+- Test fixtures use the documented `192.0.2.10` TEST-NET placeholder for consistency.
 - No `CONTRIBUTING.md` / issue templates. Optional for a personal project.
 
 ## Plan A — Public-repo cleanup (execute now)

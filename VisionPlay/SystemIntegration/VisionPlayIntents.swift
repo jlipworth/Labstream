@@ -17,7 +17,7 @@ enum VisionPlayIntentError: Error, CustomLocalizedStringResourceConvertible {
     var localizedStringResource: LocalizedStringResource {
         switch self {
         case .notSignedIn:
-            return "VisionPlay isn't signed in to a Plex server. Open the app and sign in first."
+            return "VisionPlay isn't signed in to a media server. Open the app and sign in first."
         case .nothingToResume:
             return "There's nothing in Continue Watching right now."
         }
@@ -27,7 +27,7 @@ enum VisionPlayIntentError: Error, CustomLocalizedStringResourceConvertible {
 struct PlayMediaIntent: AppIntent {
     static let title: LocalizedStringResource = "Play Media"
     static let description = IntentDescription(
-        "Plays a movie, show, or episode from your Plex library in VisionPlay.")
+        "Plays a movie, show, or episode from your media library in VisionPlay.")
     static let openAppWhenRun = true
 
     @Parameter(title: "Title", description: "What to play")
