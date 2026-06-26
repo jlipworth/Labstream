@@ -51,14 +51,20 @@ Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified 
   - **`DownloadManager+PlexOptimize.swift`** — the Plex server-side optimize kickoff/render/queue
     half (triggerOptimizeAndDownload → triggerOptimize → startOptimizedPartDownload + queue hygiene).
     ~550 lines.
-  - **`DownloadManager+Jellyfin.swift`** — the Jellyfin download entry points (downloadJellyfin's
-    static-original + server-rendered optimize/compatible lanes + downloadJellyfinOriginal + the
-    trickplay cache). ~340 lines.
-  - Net: `DownloadManager.swift` **4939 → 3271 lines (−34%)**; all three backends now own a dedicated
-    lane file. Each cut is a separate commit, verified by a clean build + a UUID-matched install +
-    launch (no crash, Plex browse UI). Remaining 5c cuts (same pattern): the Plex-optimize
-    metadata-polling half, the Emby `downloadEmby` entry point + retry/resume drivers, and the
-    side-cache cluster (overlaps Stage 7).
+  - **`DownloadManager+Jellyfin.swift`** — the Jellyfin download entry points.
+  - **`DownloadManager+Plex.swift`** — the Plex `download()` entry (+ static-part + AVPlayer preflight
+    + original-fallback helpers).
+  - **`DownloadManager+Emby.swift`** — the `downloadEmby` entry (+ `embyMediaSourceID`).
+  - **`DownloadManager+SideCache.swift`** — the offline side-asset cachers (poster art, text subtitles,
+    Plex BIF, per-chapter images).
+  - Net: `DownloadManager.swift` **4939 → 2280 lines (−54%)**. The god-object is now split across 7
+    files: a core (state, retry/resume, estimates, delete, diagnostics, metadata, keepalives, the
+    Plex-optimize polling half) + three per-backend download entries (+Plex/+Emby/+Jellyfin) + two
+    server-prep halves (+PlexOptimize/+EmbyConvert) + +SideCache. Each cut is a separate commit,
+    behavior-preserving (a `@MainActor`-class extension inherits isolation; bodies moved verbatim,
+    only shared `private` members promoted to `internal`), verified by a clean build + UUID-matched
+    install + launch. Remaining (optional): pull the Plex-optimize polling half into +PlexOptimize,
+    and the retry/resume drivers into per-backend files; Stages 4/6/7/8.
 
 **Cross-backend live verification results** (kubectl → live servers; candidates found server-side via
 the library APIs):
