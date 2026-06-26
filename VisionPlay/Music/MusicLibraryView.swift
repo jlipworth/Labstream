@@ -679,7 +679,8 @@ struct SquareArtCell: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: size, height: size,
-                        cornerRadius: artRadius)
+                        cornerRadius: artRadius,
+                        placeholderSymbol: item.kind == .artist ? "music.microphone" : "music.note")
                 .posterHover()
 
             VStack(alignment: .leading, spacing: 2) {
