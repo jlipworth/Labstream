@@ -117,13 +117,10 @@ final class MusicPlayerController {
     @ObservationIgnored private var reporter: TimelineReporter?
 
     // Per-track observers, torn down and reinstalled on each track swap.
-    @ObservationIgnored private var statusObservation: NSKeyValueObservation?
-    @ObservationIgnored private var didEndObserver: NSObjectProtocol?
+    @ObservationIgnored private lazy var trackObservers = PlayerObserverBag(player: player)
 
     // Player-level observers, installed once on first play and removed in `stop()`.
-    @ObservationIgnored private var elapsedTimeObserver: Any?
-    @ObservationIgnored private var heartbeatTimeObserver: Any?
-    @ObservationIgnored private var rateObservation: NSKeyValueObservation?
+    @ObservationIgnored private lazy var playerObservers = PlayerObserverBag(player: player)
 
     /// True once the audio session is active and the player-level observers + remote
     /// commands are registered. Reset by `stop()` so a later play re-prepares.
@@ -589,7 +586,7 @@ final class MusicPlayerController {
         // Item status, observed for the item's whole lifetime (mirrors PlaybackController
         // P4 #8): `.readyToPlay` opens the timeline readiness gate and clears any stale
         // error; `.failed` surfaces a message and auto-advances past the bad track.
-        statusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] pItem, _ in
+        trackObservers.store(playerItem.observe(\.status, options: [.new]) { [weak self] pItem, _ in
             guard let self else { return }
             Task { @MainActor in
                 // Ignore stale callbacks from an item we've already swapped out.
@@ -613,10 +610,10 @@ final class MusicPlayerController {
                     break
                 }
             }
-        }
+        })
 
         // Natural end of track: scrobble, then advance per the repeat mode.
-        didEndObserver = NotificationCenter.default.addObserver(
+        trackObservers.storeNotification(NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: playerItem,
             queue: .main
@@ -627,25 +624,25 @@ final class MusicPlayerController {
                       endedItem === self.player.currentItem else { return }
                 self.handleTrackEnded()
             }
-        }
+        })
     }
 
     /// Player-level observers (installed once): the 0.5s elapsed-time tick, the 10s
     /// timeline heartbeat + near-end scrobble, and the play/pause state mirror.
     private func installPlayerObservers() {
         let elapsedInterval = CMTime(seconds: elapsedIntervalSeconds, preferredTimescale: 600)
-        elapsedTimeObserver = player.addPeriodicTimeObserver(forInterval: elapsedInterval,
-                                                             queue: .main) { [weak self] time in
+        playerObservers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: elapsedInterval,
+                                                                         queue: .main) { [weak self] time in
             let seconds = time.seconds
             Task { @MainActor in
                 guard let self, seconds.isFinite else { return }
                 self.elapsedSeconds = seconds
             }
-        }
+        })
 
         let heartbeatInterval = CMTime(seconds: heartbeatIntervalSeconds, preferredTimescale: 1)
-        heartbeatTimeObserver = player.addPeriodicTimeObserver(forInterval: heartbeatInterval,
-                                                               queue: .main) { [weak self] _ in
+        playerObservers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: heartbeatInterval,
+                                                                         queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 guard self.ensureCurrentQueueSession() else { return }
@@ -656,11 +653,11 @@ final class MusicPlayerController {
                 // didPlayToEnd as the backstop.
                 self.reporter?.scrobbleIfNearEnd()
             }
-        }
+        })
 
         // Mirror play/pause into observable state, report the flip to PMS, and keep the
         // system Now Playing rate in sync (covers remote-initiated changes too).
-        rateObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
+        playerObservers.store(player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
@@ -670,27 +667,15 @@ final class MusicPlayerController {
                 self.reporter?.report(state: playing ? .playing : .paused, force: true)
                 self.updateNowPlayingPlaybackState()
             }
-        }
+        })
     }
 
     private func removeTrackObservers() {
-        statusObservation = nil
-        if let didEndObserver {
-            NotificationCenter.default.removeObserver(didEndObserver)
-            self.didEndObserver = nil
-        }
+        trackObservers.reset()
     }
 
     private func removePlayerObservers() {
-        if let elapsedTimeObserver {
-            player.removeTimeObserver(elapsedTimeObserver)
-            self.elapsedTimeObserver = nil
-        }
-        if let heartbeatTimeObserver {
-            player.removeTimeObserver(heartbeatTimeObserver)
-            self.heartbeatTimeObserver = nil
-        }
-        rateObservation = nil
+        playerObservers.reset()
     }
 
     // MARK: - End / failure handling
