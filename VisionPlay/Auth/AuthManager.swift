@@ -58,10 +58,12 @@ final class AuthManager {
     /// user completes authorizes first; both clear when the attempt ends.
     private var activePinIDs: Set<Int> = []
     private var activeJellyfinQuickConnectAttemptID: UUID?
+    private var activeJellyfinCredentialAttemptID: UUID?
     /// Current Emby Connect attempt and the cloud session it produced. `pendingEmbyConnect`
     /// holds the Connect user id + linked-server list (incl. per-server access keys) while the
     /// user picks a server; it is in-memory only and cleared when the attempt ends.
     private var activeEmbyConnectAttemptID: UUID?
+    private var activeEmbyCredentialAttemptID: UUID?
     private var activeEmbyConnectServerSelectionID: String?
     private var pendingEmbyConnect: PendingEmbyConnect?
 
@@ -377,6 +379,8 @@ final class AuthManager {
 
     func loginToJellyfin(server: URL, username: String, password: String) async {
         cancelPendingLogin()
+        let attemptID = UUID()
+        activeJellyfinCredentialAttemptID = attemptID
         appModel.activeBackend = .jellyfin
         keychain.selectedBackend = .jellyfin
         state = .idle
@@ -397,55 +401,80 @@ final class AuthManager {
                 }
             }
             let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
+            guard activeJellyfinCredentialAttemptID == attemptID else { return }
             try persistJellyfinAuthentication(result, server: server)
+            activeJellyfinCredentialAttemptID = nil
             state = .authenticated
         } catch JellyfinAuthError.unauthorized {
+            guard activeJellyfinCredentialAttemptID == attemptID else { return }
+            activeJellyfinCredentialAttemptID = nil
             state = .failed("Invalid Jellyfin username or password.")
         } catch JellyfinAuthError.http(let status) {
+            guard activeJellyfinCredentialAttemptID == attemptID else { return }
+            activeJellyfinCredentialAttemptID = nil
             state = .failed("Jellyfin sign-in failed (HTTP \(status)).")
         } catch JellyfinAuthError.missingCredentials {
+            guard activeJellyfinCredentialAttemptID == attemptID else { return }
+            activeJellyfinCredentialAttemptID = nil
             state = .failed("Jellyfin did not return a usable session.")
         } catch {
+            guard activeJellyfinCredentialAttemptID == attemptID else { return }
+            activeJellyfinCredentialAttemptID = nil
             state = .failed("Couldn’t reach Jellyfin server.")
         }
     }
 
     func startJellyfinQuickConnect(server: URL) async {
         cancelPendingLogin()
+        let attemptID = UUID()
+        activeJellyfinQuickConnectAttemptID = attemptID
         appModel.activeBackend = .jellyfin
         keychain.selectedBackend = .jellyfin
         state = .idle
 
         do {
             if let enabled = try await jellyfinQuickConnectEnabled(server: server), enabled == false {
+                guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+                activeJellyfinQuickConnectAttemptID = nil
                 state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
                 return
             }
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
 
             let request = JellyfinAuth.initiateQuickConnectRequest(server: server,
                                                                    identity: jellyfinIdentity)
             let data = try await jellyfinData(for: request, disabledMeansUnauthorized: true)
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
             let result = try JSONDecoder().decode(JellyfinQuickConnectResult.self, from: data)
             guard let code = result.code, !code.isEmpty,
                   let secret = result.secret, !secret.isEmpty else {
                 throw JellyfinAuthError.missingCredentials
             }
 
-            let attemptID = UUID()
-            activeJellyfinQuickConnectAttemptID = attemptID
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
             state = .awaitingJellyfinQuickConnect(code: code)
             pollTask = Task { await pollJellyfinQuickConnect(server: server,
                                                              secret: secret,
                                                              attemptID: attemptID) }
         } catch JellyfinAuthError.quickConnectDisabled {
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            activeJellyfinQuickConnectAttemptID = nil
             state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
         } catch JellyfinAuthError.unauthorized {
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            activeJellyfinQuickConnectAttemptID = nil
             state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
         } catch JellyfinAuthError.http(let status) {
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            activeJellyfinQuickConnectAttemptID = nil
             state = .failed("Jellyfin Quick Connect failed (HTTP \(status)).")
         } catch JellyfinAuthError.missingCredentials {
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            activeJellyfinQuickConnectAttemptID = nil
             state = .failed("Jellyfin did not return a Quick Connect code. Use username and password instead.")
         } catch {
+            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            activeJellyfinQuickConnectAttemptID = nil
             state = .failed("Couldn’t reach Jellyfin server.")
         }
     }
@@ -546,6 +575,8 @@ final class AuthManager {
     /// Mirrors `loginToJellyfin` but uses the Emby-specific auth/header lane.
     func loginToEmby(server: URL, username: String, password: String) async {
         cancelPendingLogin()
+        let attemptID = UUID()
+        activeEmbyCredentialAttemptID = attemptID
         appModel.activeBackend = .emby
         keychain.selectedBackend = .emby
         state = .idle
@@ -566,15 +597,25 @@ final class AuthManager {
                 }
             }
             let result = try JSONDecoder().decode(EmbyAuthenticationResult.self, from: data)
+            guard activeEmbyCredentialAttemptID == attemptID else { return }
             try persistEmbyAuthentication(result, server: server)
+            activeEmbyCredentialAttemptID = nil
             state = .authenticated
         } catch EmbyAuthError.unauthorized {
+            guard activeEmbyCredentialAttemptID == attemptID else { return }
+            activeEmbyCredentialAttemptID = nil
             state = .failed("Invalid Emby username or password.")
         } catch EmbyAuthError.http(let status) {
+            guard activeEmbyCredentialAttemptID == attemptID else { return }
+            activeEmbyCredentialAttemptID = nil
             state = .failed("Emby sign-in failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
+            guard activeEmbyCredentialAttemptID == attemptID else { return }
+            activeEmbyCredentialAttemptID = nil
             state = .failed("Emby did not return a usable session.")
         } catch {
+            guard activeEmbyCredentialAttemptID == attemptID else { return }
+            activeEmbyCredentialAttemptID = nil
             state = .failed("Couldn’t reach Emby server.")
         }
     }
@@ -609,24 +650,32 @@ final class AuthManager {
     /// servers itself. Mirrors `startJellyfinQuickConnect` but against Emby's cloud host.
     func startEmbyConnect() async {
         cancelPendingLogin()
+        let attemptID = UUID()
+        activeEmbyConnectAttemptID = attemptID
         appModel.activeBackend = .emby
         keychain.selectedBackend = .emby
         state = .idle
 
         do {
             let data = try await embyConnectData(for: EmbyConnect.createPinRequest(identity: embyIdentity))
+            guard activeEmbyConnectAttemptID == attemptID else { return }
             let pin = try JSONDecoder().decode(EmbyConnectPin.self, from: data)
             guard let code = pin.pin, !code.isEmpty else { throw EmbyAuthError.missingCredentials }
 
-            let attemptID = UUID()
-            activeEmbyConnectAttemptID = attemptID
+            guard activeEmbyConnectAttemptID == attemptID else { return }
             state = .awaitingEmbyConnectPin(code: code)
             pollTask = Task { await pollEmbyConnectPin(pin: code, attemptID: attemptID) }
         } catch EmbyAuthError.http(let status) {
+            guard activeEmbyConnectAttemptID == attemptID else { return }
+            activeEmbyConnectAttemptID = nil
             state = .failed("Emby Connect sign-in failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
+            guard activeEmbyConnectAttemptID == attemptID else { return }
+            activeEmbyConnectAttemptID = nil
             state = .failed("Emby Connect did not return a code. Use a server URL instead.")
         } catch {
+            guard activeEmbyConnectAttemptID == attemptID else { return }
+            activeEmbyConnectAttemptID = nil
             state = .failed("Couldn’t reach Emby Connect.")
         }
     }
@@ -1122,7 +1171,9 @@ final class AuthManager {
         pollTask = nil
         activePinIDs = []
         activeJellyfinQuickConnectAttemptID = nil
+        activeJellyfinCredentialAttemptID = nil
         activeEmbyConnectAttemptID = nil
+        activeEmbyCredentialAttemptID = nil
         activeEmbyConnectServerSelectionID = nil
         pendingEmbyConnect = nil
     }

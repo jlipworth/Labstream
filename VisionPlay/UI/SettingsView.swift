@@ -20,6 +20,7 @@ struct SettingsView: View {
     @State private var confirmingRemoveCompletedDownloads = false
     @State private var connectionStatus: ConnectionStatus = .unknown
     @State private var plexServerStatuses: [String: ConnectionStatus] = [:]
+    @State private var plexServerOperationID: UUID?
     /// Transient "done" feedback for the one-shot maintenance/About actions.
     @State private var clearedImageCache = false
     @State private var clearedImageCacheResetID: UUID?
@@ -299,15 +300,20 @@ struct SettingsView: View {
                             guard !serverID.isEmpty,
                                   serverID != appModel.selectedServer?.clientIdentifier else { return }
                             selectingPlexServerID = serverID
+                            let operationID = UUID()
+                            plexServerOperationID = operationID
                             Task {
                                 do {
                                     try await authManager.selectPlexServer(id: serverID)
+                                    guard plexServerOperationID == operationID else { return }
                                     plexServerStatuses[serverID] = .reachable(.now)
                                 } catch {
+                                    guard plexServerOperationID == operationID else { return }
                                     plexServerStatuses[serverID] = .unreachable(.now)
                                 }
                                 connectionStatus = .unknown
                                 selectingPlexServerID = nil
+                                plexServerOperationID = nil
                             }
                         })) {
                             ForEach(appModel.plexServers) { server in
@@ -315,7 +321,7 @@ struct SettingsView: View {
                                     .tag(server.clientIdentifier)
                             }
                         }
-                        .disabled(selectingPlexServerID != nil)
+                        .disabled(selectingPlexServerID != nil || rediscovering || checkingPlexServers)
                     if let selectingPlexServerID,
                        let server = appModel.plexServers.first(where: { $0.clientIdentifier == selectingPlexServerID }) {
                         HStack {
@@ -347,15 +353,19 @@ struct SettingsView: View {
                         Label("Check server reachability", systemImage: "dot.radiowaves.left.and.right")
                     }
                 }
-                .disabled(checkingPlexServers || appModel.plexServers.isEmpty)
+                .disabled(checkingPlexServers || rediscovering || selectingPlexServerID != nil || appModel.plexServers.isEmpty)
 
                 Button {
+                    let operationID = UUID()
+                    plexServerOperationID = operationID
                     Task {
                         rediscovering = true
                         try? await authManager.refreshServers()
+                        guard plexServerOperationID == operationID else { return }
                         rediscovering = false
                         connectionStatus = .unknown
                         plexServerStatuses.removeAll()
+                        plexServerOperationID = nil
                     }
                 } label: {
                     if rediscovering {
@@ -364,7 +374,7 @@ struct SettingsView: View {
                         Label("Re-discover servers", systemImage: "arrow.clockwise")
                     }
                 }
-                .disabled(rediscovering)
+                .disabled(rediscovering || selectingPlexServerID != nil || checkingPlexServers)
             case .jellyfin:
                 if let url = appModel.jellyfinServerBaseURL {
                     LabeledContent("Connection", value: url.absoluteString)
@@ -451,10 +461,15 @@ struct SettingsView: View {
     }
 
     private func checkPlexServerReachability() async {
+        let operationID = UUID()
+        plexServerOperationID = operationID
         checkingPlexServers = true
-        for server in appModel.plexServers {
+        let servers = appModel.plexServers
+        for server in servers {
+            guard plexServerOperationID == operationID else { return }
             plexServerStatuses[server.clientIdentifier] = .checking
             let ok = await authManager.probePlexServer(id: server.clientIdentifier)
+            guard plexServerOperationID == operationID else { return }
             plexServerStatuses[server.clientIdentifier] = ok ? .reachable(.now) : .unreachable(.now)
         }
         if let selectedID = appModel.selectedServer?.clientIdentifier,
@@ -462,6 +477,7 @@ struct SettingsView: View {
             connectionStatus = status
         }
         checkingPlexServers = false
+        plexServerOperationID = nil
     }
 
     // MARK: Libraries (#104)

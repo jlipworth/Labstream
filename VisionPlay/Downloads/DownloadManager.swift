@@ -85,6 +85,7 @@ public final class DownloadManager {
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public private(set) var activeJobs: Set<String> = []
+    private var retryingRows: Set<String> = []
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -1598,6 +1599,7 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.pause", fields: [
             "download_id": .identifier(ratingKey),
         ])
+        retryingRows.remove(ratingKey)
         lastError[ratingKey] = .interruptedResumable
         switch record.status {
         case .downloading:
@@ -1637,7 +1639,9 @@ public final class DownloadManager {
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
     public func retry(ratingKey: String) {
-        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        guard !retryingRows.contains(ratingKey),
+              let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        retryingRows.insert(ratingKey)
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -1720,7 +1724,7 @@ public final class DownloadManager {
                                                                server: server,
                                                                token: token,
                                                                identity: self.appModel.identity) ?? item
-            guard self.retryRowStillPresent(ratingKey: ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: ratingKey) else { return }
 
             // #131: if this row already has an app-managed static partial, never delete/reseed it
             // before restarting. Route back to the same static object and let
@@ -1765,7 +1769,7 @@ public final class DownloadManager {
                 : .optimize(targetName: Self.originalFallbackOptimizeTarget())
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
-            guard self.retryRowStillPresent(ratingKey: ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: ratingKey) else { return }
             self.releaseInFlight(ratingKey: ratingKey)
             if !Self.hasIncompleteStaticPartial(record) {
                 self.store.remove(ratingKey: ratingKey)
@@ -1784,6 +1788,11 @@ public final class DownloadManager {
 
     private func retryRowStillPresent(ratingKey: String) -> Bool {
         store.records.contains { $0.ratingKey == ratingKey }
+    }
+
+    private func retryAttemptCanContinue(ratingKey: String) -> Bool {
+        retryingRows.contains(ratingKey)
+            && store.records.contains { $0.ratingKey == ratingKey && $0.status != .paused }
     }
 
     private func resolveStaticRetryTarget(record: DownloadRecord,
@@ -1821,7 +1830,7 @@ public final class DownloadManager {
                                                                server: backendSession.baseURL,
                                                                token: backendSession.token,
                                                                identity: self.appModel.identity) ?? item
-            guard self.retryRowStillPresent(ratingKey: record.ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey) else { return }
             self.recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
                 "download_id": .identifier(record.ratingKey),
                 "target": .label(targetName),
@@ -1890,7 +1899,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
-            guard self.retryRowStillPresent(ratingKey: record.ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey) else { return }
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
             // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
             // mark this existing row `.failed` instead of making the retry affordance disappear.
@@ -1951,7 +1960,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
-            guard self.retryRowStillPresent(ratingKey: record.ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey) else { return }
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
             // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
             // existing row `.failed` instead of making the retry affordance disappear.
@@ -2594,6 +2603,7 @@ public final class DownloadManager {
     /// deleted). Idempotent. Keeping the queue title protected past this point would block the
     /// clean-slate cleanup from ever removing the now-abandoned completed optimize item.
     private func releaseInFlight(ratingKey: String) {
+        retryingRows.remove(ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()

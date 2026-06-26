@@ -11,6 +11,7 @@ struct LibrariesView: View {
     @State private var embyViews: [EmbyLibraryLink] = []
     @State private var loadState: HomeView.LoadState = .idle
     @State private var loadedIdentity: String?
+    @State private var loadGeneration = 0
 
     /// First-run library picker (#104). Holds the candidates + pre-checked hidden ids for the
     /// backend key whose prompt hasn't been shown yet; presented as a sheet from the loaded list.
@@ -172,7 +173,10 @@ struct LibrariesView: View {
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back; the section list doesn't change mid-session,
         // so only first load and pull-to-refresh fetch.
-        if !force, loadedIdentity == loadIdentity, case .loaded = loadState { return }
+        let activeIdentity = loadIdentity
+        if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
+        loadGeneration += 1
+        let generation = loadGeneration
         loadState = .loading
         let span = PerformanceInstrumentation.begin(.librariesLoad,
                                                      backend: appModel.activeBackend.performanceLabel,
@@ -181,15 +185,17 @@ struct LibrariesView: View {
         if appModel.activeBackend == .jellyfin {
             do {
                 let allViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 let backendKey = appModel.libraryVisibilityBackendKey
                 maybePresentFirstRunPrompt(backendKey: backendKey,
                                            candidates: allViews.map { candidate(jellyfin: $0) })
                 let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
                 jellyfinViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
-                loadedIdentity = loadIdentity
+                loadedIdentity = activeIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": jellyfinViews.count])
             } catch {
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
@@ -199,15 +205,17 @@ struct LibrariesView: View {
         if appModel.activeBackend == .emby {
             do {
                 let allViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 let backendKey = appModel.libraryVisibilityBackendKey
                 maybePresentFirstRunPrompt(backendKey: backendKey,
                                            candidates: allViews.map { candidate(emby: $0) })
                 let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
                 embyViews = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
-                loadedIdentity = loadIdentity
+                loadedIdentity = activeIdentity
                 loadState = .loaded
                 span.end(fields: ["library_count": embyViews.count])
             } catch {
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
@@ -222,6 +230,7 @@ struct LibrariesView: View {
         let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: SectionsResponse.self)
+            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             // Music sections deliberately stay out of this tab even after the #17
             // un-hide: the Music tab is their dedicated entry point and listing the
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
@@ -232,10 +241,11 @@ struct LibrariesView: View {
                                        candidates: nonMusic.map { candidate(plex: $0) })
             let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
             sections = LibraryVisibility.visible(nonMusic, hiddenIDs: hidden) { $0.key }
-            loadedIdentity = loadIdentity
+            loadedIdentity = activeIdentity
             loadState = .loaded
             span.end(fields: ["library_count": sections.count])
         } catch {
+            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }

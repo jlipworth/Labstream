@@ -15,6 +15,7 @@ struct HomeView: View {
     /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can resolve through the same URL.
     @State private var loadedIdentity: String?
+    @State private var loadGeneration = 0
 
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
@@ -156,6 +157,8 @@ struct HomeView: View {
         // A real server change (different URL) still reloads.
         let activeIdentity = loadIdentity
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
+        loadGeneration += 1
+        let generation = loadGeneration
 
         let span = PerformanceInstrumentation.begin(.homeLoad,
                                                      backend: appModel.activeBackend.performanceLabel,
@@ -165,6 +168,7 @@ struct HomeView: View {
             do {
                 let service = JellyfinBrowseService(appModel: appModel)
                 let allViews = try await service.userViewLinks()
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 // Mirror the Libraries screen: hide library rails the user has hidden (#104).
                 // Jellyfin/Emby Home rails are library-scoped (built from `views`), so filtering
                 // `views` here keeps Home consistent. (Plex Home uses non-library `/hubs` and is
@@ -173,6 +177,7 @@ struct HomeView: View {
                 let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 jellyfinViews = views
                 let load = try await service.homeRails(for: views)
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 jellyfinRails = load.rails
                 // Only pin the loaded identity for a clean load. A degraded load (some rails
                 // errored) is shown but left unpinned so pop-back / the next `.task` re-fetches
@@ -186,6 +191,7 @@ struct HomeView: View {
                     "degraded": load.isDegraded ? 1 : 0,
                 ])
             } catch {
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
@@ -202,6 +208,7 @@ struct HomeView: View {
                 let views = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
                 embyViews = views
                 let load = try await service.homeRails(for: views)
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 embyRails = load.rails
                 // See the Jellyfin branch: a degraded load is shown but not pinned (#93).
                 loadedIdentity = load.isDegraded ? nil : activeIdentity
@@ -213,6 +220,7 @@ struct HomeView: View {
                     "degraded": load.isDegraded ? 1 : 0,
                 ])
             } catch {
+                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
@@ -228,6 +236,7 @@ struct HomeView: View {
         let req = BrowseAPI.hubs(server: server, token: token, identity: appModel.identity)
         do {
             let resp = try await appModel.client.send(req, as: HubsResponse.self)
+            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             hubs = resp.mediaContainer.hub
             loadedIdentity = activeIdentity
             loadState = .loaded
@@ -241,6 +250,7 @@ struct HomeView: View {
             SpotlightIndexer.index(hubs.flatMap(\.metadata), server: server)
             VisionPlayShortcuts.updateAppShortcutParameters()
         } catch {
+            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
