@@ -115,7 +115,7 @@ struct ContentView: View {
         // controls never resolve a stale queue against a different server or backend.
         .onChange(of: appModel.activeBrowseSessionKey) { oldKey, newKey in
             guard oldKey != newKey else { return }
-            musicPlayer.stop()
+            musicPlayer.stopIfBrowseSessionChanged()
         }
         // #84: a backend switch just re-restored another lane's saved session, so a job
         // that couldn't resume earlier (its lane was inactive) can now run. `switchBackend`'s

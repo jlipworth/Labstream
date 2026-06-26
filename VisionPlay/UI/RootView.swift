@@ -108,6 +108,7 @@ struct RootView: View {
             librariesPath = NavigationPath()
             searchPath = NavigationPath()
             musicPath = NavigationPath()
+            musicPlayer.stopIfBrowseSessionChanged()
         }
         // Now Playing's "go to artist/album": land on the Music tab and push.
         .onChange(of: musicPlayer.navigationRequest) { _, item in
