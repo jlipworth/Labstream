@@ -71,79 +71,43 @@ final class MediaSessionProxyTests: XCTestCase {
         await proxy.stop(generation: opened.generation)
     }
 
-    func testOpenResolvesStreamURLWithOffsetAndRunsDecision() async throws {
-        let origin = try await StubOrigin.start { _ in
-            (200, "application/vnd.apple.mpegurl", Data("#EXTM3U\nindex.m3u8\n".utf8))
-        }
-        defer { origin.stop() }
-        let recorder = ControlRecorder(response: Self.transcodeDecisionJSON)
-        let proxy = MediaSessionProxy(upstreamFetch: origin.fetcher(),
-                                      controlSend: recorder.send())
-        let handle = try await proxy.open(sampleRequest(server: origin.baseURL), offsetMs: 600_000)
-
-        // The proxy ran a decision at the 600s offset, and the loopback URL carries it.
-        XCTAssertTrue(recorder.urls.contains { $0.absoluteString.contains("offset=600") },
-                      "expected a decision call carrying offset=600; got \(recorder.urls)")
-        XCTAssertTrue(handle.localURL.absoluteString.contains("offset=600"))
-        let decision = await proxy.currentDecision()?.decision
-        XCTAssertEqual(decision, .transcode)
-        await proxy.stop(generation: handle.generation)
-    }
-
-    func testOpenCommitsDirectPlayStartWhenProbeSavesEncode() async throws {
-        let origin = try await StubOrigin.start { _ in
-            (200, "application/vnd.apple.mpegurl", Data("#EXTM3U\nindex.m3u8\n".utf8))
-        }
-        defer { origin.stop() }
-        let recorder = ControlRecorder(response: Self.directPlayDecisionJSON)
-        let proxy = MediaSessionProxy(upstreamFetch: origin.fetcher(),
-                                      controlSend: recorder.send())
-        let handle = try await proxy.open(sampleRequest(server: origin.baseURL, directStream: true),
-                                          offsetMs: 0)
-        // savesVideoEncode == true → committed to the direct-play start (directPlay=1).
-        XCTAssertTrue(handle.localURL.absoluteString.contains("directPlay=1"))
-        XCTAssertTrue(recorder.urls.contains { url in
-            url.path == "/video/:/transcode/universal/start.m3u8"
-            && url.absoluteString.contains("directPlay=1")
-        }, "expected a direct-play start preflight before commit; got \(recorder.urls)")
-        await proxy.stop(generation: handle.generation)
-    }
-
-    func testOpenFallsBackWhenDirectPlayStartPreflightFails() async throws {
-        let origin = try await StubOrigin.start { _ in
-            (200, "application/vnd.apple.mpegurl", Data("#EXTM3U\nindex.m3u8\n".utf8))
-        }
-        defer { origin.stop() }
-        let recorder = ControlRecorder(response: Self.directPlayDecisionJSON) { req in
-            if req.url.path == "/video/:/transcode/universal/start.m3u8" {
-                throw URLError(.badServerResponse)
+    func testRewritesAbsolutePlaylistURLsAndStripsConfiguredQueryItems() async throws {
+        let origin = try await StubOrigin.start { head in
+            if head.target.hasSuffix("/start.m3u8") {
+                let playlist = """
+                #EXTM3U
+                http://127.0.0.1:\(head.value(for: "Host")?.split(separator: ":").last ?? "0")/video/segment0.ts?api_key=secret&startTimeTicks=123&keep=1
+                relative.ts?startTimeTicks=123&keep=2
+                """
+                return (200, "application/vnd.apple.mpegurl", Data(playlist.utf8))
             }
+            return (200, "video/MP2T", Data("segment".utf8))
         }
+        defer { origin.stop() }
+
         let proxy = MediaSessionProxy(upstreamFetch: origin.fetcher(),
-                                      controlSend: recorder.send())
-        let handle = try await proxy.open(sampleRequest(server: origin.baseURL, directStream: true),
-                                          offsetMs: 0)
-        XCTAssertFalse(handle.localURL.absoluteString.contains("directPlay=1"))
-        XCTAssertTrue(handle.localURL.absoluteString.contains("directPlay=0"))
+                                      strippedPlaylistQueryItemNames: ["api_key", "startTimeTicks"])
+        let pmsStart = URL(string: "http://127.0.0.1:\(origin.port)/start.m3u8")!
+        let handle = try await proxy.standUpLoopback(forStream: pmsStart)
+
+        let (data, resp) = try await loopbackTestSession().data(from: handle.localURL)
+        XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
+        let playlist = String(decoding: data, as: UTF8.self)
+        let loopbackBase = "http://\(handle.localURL.host!):\(handle.localURL.port!)"
+        XCTAssertTrue(playlist.contains(loopbackBase + "/video/segment0.ts?keep=1"), playlist)
+        XCTAssertTrue(playlist.contains("relative.ts?keep=2"), playlist)
+        XCTAssertFalse(playlist.contains("api_key="), playlist)
+        XCTAssertFalse(playlist.lowercased().contains("starttimeticks="), playlist)
+        XCTAssertFalse(playlist.contains("http://127.0.0.1:\(origin.port)/video/segment0.ts"), playlist)
         await proxy.stop(generation: handle.generation)
     }
 
-    func testMediaSessionRequestAndErrorValueSemantics() {
-        let id = ClientIdentity(clientIdentifier: "test", product: "VisionPlay",
-                                version: "0", deviceName: "test")
-        let a = MediaSessionRequest(server: URL(string: "https://example.internal:32400")!,
-                                    token: "tkn", identity: id,
-                                    metadataKey: "/library/metadata/1",
-                                    maxVideoBitrateKbps: 3000, sessionID: "s",
-                                    mediaIndex: 0, partIndex: 0,
-                                    burnSubtitleStreamID: nil, directStreamEnabled: false)
-        let b = a
-        XCTAssertEqual(a, b)
-        let directURL = URL(string: "https://example.internal/start.m3u8")!
-        XCTAssertEqual(MediaSessionError.loopbackUnavailable(directURL: directURL),
-                       MediaSessionError.loopbackUnavailable(directURL: directURL))
-        XCTAssertNotEqual(MediaSessionError.notOpen,
-                          MediaSessionError.loopbackUnavailable(directURL: directURL))
+    func testMediaSessionHandleAndStatusValueSemantics() {
+        let url = URL(string: "http://127.0.0.1:1234/start.m3u8")!
+        XCTAssertEqual(MediaSessionHandle(localURL: url, generation: 2),
+                       MediaSessionHandle(localURL: url, generation: 2))
+        XCTAssertEqual(MediaSessionStatus(generation: 2, isOpen: true, rotateCount: 1),
+                       MediaSessionStatus(generation: 2, isOpen: true, rotateCount: 1))
     }
 
 }
@@ -183,46 +147,5 @@ private final class Counter: @unchecked Sendable {
     private var count = 0
     @discardableResult func increment() -> Int { lock.lock(); count += 1; let n = count; lock.unlock(); return n }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
-}
-
-extension MediaSessionProxyTests {
-    /// A transcode (general 1001) decision body.
-    static let transcodeDecisionJSON =
-        Data(#"{"MediaContainer":{"generalDecisionCode":1001,"generalDecisionText":"Transcode"}}"#.utf8)
-    /// A direct-play (MDE 1000) decision body — `savesVideoEncode` is true.
-    static let directPlayDecisionJSON =
-        Data(#"{"MediaContainer":{"mdeDecisionCode":1000,"mdeDecisionText":"Direct play OK"}}"#.utf8)
-
-    func sampleRequest(server: URL, directStream: Bool = false) -> MediaSessionRequest {
-        MediaSessionRequest(
-            server: server, token: "tkn",
-            identity: ClientIdentity(clientIdentifier: "test", product: "VisionPlay",
-                                     version: "0", deviceName: "test"),
-            metadataKey: "/library/metadata/1", maxVideoBitrateKbps: 3000,
-            sessionID: "sess", mediaIndex: 0, partIndex: 0,
-            burnSubtitleStreamID: nil, directStreamEnabled: directStream)
-    }
-}
-
-/// Records the control-plane requests the proxy sends and returns a canned decision body.
-final class ControlRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var sent: [URL] = []
-    private let response: Data
-    private let beforeRespond: (@Sendable (PlexRequest) async throws -> Void)?
-    init(response: Data,
-         beforeRespond: (@Sendable (PlexRequest) async throws -> Void)? = nil) {
-        self.response = response
-        self.beforeRespond = beforeRespond
-    }
-    private func record(_ url: URL) { lock.lock(); sent.append(url); lock.unlock() }
-    func send() -> @Sendable (PlexRequest) async throws -> Data {
-        { [self] req in
-            record(req.url)
-            try await beforeRespond?(req)
-            return response
-        }
-    }
-    var urls: [URL] { lock.lock(); defer { lock.unlock() }; return sent }
 }
 #endif

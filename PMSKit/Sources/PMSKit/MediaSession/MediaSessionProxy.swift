@@ -3,11 +3,10 @@
 #if canImport(Network)
 import Foundation
 
-/// Player-agnostic loopback media forwarder (#33 experiment). It can interpose an app-owned
-/// HTTP origin between a renderer and PMS so the media plane can rotate a wedged upstream socket.
-/// The production player no longer uses this for seek recovery; deep seeks rebuild direct PMS
-/// player items instead, so this proxy must stay a minimal forwarding experiment and must not
-/// trigger PMS re-primes from segment requests.
+/// Player-agnostic loopback media forwarder. It interposes an app-owned HTTP origin between
+/// a renderer and an already-resolved HLS stream so the media plane can rotate a wedged
+/// upstream socket and rewrite playlists. Plex playback decisions and stream starts are owned
+/// by `PlaybackController`, not this proxy; keep this type stream-only.
 public actor MediaSessionProxy {
     private let origin = LoopbackOrigin()
     private let upstreamFetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
@@ -17,16 +16,9 @@ public actor MediaSessionProxy {
     private var connection: UpstreamConnection?
     private var current: MediaSessionHandle?
 
-    /// App-injected control-plane transport. The proxy builds PMSKit `PlexRequest`s for the
-    /// optional open-time decision/probe and sends them through this; the app wires it to
-    /// `PlexClient` (which is app-layer and must not be imported here).
-    private let controlSend: @Sendable (PlexRequest) async throws -> Data
-    private let decoder = JSONDecoder()
-    /// The most recent PMS decision (for the player's Stats overlay via `currentDecision()`).
-    private var lastDecision: DecisionResponse?
     /// The loopback base (`http://127.0.0.1:<port>`) for the current forwarding session.
     private var loopbackBase: URL?
-    /// Strictly increasing handle generation across `open` calls.
+    /// Strictly increasing handle generation across loopback opens.
     private var generationCounter = 0
 
     /// Production initializer: build the upstream `URLSession` from `mediaUpstream`, mirroring
@@ -34,7 +26,6 @@ public actor MediaSessionProxy {
     /// insecure-LAN delegate only when the user enabled it).
     public init(timeout: TimeInterval = 20,
                 trustDelegate: URLSessionDelegate? = nil,
-                controlSend: @escaping @Sendable (PlexRequest) async throws -> Data,
                 strippedPlaylistQueryItemNames: Set<String> = [],
                 injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
                 now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
@@ -44,82 +35,22 @@ public actor MediaSessionProxy {
                              delegate: trustDelegate)
         self.upstreamFetch = { req in try await box.fetch(req) }
         self.rebuildUpstream = { box.rebuild() }
-        self.controlSend = controlSend
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         _ = now
     }
 
-    /// Test initializer: inject the upstream fetcher directly (no live session). `controlSend`
-    /// defaults to a no-op (transport tests don't exercise the decision path). `rebuild` is a
-    /// no-op because there is no real socket to rotate; the rotate *count* still increments.
+    /// Test initializer: inject the upstream fetcher directly (no live session). `rebuild` is
+    /// a no-op because there is no real socket to rotate; the rotate *count* still increments.
     init(upstreamFetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse),
-         controlSend: @escaping @Sendable (PlexRequest) async throws -> Data = { _ in Data() },
          strippedPlaylistQueryItemNames: Set<String> = [],
          injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.upstreamFetch = upstreamFetch
         self.rebuildUpstream = {}
-        self.controlSend = controlSend
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         _ = now
-    }
-
-    /// Plex-aware open: resolve the stream URL (decision/probe owned here) at `offsetMs`, then
-    /// stand up the loopback fronting it. Throws `MediaSessionError.loopbackUnavailable` if the
-    /// loopback can't bind; callers should load the direct URL rather than retrying.
-    public func open(_ request: MediaSessionRequest, offsetMs: Int) async throws -> MediaSessionHandle {
-        let (streamURL, decision) = await resolveStreamURL(request, offsetMs: offsetMs)
-        self.lastDecision = decision
-        do {
-            return try await standUpLoopback(forStream: streamURL)
-        } catch {
-            throw MediaSessionError.loopbackUnavailable(directURL: streamURL)
-        }
-    }
-
-    /// The most recent PMS decision (Stats overlay). Nil before the first `open`/decision.
-    public func currentDecision() -> DecisionResponse? { lastDecision }
-
-    /// Run the PMS decision/probe and return the stream URL to front + the decision. Mirrors
-    /// `PlaybackController.startStreaming`'s logic exactly: probe with `directPlay=1` first when
-    /// enabled and commit to the direct-play start ONLY when PMS confirms it copies the video
-    /// (`savesVideoEncode`); otherwise the production transcode start.m3u8. Decision/probe
-    /// failures are non-fatal — fall through to the plain transcode start (Stage-1 behavior).
-    private func resolveStreamURL(_ request: MediaSessionRequest, offsetMs: Int)
-        async -> (URL, DecisionResponse?) {
-        let offsetSeconds: Int? = offsetMs > 0 ? offsetMs / 1000 : nil
-        let transcode = TranscodeRequest(
-            server: request.server, token: request.token, identity: request.identity,
-            metadataKey: request.metadataKey, maxVideoBitrateKbps: request.maxVideoBitrateKbps,
-            sessionID: request.sessionID, mediaIndex: request.mediaIndex, partIndex: request.partIndex,
-            burnSubtitleStreamID: request.burnSubtitleStreamID, startOffsetSeconds: offsetSeconds)
-
-        var decision: DecisionResponse?
-        var streamURL = transcode.startM3U8URL()
-        if request.directStreamEnabled {
-            do {
-                let data = try await controlSend(transcode.directPlayProbeRequest())
-                let probe = try decoder.decode(DecisionResponse.self, from: data)
-                if probe.savesVideoEncode {
-                    _ = try await controlSend(transcode.directPlayStartM3U8Request())
-                    decision = probe
-                    streamURL = transcode.directPlayStartM3U8URL()
-                }
-            } catch {
-                // Fall through to the transcode path (byte-identical to a failed probe).
-            }
-        }
-        if decision == nil {
-            do {
-                let data = try await controlSend(transcode.decisionRequest())
-                decision = try decoder.decode(DecisionResponse.self, from: data)
-            } catch {
-                // Non-fatal: attempt start.m3u8 anyway.
-            }
-        }
-        return (streamURL, decision)
     }
 
     /// Bind the app-owned loopback origin in front of `streamURL`'s PMS host and return a

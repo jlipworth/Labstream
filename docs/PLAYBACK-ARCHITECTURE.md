@@ -12,7 +12,7 @@ The Plex path runs through `PlaybackController.start()`:
 
 The `X-Plex-Client-Profile-Name=Generic` parameter in `TranscodeRequest` is load-bearing. Keep it. `Safari` was tried and regressed high-bitrate 4K HEVC/MKV cases by forcing video transcodes even when Direct Play / Maximum should copy or direct-stream. Unknown profile names can return a bare PMS HTTP 400.
 
-`MediaSessionProxy` is not the active Plex playback path. Plex playback uses PMS URLs directly plus targeted final-target rebuilds and stop-before-restart guards.
+`MediaSessionProxy` is not the active Plex playback path and no longer owns a Plex `open`/decision flow. Plex playback uses PMS URLs directly plus targeted final-target rebuilds and stop-before-restart guards; the proxy is only a stream-level loopback/playlist forwarder for already-resolved HLS URLs.
 
 ## Jellyfin playback
 
