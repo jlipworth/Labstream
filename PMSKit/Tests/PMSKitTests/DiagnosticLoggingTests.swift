@@ -33,6 +33,56 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertTrue(redacted.contains("clientIdentifier=[redacted]") || redacted.contains("clientidentifier=[redacted]"))
     }
 
+    func testSafeErrorSummaryDoesNotLeakNSErrorUserInfoOrFailingURL() {
+        let failingURL = URL(string: "https://alice.example.com:32400/video/:/transcode/universal/start.m3u8?X-Plex-Token=secret-token&query=Blade%20Runner")!
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: [
+            NSURLErrorFailingURLErrorKey: failingURL,
+            NSLocalizedDescriptionKey: "Timed out loading \(failingURL.absoluteString) for Blade Runner 2049.mkv",
+            "serverMessage": "private host alice.example.com rejected token secret-token"
+        ])
+
+        let summary = DiagnosticRedactor.safeErrorSummary(error)
+        let field = DiagnosticFieldValue.error(error).description
+        let userMessage = DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Download")
+
+        for value in [summary, field, userMessage] {
+            XCTAssertFalse(value.contains("secret-token"))
+            XCTAssertFalse(value.contains("alice.example.com"))
+            XCTAssertFalse(value.contains("Blade Runner"))
+            XCTAssertFalse(value.contains("start.m3u8"))
+            XCTAssertFalse(value.contains("serverMessage"))
+            XCTAssertFalse(value.contains("https://"))
+        }
+        XCTAssertTrue(summary.contains("kind=timeout"))
+        XCTAssertTrue(summary.contains("domain_family=nsurl"))
+        XCTAssertTrue(summary.contains("code=\(NSURLErrorTimedOut)"))
+        XCTAssertEqual(userMessage, "Download timed out.")
+    }
+
+    func testProbeQuerySummaryAndFieldsDoNotLeakRawMediaQuery() {
+        let query = "12 Years a Slave S01E02? X-Plex-Token=secret-query-token"
+        let summary = DiagnosticRedactor.probeQuerySummary(query)
+        let fields = DiagnosticRedactor.probeQueryFields(query)
+        let event = DiagnosticEvent(category: .playback,
+                                    name: "probe.start",
+                                    fields: fields)
+        let line = event.jsonLine()
+
+        for value in [summary, line] {
+            XCTAssertFalse(value.contains("12 Years"))
+            XCTAssertFalse(value.contains("Slave"))
+            XCTAssertFalse(value.contains("S01E02"))
+            XCTAssertFalse(value.contains("secret-query-token"))
+            XCTAssertFalse(value.contains("X-Plex-Token"))
+        }
+        XCTAssertTrue(summary.contains("present=true"))
+        XCTAssertTrue(summary.contains("length_bucket="))
+        XCTAssertTrue(summary.contains("signature="))
+        XCTAssertEqual(fields["query_present"], .bool(true))
+        XCTAssertEqual(fields["query_length"], .label("33-80"))
+        XCTAssertNotEqual(fields["query_signature"], .label("none"))
+    }
+
     func testReportRenderingIncludesContextSnapshotAndRedactedJSONL() throws {
         let store = DiagnosticLogStore(capacity: 10, enabled: true, clock: { Date(timeIntervalSince1970: 1_700_000_000) })
         store.record(category: .playback, name: "playback.snapshot", fields: [

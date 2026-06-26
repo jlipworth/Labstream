@@ -254,7 +254,7 @@ struct DownloadOptionsSheet: View {
                     }
                     probeFailed = true
                     compatibleRemux = nil
-                    downloadLog.error("download-sheet-jellyfin-probe-failed item=\(item.ratingKey, privacy: .public) error=\(String(describing: error), privacy: .public)")
+                    downloadLog.error("download-sheet-jellyfin-probe-failed item=\(item.ratingKey, privacy: .public) error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
                     break
                 }
             }

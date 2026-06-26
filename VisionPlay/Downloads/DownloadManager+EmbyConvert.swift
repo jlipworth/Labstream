@@ -154,7 +154,9 @@ extension DownloadManager {
                 "error": .error(error),
             ])
             failEmbyConvert(ratingKey: ratingKey,
-                            (error as? DownloadError) ?? .transferFailed(String(describing: error)))
+                            (error as? DownloadError) ?? .transferFailed(
+                                DiagnosticRedactor.safeUserFacingErrorMessage(error,
+                                                                              operation: "Transfer")))
             return
         }
 

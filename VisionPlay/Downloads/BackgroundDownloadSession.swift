@@ -258,7 +258,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         loggedProgressMilestones[task.taskIdentifier] = []
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
-        downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) path=\(request.url?.path ?? "nil", privacy: .public)")
+        let urlShape = DiagnosticRedactor.urlShape(request.url)
+        downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) url_shape=\(urlShape, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.transfer_start", fields: [
             "download_id": .identifier(ratingKey),
             "url_shape": .urlShape(request.url),
@@ -321,7 +322,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                                  bytes: offset,
                                  progress: min(1, Double(offset) / Double(expectedBytes)))
         }
-        downloadLog.info("range-start ratingKey=\(ratingKey, privacy: .public) offset=\(offset, privacy: .public) path=\(ranged.url?.path ?? "nil", privacy: .public)")
+        let urlShape = DiagnosticRedactor.urlShape(ranged.url)
+        downloadLog.info("range-start ratingKey=\(ratingKey, privacy: .public) offset=\(offset, privacy: .public) url_shape=\(urlShape, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.range_start", fields: [
             "download_id": .identifier(ratingKey),
             "offset_bytes": .bytes(offset),
@@ -330,23 +332,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             "url_shape": .urlShape(ranged.url),
         ])
         task.resume()
-    }
-
-    /// Path + query of a request URL with token-bearing query values redacted and the host omitted —
-    /// safe to log for diagnosing a transcode/download rejection without leaking credentials or the
-    /// server hostname.
-    static func sanitizedPathQuery(_ url: URL?) -> String {
-        guard let url, var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return "nil"
-        }
-        let secretNames = ["X-Plex-Token", "api_key", "ApiKey", "apikey", "token", "access_token"]
-        comps.queryItems = comps.queryItems?.map { item in
-            secretNames.contains { $0.caseInsensitiveCompare(item.name) == .orderedSame }
-                ? URLQueryItem(name: item.name, value: "REDACTED")
-                : item
-        }
-        let query = comps.query.map { "?\($0)" } ?? ""
-        return comps.path + query
     }
 
     /// #95: resume a `.paused` download from persisted URLSession resume data, continuing from
@@ -534,7 +519,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         } catch {
             dataTask.cancel()
             store.setStatus(ratingKey: entry.ratingKey, .failed)
-            onError?(entry.ratingKey, .transferFailed(String(describing: error)))
+            onError?(entry.ratingKey, .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
             onChange?()
             return
         }
@@ -634,16 +620,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         // 1. HTTP status — Plex returns 200 for a real file body.
         if let http = downloadTask.response as? HTTPURLResponse {
             guard (200...299).contains(http.statusCode) else {
-                // A download task writes the response body to `location` even on a 4xx,
-                // so capture PMS's error page + the sanitized request (token stripped,
-                // host omitted) at .error level — .info logs are memory-only and get
-                // evicted before we can read them. This makes a transcode rejection
-                // (e.g. an endpoint/param the universal transcoder refuses) diagnosable
-                // from the log instead of an opaque status code.
-                let body = (try? Data(contentsOf: location))
-                    .map { String(decoding: $0.prefix(800), as: UTF8.self) } ?? "<unreadable>"
-                let req = Self.sanitizedPathQuery(downloadTask.originalRequest?.url)
-                downloadLog.error("download-http-error ratingKey=\(entry.ratingKey, privacy: .public) http=\(http.statusCode, privacy: .public) req=\(req, privacy: .public) body=\(body, privacy: .public)")
+                // A download task writes the response body to `location` even on a 4xx. Keep only
+                // the URL shape and body-size bucket at .error level — raw server bodies can carry
+                // paths, item names, or private server text that later gets pasted into issues.
+                let bodyBytes = (try? Data(contentsOf: location))?.count
+                let reqShape = DiagnosticRedactor.urlShape(downloadTask.originalRequest?.url)
+                let bodyBucket = bodyBytes.map(DiagnosticRedactor.byteBucket) ?? "unknown"
+                downloadLog.error("download-http-error ratingKey=\(entry.ratingKey, privacy: .public) http=\(http.statusCode, privacy: .public) req_shape=\(reqShape, privacy: .public) body_bytes=\(bodyBucket, privacy: .public)")
                 fail("Server returned HTTP \(http.statusCode).")
                 return
             }
@@ -668,7 +651,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                 "error": .error(error),
             ])
             store.setStatus(ratingKey: entry.ratingKey, .failed)
-            onError?(entry.ratingKey, .transferFailed(String(describing: error)))
+            onError?(entry.ratingKey, .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
             onChange?()
             return
         }
@@ -841,7 +825,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         while ContinuousClock.now < deadline {
             switch item.status {
             case .failed:
-                return (false, "item_failed", durationMs, item.error.map { String(describing: $0) })
+                return (false, "item_failed", durationMs,
+                        item.error.map { DiagnosticRedactor.safeErrorSummary($0) })
             case .readyToPlay:
                 sawReady = true
             case .unknown:
@@ -884,7 +869,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                         "bytes": .bytes(rangeEntry.totalBytes),
                     ])
                 } else {
-                    downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
+                    let summary = DiagnosticRedactor.safeErrorSummary(error)
+                    downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
                     AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
                         "download_id": .identifier(rangeEntry.ratingKey),
                         "error": .error(error),
@@ -959,7 +945,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
                !resumeData.isEmpty {
                 guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else {
-                    downloadLog.error("transfer-nonresumable ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public) resumeData=true")
+                    let summary = DiagnosticRedactor.safeErrorSummary(error)
+                    downloadLog.error("transfer-nonresumable ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public) resumeData=true")
                     AppDiagnostics.record(.downloads, "downloads.transfer_nonresumable", fields: [
                         "download_id": .identifier(entry.ratingKey),
                         "error": .error(error),
@@ -972,7 +959,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                     onChange?()
                     return
                 }
-                downloadLog.error("transfer-paused ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+                let summary = DiagnosticRedactor.safeErrorSummary(error)
+                downloadLog.error("transfer-paused ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.transfer_paused", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "error": .error(error),
@@ -985,7 +973,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                 onChange?()
                 return
             }
-            downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) desc=\(error.localizedDescription, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
+            let summary = DiagnosticRedactor.safeErrorSummary(error)
+            downloadLog.error("transfer-failed ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
             AppDiagnostics.record(.downloads, "downloads.transfer_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "error": .error(error),
@@ -993,7 +982,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             ])
             clearRetryCount(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .failed)
-            onError?(entry.ratingKey, .transferFailed(error.localizedDescription))
+            onError?(entry.ratingKey, .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
         } else {
             clearRetryCount(ratingKey: entry.ratingKey)
             downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")

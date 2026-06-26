@@ -405,7 +405,7 @@ public final class DownloadManager {
             recordDownloadDiagnostic("downloads.original_probe", fields: fields)
             return (eligibility.playsWholeFileDirectly, part)
         } catch {
-            downloadLog.error("download-probe-failed ratingKey=\(item.ratingKey, privacy: .public) err=\(String(describing: error), privacy: .public)")
+            downloadLog.error("download-probe-failed ratingKey=\(item.ratingKey, privacy: .public) error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             recordDownloadDiagnostic("downloads.original_probe", fields: [
                 "download_id": .identifier(item.ratingKey),
                 "probe": .label("failed"),
@@ -1047,7 +1047,7 @@ public final class DownloadManager {
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
-                "error": .label(String(describing: error)),
+                "error": .error(error),
             ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
@@ -1064,7 +1064,8 @@ public final class DownloadManager {
                 "target": .label(targetName),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
+            lastError[ratingKey] = .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
@@ -1281,7 +1282,7 @@ public final class DownloadManager {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label(backendLabel),
-                "error": .label(String(describing: error)),
+                "error": .error(error),
             ])
             lastError[ratingKey] = error
             store.setStatus(ratingKey: ratingKey, .failed)
@@ -1293,7 +1294,8 @@ public final class DownloadManager {
                 "backend": .label(backendLabel),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
+            lastError[ratingKey] = .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
             if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
             refreshRecords()

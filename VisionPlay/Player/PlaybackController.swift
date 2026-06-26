@@ -2049,7 +2049,8 @@ final class PlaybackController {
                 recordTranscodeDiagnostic("transcode.decision", fields: decisionDiagnosticFields(response))
                 if case .unsupported = response.decision {
                     recordTranscodeDiagnostic("transcode.unsupported", fields: decisionDiagnosticFields(response))
-                    NSLog("PlaybackController: transcode decision unsupported: %@", String(describing: response.generalDecisionText))
+                    NSLog("PlaybackController: transcode decision unsupported code=%@",
+                          response.generalDecisionCode.map(String.init) ?? "nil")
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
@@ -3502,7 +3503,7 @@ final class PlaybackController {
             fields["error"] = .error(underlying)
             recordPlaybackDiagnostic("playback.stall_watchdog_fired", fields: fields)
             NSLog("PlaybackController: stream stalled, surfacing failure (%@)",
-                  String(describing: underlying))
+                  Self.safeErrorSummary(underlying))
             surfaceFailure(underlying)
         } else {
             if maxVideoBitrateKbps <= 0 {
@@ -3923,9 +3924,7 @@ final class PlaybackController {
     }
 
     private static func safeErrorSummary(_ error: Error?) -> String {
-        guard let error else { return "none" }
-        let nsError = error as NSError
-        return "class=\(String(describing: type(of: error))) domain_family=\(errorDomainFamily(nsError.domain)) code=\(nsError.code)"
+        DiagnosticRedactor.safeErrorSummary(error)
     }
 
     private func maybeRecordDiagnosticSnapshot(force: Bool = false) {
@@ -3944,8 +3943,8 @@ final class PlaybackController {
 /// (mirroring `PlaybackDiagnostics`) so PlayerView/DetailView can react to a failure and
 /// show an error + Retry without the whole controller needing to be `@Observable`.
 /// Error surfaced when a failure-recovery rebuild can't reach playback within the View's
-/// reconnect watchdog window (GH #33). Its `localizedDescription` becomes the Retry/Close
-/// overlay's message, so it's written for the viewer, not the log.
+/// reconnect watchdog window (GH #33). Its message is controlled by VisionPlay and safe for the
+/// Retry/Close overlay.
 struct ReconnectTimeoutError: LocalizedError {
     var errorDescription: String? {
         "Couldn't reconnect to the server. It may be busy or briefly unreachable — try again."
@@ -3968,16 +3967,29 @@ final class PlaybackError {
     /// A human-readable description of the failure, if AVFoundation provided one.
     private(set) var message: String?
 
-    /// Mark a failure for display. Stores the localized description when available.
+    /// Mark a failure for display. Raw framework/server error strings are collapsed to a safe
+    /// message; only VisionPlay-authored playback messages are surfaced verbatim.
     func set(_ error: Error?) {
         isFailed = true
-        message = error?.localizedDescription
+        message = Self.safeDisplayMessage(for: error)
     }
 
     /// Clear the failure state (on (re)start / retry).
     func clear() {
         isFailed = false
         message = nil
+    }
+
+    private static func safeDisplayMessage(for error: Error?) -> String? {
+        guard let error else { return nil }
+        if let reconnect = error as? ReconnectTimeoutError {
+            return reconnect.errorDescription
+        }
+        let nsError = error as NSError
+        if nsError.domain == "VisionPlay.Playback" {
+            return nsError.userInfo[NSLocalizedDescriptionKey] as? String
+        }
+        return DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Playback")
     }
 }
 

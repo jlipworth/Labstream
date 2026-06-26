@@ -41,7 +41,16 @@ enum DebugEmbyDownloadProbe {
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
 
-        let query = DebugDownloadProbeSupport.value(after: "--vp-probe-query", in: arguments) ?? "12 Years a Slave"
+        let rawQuery = DebugDownloadProbeSupport.value(after: "--vp-probe-query", in: arguments)
+        let trimmedQuery = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let query = trimmedQuery, !query.isEmpty else {
+            log.error("probe.fail reason=missing_probe_query")
+            AppDiagnostics.record(.downloads, "probe.emby_download.fail", fields: [
+                "reason": .label("missing_probe_query"),
+                "query_present": .bool(false),
+            ])
+            return
+        }
         let startDownload = arguments.contains("--vp-probe-start-download")
         let startOptimize = arguments.contains("--vp-probe-start-optimize")
         let refreshExisting = arguments.contains("--vp-probe-refresh-existing")
@@ -52,13 +61,16 @@ enum DebugEmbyDownloadProbe {
         let preset = DebugDownloadProbeSupport.value(after: "--vp-probe-download-preset", in: arguments) ?? "1080p 8 Mbps"
         let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? 30
 
-        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(query, privacy: .private) start=\(startDownload, privacy: .public) startOptimize=\(startOptimize, privacy: .public) refreshExisting=\(refreshExisting, privacy: .public)")
-        AppDiagnostics.record(.downloads, "probe.emby_download.start", fields: [
+        let querySummary = DiagnosticRedactor.probeQuerySummary(query)
+        log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(querySummary, privacy: .public) start=\(startDownload, privacy: .public) startOptimize=\(startOptimize, privacy: .public) refreshExisting=\(refreshExisting, privacy: .public)")
+        var startFields: [String: DiagnosticFieldValue] = [
             "start": .bool(startDownload),
             "start_optimize": .bool(startOptimize),
             "refresh_existing": .bool(refreshExisting),
             "observe_only": .bool(observeOnly),
-        ])
+        ]
+        startFields.merge(DiagnosticRedactor.probeQueryFields(query)) { _, new in new }
+        AppDiagnostics.record(.downloads, "probe.emby_download.start", fields: startFields)
 
         guard let backendSession = appModel.backendSession(for: .emby),
               let userId = backendSession.userID else {
@@ -181,7 +193,7 @@ enum DebugEmbyDownloadProbe {
                 "progressed": .bool(progressed),
             ])
         } catch {
-            log.error("probe.fail error=\(String(describing: error), privacy: .public)")
+            log.error("probe.fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.downloads, "probe.emby_download.fail", fields: [
                 "error": .error(error),
             ])

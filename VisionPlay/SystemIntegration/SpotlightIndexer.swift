@@ -30,7 +30,8 @@ enum SpotlightIndexer {
         guard !searchable.isEmpty else { return }
         CSSearchableIndex.default().indexSearchableItems(searchable) { error in
             if let error {
-                NSLog("%@", "SpotlightIndexer: indexing failed: \(error.localizedDescription)")
+                NSLog("SpotlightIndexer: indexing failed (%@)",
+                      DiagnosticRedactor.safeErrorSummary(error))
             }
         }
     }
@@ -43,7 +44,8 @@ enum SpotlightIndexer {
         CSSearchableIndex.default()
             .deleteSearchableItems(withDomainIdentifiers: [domainIdentifier]) { error in
                 if let error {
-                    NSLog("%@", "SpotlightIndexer: delete failed: \(error.localizedDescription)")
+                    NSLog("SpotlightIndexer: delete failed (%@)",
+                          DiagnosticRedactor.safeErrorSummary(error))
                     completion?(false)
                 } else {
                     completion?(true)

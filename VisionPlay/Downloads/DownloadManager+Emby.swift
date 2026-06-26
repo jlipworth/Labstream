@@ -121,7 +121,8 @@ extension DownloadManager {
                 "phase": .label("playback_info"),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
+            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -296,7 +297,8 @@ extension DownloadManager {
                 "backend": .label("Emby"),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(String(describing: error))
+            lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()

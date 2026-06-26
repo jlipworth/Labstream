@@ -202,7 +202,8 @@ extension DownloadManager {
                 "backend": .label("Jellyfin"),
                 "error": .error(error),
             ])
-            lastError[ratingKey] = .transferFailed(String(describing: error))
+            lastError[ratingKey] = .transferFailed(
+                DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
