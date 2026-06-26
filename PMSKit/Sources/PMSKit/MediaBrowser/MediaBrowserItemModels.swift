@@ -293,8 +293,8 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             summary: overview,
             thumb: resolvedThumb,
             art: backdrop,
-            media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toPlexMedia(index: $0.offset, itemId: id) },
-            chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toPlexChapter(index: $0.offset, itemId: id) },
+            media: mediaSources.isEmpty ? nil : mediaSources.enumerated().map { $0.element.toCanonicalMedia(index: $0.offset, itemId: id) },
+            chapters: chapters.isEmpty ? nil : chapters.enumerated().map { $0.element.toCanonicalChapter(index: $0.offset, itemId: id) },
             rating: shouldExposeCommunityRating ? communityRating : nil,
             contentRating: officialRating,
             tagline: taglines.first,
@@ -400,7 +400,7 @@ public struct MediaBrowserChapterDto<Flavor: MediaBrowserFlavor>: Decodable, Sen
         case imageTag = "ImageTag"
     }
 
-    func toPlexChapter(index: Int, itemId: String) -> Chapter {
+    func toCanonicalChapter(index: Int, itemId: String) -> Chapter {
         Chapter(id: index + 1,
                 tag: name,
                 startTimeOffset: startPositionTicks.map { $0 / 10_000 },
@@ -456,14 +456,14 @@ public struct MediaBrowserItemMediaSourceDto<Flavor: MediaBrowserFlavor>: Decoda
         mediaStreams = try c.decodeIfPresent([MediaBrowserItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
     }
 
-    func toPlexMedia(index: Int, itemId: String) -> Media {
+    func toCanonicalMedia(index: Int, itemId: String) -> Media {
         let part = Part(id: index + 1,
                         key: "\(Flavor.syntheticScheme)://item/\(itemId)/media/\(id ?? String(index))",
                         duration: nil,
                         file: nil,
                         size: nil,
                         container: container,
-                        streams: mediaStreams.enumerated().compactMap { $0.element.toPlexStream(fallbackID: $0.offset + 1) })
+                        streams: mediaStreams.enumerated().compactMap { $0.element.toCanonicalStream(fallbackID: $0.offset + 1) })
         // Jellyfin/Emby carry resolution & codecs on the per-stream `MediaStreams`, not on the
         // MediaSource itself (only `Bitrate`/`Container` live there). Fall back to the video /
         // audio streams so resolution ("4K"/"1080p") and codec badges populate (GH #108).
@@ -529,7 +529,7 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         height = try c.decodeIfPresent(Int.self, forKey: .height)
     }
 
-    func toPlexStream(fallbackID: Int) -> Stream? {
+    func toCanonicalStream(fallbackID: Int) -> Stream? {
         guard let streamType else { return nil }
         return Stream(id: index ?? fallbackID,
                       streamType: streamType.rawValue,

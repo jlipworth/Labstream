@@ -4,8 +4,8 @@ import Testing
 
 @Suite("Jellyfin library")
 struct JellyfinLibraryTests {
-    private let server = URL(string: "https://jellyfin.example.test/base")!
-    private let identity = JellyfinClientIdentity(client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
+    private let server = TestFixtures.jellyfinServer
+    private let identity = TestFixtures.jellyfinIdentity
 
     @Test func decodesAuthenticationResult() throws {
         let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: Data(#"""
@@ -189,11 +189,6 @@ struct JellyfinLibraryTests {
         #expect(trackQuery["albumArtistIds"] == nil)
     }
 
-    private func queryMap(_ request: URLRequest) throws -> [String: String] {
-        let url = try #require(request.url)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-    }
 
     @Test func audioStreamURLHonorsBitrateCap() throws {
         let url = try JellyfinLibrary.audioStreamURL(server: server,
