@@ -247,7 +247,7 @@ public final class DownloadManager {
             // at a different server (re-login elsewhere), firing the DELETE there would hit the
             // wrong server and leak the original encoder — skip and keep the psid so a later
             // launch on the matching server retries.
-            guard Self.backendSessionMatchesPersistedServer(metadata: md, live: live) else { continue }
+            guard live.matchesPersistedServer(md) else { continue }
             let key = record.ratingKey
             switch kind {
             case .jellyfin:
@@ -275,43 +275,6 @@ public final class DownloadManager {
     /// Confirm a persisted encoder handle belongs to the currently-restored backend lane before
     /// sending `DELETE /Videos/ActiveEncodings`. Prefer stable server ids; fall back to the saved
     /// base URL for servers that did not provide one.
-    private static func backendSessionMatchesPersistedServer(metadata: OfflineMetadata,
-                                                             live: BackendSession) -> Bool {
-        if let persistedID = metadata.backendServerID?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !persistedID.isEmpty {
-            return live.serverID == persistedID
-        }
-        guard let persistedURLString = metadata.backendBaseURLString,
-              let persistedURL = URL(string: persistedURLString) else {
-            // Legacy/partial metadata has no server identity to compare. Allow the best-effort
-            // cleanup rather than permanently leaking a known PlaySessionId.
-            return true
-        }
-        return sameBackendBaseURL(persistedURL, live.baseURL)
-    }
-
-    private static func sameBackendBaseURL(_ lhs: URL, _ rhs: URL) -> Bool {
-        let lhsScheme = lhs.scheme?.lowercased()
-        let rhsScheme = rhs.scheme?.lowercased()
-        guard lhsScheme == rhsScheme,
-              lhs.host?.lowercased() == rhs.host?.lowercased(),
-              effectivePort(lhs) == effectivePort(rhs) else { return false }
-        return normalizedBasePath(lhs.path) == normalizedBasePath(rhs.path)
-    }
-
-    private static func effectivePort(_ url: URL) -> Int? {
-        if let port = url.port { return port }
-        switch url.scheme?.lowercased() {
-        case "http": return 80
-        case "https": return 443
-        default: return nil
-        }
-    }
-
-    private static func normalizedBasePath(_ path: String) -> String {
-        path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    }
-
     /// Absolute local URL for a completed download, if present on disk.
     public func localURL(for ratingKey: String) -> URL? {
         store.localURL(for: ratingKey)
@@ -2485,7 +2448,7 @@ public final class DownloadManager {
                   !mediaSourceId.isEmpty,
                   let session = appModel.backendSession(for: .jellyfin),
                   let userId = session.userID,
-                  Self.backendSessionMatchesPersistedServer(metadata: metadata, live: session)
+                  session.matchesPersistedServer(metadata)
             else { continue }
 
             startJellyfinDownloadKeepalive(
