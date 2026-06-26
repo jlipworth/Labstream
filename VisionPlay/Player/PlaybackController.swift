@@ -230,14 +230,10 @@ final class PlaybackController {
     }
 
     // State.
-    private var timeObserver: Any?
-    private var statusObservation: NSKeyValueObservation?
-    private var rateObservation: NSKeyValueObservation?
-    private var didEndObserver: NSObjectProtocol?
-    private var diagnosticsTimer: Timer?
+    private lazy var observers = PlayerObserverBag(player: player)
+    private lazy var diagnosticsObservers = PlayerObserverBag()
     private var lastDiagnosticSnapshotUptime: TimeInterval = 0
     private var lastDiagnosticTimeControlStatus: AVPlayer.TimeControlStatus?
-    private var failedToEndObserver: NSObjectProtocol?
     private var currentPlayerItemGeneration = 0
     private var nextPlayerItemGeneration = 0
     private var ignoredRecoverableFailedToEndCount = 0
@@ -248,7 +244,7 @@ final class PlaybackController {
     /// timer is the catch-all: armed while the player is starved, it surfaces the error+Retry
     /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
     /// state. Cancelled the moment playback genuinely resumes (`.playing`).
-    private var stallWatchdog: Timer?
+    private lazy var stallWatchdogObservers = PlayerObserverBag()
     private var reconnectWatchdogTask: Task<Void, Never>?
     private var reconnectInProgress = false
     private var hasObservedPlayback = false
@@ -259,7 +255,6 @@ final class PlaybackController {
     /// seek on visionOS (#25): AVKit's user-navigation delegate callbacks
     /// (`willResumePlaybackAfterUserNavigatedFromTime:toTime:`) are `API_UNAVAILABLE(visionos)`,
     /// checked in the XROS 26.5 AVPlayerViewController.h.
-    private var timeJumpedObserver: NSObjectProtocol?
     private var started = false
     private var playbackStartupSpan: PerformanceSpan?
     private var playbackItemLoadSpan: PerformanceSpan?
@@ -606,11 +601,6 @@ final class PlaybackController {
     /// Tail (seconds) subtracted from a marker's end before we clear the button, so it
     /// doesn't flicker off exactly at the boundary while the playhead drifts across it.
     private let skipMarkerTailSeconds: Double = 1.0
-
-    /// Separate, fine-grained time observer for marker detection. The 10s timeline
-    /// heartbeat is far too coarse to drive an on-screen Skip button, so we add a ~0.5s
-    /// observer dedicated to updating `skipMarker`.
-    private var markerTimeObserver: Any?
 
     /// How often (seconds) the periodic time observer fires.
     private let timelineIntervalSeconds: Double = 10
@@ -2531,7 +2521,7 @@ final class PlaybackController {
     /// `Timer` is used (rather than the timeline observer) so the numbers tick even
     /// while paused and at a finer cadence than the 10s heartbeat.
     private func startDiagnosticsSampling() {
-        diagnosticsTimer?.invalidate()
+        diagnosticsObservers.reset()
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -2541,7 +2531,7 @@ final class PlaybackController {
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        diagnosticsTimer = timer
+        diagnosticsObservers.storeTimer(timer)
     }
 
     private func installObservers(for playerItem: AVPlayerItem,
@@ -2552,7 +2542,7 @@ final class PlaybackController {
         // seek on `.readyToPlay` AND a later `.failed`. The old code self-nilled this
         // observation inside the readyToPlay branch, so a subsequent ready→failed
         // transition (e.g. transcode dies mid-stream) was never seen.
-        statusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] pItem, _ in
+        observers.store(playerItem.observe(\.status, options: [.new]) { [weak self] pItem, _ in
             guard let self else { return }
             Task { @MainActor in
                 guard self.isCurrentObservedItem(pItem,
@@ -2648,11 +2638,11 @@ final class PlaybackController {
                     break
                 }
             }
-        }
+        })
 
         // A start.m3u8 that begins playing but then dies (transcode tears down, segment
         // 404s) fires this rather than flipping item.status (P3 #8). Treat it the same.
-        failedToEndObserver = NotificationCenter.default.addObserver(
+        observers.storeNotification(NotificationCenter.default.addObserver(
             forName: AVPlayerItem.failedToPlayToEndTimeNotification,
             object: playerItem,
             queue: .main
@@ -2665,12 +2655,12 @@ final class PlaybackController {
                                              itemGeneration: itemGeneration,
                                              observedPlaybackGeneration: observedPlaybackGeneration)
             }
-        }
+        })
 
         // Final-target rebuild recovery (#33 reset): `timeJumpedNotification` is the only
         // in-process signal of a user seek on visionOS. In-buffer jumps stay native;
         // out-of-buffer jumps are debounced and rebuilt once at the settled target.
-        timeJumpedObserver = NotificationCenter.default.addObserver(
+        observers.storeNotification(NotificationCenter.default.addObserver(
             forName: AVPlayerItem.timeJumpedNotification,
             object: playerItem,
             queue: .main
@@ -2688,11 +2678,11 @@ final class PlaybackController {
                 }
                 self.handleSeekJump()
             }
-        }
+        })
 
         // Periodic heartbeat ~ every 10s.
         let interval = CMTime(seconds: timelineIntervalSeconds, preferredTimescale: 1)
-        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
+        observers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 let state: TimelineRequest.State = self.player.timeControlStatus == .paused ? .paused : .playing
@@ -2703,13 +2693,13 @@ final class PlaybackController {
                 // watched once we cross ~90%; didPlayToEnd remains the backstop.
                 self.timeline.scrobbleIfNearEnd()
             }
-        }
+        })
 
         // Marker detection (#14): a finer ~0.5s observer that toggles the Skip
         // Intro/Skip Credits button as the playhead enters/leaves an intro/credits range.
         // Separate from the 10s heartbeat above, which is too coarse for a live button.
         let markerInterval = CMTime(seconds: 0.5, preferredTimescale: 600)
-        markerTimeObserver = player.addPeriodicTimeObserver(forInterval: markerInterval, queue: .main) { [weak self] time in
+        observers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: markerInterval, queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
                 self.updateSkipMarker(at: time.seconds)
@@ -2717,7 +2707,7 @@ final class PlaybackController {
                 self.updateUpNext(at: time.seconds)
                 self.updateOfflineSubtitleOverlay(at: time.seconds)
             }
-        }
+        })
 
         // Single observer for `\.timeControlStatus` driving BOTH the transport/diagnostics
         // update and the rebuffer/stall spinner (#21). These were previously two separate
@@ -2726,17 +2716,17 @@ final class PlaybackController {
         // spinner handler. We preserve that order explicitly here: `handleTimeControlTransport`
         // MUST run before `handleTimeControlBuffering` (the latter clears a surfaced error and
         // signals "playback active", which is conceptually downstream of the transport state).
-        rateObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
+        observers.store(player.observe(\.timeControlStatus, options: [.new]) { [weak self] avPlayer, _ in
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
                 self.handleTimeControlTransport(status: status)
                 self.handleTimeControlBuffering(status: status)
             }
-        }
+        })
 
         // Scrobble on completion.
-        didEndObserver = NotificationCenter.default.addObserver(
+        observers.storeNotification(NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: playerItem,
             queue: .main
@@ -2774,7 +2764,7 @@ final class PlaybackController {
                     self.onPlaybackEnded?()
                 }
             }
-        }
+        })
     }
 
     /// Transport/diagnostics half of the merged `\.timeControlStatus` observation. Runs
@@ -2848,38 +2838,16 @@ final class PlaybackController {
     }
 
     private func removeObservers() {
-        if let timeObserver {
-            player.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
-        }
-        if let markerTimeObserver {
-            player.removeTimeObserver(markerTimeObserver)
-            self.markerTimeObserver = nil
-        }
-        statusObservation = nil
-        rateObservation = nil
         // Cancel the stall watchdog so a stale timer can't fire across a reload / Retry /
         // teardown and surface an error against a freshly-loaded item.
         cancelStallWatchdog()
-        if let timeJumpedObserver {
-            NotificationCenter.default.removeObserver(timeJumpedObserver)
-            self.timeJumpedObserver = nil
-        }
         // Drop any armed final-target rebuild so a debounced timer can't fire against a freshly-loaded item.
         cancelPendingFinalTargetRebuild()
         // Clear any lingering spinner state across a reload/teardown so it can't get stuck on.
         buffering.set(false)
         updateTransportStatus()
-        diagnosticsTimer?.invalidate()
-        diagnosticsTimer = nil
-        if let didEndObserver {
-            NotificationCenter.default.removeObserver(didEndObserver)
-            self.didEndObserver = nil
-        }
-        if let failedToEndObserver {
-            NotificationCenter.default.removeObserver(failedToEndObserver)
-            self.failedToEndObserver = nil
-        }
+        diagnosticsObservers.reset()
+        observers.reset()
     }
 
 
@@ -3435,7 +3403,7 @@ final class PlaybackController {
     /// Arm the stall watchdog if it isn't already running and no error is being shown. Idempotent
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
-        guard stallWatchdog == nil, !playbackError.isFailed else { return }
+        guard stallWatchdogObservers.isEmpty, !playbackError.isFailed else { return }
         stallProgressBaseline = currentStallProgressSignature()
         recordPlaybackDiagnostic("playback.stall_watchdog_armed", fields: [
             "timeout_seconds": .int(Int(activeStallTimeoutSeconds)),
@@ -3449,16 +3417,15 @@ final class PlaybackController {
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        stallWatchdog = timer
+        stallWatchdogObservers.storeTimer(timer)
     }
 
     /// Cancel the stall watchdog (genuine resume, teardown, or retry).
     private func cancelStallWatchdog() {
-        if stallWatchdog != nil {
+        if !stallWatchdogObservers.isEmpty {
             recordPlaybackDiagnostic("playback.stall_watchdog_cancelled")
         }
-        stallWatchdog?.invalidate()
-        stallWatchdog = nil
+        stallWatchdogObservers.reset()
         stallProgressBaseline = nil
     }
 
@@ -3477,8 +3444,7 @@ final class PlaybackController {
     /// non-reopenable/static streams), the same visible Retry failure path remains terminal.
     private func handleStallTimeout() {
         let baseline = stallProgressBaseline
-        stallWatchdog?.invalidate()
-        stallWatchdog = nil
+        stallWatchdogObservers.reset()
         stallProgressBaseline = nil
         guard !playbackError.isFailed, let current = player.currentItem else { return }
         guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
