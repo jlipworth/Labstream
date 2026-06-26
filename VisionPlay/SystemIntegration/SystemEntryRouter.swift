@@ -23,9 +23,9 @@ final class SystemEntryRouter {
         enum Target: Equatable {
             /// A fully-formed item (an intent that already holds the metadata).
             case item(MediaItem)
-            /// Just a ratingKey (a Spotlight hit / entity id); the consumer fetches
-            /// the metadata before navigating.
-            case ratingKey(String)
+            /// A backend/server/rating-key route (a Spotlight hit / entity id); the
+            /// consumer fetches the metadata before navigating. Legacy bare ids parse as Plex.
+            case routeKey(BackendScopedMediaID)
         }
         let id = UUID()
         let target: Target
@@ -92,7 +92,11 @@ final class SystemEntryRouter {
     // MARK: - Requests
 
     func open(ratingKey: String, autoPlay: Bool) {
-        pending = Route(target: .ratingKey(ratingKey), autoPlay: autoPlay)
+        open(routeKey: BackendScopedMediaID(backend: .plex, ratingKey: ratingKey), autoPlay: autoPlay)
+    }
+
+    func open(routeKey: BackendScopedMediaID, autoPlay: Bool) {
+        pending = Route(target: .routeKey(routeKey), autoPlay: autoPlay)
     }
 
     func open(item: MediaItem, autoPlay: Bool) {

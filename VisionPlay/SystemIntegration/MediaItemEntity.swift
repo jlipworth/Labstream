@@ -1,8 +1,9 @@
 import AppIntents
 import PMSKit
 
-/// An App Intents entity wrapping one library item, identified by its
-/// `ratingKey` (issue #24). This is what shows up as the "Title" parameter in
+/// An App Intents entity wrapping one library item. Current suggestions still use the
+/// legacy Plex `ratingKey` identifier, while resolution accepts backend-scoped ids too.
+/// This is what shows up as the "Title" parameter in
 /// Shortcuts and in "Play <title> on VisionPlay" Siri phrases.
 ///
 /// Deliberately a snapshot of display fields only — intents re-fetch authoritative
@@ -11,7 +12,8 @@ struct MediaItemEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Media Item")
     static let defaultQuery = MediaItemEntityQuery()
 
-    /// The Plex `ratingKey` — the app's universal handle for an item.
+    /// System-entry identifier. Current Plex-only suggestions are legacy bare ratingKeys;
+    /// future backend-scoped ids parse through `MediaSearchIdentifier.routeKey`.
     let id: String
     let title: String
     /// Secondary display line: show + episode code for an episode, year for a movie.
@@ -63,9 +65,15 @@ struct MediaItemEntityQuery: EntityStringQuery {
         guard await SystemEntryRouter.shared.ensureBrowseReady(),
               let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         var found: [MediaItemEntity] = []
-        for ratingKey in identifiers {
+        for identifier in identifiers {
+            let routeKey = MediaSearchIdentifier.routeKey(from: identifier)
+            guard routeKey.backend == .plex else { continue }
+            if let namespace = routeKey.serverNamespace,
+               namespace != BackendScopedMediaID.serverNamespace(ctx.server) {
+                continue
+            }
             let req = BrowseAPI.metadata(server: ctx.server, token: ctx.token,
-                                         identity: ctx.identity, ratingKey: ratingKey)
+                                         identity: ctx.identity, ratingKey: routeKey.ratingKey)
             if let resp = try? await ctx.client.send(req, as: MetadataResponse.self),
                let item = resp.mediaContainer.metadata.first {
                 found.append(MediaItemEntity(item: item))
