@@ -875,7 +875,8 @@ public final class DownloadManager {
         // stays a remux only while the source video is stream-copy eligible; `.optimize` always transcodes.
         let intent: EmbyDownloadRouter.Intent
         switch choice {
-        case .original, .existingVersion: intent = .directOrExisting
+        case .original: intent = .original
+        case .existingVersion: intent = .existingVersion
         case .optimizeCompatible: intent = .compatible
         case .optimize: intent = .transcode
         }

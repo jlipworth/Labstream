@@ -31,11 +31,10 @@ struct EmbyDownloadRouterTests {
         #expect(!EmbyDownloadRouter.containerGate(part: nil, negotiatedContainer: nil))
     }
 
-    // MARK: - .directOrExisting (.original / #112 .existingVersion)
+    // MARK: - .original (user/source original — direct-play gated)
 
     @Test func directPlayablePlaysOriginalByteForByte() {
-        // #126: an existing-version handoff resolves to a directly-playable mp4/h264 source → .original.
-        let route = EmbyDownloadRouter.route(intent: .directOrExisting,
+        let route = EmbyDownloadRouter.route(intent: .original,
                                              supportsDirectPlay: true, container: "mp4",
                                              videoCodec: "h264", audioCodec: "aac",
                                              part: part(container: "mp4"))
@@ -45,17 +44,49 @@ struct EmbyDownloadRouterTests {
     @Test func directPlayButNonPlayableContainerFallsToTranscode() {
         // Server says direct-play, but neither the negotiated nor the source container is a local
         // mp4 family → cannot download byte-for-byte → transcode.
-        let route = EmbyDownloadRouter.route(intent: .directOrExisting,
+        let route = EmbyDownloadRouter.route(intent: .original,
                                              supportsDirectPlay: true, container: "mkv",
                                              videoCodec: "hevc", audioCodec: "dts",
                                              part: part(container: "mkv"))
         #expect(route == .transcode)
     }
 
-    @Test func noDirectPlayFallsToTranscodeEvenWithPlayableContainer() {
-        let route = EmbyDownloadRouter.route(intent: .directOrExisting,
+    @Test func originalNoDirectPlayFallsToTranscodeEvenWithPlayableContainer() {
+        // A user-original has no server-rendered guarantee, so it keeps the direct-play safety net.
+        let route = EmbyDownloadRouter.route(intent: .original,
                                              supportsDirectPlay: false, container: "mp4",
                                              videoCodec: "h264", audioCodec: "aac",
+                                             part: part(container: "mp4"))
+        #expect(route == .transcode)
+    }
+
+    // MARK: - .existingVersion (#126 convert-reuse — container/codec gated, NOT direct-play)
+
+    @Test func existingVersionDownloadsPlayableMp4EvenWhenEmbyDeniesDirectPlay() {
+        // Regression: the convert→download reuse handoff GETs a pre-rendered mp4/h264 file byte-for-
+        // byte. Emby returns supportsDirectPlay=false for it (observed live), which used to refuse the
+        // download (converted_not_directly_downloadable → no row). It must download as .original.
+        let route = EmbyDownloadRouter.route(intent: .existingVersion,
+                                             supportsDirectPlay: false, container: "mp4",
+                                             videoCodec: "h264", audioCodec: "aac",
+                                             part: part(container: "mkv"))
+        #expect(route == .original)
+    }
+
+    @Test func existingVersionTranscodesNonLocallyPlayableContainer() {
+        // A converted source that is somehow still an mkv cannot be GET byte-for-byte → transcode.
+        let route = EmbyDownloadRouter.route(intent: .existingVersion,
+                                             supportsDirectPlay: false, container: "mkv",
+                                             videoCodec: "h264", audioCodec: "aac",
+                                             part: part(container: "mkv"))
+        #expect(route == .transcode)
+    }
+
+    @Test func existingVersionFailsClosedOnUnknownVideoCodec() {
+        // No preflight on this lane → fail closed on an unknown codec even with a playable container.
+        let route = EmbyDownloadRouter.route(intent: .existingVersion,
+                                             supportsDirectPlay: true, container: "mp4",
+                                             videoCodec: nil, audioCodec: "aac",
                                              part: part(container: "mp4"))
         #expect(route == .transcode)
     }

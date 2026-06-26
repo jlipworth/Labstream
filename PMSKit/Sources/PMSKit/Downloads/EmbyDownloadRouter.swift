@@ -10,13 +10,20 @@ import Foundation
 /// by `EmbyDownloadRouterTests`.
 public enum EmbyDownloadRouter {
     /// What the user asked for, collapsed to the three classes the router distinguishes. The app's
-    /// `DownloadChoice` maps `.original`/`.existingVersion` → `.directOrExisting`,
+    /// `DownloadChoice` maps `.original` → `.original`, `.existingVersion` → `.existingVersion`,
     /// `.optimizeCompatible` → `.compatible`, and `.optimize` → `.transcode`.
     public enum Intent: Sendable, Equatable {
-        /// A user/source original OR a #126 existing-version handoff: both negotiate identically — a
-        /// directly-playable file in a local container downloads byte-for-byte, anything else falls
-        /// to transcode.
-        case directOrExisting
+        /// A user/source `.original`: download byte-for-byte ONLY when Emby negotiates direct-play AND
+        /// the container is locally playable. A user-original has no server-rendered guarantee, so the
+        /// direct-play verdict is the safety net against silently downloading a non-playable source.
+        case original
+        /// A #126 existing-version / convert-reuse handoff: the source is a PRE-RENDERED file we GET
+        /// byte-for-byte (static download), so eligibility is purely "can AVFoundation play this local
+        /// container+codec" (mirrors Plex's `existingVersionPlayableOffline` / #125) — NOT Emby's
+        /// streaming `supportsDirectPlay` verdict, which it returns false for even a clean mp4/h264
+        /// converted file (observed live, Emby 4.9; that false verdict used to silently kill the
+        /// convert→download handoff).
+        case existingVersion
         /// #83 "Original quality (compatible)": honour the remux lane when the source video is
         /// stream-copy eligible, otherwise transcode.
         case compatible
@@ -54,9 +61,14 @@ public enum EmbyDownloadRouter {
                              audioCodec: String?,
                              part: Part?) -> Route {
         switch intent {
-        case .directOrExisting:
+        case .original:
             return (supportsDirectPlay && containerGate(part: part, negotiatedContainer: container))
                 ? .original : .transcode
+        case .existingVersion:
+            // Static GET of a pre-rendered file → gate on local playability (container + video codec,
+            // fail-closed on unknown), independent of Emby's streaming direct-play verdict.
+            return OfflineDownloadDecision.existingVersionPlayableOffline(
+                container: container, videoCodec: videoCodec) ? .original : .transcode
         case .compatible:
             // The negotiated DirectStream flag may be false for audio-only transcode cases (e.g.
             // HEVC + DTS → MP4 + AAC) that still preserve original video quality, so gate on
