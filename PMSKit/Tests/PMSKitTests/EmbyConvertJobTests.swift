@@ -220,22 +220,30 @@ struct EmbyConvertJobTests {
 
     // MARK: - Quality mapping
 
-    @Test("Original video quality maps to keep-quality bitrate + tv profile, never the original token")
+    @Test("Original video quality routes through the resolution-preserving custom path (#128), never the original token")
     func originalQualityMapping() {
         let q = EmbyConvertRequest.convertQuality(forPresetLabel: "Original video quality")
         #expect(q.quality != "original")
         #expect(q.quality == "custom")
-        #expect(q.profile == "tv")
+        // #128: "Original" must preserve source resolution — `tv` would silently downscale 4K to 1080p.
+        #expect(q.profile == "custom")
+        #expect(q.container == "mp4")
+        #expect(q.videoCodec == "h264")
+        #expect(q.audioCodec == "aac")
         #expect(q.bitrate == EmbyConvertRequest.keepQualityBitrate)
         #expect(q.bitrate == 80_000_000)
     }
 
-    @Test("Bitrate presets map to quality:custom + the labelled bps + tv profile (no cap)")
+    @Test("Sub-1080p bitrate presets keep profile:tv with NO custom criteria (the tv ceiling is the wanted downscale)")
     func bitratePresetMapping() {
         let p1080 = EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 8 Mbps")
         #expect(p1080.quality == "custom")
         #expect(p1080.profile == "tv")
         #expect(p1080.bitrate == 8_000_000)
+        // tv-profile presets must NOT carry custom criteria.
+        #expect(p1080.container == nil)
+        #expect(p1080.videoCodec == nil)
+        #expect(p1080.audioCodec == nil)
 
         #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 20 Mbps").bitrate == 20_000_000)
         #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "1080p · 12 Mbps").bitrate == 12_000_000)
@@ -243,26 +251,58 @@ struct EmbyConvertJobTests {
 
         let p720 = EmbyConvertRequest.convertQuality(forPresetLabel: "720p · 4 Mbps")
         #expect(p720.bitrate == 4_000_000)
+        #expect(p720.profile == "tv")
         #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "720p · 3 Mbps").bitrate == 3_000_000)
         #expect(EmbyConvertRequest.convertQuality(forPresetLabel: "720p · 2 Mbps").bitrate == 2_000_000)
 
         let p480 = EmbyConvertRequest.convertQuality(forPresetLabel: "480p · 1.5 Mbps")
         #expect(p480.bitrate == 1_500_000)
+        #expect(p480.profile == "tv")
     }
 
-    @Test("High-bitrate presets are NOT capped — Emby honors arbitrary custom bitrates")
-    func highBitrateNotCapped() {
+    @Test("4K preset routes through profile:custom with mp4/h264/aac criteria + uncapped bitrate (#128)")
+    func fourKUsesCustomProfile() {
         let p4k = EmbyConvertRequest.convertQuality(forPresetLabel: "4K · 40 Mbps")
         #expect(p4k.quality == "custom")
-        #expect(p4k.profile == "tv")
+        // #128: custom (NOT tv) so output keeps true 4K instead of the tv profile's 1080p ceiling.
+        #expect(p4k.profile == "custom")
+        #expect(p4k.container == "mp4")
+        #expect(p4k.videoCodec == "h264")
+        #expect(p4k.audioCodec == "aac")
         #expect(p4k.bitrate == 40_000_000)
     }
 
-    @Test("An unrecognized label falls back to the keep-quality bitrate (custom/tv)")
+    @Test("createJobRequest emits the custom criteria only when supplied (#128)")
+    func customCriteriaInBody() throws {
+        // tv path: no criteria keys at all.
+        let tvBody = try createJobBody()
+        #expect(tvBody["container"] == nil)
+        #expect(tvBody["videoCodec"] == nil)
+        #expect(tvBody["audioCodec"] == nil)
+
+        // custom path: the required mp4/h264/aac triple is present (camelCase, binds live).
+        let q = EmbyConvertRequest.customFourKQuality(bitrate: 40_000_000)
+        let req = try EmbyConvertRequest.createJobRequest(
+            server: server, token: token, identity: identity,
+            userId: userId, itemId: "item-placeholder",
+            quality: q.quality, profile: q.profile, bitrate: q.bitrate,
+            name: "Title [VisionPlay abcd1234]",
+            container: q.container, videoCodec: q.videoCodec, audioCodec: q.audioCodec)
+        let data = try #require(req.httpBody)
+        let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(body["profile"] as? String == "custom")
+        #expect(body["container"] as? String == "mp4")
+        #expect(body["videoCodec"] as? String == "h264")
+        #expect(body["audioCodec"] as? String == "aac")
+        #expect(body["bitrate"] as? Int == 40_000_000)
+        #expect(body["targetId"] as? String == "originalmediafolder")
+    }
+
+    @Test("An unrecognized label falls back to the resolution-preserving custom path (#128)")
     func unknownLabelFallsBack() {
         let q = EmbyConvertRequest.convertQuality(forPresetLabel: "Mystery preset")
         #expect(q.quality == "custom")
-        #expect(q.profile == "tv")
+        #expect(q.profile == "custom")
         #expect(q.bitrate == EmbyConvertRequest.keepQualityBitrate)
     }
 }
