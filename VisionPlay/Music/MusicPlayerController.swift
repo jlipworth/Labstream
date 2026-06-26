@@ -106,6 +106,11 @@ final class MusicPlayerController {
     /// `next()`/`previous()` walk this array, NOT `queue` directly.
     @ObservationIgnored private var playOrder: [Int] = []
 
+    /// Browse-session identity that produced the current queue. Queue `MediaItem`s carry backend
+    /// ids but no explicit origin session, so every transport/queue action verifies this before it
+    /// resolves a track through the current `AppModel` (#136).
+    @ObservationIgnored private var queueBrowseSessionKey: String?
+
     /// Timeline/scrobble reporter for the CURRENT track only — recreated on every track
     /// start (it binds to one `MediaItem` at init). The outgoing reporter flushes a final
     /// `.stopped` before being replaced.
@@ -157,6 +162,7 @@ final class MusicPlayerController {
     /// plays first and the rest follow in a fresh random order.
     func play(tracks: [MediaItem], startingAt index: Int) {
         guard tracks.indices.contains(index) else { return }
+        queueBrowseSessionKey = appModel.activeBrowseSessionKey
         queue = tracks
         rebuildPlayOrder(currentFirst: index)
         startTrack(at: index)
@@ -174,6 +180,7 @@ final class MusicPlayerController {
     /// has finished (repeat off), play restarts the queue from the top — the parked
     /// at-end item can't resume with a plain `play()`.
     func togglePlayPause() {
+        guard ensureCurrentQueueSession() else { return }
         guard player.currentItem != nil else { return }
         if atQueueEnd {
             if let firstIdx = playOrder.first { startTrack(at: firstIdx) }
@@ -194,6 +201,7 @@ final class MusicPlayerController {
     /// (otherwise an AirPods tap during the movie would resume music underneath it).
     /// Call before launching any fullscreen video player. No-op when idle.
     func pauseForVideo() {
+        guard ensureCurrentQueueSession() else { return }
         guard sessionPrepared, player.currentItem != nil else { return }
         if isPlaying {
             player.pause()
@@ -218,12 +226,14 @@ final class MusicPlayerController {
     /// queue wraps to the start regardless of repeat mode (the user asked explicitly);
     /// only the AUTO advance at play-to-end honors `.off` by stopping.
     func next() {
+        guard ensureCurrentQueueSession() else { return }
         advance(auto: false)
     }
 
     /// Restart the current track if more than 3 seconds in; otherwise go to the previous
     /// track in the traversal order (or restart when already at the first).
     func previous() {
+        guard ensureCurrentQueueSession() else { return }
         guard currentIndex != nil else { return }
         if elapsedSeconds > 3 {
             seek(to: 0)
@@ -242,6 +252,7 @@ final class MusicPlayerController {
     /// where the user dropped it; `elapsedSeconds` updates eagerly so the UI doesn't snap
     /// back while the seek completes.
     func seek(to seconds: Double) {
+        guard ensureCurrentQueueSession() else { return }
         let clamped = max(0, seconds)
         let target = CMTime(seconds: clamped, preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
@@ -252,12 +263,14 @@ final class MusicPlayerController {
     /// Toggle shuffle. The current track keeps playing; only the UPCOMING traversal is
     /// reshuffled (current first), and turning shuffle off restores queue order.
     func toggleShuffle() {
+        guard ensureCurrentQueueSession() else { return }
         shuffleEnabled.toggle()
         rebuildPlayOrder(currentFirst: currentIndex ?? 0)
     }
 
     /// Cycle off → all → one → off.
     func cycleRepeatMode() {
+        guard ensureCurrentQueueSession() else { return }
         let all = RepeatMode.allCases
         guard let idx = all.firstIndex(of: repeatMode) else { return }
         repeatMode = all[(idx + 1) % all.count]
@@ -266,6 +279,7 @@ final class MusicPlayerController {
     /// Play a specific queue row (tapped in the NowPlaying queue list). With shuffle on,
     /// the upcoming order is re-randomized from the chosen track.
     func jump(to index: Int) {
+        guard ensureCurrentQueueSession() else { return }
         guard queue.indices.contains(index) else { return }
         rebuildPlayOrder(currentFirst: index)
         startTrack(at: index)
@@ -282,6 +296,10 @@ final class MusicPlayerController {
     /// them (matching the system-music expectation).
     func playNext(_ tracks: [MediaItem]) {
         guard !tracks.isEmpty else { return }
+        guard ensureCurrentQueueSession() else {
+            play(tracks: tracks, startingAt: 0)
+            return
+        }
         guard current != nil else {
             play(tracks: tracks, startingAt: 0)
             return
@@ -294,6 +312,10 @@ final class MusicPlayerController {
     /// MUSIC-DESIGN §4.3). Starts playback when nothing is loaded.
     func addToQueue(_ tracks: [MediaItem]) {
         guard !tracks.isEmpty else { return }
+        guard ensureCurrentQueueSession() else {
+            play(tracks: tracks, startingAt: 0)
+            return
+        }
         guard current != nil else {
             play(tracks: tracks, startingAt: 0)
             return
@@ -306,6 +328,7 @@ final class MusicPlayerController {
     /// failure-advance rule); removing it with nothing upcoming stops playback
     /// but keeps the remaining queue visible.
     func remove(at queueIndex: Int) {
+        guard ensureCurrentQueueSession() else { return }
         let (state, effect) = QueueMutation.remove(at: queueIndex, from: mutationState)
         switch effect {
         case .none:
@@ -328,6 +351,7 @@ final class MusicPlayerController {
     /// track. Shuffle off → the traversal becomes the new display order; shuffle
     /// on → the traversal is rebuilt (current first, rest reshuffled).
     func move(fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard ensureCurrentQueueSession() else { return }
         let state = QueueMutation.move(fromOffsets: source, toOffset: destination,
                                        in: mutationState)
         if shuffleEnabled {
@@ -341,6 +365,7 @@ final class MusicPlayerController {
 
     /// "Clear queue": drop everything except the current track.
     func clearUpcoming() {
+        guard ensureCurrentQueueSession() else { return }
         guard !queue.isEmpty else { return }
         apply(QueueMutation.clearUpcoming(in: mutationState))
     }
@@ -374,6 +399,26 @@ final class MusicPlayerController {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
+    /// Clear playback when the active browse session no longer matches the session that produced
+    /// the queue. Called both from RootView/ContentView on session changes and defensively before
+    /// transport actions, so a stale queue can never later resolve ids against a different server.
+    func stopIfBrowseSessionChanged() {
+        guard let queueBrowseSessionKey,
+              queueBrowseSessionKey != appModel.activeBrowseSessionKey else { return }
+        NSLog("MusicPlayerController: clearing music queue for browse session change")
+        stop()
+    }
+
+    private func ensureCurrentQueueSession() -> Bool {
+        guard let queueBrowseSessionKey else { return true }
+        guard queueBrowseSessionKey == appModel.activeBrowseSessionKey else {
+            NSLog("MusicPlayerController: refusing stale music queue action after browse session change")
+            stop()
+            return false
+        }
+        return true
+    }
+
     /// Tear down playback entirely: final `.stopped` report, all observers and remote-
     /// command targets removed, the player emptied, the audio session released (notifying
     /// other audio apps), and the queue cleared.
@@ -396,6 +441,7 @@ final class MusicPlayerController {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         currentArtwork = nil
+        queueBrowseSessionKey = nil
         queue = []
         playOrder = []
         currentIndex = nil
@@ -429,6 +475,7 @@ final class MusicPlayerController {
     /// `next()` (always wraps). `wrapOnEnd` is forced off for failure-driven advances so
     /// a queue where every track fails can't loop forever.
     private func advance(auto: Bool, wrapOnEnd: Bool = true) {
+        guard ensureCurrentQueueSession() else { return }
         guard let currentIndex,
               let pos = playOrder.firstIndex(of: currentIndex) else { return }
         let nextPos = pos + 1
@@ -458,6 +505,7 @@ final class MusicPlayerController {
     /// + observers. First call also activates the audio session, installs the player-
     /// level observers, and registers the remote commands.
     private func startTrack(at index: Int) {
+        guard ensureCurrentQueueSession() else { return }
         guard queue.indices.contains(index) else { return }
         let track = queue[index]
 
@@ -597,6 +645,7 @@ final class MusicPlayerController {
                                                                queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.ensureCurrentQueueSession() else { return }
                 let state: TimelineRequest.State =
                     self.player.timeControlStatus == .paused ? .paused : .playing
                 self.reporter?.report(state: state, force: false)
@@ -647,6 +696,7 @@ final class MusicPlayerController {
     /// same reporter); otherwise scrobble and auto-advance (`.all` wraps at the queue
     /// end, `.off` stops there with the queue kept visible).
     private func handleTrackEnded() {
+        guard ensureCurrentQueueSession() else { return }
         if repeatMode == .one {
             reporter?.scrobble()
             // Fresh reporter for the replay: scrobbling is one-shot per reporter, so
@@ -669,6 +719,7 @@ final class MusicPlayerController {
     /// where every track fails terminates instead of looping; the message stays up until
     /// a later track reaches `.readyToPlay`.
     private func handleTrackFailure(_ error: Error?) {
+        guard ensureCurrentQueueSession() else { return }
         let title = current?.title ?? "track"
         AppDiagnostics.record(.music, "music.item_failed", fields: [
             "error": .error(error),
