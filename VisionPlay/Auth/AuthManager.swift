@@ -417,6 +417,10 @@ final class AuthManager {
             guard activeJellyfinCredentialAttemptID == attemptID else { return }
             activeJellyfinCredentialAttemptID = nil
             state = .failed("Jellyfin did not return a usable session.")
+        } catch JellyfinAuthError.secureStorageFailed {
+            guard activeJellyfinCredentialAttemptID == attemptID else { return }
+            activeJellyfinCredentialAttemptID = nil
+            state = .failed("Couldn’t securely save the Jellyfin session.")
         } catch {
             guard activeJellyfinCredentialAttemptID == attemptID else { return }
             activeJellyfinCredentialAttemptID = nil
@@ -517,6 +521,11 @@ final class AuthManager {
                     activeJellyfinQuickConnectAttemptID = nil
                     pollTask = nil
                     state = .failed("Jellyfin did not return a usable session. Use username and password instead.")
+                } catch JellyfinAuthError.secureStorageFailed {
+                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+                    activeJellyfinQuickConnectAttemptID = nil
+                    pollTask = nil
+                    state = .failed("Couldn’t securely save the Jellyfin session.")
                 } catch {
                     guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
                     activeJellyfinQuickConnectAttemptID = nil
@@ -561,10 +570,12 @@ final class AuthManager {
               let userID = result.user?.id, !userID.isEmpty else {
             throw JellyfinAuthError.missingCredentials
         }
-        keychain.jellyfinServerURLString = server.absoluteString
-        keychain.jellyfinAccessToken = token
-        keychain.jellyfinUserID = userID
-        keychain.jellyfinServerID = result.serverId
+        guard keychain.saveJellyfinSession(serverURLString: server.absoluteString,
+                                            accessToken: token,
+                                            userID: userID,
+                                            serverID: result.serverId) else {
+            throw JellyfinAuthError.secureStorageFailed
+        }
         appModel.jellyfinServerBaseURL = server
         appModel.jellyfinAccessToken = token
         appModel.jellyfinUserID = userID
@@ -613,6 +624,10 @@ final class AuthManager {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
             state = .failed("Emby did not return a usable session.")
+        } catch EmbyAuthError.secureStorageFailed {
+            guard activeEmbyCredentialAttemptID == attemptID else { return }
+            activeEmbyCredentialAttemptID = nil
+            state = .failed("Couldn’t securely save the Emby session.")
         } catch {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
@@ -625,17 +640,19 @@ final class AuthManager {
               let userID = result.user?.id, !userID.isEmpty else {
             throw EmbyAuthError.missingCredentials
         }
-        persistEmbySession(server: server, token: token, userID: userID, serverID: result.serverId)
+        try persistEmbySession(server: server, token: token, userID: userID, serverID: result.serverId)
     }
 
     /// Persist a resolved Emby server session to keychain + app model. Shared by the
     /// username/password path and the Emby Connect PIN path — once Connect exchange yields a
     /// normal per-server token, the saved session is identical, so restore/refresh is shared.
-    private func persistEmbySession(server: URL, token: String, userID: String, serverID: String?) {
-        keychain.embyServerURLString = server.absoluteString
-        keychain.embyAccessToken = token
-        keychain.embyUserID = userID
-        keychain.embyServerID = serverID
+    private func persistEmbySession(server: URL, token: String, userID: String, serverID: String?) throws {
+        guard keychain.saveEmbySession(serverURLString: server.absoluteString,
+                                       accessToken: token,
+                                       userID: userID,
+                                       serverID: serverID) else {
+            throw EmbyAuthError.secureStorageFailed
+        }
         appModel.embyServerBaseURL = server
         appModel.embyAccessToken = token
         appModel.embyUserID = userID
@@ -803,7 +820,7 @@ final class AuthManager {
                 throw EmbyAuthError.missingCredentials
             }
             guard activeEmbyConnectAttemptID == attemptID else { return }
-            persistEmbySession(server: base, token: token, userID: userID, serverID: expectedSystemID)
+            try persistEmbySession(server: base, token: token, userID: userID, serverID: expectedSystemID)
             activeEmbyConnectAttemptID = nil
             pendingEmbyConnect = nil
             pollTask = nil
@@ -812,6 +829,8 @@ final class AuthManager {
             failEmbyConnect(attemptID, "Emby server exchange failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
             failEmbyConnect(attemptID, "The Emby server did not return a usable session.")
+        } catch EmbyAuthError.secureStorageFailed {
+            failEmbyConnect(attemptID, "Couldn’t securely save the Emby session.")
         } catch {
             failEmbyConnect(attemptID, "Couldn’t complete Emby sign-in with the selected server.")
         }
@@ -1207,12 +1226,14 @@ private enum JellyfinAuthError: Error {
     case quickConnectDisabled
     case http(Int)
     case missingCredentials
+    case secureStorageFailed
 }
 
 private enum EmbyAuthError: Error {
     case unauthorized
     case http(Int)
     case missingCredentials
+    case secureStorageFailed
 }
 
 private extension MediaBackendKind {

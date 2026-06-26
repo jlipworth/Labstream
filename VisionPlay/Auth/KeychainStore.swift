@@ -1,4 +1,5 @@
 import Foundation
+import PMSKit
 import Security
 
 /// Minimal Keychain wrapper for the two long-lived secrets the app persists:
@@ -24,9 +25,15 @@ final class KeychainStore {
     static let embyServerIDKey = "embyServerID"
 
     private let service: String
+    private let fallbackPolicy: SecretFileFallbackPolicy
+    private let fileManager: FileManager
 
-    init(service: String = "com.visionplay.app") {
+    init(service: String = "com.visionplay.app",
+         fallbackPolicy: SecretFileFallbackPolicy = .current,
+         fileManager: FileManager = .default) {
         self.service = service
+        self.fallbackPolicy = fallbackPolicy
+        self.fileManager = fileManager
     }
 
     /// Insert or update the value for `account`.
@@ -44,21 +51,19 @@ final class KeychainStore {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
 
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var addQuery = query
-            addQuery[kSecValueData as String] = data
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            status = SecItemAdd(addQuery as CFDictionary, nil)
-        }
-
+        let status = saveToKeychain(data, query: query, attributes: attributes)
         if status == errSecSuccess {
             // Drop any stale fallback so it can't shadow the real value later.
-            try? FileManager.default.removeItem(at: fallbackURL(for: account))
+            cleanupFallback(for: account)
             return true
         }
 
-        NSLog("%@", "KeychainStore: SecItem save failed for \(account) (OSStatus \(status)); using file fallback")
+        guard fallbackPolicy.allowsSecretFileFallback else {
+            NSLog("%@", "KeychainStore: SecItem save failed for \(account) (OSStatus \(status)); refusing file fallback")
+            return false
+        }
+
+        NSLog("%@", "KeychainStore: SecItem save failed for \(account) (OSStatus \(status)); using DEBUG simulator file fallback")
         return saveFallback(data, for: account)
     }
 
@@ -76,9 +81,14 @@ final class KeychainStore {
         if status == errSecSuccess,
            let data = result as? Data,
            let value = String(data: data, encoding: .utf8) {
+            cleanupFallback(for: account)
             return value
         }
-        return readFallback(account)
+
+        if status != errSecItemNotFound, !fallbackPolicy.allowsSecretFileFallback {
+            NSLog("%@", "KeychainStore: SecItem read failed for \(account) (OSStatus \(status))")
+        }
+        return readFallbackForMigrationOrDevelopment(account, keychainStatus: status)
     }
 
     /// Remove the value for `account` (no-op if absent).
@@ -90,26 +100,65 @@ final class KeychainStore {
             kSecAttrAccount as String: account,
         ]
         let status = SecItemDelete(query as CFDictionary)
-        try? FileManager.default.removeItem(at: fallbackURL(for: account))
+        cleanupFallback(for: account)
         return status == errSecSuccess || status == errSecItemNotFound
     }
 
     // MARK: - File fallback (unsigned Simulator / missing-entitlement only)
 
-    private func fallbackURL(for account: String) -> URL {
-        let dir = FileManager.default
+    private func saveToKeychain(_ data: Data,
+                                query: [String: Any],
+                                attributes: [String: Any]) -> OSStatus {
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+        return status
+    }
+
+    private func saveFallbackDataToKeychain(_ data: Data, for account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let status = saveToKeychain(data, query: query, attributes: attributes)
+        if status == errSecSuccess {
+            cleanupFallback(for: account)
+            return true
+        }
+        NSLog("%@", "KeychainStore: fallback migration failed for \(account) (OSStatus \(status))")
+        return false
+    }
+
+    private func fallbackDirectory() -> URL {
+        fileManager
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VisionPlaySecrets", isDirectory: true)
-        return dir.appendingPathComponent("\(service).\(account)")
+    }
+
+    private func fallbackURL(for account: String) -> URL {
+        fallbackDirectory().appendingPathComponent("\(service).\(account)")
     }
 
     @discardableResult
     private func saveFallback(_ data: Data, for account: String) -> Bool {
         let url = fallbackURL(for: account)
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true)
-            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            try fileManager.createDirectory(at: url.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+            try CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+                to: url.deletingLastPathComponent(),
+                protection: CredentialArtifactStorage.credentialFallbackProtection,
+                fileManager: fileManager)
+            try CredentialArtifactStorage.writeCredentialFallback(data, to: url, fileManager: fileManager)
             return true
         } catch {
             NSLog("%@", "KeychainStore: file fallback save failed for \(account): \(error)")
@@ -117,9 +166,35 @@ final class KeychainStore {
         }
     }
 
-    private func readFallback(_ account: String) -> String? {
-        guard let data = try? Data(contentsOf: fallbackURL(for: account)) else { return nil }
-        return String(data: data, encoding: .utf8)
+    private func readFallbackForMigrationOrDevelopment(_ account: String,
+                                                       keychainStatus: OSStatus) -> String? {
+        let canUseDevelopmentFallback = fallbackPolicy.allowsSecretFileFallback
+        let canAttemptMigration = keychainStatus == errSecItemNotFound
+        guard canUseDevelopmentFallback || canAttemptMigration else { return nil }
+
+        let url = fallbackURL(for: account)
+        guard let data = try? Data(contentsOf: url),
+              let value = String(data: data, encoding: .utf8) else { return nil }
+
+        // Harden any legacy fallback file before deciding whether it may be used.
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: url,
+            protection: CredentialArtifactStorage.credentialFallbackProtection,
+            fileManager: fileManager)
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: url.deletingLastPathComponent(),
+            protection: CredentialArtifactStorage.credentialFallbackProtection,
+            fileManager: fileManager)
+
+        if canAttemptMigration, saveFallbackDataToKeychain(data, for: account) {
+            return value
+        }
+
+        return canUseDevelopmentFallback ? value : nil
+    }
+
+    private func cleanupFallback(for account: String) {
+        try? fileManager.removeItem(at: fallbackURL(for: account))
     }
 
     // MARK: Convenience for the two well-known keys
@@ -190,6 +265,56 @@ final class KeychainStore {
     private func setOptional(_ value: String?, for key: String) {
         if let value, !value.isEmpty { save(value, for: key) }
         else { delete(key) }
+    }
+
+    @discardableResult
+    func saveJellyfinSession(serverURLString: String,
+                             accessToken: String,
+                             userID: String,
+                             serverID: String?) -> Bool {
+        saveCredentialSet(
+            required: [
+                (Self.jellyfinServerURLKey, serverURLString),
+                (Self.jellyfinAccessTokenKey, accessToken),
+                (Self.jellyfinUserIDKey, userID),
+            ],
+            optional: [(Self.jellyfinServerIDKey, serverID)])
+    }
+
+    @discardableResult
+    func saveEmbySession(serverURLString: String,
+                         accessToken: String,
+                         userID: String,
+                         serverID: String?) -> Bool {
+        saveCredentialSet(
+            required: [
+                (Self.embyServerURLKey, serverURLString),
+                (Self.embyAccessTokenKey, accessToken),
+                (Self.embyUserIDKey, userID),
+            ],
+            optional: [(Self.embyServerIDKey, serverID)])
+    }
+
+    private func saveCredentialSet(required: [(String, String)],
+                                   optional: [(String, String?)]) -> Bool {
+        let allKeys = required.map(\.0) + optional.map(\.0)
+        for (key, value) in required {
+            guard save(value, for: key) else {
+                allKeys.forEach { delete($0) }
+                return false
+            }
+        }
+        for (key, value) in optional {
+            if let value, !value.isEmpty {
+                guard save(value, for: key) else {
+                    allKeys.forEach { delete($0) }
+                    return false
+                }
+            } else {
+                delete(key)
+            }
+        }
+        return true
     }
 
     /// Returns the persisted client identifier, generating + storing one on first
