@@ -270,7 +270,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				VISIONPLAY_BUILD_DATE_UTC = unknown;
 				VISIONPLAY_BUILD_SLUG = dev;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay;
@@ -302,7 +302,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.2.0;
+				MARKETING_VERSION = 1.2.1;
 				VISIONPLAY_BUILD_DATE_UTC = unknown;
 				VISIONPLAY_BUILD_SLUG = dev;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.VisionPlay;
