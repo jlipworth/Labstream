@@ -2191,8 +2191,12 @@ final class PlaybackController {
         load(playerItem, resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
     }
 
-    private func playableRemoteStreamURL(_ url: URL, resumeOffsetMs: Int?) async -> URL {
-        guard remotePlayMethod == .transcode,
+    private func playableRemoteStreamURL(_ url: URL,
+                                         resumeOffsetMs: Int?,
+                                         playMethod: JellyfinPlayMethod?,
+                                         generation: Int) async -> URL? {
+        guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        guard playMethod == .transcode,
               let resumeOffsetMs, resumeOffsetMs > 0,
               let primedURL = jellyfinHLSURL(url, startTimeTicks: resumeOffsetMs * 10_000)
         else { return url }
@@ -2202,6 +2206,10 @@ final class PlaybackController {
                                       injectedPlaylistStartTimeOffsetSeconds: Double(resumeOffsetMs) / 1000.0)
         do {
             let handle = try await proxy.standUpLoopback(forStream: primedURL)
+            guard !Task.isCancelled, generation == playbackGeneration else {
+                await proxy.stop(generation: handle.generation)
+                return nil
+            }
             if let oldProxy = jellyfinHLSProxy, let oldGeneration = jellyfinHLSProxyGeneration {
                 await oldProxy.stop(generation: oldGeneration)
             }
@@ -2213,6 +2221,9 @@ final class PlaybackController {
             ])
             return handle.localURL
         } catch {
+            guard !(error is CancellationError), !Task.isCancelled, generation == playbackGeneration else {
+                return nil
+            }
             recordPlaybackDiagnostic("playback.remote_hls_proxy_failed", fields: [
                 "target": .millisecondsBucket(resumeOffsetMs),
                 "error": .error(error),
@@ -3780,6 +3791,16 @@ final class PlaybackController {
                     reopened.onStop?()
                     return
                 }
+                let nextPlayMethod = reopened.playMethod ?? self.remotePlayMethod
+                guard let playableURL = await self.playableRemoteStreamURL(reopened.url,
+                                                                           resumeOffsetMs: offsetMs,
+                                                                           playMethod: nextPlayMethod,
+                                                                           generation: generation),
+                      !Task.isCancelled,
+                      generation == self.playbackGeneration else {
+                    reopened.onStop?()
+                    return
+                }
                 self.remoteHTTPHeaders = reopened.headers
                 self.remotePlaySessionId = reopened.playSessionId
                 if let sourceMetadata = reopened.sourceMetadata {
@@ -3790,8 +3811,6 @@ final class PlaybackController {
                 }
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false
-                let playableURL = await self.playableRemoteStreamURL(reopened.url,
-                                                                      resumeOffsetMs: offsetMs)
                 self.loadRemoteStream(playableURL, headers: reopened.headers, resumeOffsetMs: offsetMs)
                 let samePlaySession = priorPlaySessionId != nil && priorPlaySessionId == reopened.playSessionId
                 if samePlaySession {

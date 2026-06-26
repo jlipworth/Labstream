@@ -620,9 +620,12 @@ final class MusicPlayerController {
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: playerItem,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self, weak playerItem] _ in
             Task { @MainActor in
-                self?.handleTrackEnded()
+                guard let self,
+                      let endedItem = playerItem,
+                      endedItem === self.player.currentItem else { return }
+                self.handleTrackEnded()
             }
         }
     }
@@ -821,56 +824,103 @@ final class MusicPlayerController {
     // MARK: - Remote commands (MPRemoteCommandCenter)
 
     /// Hook up the system transport controls (registered once, on first play; targets
-    /// removed in `stop()`). Handlers are delivered on the main thread, so
-    /// `MainActor.assumeIsolated` is the same pattern as the diagnostics timer in
-    /// `PlaybackController`.
+    /// removed in `stop()`). MediaPlayer normally calls these on the main thread, where
+    /// we can return the precise status synchronously. If the system ever delivers a
+    /// command off-main, schedule the mutation onto the main actor instead of trapping.
     private func registerRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
-                if !self.isPlaying { self.togglePlayPause() }
-                return .success
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
+                    guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
+                    if !self.isPlaying { self.togglePlayPause() }
+                    return .success
+                }
             }
+            Task { @MainActor [weak self] in
+                guard let self, self.player.currentItem != nil else { return }
+                if !self.isPlaying { self.togglePlayPause() }
+            }
+            return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
-                if self.isPlaying { self.togglePlayPause() }
-                return .success
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
+                    guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
+                    if self.isPlaying { self.togglePlayPause() }
+                    return .success
+                }
             }
+            Task { @MainActor [weak self] in
+                guard let self, self.player.currentItem != nil else { return }
+                if self.isPlaying { self.togglePlayPause() }
+            }
+            return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
-                self.togglePlayPause()
-                return .success
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
+                    guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
+                    self.togglePlayPause()
+                    return .success
+                }
             }
+            Task { @MainActor [weak self] in
+                guard let self, self.player.currentItem != nil else { return }
+                self.togglePlayPause()
+            }
+            return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                guard let self, self.current != nil else { return .noActionableNowPlayingItem }
-                self.next()
-                return .success
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
+                    guard let self, self.current != nil else { return .noActionableNowPlayingItem }
+                    self.next()
+                    return .success
+                }
             }
+            Task { @MainActor [weak self] in
+                guard let self, self.current != nil else { return }
+                self.next()
+            }
+            return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                guard let self, self.current != nil else { return .noActionableNowPlayingItem }
-                self.previous()
-                return .success
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
+                    guard let self, self.current != nil else { return .noActionableNowPlayingItem }
+                    self.previous()
+                    return .success
+                }
             }
+            Task { @MainActor [weak self] in
+                guard let self, self.current != nil else { return }
+                self.previous()
+            }
+            return .success
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                guard let self, self.player.currentItem != nil,
-                      let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
-                    return .commandFailed
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
+                    guard let self, self.player.currentItem != nil,
+                          let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                        return .commandFailed
+                    }
+                    self.seek(to: positionEvent.positionTime)
+                    return .success
                 }
-                self.seek(to: positionEvent.positionTime)
-                return .success
             }
+            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let positionTime = positionEvent.positionTime
+            Task { @MainActor [weak self] in
+                guard let self, self.player.currentItem != nil,
+                      !Task.isCancelled else { return }
+                self.seek(to: positionTime)
+            }
+            return .success
         }
     }
 
