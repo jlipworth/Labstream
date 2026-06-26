@@ -238,7 +238,7 @@ final class AuthManager {
                                                        token: token,
                                                        identity: jellyfinIdentity,
                                                        userId: userID)
-        let (_, response) = try await Self.jellyfinSession.data(for: req)
+        let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
         guard let http = response as? HTTPURLResponse else { return 200 }
         return http.statusCode
     }
@@ -267,7 +267,7 @@ final class AuthManager {
                                                        token: token,
                                                        identity: embyIdentity,
                                                        userId: userID)
-            let (_, response) = try await Self.jellyfinSession.data(for: req)
+            let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
                 case 200..<300: break
@@ -389,7 +389,7 @@ final class AuthManager {
                                                                     username: username,
                                                                     password: password,
                                                                     identity: jellyfinIdentity)
-            let (data, response) = try await Self.jellyfinSession.data(for: request)
+            let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
                 case 200..<300:
@@ -596,7 +596,7 @@ final class AuthManager {
                                                                  username: username,
                                                                  password: password,
                                                                  identity: embyIdentity)
-            let (data, response) = try await Self.jellyfinSession.data(for: request)
+            let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
                 case 200..<300:
@@ -852,7 +852,7 @@ final class AuthManager {
         if let localBase, await embyServerIdentityMatches(localBase, expectedSystemID: expectedSystemID, session: Self.probeSession) {
             return localBase
         }
-        if let wanBase, await embyServerIdentityMatches(wanBase, expectedSystemID: expectedSystemID, session: Self.jellyfinSession) {
+        if let wanBase, await embyServerIdentityMatches(wanBase, expectedSystemID: expectedSystemID, session: Self.mediaBrowserAuthSession) {
             return wanBase
         }
         return nil
@@ -895,7 +895,7 @@ final class AuthManager {
     }
 
     private func embyConnectData(for request: URLRequest) async throws -> Data {
-        let (data, response) = try await Self.jellyfinSession.data(for: request)
+        let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
         if let http = response as? HTTPURLResponse {
             switch http.statusCode {
             case 200..<300: break
@@ -907,7 +907,7 @@ final class AuthManager {
     }
 
     private func jellyfinData(for request: URLRequest, disabledMeansUnauthorized: Bool) async throws -> Data {
-        let (data, response) = try await Self.jellyfinSession.data(for: request)
+        let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
         if let http = response as? HTTPURLResponse {
             switch http.statusCode {
             case 200..<300:
@@ -1205,7 +1205,7 @@ final class AuthManager {
         appModel.identity.emby
     }
 
-    private static let jellyfinSession: URLSession = {
+    private static let mediaBrowserAuthSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
         cfg.timeoutIntervalForResource = 30
