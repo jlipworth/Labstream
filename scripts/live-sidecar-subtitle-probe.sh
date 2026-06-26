@@ -30,4 +30,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LiveSidecarSubtitleProbe 2>&1 | grep -E '^>>> SIDECAR|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> SIDECAR|error:|Test run' swift test --filter LiveSidecarSubtitleProbe

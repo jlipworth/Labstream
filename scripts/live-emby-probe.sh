@@ -33,4 +33,4 @@ set +a
 
 cd PMSKit
 # --filter matches the test type; grep keeps output focused on the >>> LIVE dump lines.
-swift test --filter LiveEmbyProbe 2>&1 | grep -E '^>>> LIVE|error:|warning: .*Live|Test run' || true
+../scripts/live-test-filter.sh '^>>> LIVE|error:|warning: .*Live|Test run' swift test --filter LiveEmbyProbe

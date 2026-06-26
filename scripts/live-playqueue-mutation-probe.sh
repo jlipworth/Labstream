@@ -30,4 +30,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LivePlayQueueMutationProbe 2>&1 | grep -E '^>>> PLAYQUEUE|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> PLAYQUEUE|error:|Test run' swift test --filter LivePlayQueueMutationProbe

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PMSKit
 
 /// Shared opt-in config for the issue-#75 Plex live probes (subtitle-burn, browse, timeline).
@@ -66,5 +69,27 @@ struct LiveProbeConfig {
     /// Instance convenience for the #75 probes that hold a `LiveProbeConfig`.
     func redact(_ string: String) -> String {
         Self.redact(string, token: token, server: server)
+    }
+}
+
+/// Shared transport for opt-in live probes. It deliberately returns only response status and
+/// bytes so probe logs can stay shape-only and avoid printing request URLs/headers by accident.
+struct LiveProbeTransport {
+    func send(_ request: URLRequest) async throws -> (data: Data, status: Int) {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        return (data, (response as? HTTPURLResponse)?.statusCode ?? -1)
+    }
+}
+
+/// Shared safe formatting for live probes. Any raw server/user/media labels should pass through
+/// here before printing to public terminal logs.
+enum LiveProbeLogger {
+    static func serverNameSummary(_ serverName: String?) -> String {
+        guard let serverName, !serverName.isEmpty else { return "nil" }
+        return "set(sig=\(DiagnosticRedactor.stableIdentifier(for: serverName)))"
+    }
+
+    static func idPresence(_ value: String?) -> String {
+        (value?.isEmpty == false) ? "<set>" : "nil"
     }
 }
