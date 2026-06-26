@@ -104,6 +104,7 @@ struct JellyfinBrowseService {
     func albumArtistsPage(parentId: String?,
                           startIndex: Int? = nil,
                           limit: Int? = nil,
+                          nameStartsWith: String? = nil,
                           sortBy: String = "SortName",
                           sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
@@ -114,6 +115,7 @@ struct JellyfinBrowseService {
                                                           parentId: parentId,
                                                           startIndex: startIndex,
                                                           limit: limit,
+                                                          nameStartsWith: nameStartsWith,
                                                           sortBy: sortBy,
                                                           sortOrder: sortOrder)
         let response = try await send(req, as: JellyfinItemsResponse.self)

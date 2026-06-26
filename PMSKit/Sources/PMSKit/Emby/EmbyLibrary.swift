@@ -69,6 +69,7 @@ public enum EmbyLibrary {
                                            parentId: String?,
                                            startIndex: Int? = nil,
                                            limit: Int? = nil,
+                                           nameStartsWith: String? = nil,
                                            sortBy: String = "SortName",
                                            sortOrder: String = "Ascending",
                                            fields: String = gridItemFields) throws -> URLRequest {
@@ -84,6 +85,11 @@ public enum EmbyLibrary {
         if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
         if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
         if let limit { query.append(URLQueryItem(name: "Limit", value: String(limit))) }
+        // The A–Z rail probes each letter's album-artist count with a `NameStartsWith=X`,
+        // `Limit=1` request and reads the envelope's `TotalRecordCount` (#111).
+        if let nameStartsWith, !nameStartsWith.isEmpty {
+            query.append(URLQueryItem(name: "NameStartsWith", value: nameStartsWith))
+        }
         let url = try url(server: server, path: "/Artists/AlbumArtists", queryItems: query)
         return get(url: url, token: token, identity: identity, userId: userId)
     }

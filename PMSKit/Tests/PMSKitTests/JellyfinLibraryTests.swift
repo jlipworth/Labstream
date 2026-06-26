@@ -126,6 +126,24 @@ struct JellyfinLibraryTests {
         #expect(query["limit"] == "60")
         #expect(query["recursive"] == "true")
         #expect(query["enableImages"] == "true")
+        // No letter probe → no NameStartsWith on the plain page request.
+        #expect(query["nameStartsWith"] == nil)
+    }
+
+    @Test func albumArtistsRequestEmitsNameStartsWithForRailProbe() throws {
+        // The Artists A–Z rail probes each letter's count with `NameStartsWith=X`,
+        // `Limit=1` and reads `TotalRecordCount` (#111).
+        let request = try JellyfinLibrary.albumArtistsRequest(server: server,
+                                                              token: "token-abc",
+                                                              identity: identity,
+                                                              userId: "user-1",
+                                                              parentId: "music-lib",
+                                                              limit: 1,
+                                                              nameStartsWith: "B")
+        let query = try queryMap(request)
+        #expect(query["nameStartsWith"] == "B")
+        #expect(query["limit"] == "1")
+        #expect(query["parentId"] == "music-lib")
     }
 
     @Test func playlistItemsRequestPreservesPlaylistOrder() throws {

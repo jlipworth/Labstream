@@ -69,6 +69,23 @@ struct EmbyLibraryTests {
         #expect(q["Limit"] == "60")
         #expect(q["Recursive"] == "true")
         #expect(q["EnableImages"] == "true")
+        #expect(q["NameStartsWith"] == nil)
+    }
+
+    @Test func albumArtistsRequestEmitsNameStartsWithForRailProbe() throws {
+        // The Artists A–Z rail probes each letter's count with `NameStartsWith=X`,
+        // `Limit=1` and reads `TotalRecordCount` (#111).
+        let request = try EmbyLibrary.albumArtistsRequest(server: server,
+                                                          token: "token-abc",
+                                                          identity: identity,
+                                                          userId: "user-9",
+                                                          parentId: "music-lib",
+                                                          limit: 1,
+                                                          nameStartsWith: "B")
+        let q = try query(request)
+        #expect(q["NameStartsWith"] == "B")
+        #expect(q["Limit"] == "1")
+        #expect(q["ParentId"] == "music-lib")
     }
 
     @Test func playlistItemsRequestPreservesPlaylistOrder() throws {
