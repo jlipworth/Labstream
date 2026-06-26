@@ -1,14 +1,14 @@
 import AppIntents
 import PMSKit
 
-/// An App Intents entity wrapping one Plex library item, identified by its
+/// An App Intents entity wrapping one library item, identified by its
 /// `ratingKey` (issue #24). This is what shows up as the "Title" parameter in
 /// Shortcuts and in "Play <title> on VisionPlay" Siri phrases.
 ///
 /// Deliberately a snapshot of display fields only — intents re-fetch authoritative
 /// metadata by ratingKey at perform time, so a stale snapshot can't mis-play.
 struct MediaItemEntity: AppEntity {
-    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Plex Item")
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Media Item")
     static let defaultQuery = MediaItemEntityQuery()
 
     /// The Plex `ratingKey` — the app's universal handle for an item.
@@ -59,6 +59,7 @@ struct MediaItemEntity: AppEntity {
 struct MediaItemEntityQuery: EntityStringQuery {
     @MainActor
     func entities(for identifiers: [String]) async throws -> [MediaItemEntity] {
+        guard PlaybackPreferences.systemMediaSuggestionsEnabled() else { return [] }
         guard await SystemEntryRouter.shared.ensureBrowseReady(),
               let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         var found: [MediaItemEntity] = []
@@ -75,6 +76,7 @@ struct MediaItemEntityQuery: EntityStringQuery {
 
     @MainActor
     func entities(matching string: String) async throws -> [MediaItemEntity] {
+        guard PlaybackPreferences.systemMediaSuggestionsEnabled() else { return [] }
         guard await SystemEntryRouter.shared.ensureBrowseReady(),
               let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         let req = BrowseAPI.search(server: ctx.server, token: ctx.token,
@@ -93,6 +95,7 @@ struct MediaItemEntityQuery: EntityStringQuery {
     /// someone is most likely to ask Siri to play.
     @MainActor
     func suggestedEntities() async throws -> [MediaItemEntity] {
+        guard PlaybackPreferences.systemMediaSuggestionsEnabled() else { return [] }
         guard await SystemEntryRouter.shared.ensureBrowseReady(),
               let ctx = SystemEntryRouter.shared.browseContext else { return [] }
         let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)

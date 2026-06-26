@@ -5,7 +5,7 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
-A personal-use, native **visionOS (Apple Vision Pro)** media client for Plex and Jellyfin. It combines
+A personal-use, native **visionOS (Apple Vision Pro)** media client for Plex, Jellyfin, and Emby. It combines
 server-aware streaming quality control, custom Apple Vision Pro cinema playback, and offline downloads
 that choose between raw originals and compatible server-rendered copies.
 
@@ -15,7 +15,7 @@ that choose between raw originals and compatible server-rendered copies.
 
 ## What this app does
 
-- **Sign-in** via Plex PIN OAuth or Jellyfin credentials, with secrets stored in Keychain
+- **Sign-in** via Plex PIN OAuth, Jellyfin credentials, or Emby Connect/manual Emby credentials, with secrets stored in Keychain
 - **Browse + search** Home hubs, libraries, and a search surface
 - **Server-aware playback** — Direct Play / Maximum attempts copy/direct paths where viable; explicit
   quality rungs request capped server streams
@@ -114,7 +114,7 @@ gotchas worth knowing before changing the player or transcode code. Current arch
 [`diagnostics/privacy`](docs/DIAGNOSTICS-PRIVACY.md), [`system integration`](docs/SYSTEM-INTEGRATION.md),
 and [`testing`](docs/TESTING-STRATEGY.md).
 
-On first launch, choose Plex or Jellyfin and sign in to your server. Reinstalling wipes the app
+On first launch, choose Plex, Jellyfin, or Emby and sign in to your server. Reinstalling wipes the app
 container, so a re-login is required after a fresh install.
 
 ## Docs

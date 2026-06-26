@@ -45,6 +45,7 @@ struct SettingsView: View {
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
     @AppStorage(PlaybackPreferences.Keys.prioritizeQuickDownloads) private var prioritizeQuickDownloads = PlaybackPreferences.defaultPrioritizeQuickDownloads
+    @AppStorage(PlaybackPreferences.Keys.systemMediaSuggestionsEnabled) private var systemMediaSuggestionsEnabled = PlaybackPreferences.defaultSystemMediaSuggestionsEnabled
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
     @AppStorage(AppDiagnostics.enabledDefaultsKey) private var diagnosticLoggingEnabled = false
     @AppStorage(PlaybackPreferences.Keys.preferredAudioLanguage) private var preferredAudioLanguage = ""
@@ -158,6 +159,22 @@ struct SettingsView: View {
                 Label("Adaptive Bitrate", systemImage: "arrow.up.arrow.down.circle")
             }
 
+            Toggle(isOn: Binding(
+                get: { systemMediaSuggestionsEnabled },
+                set: { enabled in
+                    systemMediaSuggestionsEnabled = enabled
+                    if !enabled {
+                        SpotlightIndexer.deleteAll { ok in
+                            AppDiagnostics.record(.settingsUI, "system_media_suggestions.disabled", fields: [
+                                "spotlight_delete_accepted": .bool(ok),
+                            ])
+                        }
+                    }
+                    VisionPlayShortcuts.updateAppShortcutParameters()
+                })) {
+                    Label("Show Media in Spotlight & Siri", systemImage: "magnifyingglass.circle")
+                }
+
             Picker(selection: $preferredAudioLanguage) {
                 ForEach(PlaybackLanguageOption.common) { option in
                     Text(option.label).tag(option.id)
@@ -232,11 +249,11 @@ struct SettingsView: View {
         case .plex:
             let subtitleMode = SubtitleAutoSelectMode(rawValue: subtitleAutoSelectModeRaw) ?? .manual
             let burnMode = SubtitleBurnMode(rawValue: subtitleBurnModeRaw) ?? .automatic
-            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. Adaptive Bitrate may reopen the stream at a lower or higher capped quality after sustained stalls or healthy playback. \(subtitleMode.help) \(burnMode.help)"
+            return active + " Home/Local applies when the selected Plex connection is advertised as local; Internet/Remote applies otherwise. These are maximum/default caps, not a Direct Play guarantee. Adaptive Bitrate may reopen the stream at a lower or higher capped quality after sustained stalls or healthy playback. Spotlight & Siri suggestions can expose browsed media titles to system surfaces; turn them off to stop new indexing and clear VisionPlay's Spotlight index. \(subtitleMode.help) \(burnMode.help)"
         case .jellyfin:
-            return active + " Jellyfin currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback. Skip modes are honored when marker data exists."
+            return active + " Jellyfin currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback. Spotlight & Siri suggestions can expose browsed media titles to system surfaces; turn them off to stop new indexing and clear VisionPlay's Spotlight index. Skip modes are honored when marker data exists."
         case .emby:
-            return active + " Emby currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback."
+            return active + " Emby currently uses the Internet/Remote cap. Adaptive Bitrate may reopen transcoded streams at a lower or higher capped quality after sustained stalls or healthy playback. Spotlight & Siri suggestions can expose browsed media titles to system surfaces; turn them off to stop new indexing and clear VisionPlay's Spotlight index."
         }
     }
 

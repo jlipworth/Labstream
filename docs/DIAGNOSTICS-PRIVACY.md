@@ -4,11 +4,13 @@ VisionPlay diagnostics are for user-initiated debugging, not analytics.
 
 ## Contract
 
-- Diagnostic logging is off by default.
+- Diagnostic event logging is off by default.
 - When enabled, events stay in a bounded local ring buffer.
 - Reports are copied/exported only when the user taps the copy action.
 - No diagnostic report is uploaded by the app.
 - Reports must omit or redact tokens, client identifiers, hostnames/IP addresses, full URLs, usernames, library paths, filenames, and media titles.
+- Passive MetricKit crash/hang summaries are a separate local-only channel: visionOS may deliver them after a bad run, VisionPlay stores only a small bounded list of redacted summaries, and they surface only in a user-previewed/copied/exported report.
+- Free-form feedback prose is best-effort scrubbed and previewed, but a bare media title or personal detail can look like ordinary text. UI and docs must tell the user to review/edit the preview before sharing.
 
 ## Typed fields
 
@@ -32,9 +34,10 @@ The report may include:
 - connection scheme, not host
 - selected quality settings
 - recent playback snapshot when present
-- recent redacted event summaries
+- passive redacted MetricKit crash/hang summaries when present
+- recent redacted event summaries when diagnostic event logging was enabled
 
-It must not include the user’s Plex server name, Jellyfin server URL, raw hostname/IP, tokens, media titles, or filesystem paths.
+It must not include the user’s Plex server name, Jellyfin/Emby server URL, raw hostname/IP, tokens, media titles, or filesystem paths.
 
 ## Profiling
 

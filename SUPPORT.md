@@ -1,19 +1,19 @@
 # VisionPlay — Support
 
-VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server or Jellyfin server**.
+VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server, Jellyfin server, or Emby server**.
 
 ## Requirements
 
 - Apple Vision Pro running **visionOS 26.0** or later.
-- A reachable **Plex Media Server** or **Jellyfin server** you administer or have access to.
-  Plex mode also requires a Plex account for PIN/OAuth sign-in.
+- A reachable **Plex Media Server**, **Jellyfin server**, or **Emby server** you administer or have access to.
+  Plex mode requires a Plex account for PIN/OAuth sign-in; Emby mode can use Emby Connect PIN sign-in or a manual Emby server URL.
 - Local-network playback is free. Plex remote (off-LAN) streaming may require Plex
   Pass or Remote Watch Pass on your account — this is a Plex server-side
   requirement, not a VisionPlay feature.
 
 ## Getting started
 
-1. Launch VisionPlay and choose Plex or Jellyfin.
+1. Launch VisionPlay and choose Plex, Jellyfin, or Emby.
 2. Sign in to the selected backend and choose/enter the server.
 3. Browse your libraries, then play. Titles resume where you left off.
 
@@ -27,7 +27,7 @@ VisionPlay is a native Apple Vision Pro client for **your own Plex Media Server 
   Settings.
 - **Can I watch away from home?** Remote streaming of personal media may require
   Plex Pass / Remote Watch Pass on your Plex account in Plex mode (a Plex policy).
-  Jellyfin remote access depends on your Jellyfin server/network setup.
+  Jellyfin and Emby remote access depend on your server/network setup.
 
 ## Reporting a problem
 
@@ -49,8 +49,8 @@ local diagnostic report:
 4. Tap **Copy diagnostic report** and paste it into the issue.
 5. Turn diagnostic logging off again if you no longer need it.
 
-Diagnostics are opt-in, stored in a bounded local ring buffer, and exported only
-when you tap the copy button. The report intentionally omits sensitive values
+Diagnostic event logging is opt-in, stored in a bounded local ring buffer, and exported only
+when you tap the copy/export/feedback button. Passive redacted MetricKit crash/hang summaries may also be stored locally in a small bounded list for inclusion in a user-initiated report. The report intentionally omits sensitive values
 such as tokens, client identifiers, hostnames/IP addresses, full URLs, usernames,
 library paths, filenames, and media titles.
 

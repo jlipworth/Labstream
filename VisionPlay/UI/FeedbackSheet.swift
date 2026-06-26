@@ -89,7 +89,7 @@ struct FeedbackSheet: View {
                 } header: {
                     Text("Describe the problem (optional)")
                 } footer: {
-                    Text("Your note is scrubbed the same way the rest of the report is — tokens, server name/URL/IP, usernames, paths, filenames, and media titles are removed before it's shared.")
+                    Text("Your note is scrubbed for tokens, server name/URL/IP, usernames, paths, and filenames. Bare media titles or personal details in ordinary prose may remain, so review the preview below before sharing.")
                 }
 
                 SwiftUI.Section {

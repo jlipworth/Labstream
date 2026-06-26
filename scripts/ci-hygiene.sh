@@ -217,6 +217,24 @@ if ((${#scan_paths[@]} > 0)); then
   )
 fi
 
+# Archive docs are historical, so they are allowed to mention retired decisions and
+# synthetic examples, but they are still part of the public repo. Keep obviously
+# machine-local paths and private-LAN examples out of committed archives.
+archive_paths=()
+while IFS= read -r -d '' path; do
+  case "$path" in
+    docs/archive/*)
+      archive_paths+=("$path")
+      ;;
+  esac
+done < <(git ls-files -z)
+
+if ((${#archive_paths[@]} > 0)); then
+  if git grep -n -I -E -- '/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/path/to/temp|\\b10\.([0-9]{1,3}\.){2}[0-9]{1,3}\b|\\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b|\\b172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}\b' -- "${archive_paths[@]}" | grep -v '/Users/AuthenticateByName'; then
+    fail "public archive docs contain machine-local paths or private-LAN IP examples; scrub to placeholders such as /path/to/visionplay or 192.0.2.10"
+  fi
+fi
+
 
 if [[ -f pyproject.toml ]]; then
   if ! command -v uv >/dev/null 2>&1; then

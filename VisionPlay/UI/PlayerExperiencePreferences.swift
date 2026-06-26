@@ -15,6 +15,7 @@ enum PlaybackPreferences {
         static let defaultDownloadQuality = "defaultDownloadQuality"
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
         static let prioritizeQuickDownloads = "prioritizeQuickDownloads"
+        static let systemMediaSuggestionsEnabled = "systemMediaSuggestionsEnabled"
 
         // Audio/subtitle language + subtitle-handling keys (formerly the separate
         // `PlaybackPreferenceKeys` namespace). Raw strings preserved exactly so existing
@@ -51,6 +52,16 @@ enum PlaybackPreferences {
     /// Off by default: the move PUT reorders the user's server-wide conversion queue and is
     /// admin-gated, so it is opt-in (least surprising — respect the server's queue order).
     static let defaultPrioritizeQuickDownloads = false
+    /// On by default to preserve existing #24 behavior, but user-visible because it exposes
+    /// browsed media titles to system search/Siri/Shortcuts surfaces outside VisionPlay.
+    static let defaultSystemMediaSuggestionsEnabled = true
+
+    static func systemMediaSuggestionsEnabled(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: Keys.systemMediaSuggestionsEnabled) != nil else {
+            return defaultSystemMediaSuggestionsEnabled
+        }
+        return defaults.bool(forKey: Keys.systemMediaSuggestionsEnabled)
+    }
 
     /// Whether a newly-enqueued optimize job should jump ahead of pending conversions (but never
     /// the one currently transcoding). When false, the server's queue order is respected and no

@@ -25,6 +25,7 @@ enum SpotlightIndexer {
     /// Queue a batch for indexing. Fire-and-forget: indexing is a nicety and must
     /// never affect browse, so failures are only logged.
     static func index(_ items: [MediaItem], server: URL) {
+        guard PlaybackPreferences.systemMediaSuggestionsEnabled() else { return }
         guard CSSearchableIndex.isIndexingAvailable() else { return }
         let searchable = items.compactMap { searchableItem(for: $0, server: server) }
         guard !searchable.isEmpty else { return }

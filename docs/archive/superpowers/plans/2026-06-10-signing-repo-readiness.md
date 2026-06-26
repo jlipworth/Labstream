@@ -36,7 +36,7 @@
   - Put the hygiene logic in a local script so CI and local developers run the same checks.
 - Modify: `.gitignore`
   - Confirm local signing and Xcode generated files remain ignored; add missing generated signing/profile patterns only if needed.
-- Local-only, not committed: rename checkout folder from `/path/to/user/visionplay-app` to `/path/to/user/visionplay` after implementation is committed/pushed or at a deliberate handoff point.
+- Local-only, not committed: rename checkout folder from `/path/to/visionplay-app` to `/path/to/visionplay` after implementation is committed/pushed or at a deliberate handoff point.
 
 ## Existing dirty tree rule
 
@@ -593,32 +593,32 @@ pwd
 procs visionplay-app || true
 ```
 
-Expected: current path is `/path/to/user/visionplay-app`; no critical process is using it. If a process is using the path, stop it or defer the rename.
+Expected: current path is `/path/to/visionplay-app`; no critical process is using it. If a process is using the path, stop it or defer the rename.
 
 - [ ] **Step 2: Move from parent directory**
 
 Run:
 
 ```bash
-cd /path/to/user
+cd /path/to
 if [ -e visionplay ]; then
-  echo 'ERROR: /path/to/user/visionplay already exists' >&2
+  echo 'ERROR: /path/to/visionplay already exists' >&2
   exit 1
 fi
 mv visionplay-app visionplay
-cd /path/to/user/visionplay
+cd /path/to/visionplay
 pwd
 git status --short --branch
 ```
 
-Expected: `pwd` prints `/path/to/user/visionplay`; git still works.
+Expected: `pwd` prints `/path/to/visionplay`; git still works.
 
 - [ ] **Step 3: Search for hard-coded local path references**
 
 Run:
 
 ```bash
-rg -n '/path/to/user/visionplay-app|visionplay-app' . --hidden -g '!DerivedData' -g '!.git' || true
+rg -n '/path/to/visionplay-app|visionplay-app' . --hidden -g '!DerivedData' -g '!.git' || true
 ```
 
 Expected: either no output or only historical docs/spec references. If active scripts/docs contain the old local path, patch them in a small follow-up commit.
@@ -628,7 +628,7 @@ Expected: either no output or only historical docs/spec references. If active sc
 Final response should say:
 
 ```text
-Repo folder renamed locally: /path/to/user/visionplay
+Repo folder renamed locally: /path/to/visionplay
 ```
 
-Also note that any already-open terminal/editor windows pointed at `/path/to/user/visionplay-app` should be reopened in the new path.
+Also note that any already-open terminal/editor windows pointed at `/path/to/visionplay-app` should be reopened in the new path.
