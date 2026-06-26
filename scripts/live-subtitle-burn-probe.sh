@@ -37,4 +37,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LiveSubtitleBurnProbe 2>&1 | grep -E '^>>> SUBBURN|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> SUBBURN|error:|Test run' swift test --filter LiveSubtitleBurnProbe

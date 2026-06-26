@@ -32,4 +32,4 @@ set +a
 
 cd PMSKit
 # Print the full body lines too (not just >>> LIVE) so the discovered JSON is visible.
-swift test --filter LiveOptimizeProbe 2>&1 | grep -E '^>>> LIVE|^\{|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> LIVE|^\{|error:|Test run' swift test --filter LiveOptimizeProbe

@@ -35,4 +35,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LivePlexBrowseProbe 2>&1 | grep -E '^>>> BROWSE|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> BROWSE|error:|Test run' swift test --filter LivePlexBrowseProbe

@@ -37,4 +37,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LivePlexTimelineProbe 2>&1 | grep -E '^>>> TIMELINE|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> TIMELINE|error:|Test run' swift test --filter LivePlexTimelineProbe

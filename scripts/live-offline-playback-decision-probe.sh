@@ -30,4 +30,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LiveOfflinePlaybackDecisionProbe 2>&1 | grep -E '^>>> OFFLINEPLAY|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> OFFLINEPLAY|error:|Test run' swift test --filter LiveOfflinePlaybackDecisionProbe

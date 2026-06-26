@@ -35,4 +35,4 @@ source "$env_file"
 set +a
 
 cd PMSKit
-swift test --filter LiveSegmentProbe 2>&1 | grep -E '^>>> SEG|error:|Test run' || true
+../scripts/live-test-filter.sh '^>>> SEG|error:|Test run' swift test --filter LiveSegmentProbe

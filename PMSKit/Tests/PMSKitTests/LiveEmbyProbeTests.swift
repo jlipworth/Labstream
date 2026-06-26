@@ -62,12 +62,7 @@ struct LiveEmbyProbeTests {
 
     // Scrubbing is centralized in `LiveProbeConfig.redact` (shared by every Plex + Emby probe);
     // its default credential-key set already covers `api_key`.
-
-    private func send(_ request: URLRequest) async throws -> (Data, Int) {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        return (data, status)
-    }
+    private let transport = LiveProbeTransport()
 
     private func stopActiveEncodingIfNeeded(_ result: EmbyPlaybackOpenResult,
                                             cfg: LiveConfig,
@@ -80,7 +75,7 @@ struct LiveEmbyProbeTests {
             userId: cfg.userId,
             deviceId: cfg.identity.deviceId,
             playSessionId: result.playSessionId)
-        let (_, stopStatus) = try await send(stop)
+        let (_, stopStatus) = try await transport.send(stop)
         print(">>> LIVE [\(label)] ActiveEncodings DELETE HTTP \(stopStatus)")
         #expect((200..<300).contains(stopStatus) || [400, 404, 410].contains(stopStatus),
                 "active encoding cleanup should return success or already-gone status, got \(stopStatus)")
@@ -95,11 +90,11 @@ struct LiveEmbyProbeTests {
         // (a) GET /System/Info/Public — UNAUTHENTICATED pre-login validation.
         do {
             let req = try EmbyAuth.serverInfoRequest(server: cfg.server)
-            let (data, status) = try await send(req)
+            let (data, status) = try await transport.send(req)
             print(">>> LIVE [serverInfo] HTTP \(status), \(data.count) bytes")
             #expect(status == 200, "serverInfo expected HTTP 200, got \(status)")
             let info = try JSONDecoder().decode(EmbyServerInfo.self, from: data)
-            print(">>> LIVE [serverInfo] decoded: name=\(info.serverName ?? "nil") version=\(info.version ?? "nil") id=\(info.id != nil ? "<set>" : "nil")")
+            print(">>> LIVE [serverInfo] decoded: name=\(LiveProbeLogger.serverNameSummary(info.serverName)) version=\(info.version ?? "nil") id=\(LiveProbeLogger.idPresence(info.id))")
             #expect(info.version != nil, "serverInfo should decode a Version")
         }
 
@@ -113,7 +108,7 @@ struct LiveEmbyProbeTests {
                 recursive: true,
                 includeItemTypes: "Movie",
                 fields: "MediaSources,Overview,Chapters,Genres")
-            let (data, status) = try await send(req)
+            let (data, status) = try await transport.send(req)
             print(">>> LIVE [items] HTTP \(status), \(data.count) bytes")
             #expect(status == 200, "items expected HTTP 200, got \(status)")
             let response = try EmbyItemsResponse.decode(from: data)
@@ -141,7 +136,7 @@ struct LiveEmbyProbeTests {
                 userId: cfg.userId,
                 itemId: cfg.itemId,
                 maxStreamingBitrate: cfg.maxStreamingBitrate)
-            let (data, status) = try await send(req)
+            let (data, status) = try await transport.send(req)
             print(">>> LIVE [playbackInfo] HTTP \(status), \(data.count) bytes")
             #expect(status == 200, "playbackInfo expected HTTP 200, got \(status)")
             let response = try EmbyPlaybackInfoResponse.decode(from: data)
@@ -181,7 +176,7 @@ struct LiveEmbyProbeTests {
                 userId: cfg.userId,
                 itemId: cfg.itemId,
                 maxStreamingBitrate: cfg.maxStreamingBitrate)
-            let (discoverData, discoverStatus) = try await send(discoverReq)
+            let (discoverData, discoverStatus) = try await transport.send(discoverReq)
             #expect(discoverStatus == 200, "discover playbackInfo expected HTTP 200, got \(discoverStatus)")
             let discover = try EmbyPlaybackInfoResponse.decode(from: discoverData)
             let subtitleIndices = discover.mediaSources
@@ -202,7 +197,7 @@ struct LiveEmbyProbeTests {
                 itemId: cfg.itemId,
                 maxStreamingBitrate: cfg.maxStreamingBitrate,
                 subtitleStreamIndex: subtitleIndex)
-            let (subData, subStatus) = try await send(subReq)
+            let (subData, subStatus) = try await transport.send(subReq)
             print(">>> LIVE [subtitle] PlaybackInfo(subtitleStreamIndex=\(subtitleIndex)) HTTP \(subStatus), \(subData.count) bytes")
             #expect(subStatus == 200, "subtitle playbackInfo expected HTTP 200, got \(subStatus)")
             let subResponse = try EmbyPlaybackInfoResponse.decode(from: subData)
@@ -225,7 +220,7 @@ struct LiveEmbyProbeTests {
             do {
                 var fetch = URLRequest(url: resolvedSub.url)
                 for (k, v) in resolvedSub.requiredHTTPHeaders { fetch.setValue(v, forHTTPHeaderField: k) }
-                let (_, fetchStatus) = try await send(fetch)
+                let (_, fetchStatus) = try await transport.send(fetch)
                 print(">>> LIVE [subtitle] burn-in stream GET HTTP \(fetchStatus)")
                 #expect((200..<400).contains(fetchStatus),
                         "burn-in stream should fetch with a success status, got \(fetchStatus)")
