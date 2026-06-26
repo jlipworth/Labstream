@@ -25,6 +25,10 @@ struct PosterImage: View {
     /// Request scale for backend image transcodes. Most posters use @2x for crispness;
     /// decorative blurred/backdrop art can opt into @1x to avoid fetching oversized images.
     var requestScale: CGFloat = 2.0
+    /// SF Symbol shown when there's no artwork (or it fails). Defaults to the film glyph
+    /// for video posters; music cells pass a `music.*` glyph so an art-less artist/album
+    /// reads as "no cover" rather than "broken" (#111).
+    var placeholderSymbol: String = "film"
 
     @Environment(AppModel.self) private var appModel
 
@@ -121,7 +125,7 @@ struct PosterImage: View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .fill(.regularMaterial)
             .overlay {
-                Image(systemName: "film")
+                Image(systemName: placeholderSymbol)
                     .font(.system(size: min(width, height) * 0.22))
                     .foregroundStyle(.secondary)
             }
