@@ -132,6 +132,18 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     public let parentPrimaryImageItemId: String?
     public let parentPrimaryImageTag: String?
 
+    // Music hierarchy (#111). An `Audio` row carries its album name/id + album-artist directly
+    // (it does NOT use Series*/Season* — those are TV-only); an album's primary art lives on the
+    // album, so a track without its own Primary mints art against `AlbumId`/`AlbumPrimaryImageTag`.
+    /// Album display name for an `Audio` track (`Album`).
+    public let album: String?
+    /// Owning album id for an `Audio` track (`AlbumId`) — the music parent for nav + art.
+    public let albumId: String?
+    /// Album-artist display name (`AlbumArtist`) — the grandparent of a track, parent of an album.
+    public let albumArtist: String?
+    /// Album primary-image tag (`AlbumPrimaryImageTag`), paired with `albumId` for a track's poster.
+    public let albumPrimaryImageTag: String?
+
     enum CodingKeys: String, CodingKey {
         case id = "Id"
         case name = "Name"
@@ -168,6 +180,10 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case parentBackdropImageTags = "ParentBackdropImageTags"
         case parentPrimaryImageItemId = "ParentPrimaryImageItemId"
         case parentPrimaryImageTag = "ParentPrimaryImageTag"
+        case album = "Album"
+        case albumId = "AlbumId"
+        case albumArtist = "AlbumArtist"
+        case albumPrimaryImageTag = "AlbumPrimaryImageTag"
     }
 
     public init(from decoder: Decoder) throws {
@@ -207,6 +223,10 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         parentBackdropImageTags = try c.decodeIfPresent([String].self, forKey: .parentBackdropImageTags) ?? []
         parentPrimaryImageItemId = try c.decodeIfPresent(String.self, forKey: .parentPrimaryImageItemId)
         parentPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .parentPrimaryImageTag)
+        album = try c.decodeIfPresent(String.self, forKey: .album)
+        albumId = try c.decodeIfPresent(String.self, forKey: .albumId)
+        albumArtist = try c.decodeIfPresent(String.self, forKey: .albumArtist)
+        albumPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .albumPrimaryImageTag)
     }
 
     public func toMediaItem() -> MediaItem? {
@@ -228,6 +248,9 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
                 return ownPrimaryPath ?? parentThumbPath ?? seriesPrimaryPath
             case "season":
                 return ownPrimaryPath ?? seriesPrimaryPath
+            case "track":
+                // A track rarely has its own Primary — its art lives on the owning album (#111).
+                return ownPrimaryPath ?? albumPrimaryPath
             default:
                 return ownPrimaryPath
             }
@@ -276,16 +299,26 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             directors: crewDirectors.isEmpty ? nil : crewDirectors.map(Tag.init(tag:)),
             studios: studioNames.isEmpty ? nil : studioNames.map(Tag.init(tag:)),
             logo: syntheticImagePath(type: .logo, tag: ownLogo),
-            grandparentTitle: mappedType == "episode" ? seriesName : nil,
+            // Music (#111): a TRACK's grandparent is the album-artist, its parent the album; an
+            // ALBUM's parent is the album-artist. Video types keep the episode/season wiring.
+            grandparentTitle: mappedType == "episode" ? seriesName
+                : (mappedType == "track" ? albumArtist : nil),
             grandparentRatingKey: mappedType == "episode" ? seriesId : nil,
             grandparentThumb: mappedType == "episode" ? seriesPrimaryPath : nil,
-            parentTitle: mappedType == "season" ? seriesName : nil,
-            parentRatingKey: parentId,
-            parentThumb: parentThumbPath ?? seriesPrimaryPath,
+            parentTitle: mappedType == "season" ? seriesName
+                : (mappedType == "track" ? album : (mappedType == "album" ? albumArtist : nil)),
+            parentRatingKey: mappedType == "track" ? (albumId ?? parentId) : parentId,
+            parentThumb: parentThumbPath ?? albumPrimaryPath ?? seriesPrimaryPath,
             parentIndex: parentIndexNumber,
             index: indexNumber,
             primaryImageAspectRatio: primaryImageAspectRatio,
             providerIds: providerIds.isEmpty ? nil : providerIds)
+    }
+
+    /// Album-poster fallback for a track (#111): `AlbumPrimaryImageTag` minted against `AlbumId`.
+    private var albumPrimaryPath: String? {
+        guard let tag = albumPrimaryImageTag, let owner = albumId else { return nil }
+        return syntheticImagePath(type: .primary, tag: tag, ownerId: owner)
     }
 
     /// Season-thumb fallback: prefer the `ParentThumb*` companion (owning id + tag), else
@@ -320,6 +353,12 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case "Season": return "season"
         case "Episode": return "episode"
         case "Video": return "video"
+        // Music (#111): map MediaBrowser's music item types onto PMS music kinds so search/browse
+        // can facet and route them (artist/album → music nav, track → music playback).
+        case "MusicArtist", "AlbumArtist": return "artist"
+        case "MusicAlbum": return "album"
+        case "Audio": return "track"
+        case "Playlist": return "playlist"
         default: return nil
         }
     }
