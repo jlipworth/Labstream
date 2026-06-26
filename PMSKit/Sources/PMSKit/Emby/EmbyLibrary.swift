@@ -30,6 +30,8 @@ public enum EmbyLibrary {
                                     sortOrder: String = "Ascending",
                                     includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                                     fields: String = fullItemFields,
+                                    albumArtistIds: String? = nil,
+                                    artistIds: String? = nil,
                                     filters: [String] = []) throws -> URLRequest {
         var query = baseItemsQuery(fields: fields)
         if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
@@ -42,11 +44,47 @@ public enum EmbyLibrary {
         if let nameStartsWith, !nameStartsWith.isEmpty {
             query.append(URLQueryItem(name: "NameStartsWith", value: nameStartsWith))
         }
+        // An album-artist entity is a tag aggregate, not a folder, so its albums/tracks are
+        // reached by these filters rather than `ParentId` (#111).
+        if let albumArtistIds, !albumArtistIds.isEmpty {
+            query.append(URLQueryItem(name: "AlbumArtistIds", value: albumArtistIds))
+        }
+        if let artistIds, !artistIds.isEmpty {
+            query.append(URLQueryItem(name: "ArtistIds", value: artistIds))
+        }
         replaceQueryItem(named: "IncludeItemTypes", with: includeItemTypes, in: &query)
         if !filters.isEmpty { query.append(URLQueryItem(name: "Filters", value: filters.joined(separator: ","))) }
         replaceQueryItem(named: "SortBy", with: sortBy, in: &query)
         replaceQueryItem(named: "SortOrder", with: sortOrder, in: &query)
         let url = try url(server: server, path: "/Users/\(userId)/Items", queryItems: query)
+        return get(url: url, token: token, identity: identity, userId: userId)
+    }
+
+    /// Album artists for a music library (#111) — see the Jellyfin twin for why this uses
+    /// `/Artists/AlbumArtists` rather than a `MusicArtist` items browse.
+    public static func albumArtistsRequest(server: URL,
+                                           token: String,
+                                           identity: EmbyClientIdentity,
+                                           userId: String,
+                                           parentId: String?,
+                                           startIndex: Int? = nil,
+                                           limit: Int? = nil,
+                                           sortBy: String = "SortName",
+                                           sortOrder: String = "Ascending",
+                                           fields: String = gridItemFields) throws -> URLRequest {
+        var query = [
+            URLQueryItem(name: "UserId", value: userId),
+            URLQueryItem(name: "Fields", value: fields),
+            URLQueryItem(name: "EnableUserData", value: "true"),
+            URLQueryItem(name: "EnableImages", value: "true"),
+            URLQueryItem(name: "Recursive", value: "true"),
+            URLQueryItem(name: "SortBy", value: sortBy),
+            URLQueryItem(name: "SortOrder", value: sortOrder),
+        ]
+        if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
+        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
+        if let limit { query.append(URLQueryItem(name: "Limit", value: String(limit))) }
+        let url = try url(server: server, path: "/Artists/AlbumArtists", queryItems: query)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 

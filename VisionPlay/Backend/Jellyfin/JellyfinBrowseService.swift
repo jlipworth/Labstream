@@ -75,6 +75,8 @@ struct JellyfinBrowseService {
                    sortOrder: String = "Ascending",
                    includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                    fields: String = JellyfinLibrary.fullItemFields,
+                   albumArtistIds: String? = nil,
+                   artistIds: String? = nil,
                    filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
         let req = try JellyfinLibrary.itemsRequest(server: context.server,
@@ -91,7 +93,29 @@ struct JellyfinBrowseService {
                                                    sortOrder: sortOrder,
                                                    includeItemTypes: includeItemTypes,
                                                    fields: fields,
+                                                   albumArtistIds: albumArtistIds,
+                                                   artistIds: artistIds,
                                                    filters: filters)
+        let response = try await send(req, as: JellyfinItemsResponse.self)
+        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+    }
+
+    /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
+    func albumArtistsPage(parentId: String?,
+                          startIndex: Int? = nil,
+                          limit: Int? = nil,
+                          sortBy: String = "SortName",
+                          sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
+        let context = try context()
+        let req = try JellyfinLibrary.albumArtistsRequest(server: context.server,
+                                                          token: context.token,
+                                                          identity: jellyfinIdentity,
+                                                          userId: context.userID,
+                                                          parentId: parentId,
+                                                          startIndex: startIndex,
+                                                          limit: limit,
+                                                          sortBy: sortBy,
+                                                          sortOrder: sortOrder)
         let response = try await send(req, as: JellyfinItemsResponse.self)
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
