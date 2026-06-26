@@ -14,4 +14,4 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 
 ## Active notes
 
-_No active research notes right now. Add new not-yet-implemented planning notes here; once a topic ships and is proven, promote the durable parts into the focused current docs and move the note into `docs/archive/research/`._
+- [Offline playback compatibility on Apple Vision Pro](offline-playback-compatibility.md) — current #167 research map for source-route gates, final-artifact validation, backend compatibility, and headless vs. physical AVP proof.

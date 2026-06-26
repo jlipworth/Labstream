@@ -2,6 +2,8 @@
 
 Downloads must produce a static local file. The app should not treat a live streaming transcode as a durable offline transfer.
 
+For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](research/offline-playback-compatibility.md).
+
 ## Plex routes
 
 ### Direct original
