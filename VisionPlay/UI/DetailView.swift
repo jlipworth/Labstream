@@ -1117,51 +1117,23 @@ struct DetailView: View {
         // backend, so a detail that lingered across a switch refreshes from the right server.
         let span = PerformanceInstrumentation.begin(.detailMetadata,
                                                      backend: actionBackend.performanceLabel)
-        if actionBackend == .jellyfin {
-            if let full = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: requestedRatingKey) {
-                guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
-                detailed = full
-                selectedMediaIndex = 0
-                watchedOverride = nil
-                span.end(fields: ["media_count": full.media?.count ?? 0])
-            } else {
-                span.end(result: "failure", fields: ["error": "metadata_unavailable"])
-            }
+        let result = await DetailMetadataLoader.load(ratingKey: requestedRatingKey,
+                                                     backend: actionBackend,
+                                                     appModel: appModel)
+        guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
+        guard let full = result.item else {
+            span.end(result: "failure", fields: ["error": result.errorLabel ?? "metadata_unavailable"])
             return
         }
-        if actionBackend == .emby {
-            if let full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: requestedRatingKey) {
-                guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
-                detailed = full
-                selectedMediaIndex = 0
-                watchedOverride = nil
-                span.end(fields: ["media_count": full.media?.count ?? 0])
-            } else {
-                span.end(result: "failure", fields: ["error": "metadata_unavailable"])
-            }
-            return
+        detailed = full
+        // The fresh payload may have a different number of media entries; clamp the
+        // selection and drop any stale optimistic watched override now that we have
+        // an authoritative value from the server.
+        if selectedMediaIndex >= (full.media?.count ?? 1) {
+            selectedMediaIndex = 0
         }
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
-            span.end(result: "failure", fields: ["error": "missing_plex_server"])
-            return
-        }
-        let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: requestedRatingKey)
-        if let resp = try? await appModel.client.send(req, as: MetadataResponse.self),
-           let full = resp.mediaContainer.metadata.first {
-            guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
-            detailed = full
-            // The fresh payload may have a different number of versions; clamp the
-            // selection and drop any stale optimistic watched override now that we have
-            // an authoritative value from the server.
-            if selectedMediaIndex >= (full.media?.count ?? 1) {
-                selectedMediaIndex = 0
-            }
-            watchedOverride = nil
-            span.end(fields: ["media_count": full.media?.count ?? 0])
-        } else {
-            span.end(result: "failure", fields: ["error": "metadata_unavailable"])
-        }
+        watchedOverride = nil
+        span.end(fields: ["media_count": full.media?.count ?? 0])
     }
 }
 
