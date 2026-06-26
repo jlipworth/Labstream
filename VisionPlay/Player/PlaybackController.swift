@@ -2213,8 +2213,7 @@ final class PlaybackController {
               let primedURL = jellyfinHLSURL(url, startTimeTicks: resumeOffsetMs * 10_000)
         else { return url }
 
-        let proxy = MediaSessionProxy(controlSend: { _ in Data() },
-                                      strippedPlaylistQueryItemNames: ["starttimeticks"],
+        let proxy = MediaSessionProxy(strippedPlaylistQueryItemNames: ["starttimeticks"],
                                       injectedPlaylistStartTimeOffsetSeconds: Double(resumeOffsetMs) / 1000.0)
         do {
             let handle = try await proxy.standUpLoopback(forStream: primedURL)

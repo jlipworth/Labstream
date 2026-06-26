@@ -6,7 +6,7 @@ import Foundation
 /// origin swap (scheme/host/port), preserving the target's existing percent-encoding.
 struct UpstreamURLMapper {
     /// PMS origin: scheme + host + port only (no path/query). Derive with
-    /// `MediaSessionProxy` from the `start.m3u8` URL passed to `open`.
+    /// `MediaSessionProxy` from the resolved HLS URL passed to `standUpLoopback`.
     let upstreamBase: URL
 
     func upstreamURL(forTarget target: String) -> URL? {
