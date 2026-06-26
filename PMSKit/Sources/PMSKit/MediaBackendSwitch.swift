@@ -1,6 +1,6 @@
 import Foundation
 
-public enum MediaBackendChoice: String, Sendable, Equatable {
+public enum MediaBackendChoice: String, Sendable, Equatable, Hashable, Codable {
     case plex
     case jellyfin
     case emby

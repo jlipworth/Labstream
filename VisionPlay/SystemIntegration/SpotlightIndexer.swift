@@ -15,9 +15,9 @@ import UniformTypeIdentifiers
 ///     item (with a token-bearing URL); titles + descriptions are plenty for search.
 ///   - Music stays out of this first system-video surface; music now has dedicated
 ///     in-app routes, but these App Intents/deep links target video DetailView.
-///   - `uniqueIdentifier` includes a non-secret server namespace plus ratingKey so
-///     a result indexed on one server cannot accidentally open the same ratingKey on
-///     another. PMSKit owns the parser so the namespace-stripping behavior is unit-tested.
+///   - `uniqueIdentifier` currently keeps the legacy Plex server namespace plus ratingKey,
+///     while PMSKit also understands the newer backend-scoped id shape for future
+///     non-Plex system-entry routes.
 enum SpotlightIndexer {
     /// Single domain for everything we index, so sign-out can wipe it in one call.
     static let domainIdentifier = "com.jlipworth.VisionPlay.media"
@@ -54,10 +54,14 @@ enum SpotlightIndexer {
             }
     }
 
-    /// Recover the Plex ratingKey from a CoreSpotlight identifier. Identifiers from
-    /// older builds were bare ratingKeys, so keep accepting them for compatibility.
+    /// Recover the ratingKey from a CoreSpotlight identifier. Identifiers from older builds
+    /// were bare ratingKeys; newer helpers can also parse backend-scoped ids.
+    static func routeKey(from searchableIdentifier: String) -> BackendScopedMediaID {
+        MediaSearchIdentifier.routeKey(from: searchableIdentifier)
+    }
+
     static func ratingKey(from searchableIdentifier: String) -> String {
-        MediaSearchIdentifier.ratingKey(from: searchableIdentifier)
+        routeKey(from: searchableIdentifier).ratingKey
     }
 
     private static func searchableItem(for item: MediaItem, server: URL) -> CSSearchableItem? {

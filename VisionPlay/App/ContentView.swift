@@ -91,7 +91,7 @@ struct ContentView: View {
         .onContinueUserActivity(CSSearchableItemActionType) { activity in
             guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                   !id.isEmpty else { return }
-            SystemEntryRouter.shared.open(ratingKey: SpotlightIndexer.ratingKey(from: id), autoPlay: false)
+            SystemEntryRouter.shared.open(routeKey: SpotlightIndexer.routeKey(from: id), autoPlay: false)
         }
         // Sign-out: the music player outlives RootView, so without this music would
         // keep playing over the login screen with stale credentials (#17).

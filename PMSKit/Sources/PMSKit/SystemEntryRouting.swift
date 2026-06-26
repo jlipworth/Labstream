@@ -1,33 +1,105 @@
 import Foundation
 
+/// Backend/server/item identity for system-entry and navigation surfaces.
+///
+/// The app still only indexes Plex items today, but this value gives future Spotlight,
+/// App Intent, and deep-link routes a single backend-scoped shape instead of passing a
+/// raw `ratingKey` plus out-of-band active-backend state.
+public struct BackendScopedMediaID: Sendable, Hashable, Codable {
+    public static let currentPrefix = "vp1"
+
+    public let backend: MediaBackendChoice
+    public let serverNamespace: String?
+    public let ratingKey: String
+
+    public init(backend: MediaBackendChoice,
+                serverNamespace: String? = nil,
+                ratingKey: String) {
+        self.backend = backend
+        self.serverNamespace = serverNamespace?.isEmpty == true ? nil : serverNamespace
+        self.ratingKey = ratingKey
+    }
+
+    public init(backend: MediaBackendChoice,
+                server: URL,
+                ratingKey: String) {
+        self.init(backend: backend,
+                  serverNamespace: Self.serverNamespace(server),
+                  ratingKey: ratingKey)
+    }
+
+    /// Versioned identifier shape for new backend-scoped system-entry values.
+    /// The final component is allowed to contain the separator so backend item ids remain opaque.
+    public var identifier: String {
+        [Self.currentPrefix, backend.rawValue, serverNamespace ?? "", ratingKey]
+            .joined(separator: MediaSearchIdentifier.separator)
+    }
+
+    /// Parse a versioned backend-scoped id, a legacy server-scoped Plex id, or an old bare
+    /// ratingKey. Legacy paths default to Plex to preserve existing Spotlight/App Intent entries.
+    public init(systemIdentifier identifier: String) {
+        let pieces = identifier.split(separator: MediaSearchIdentifier.separator,
+                                      maxSplits: 3,
+                                      omittingEmptySubsequences: false)
+            .map(String.init)
+        if pieces.count == 4,
+           pieces[0] == Self.currentPrefix,
+           let backend = MediaBackendChoice(rawValue: pieces[1]) {
+            self.init(backend: backend,
+                      serverNamespace: pieces[2].isEmpty ? nil : pieces[2],
+                      ratingKey: pieces[3])
+            return
+        }
+
+        let legacy = identifier.split(separator: MediaSearchIdentifier.separator,
+                                      maxSplits: 1,
+                                      omittingEmptySubsequences: false)
+            .map(String.init)
+        if legacy.count == 2 {
+            self.init(backend: .plex,
+                      serverNamespace: legacy[0].isEmpty ? nil : legacy[0],
+                      ratingKey: legacy[1])
+        } else {
+            self.init(backend: .plex, ratingKey: identifier)
+        }
+    }
+
+    public static func serverNamespace(_ server: URL) -> String {
+        let host = server.host(percentEncoded: false) ?? server.host ?? server.absoluteString
+        if let port = server.port {
+            return "\(host):\(port)"
+        }
+        return host
+    }
+}
+
 /// Pure helpers for VisionPlay system-entry routing (App Intents and Spotlight).
 /// Kept in PMSKit so identifier parsing and one-shot autoplay behavior have unit coverage
 /// without depending on SwiftUI/AppIntents/CoreSpotlight.
 public enum MediaSearchIdentifier {
     public static let separator = "|"
 
-    /// Build a non-secret, server-scoped identifier for a media item in system search.
-    /// The namespace prevents a Spotlight result from one server accidentally opening the
-    /// same ratingKey on another server. The host/port is already visible connection metadata;
-    /// no token or path is included.
+    /// Build the existing non-secret, Plex/server-scoped identifier for a media item in system
+    /// search. Kept byte-compatible with the current Plex-only Spotlight index.
     public static func make(ratingKey: String, server: URL) -> String {
-        "\(serverNamespace(server))\(separator)\(ratingKey)"
+        "\(BackendScopedMediaID.serverNamespace(server))\(separator)\(ratingKey)"
+    }
+
+    /// Build a versioned backend-scoped identifier for future non-Plex system-entry routes.
+    public static func make(ratingKey: String, server: URL, backend: MediaBackendChoice) -> String {
+        BackendScopedMediaID(backend: backend, server: server, ratingKey: ratingKey).identifier
+    }
+
+    /// Recover the full backend-scoped route key from a system-search identifier. Older builds
+    /// indexed bare ratingKeys or `server|ratingKey`, so both forms still parse as Plex keys.
+    public static func routeKey(from identifier: String) -> BackendScopedMediaID {
+        BackendScopedMediaID(systemIdentifier: identifier)
     }
 
     /// Recover the media ratingKey from a system-search identifier. Older builds indexed
-    /// bare ratingKeys, so a string without the namespace separator remains valid.
+    /// bare ratingKeys, and current Plex-only Spotlight IDs are `server|ratingKey`.
     public static func ratingKey(from identifier: String) -> String {
-        identifier.split(separator: separator, maxSplits: 1, omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? identifier
-    }
-
-    private static func serverNamespace(_ server: URL) -> String {
-        let host = server.host(percentEncoded: false) ?? server.host ?? server.absoluteString
-        if let port = server.port {
-            return "\(host):\(port)"
-        }
-        return host
+        routeKey(from: identifier).ratingKey
     }
 }
 

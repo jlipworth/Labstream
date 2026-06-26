@@ -194,18 +194,27 @@ struct RootView: View {
             let client = appModel.client
 
             // Resolve the target to a full item. Spotlight hits and Play/Open
-            // intents arrive as a bare ratingKey and are fetched fresh here;
+            // intents arrive as a backend-scoped route key and are fetched fresh here;
             // `.item` is reserved for callers that JUST fetched the metadata
             // (Continue Watching), so no snapshot can grow stale in between.
             var item: MediaItem?
             switch route.target {
             case .item(let given):
                 item = given
-            case .ratingKey(let ratingKey):
-                guard let server = appModel.serverBaseURL,
+            case .routeKey(let routeKey):
+                // Only Plex system-entry ids are currently indexed/routable. If a future
+                // non-Plex id reaches this path before non-Plex system indexing is enabled,
+                // do not resolve it against whichever backend happens to be active.
+                guard routeKey.backend == .plex,
+                      appModel.activeBackend.backendChoice == routeKey.backend,
+                      let server = appModel.serverBaseURL,
                       let token = appModel.serverToken else { return }
+                if let namespace = routeKey.serverNamespace,
+                   namespace != BackendScopedMediaID.serverNamespace(server) {
+                    return
+                }
                 let req = BrowseAPI.metadata(server: server, token: token,
-                                             identity: identity, ratingKey: ratingKey)
+                                             identity: identity, ratingKey: routeKey.ratingKey)
                 item = (try? await client.send(req, as: MetadataResponse.self))?
                     .mediaContainer.metadata.first
                 guard isCurrentRoute() else { return }
