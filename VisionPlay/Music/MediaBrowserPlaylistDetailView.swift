@@ -17,7 +17,7 @@ struct MediaBrowserPlaylistDetailView: View {
     @Environment(MusicPlayerController.self) private var player
 
     @State private var tracks: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
 
     /// Hero art size, matching the album/playlist detail header.
     private let coverSize: CGFloat = 300

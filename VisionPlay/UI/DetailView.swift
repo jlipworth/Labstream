@@ -1259,7 +1259,7 @@ struct ContainerBrowserView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var children: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
 
     private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
                                     spacing: DS.Space.xl)]

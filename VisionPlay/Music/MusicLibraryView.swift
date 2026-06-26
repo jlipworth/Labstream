@@ -11,7 +11,7 @@ struct MusicLibraryView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var sections: [PlexSection] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     /// Key of the section the user is browsing (only meaningful with 2+ sections).
     @State private var selectedSectionKey: String?
     /// Server identity the current sections were loaded from (pop-back no-op guard).
@@ -198,7 +198,7 @@ private struct MusicHomePivot: View {
     @State private var historyTracks: [MediaItem] = []
     /// Ladder rung 3: recently-added albums when hubs failed entirely.
     @State private var fallbackAlbums: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     @State private var isShuffling = false
     @State private var shuffleError: String?
     @State private var loadGeneration = 0
@@ -486,7 +486,7 @@ private struct MusicPlaylistsPivot: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var playlists: [MediaItem] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     @State private var loadGeneration = 0
 
     var body: some View {

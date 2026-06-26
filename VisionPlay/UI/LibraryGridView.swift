@@ -9,7 +9,7 @@ struct LibrariesView: View {
     @State private var sections: [PlexSection] = []
     @State private var jellyfinViews: [JellyfinLibraryLink] = []
     @State private var embyViews: [EmbyLibraryLink] = []
-    @State private var loadState: HomeView.LoadState = .idle
+    @State private var loadState: BrowseLoadState = .idle
     @State private var loadedIdentity: String?
     @State private var loadGeneration = 0
 
