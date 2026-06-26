@@ -343,35 +343,9 @@ public final class DownloadManager {
     public func isDownloadTranscodeLimited(_ ratingKey: String) -> Bool {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }),
               record.status == .downloading else { return false }
-        return Self.isLiveTranscoderSourced(record)
-    }
-
-    /// #123: whether a row's byte stream comes from a LIVE server transcoder rather than the wire —
-    /// so its byte cadence is transcoder OUTPUT, not network speed, and a "/s" readout would mislead.
-    /// Keyed on the PERSISTED lane (`resolvedDownloadLane`), so the suppression survives relaunch —
-    /// the old in-memory `transcodeSourcedDownloads` set + 500 KB/s heuristic did not, and a resumed
-    /// transcoded row would then show its output rate as MB/s unconditionally. Lanes:
-    /// - `.original` (incl. existing-version): static, range-resumable → genuine wire speed → false.
-    /// - `.optimize`: Plex phase-2 downloads a rendered static Part; Jellyfin/Emby optimize is live.
-    /// - `.compatibleRemux`: a live remux stream with NO Content-Length is transcoder-gated → true;
-    ///   but once the server reports a size (`progress > 0`) the transfer is effectively static and
-    ///   network-bound, so show the real rate → false.
-    static func isLiveTranscoderSourced(_ record: DownloadRecord) -> Bool {
-        let lane = record.metadata?.resolvedDownloadLane() ?? .original
-        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-        switch lane {
-        case .original:
-            return false
-        case .optimize:
-            // Plex optimize has a separate server-side render phase; once the optimized Part exists,
-            // the app downloads that rendered static file with a real Content-Length/range support.
-            // Jellyfin/Emby optimize lanes are live encoder streams, so their byte cadence remains
-            // transcoder-gated for the whole transfer.
-            return backend == .plex ? record.progress <= 0 : true
-        case .compatibleRemux:
-            return record.progress <= 0
-        }
+        // #123 / #135 Stage 1c: the lane × backend × progress classification lives in the pure,
+        // tested `DownloadDisplayClassifier`.
+        return DownloadDisplayClassifier.isLiveTranscoderSourced(record)
     }
 
     /// #84: whether the backend lane a row needs is currently configured/authenticated. The
@@ -913,7 +887,7 @@ public final class DownloadManager {
                 }
                 let profile = Self.jellyfinTranscodeProfile(named: targetName)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
-                expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
                 let infoReq = try JellyfinPlayback.downloadPlaybackInfoRequest(
                     server: server, token: token, identity: identity,
@@ -993,7 +967,7 @@ public final class DownloadManager {
                     metadata.downloadLane = .optimize
                     metadata.optimizeTargetName = Self.jellyfinDefaultDownloadPreset
                     let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
-                    expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                    expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                                  videoBitrateBps: profile.videoBitrateBps)
                     request = Self.jellyfinTranscodedDownloadRequest(
                         server, token, identity, itemId, decision.mediaSourceId,
@@ -1462,7 +1436,7 @@ public final class DownloadManager {
                     playSessionId: decision.playSessionId,
                     videoBitrate: profile.videoBitrateBps,
                     audioBitrate: 192_000)
-                expectedBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
             }
         } catch {
@@ -2271,13 +2245,13 @@ public final class DownloadManager {
                 mediaBytes = part?.size
             } else if let profile = Self.customDownloadProfile(named: targetName) {
                 if let kbps = profile.settings.maxVideoBitrateKbps {
-                    mediaBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                    mediaBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                              videoBitrateBps: kbps * 1_000)
                 } else {
                     mediaBytes = part?.size
                 }
             } else {
-                mediaBytes = Self.estimatedTranscodeBytes(durationMs: item.duration,
+                mediaBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                           videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
             }
         }
@@ -3744,21 +3718,14 @@ public final class DownloadManager {
                                         maxHeight: height)
     }
 
-    private static func estimatedTranscodeBytes(durationMs: Int?, videoBitrateBps: Int) -> Int? {
-        guard let durationMs, durationMs > 0 else { return nil }
-        // Add a modest audio/container allowance to the selected video bitrate so the storage
-        // preflight is conservative without requiring a Content-Length from Jellyfin's stream.
-        let totalBitrate = videoBitrateBps + 256_000
-        return Int((Double(durationMs) / 1000.0) * Double(totalBitrate) / 8.0)
-    }
-
     private static func estimatedTranscodeBytes(for record: DownloadRecord) -> Int? {
         guard let targetName = record.metadata?.optimizeTargetName, !targetName.isEmpty else {
             return nil
         }
         let profile = jellyfinTranscodeProfile(named: targetName)
-        return estimatedTranscodeBytes(durationMs: record.metadata?.duration,
-                                       videoBitrateBps: profile.videoBitrateBps)
+        // #135 Stage 1b: the pure duration × bitrate estimate lives in `TranscodeSizeEstimator`.
+        return TranscodeSizeEstimator.bytes(durationMs: record.metadata?.duration,
+                                            videoBitrateBps: profile.videoBitrateBps)
     }
 
     /// Unified download fraction for a row's bar + caption (#97), so Plex/Jellyfin/Emby
