@@ -33,7 +33,6 @@ struct MusicPagedGrid: View {
 
     private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
                                     spacing: DS.Space.xl)]
-    private let alphabetRailSortClearance: CGFloat = 72
 
     private var pagingSource: LibraryPagingSource {
         .music(kind: kind, libraryID: libraryID, libraryTitle: libraryTitle,
@@ -80,27 +79,20 @@ struct MusicPagedGrid: View {
     private var loadedGrid: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             HStack {
-                Spacer()
                 sortMenu
+                Spacer()
             }
-            .padding(.leading, DS.Space.xxl)
-            .padding(.trailing, sortTrailingPadding)
+            .padding(.horizontal, DS.Space.xxl)
 
             LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
                 // Position-keyed: a slot's identity is its place in the listing; its content
                 // arrives when the page loads (same contract as the video grid's slots).
                 ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
-                    if let item = slot {
-                        NavigationLink(value: item) {
-                            SquareArtCell(item: item, size: MusicArt.gridMin, subtitle: subtitle(item))
-                        }
-                        .cardLink()
-                        .id(index)
-                    } else {
-                        MusicPlaceholderCell()
-                            .id(index)
-                            .onAppear { prefetchPage(containing: index) }
-                    }
+                    MusicPagedGridSlot(index: index,
+                                       item: slot,
+                                       subtitle: slot.flatMap(subtitle(_:)),
+                                       onPlaceholderAppear: { prefetchPage(containing: index) })
+                    .id(index)
                 }
             }
             .padding(.horizontal, DS.Space.xxl)
@@ -118,13 +110,6 @@ struct MusicPagedGrid: View {
                 .font(.callout)
         }
         .buttonStyle(.bordered)
-    }
-
-    private var sortTrailingPadding: CGFloat {
-        guard paging.alphabetBuckets.count > 1, case .loaded = paging.loadState else {
-            return DS.Space.xxl
-        }
-        return DS.Space.xxl + alphabetRailSortClearance
     }
 
     /// "Artist · 1973" on albums, dropping whichever half is missing; nil for artists.
@@ -163,6 +148,33 @@ struct MusicPagedGrid: View {
                 withAnimation(.snappy(duration: 0.25)) {
                     proxy.scrollTo(entry.offset, anchor: .top)
                 }
+            }
+        }
+    }
+}
+
+private struct MusicPagedGridSlot: View {
+    let index: Int
+    let item: MediaItem?
+    let subtitle: String?
+    let onPlaceholderAppear: () -> Void
+
+    var body: some View {
+        Group {
+            if let item {
+                NavigationLink(value: item) {
+                    SquareArtCell(item: item, size: MusicArt.gridMin, subtitle: subtitle)
+                }
+                .cardLink()
+                // Keep the outer numeric `.id(index)` as the scroll target, but force the
+                // inner subtree to be replaced when a sparse slot flips from placeholder to
+                // loaded content. Fast A-Z jumps can otherwise leave LazyVGrid reusing a
+                // placeholder subtree even after the page fetch filled the slot.
+                .id("loaded-\(item.ratingKey)")
+            } else {
+                MusicPlaceholderCell()
+                    .id("placeholder-\(index)")
+                    .onAppear(perform: onPlaceholderAppear)
             }
         }
     }

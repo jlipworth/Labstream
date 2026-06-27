@@ -649,26 +649,36 @@ struct SquareArtCell: View {
         item.kind == .artist ? size / 2 : DS.Radius.poster
     }
 
+    private var textAlignment: HorizontalAlignment {
+        item.kind == .artist ? .center : .leading
+    }
+
+    private var frameAlignment: Alignment {
+        item.kind == .artist ? .center : .leading
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.sm) {
+        VStack(alignment: textAlignment, spacing: DS.Space.sm) {
             PosterImage(path: item.thumb, width: size, height: size,
                         cornerRadius: artRadius,
                         placeholderSymbol: item.kind == .artist ? "music.microphone" : "music.note")
                 .posterHover()
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: textAlignment, spacing: 2) {
                 Text(item.title)
                     .font(.headline)
                     .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: frameAlignment)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: frameAlignment)
                 }
             }
         }
-        .frame(width: size, alignment: .leading)
+        .frame(width: size, alignment: frameAlignment)
         // NOTE: highlight comes from the wrapping link's `.cardLink()` — a custom
         // ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
     }
