@@ -333,9 +333,13 @@ struct DetailView: View {
                 }
             }
 
-            movieVersionPicker
+            DetailMovieVersionPicker(versions: movieVersions,
+                                     activeVersionRatingKey: activeVersionRatingKey,
+                                     selectedVersionRatingKey: $selectedVersionRatingKey,
+                                     resolvedLabels: movieVersionLabels)
 
-            versionPicker
+            DetailMediaVersionPicker(media: detailed.media,
+                                     selectedMediaIndex: $selectedMediaIndex)
 
             if let playbackErrorMessage {
                 Text(playbackErrorMessage)
@@ -427,60 +431,6 @@ struct DetailView: View {
         .disabled(isTogglingWatched)
     }
 
-    /// Movie-version chooser (#108) — only shown when the grid collapsed several distinct
-    /// backend items (different editions/files of one logical movie, each its own ratingKey)
-    /// into this tile. Picking a version sets `selectedVersionRatingKey`, which re-fetches that
-    /// version's full metadata into `detailed` (via the `.task(id:)`), so Play/Download act on
-    /// the chosen version. Distinct from `versionPicker`, which switches between multiple `Media`
-    /// entries WITHIN one item. A single-version movie attaches no `versions`, so this is hidden.
-    @ViewBuilder
-    private var movieVersionPicker: some View {
-        if movieVersions.count > 1 {
-            Menu {
-                ForEach(Array(movieVersions.enumerated()), id: \.element.ratingKey) { index, version in
-                    Button {
-                        selectedVersionRatingKey = version.ratingKey
-                    } label: {
-                        if version.ratingKey == activeVersionRatingKey {
-                            Label(movieVersionLabel(version, index: index), systemImage: "checkmark")
-                        } else {
-                            Text(movieVersionLabel(version, index: index))
-                        }
-                    }
-                }
-            } label: {
-                Label("Version: \(movieVersionLabel(currentMovieVersion, index: currentMovieVersionIndex))",
-                      systemImage: "square.stack.3d.up")
-                    .font(.callout)
-            }
-            .menuStyle(.borderlessButton)
-        }
-    }
-
-    /// The currently-selected movie version (#108), defaulting to the first.
-    private var currentMovieVersion: MediaItem {
-        movieVersions.first { $0.ratingKey == activeVersionRatingKey } ?? movieVersions[0]
-    }
-
-    private var currentMovieVersionIndex: Int {
-        movieVersions.firstIndex { $0.ratingKey == activeVersionRatingKey } ?? 0
-    }
-
-    /// Label for a collapsed movie version (#108). Prefers a resolution/codec label resolved
-    /// from a brief per-version metadata fetch (`resolveMovieVersionLabels`); falls back to the
-    /// version's own first `Media` if the grid payload happened to carry one; otherwise a stable
-    /// ordinal so the menu always distinguishes the entries.
-    private func movieVersionLabel(_ version: MediaItem, index: Int) -> String {
-        if let resolved = movieVersionLabels[version.ratingKey], !resolved.isEmpty {
-            return resolved
-        }
-        if let media = version.media?.first {
-            let label = MediaVersionLabel.versionLabel(for: media)
-            if label != "Version" { return label }
-        }
-        return "Version \(index + 1)"
-    }
-
     /// Fetch each collapsed version's brief metadata concurrently to build resolution/codec
     /// labels for the chooser (#108, finding 5). Grid items lack `MediaSources`, so without
     /// this every entry would read "Version N". Bounded to `movieVersions` (2–3 items), run
@@ -533,34 +483,6 @@ struct DetailView: View {
         guard let media = full?.media?.first else { return nil }
         let label = MediaVersionLabel.versionLabel(for: media)
         return label == "Version" ? nil : label
-    }
-
-    /// Version picker — only shown when the item ships more than one `Media` entry. Each
-    /// row labels the version by resolution / codec / bitrate so the viewer can pick the
-    /// 4K vs. the 1080p file, etc. The chosen index threads into both playback and the
-    /// media-info summary.
-    @ViewBuilder
-    private var versionPicker: some View {
-        if let media = detailed.media, media.count > 1 {
-            Menu {
-                ForEach(Array(media.enumerated()), id: \.element.id) { index, m in
-                    Button {
-                        selectedMediaIndex = index
-                    } label: {
-                        if index == selectedMediaIndex {
-                            Label(MediaVersionLabel.versionLabel(for: m), systemImage: "checkmark")
-                        } else {
-                            Text(MediaVersionLabel.versionLabel(for: m))
-                        }
-                    }
-                }
-            } label: {
-                Label("Version: \(MediaVersionLabel.versionLabel(for: media[safe: selectedMediaIndex] ?? media[0]))",
-                      systemImage: "rectangle.stack.badge.play")
-                    .font(.callout)
-            }
-            .menuStyle(.borderlessButton)
-        }
     }
 
     /// Origin for an ONLINE (streamed) playback launched from this detail: the originating browse
