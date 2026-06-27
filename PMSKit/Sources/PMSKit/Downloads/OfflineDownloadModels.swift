@@ -39,6 +39,20 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
         progress >= 1.0 ? .complete : .queued
     }
 
+    /// True while this row represents work the app/server is still doing.
+    ///
+    /// `.preparing` is intentionally active: Emby convert-then-download has no URLSession task yet,
+    /// but a server-side Sync job may already be rendering. UI affordances and duplicate-enqueue
+    /// guards must treat it like `.queued` / `.downloading`, not like an idle row.
+    public var isActiveWork: Bool {
+        switch self {
+        case .queued, .preparing, .downloading:
+            return true
+        case .complete, .unverified, .failed, .paused:
+            return false
+        }
+    }
+
     /// Reconcile a persisted row's status against disk reality at launch (D2).
     ///
     /// A row left `.queued`/`.downloading` from a previous run whose task did NOT

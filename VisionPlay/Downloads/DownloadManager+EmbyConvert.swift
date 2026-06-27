@@ -53,6 +53,18 @@ extension DownloadManager {
         convertMetadata.downloadLane = .optimize
         convertMetadata.resumeMode = .serverPrepThenStatic
 
+        // Seed a visible `.preparing` row BEFORE the expensive reuse/refresh preflight so the
+        // headset UI immediately reflects the accepted tap and subsequent taps see an active row.
+        // If we find a reusable converted source below, this temporary server-prep row is removed
+        // before handing off to the static `.existingVersion` lane. If the app dies before the
+        // Sync job is created, launch reconciliation keeps the row `.preparing` and the resume path
+        // fails it as a retryable "conversion did not finish starting" row because it has no job id.
+        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+        optimizeState[ratingKey] = "queued"
+        refreshRecords()
+
         // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
         // instead of re-converting, and (b) identify the freshly-converted source once a new job
         // completes (a second `File` source appears on the same item).
@@ -77,9 +89,12 @@ extension DownloadManager {
                 "source_count": .int(fileSources.count),
             ])
             // We hold the in-flight slot from `downloadEmby`; release it so the `.existingVersion`
-            // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). No
-            // `.preparing` row was seeded yet, so there is nothing to remove.
+            // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). The
+            // temporary `.preparing` row was only preflight feedback; remove it before the static lane
+            // seeds its own row for the reusable file.
+            clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
+            store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
             return
         }
@@ -100,7 +115,9 @@ extension DownloadManager {
                 "target": .label(targetName),
                 "phase": .label("post_refresh"),
             ])
+            clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
+            store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
             return
         }
@@ -125,11 +142,11 @@ extension DownloadManager {
             "snapshot_count": .int(snapshotIds.count),
         ])
 
-        // Seed the 0% `.preparing` row immediately so the UI shows the job while we create it.
+        // Refresh the visible `.preparing` row with the full pre-conversion snapshot before creating
+        // the server job.
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                     bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
-        optimizeState[ratingKey] = "queued"
         refreshRecords()
 
         // 1. Create the convert job.

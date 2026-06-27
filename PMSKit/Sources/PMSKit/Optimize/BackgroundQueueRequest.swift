@@ -86,17 +86,24 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
         /// Source item ratingKey for this background transcode job, when PMS reports it.
         /// This is the reliable attribution key when several optimize jobs run concurrently.
         public let ratingKey: String?
+        /// Human title/subtitle from PMS, when present. Privacy-sensitive: callers may use them
+        /// for in-memory attribution but must never log the values.
+        public let title: String?
+        public let subtitle: String?
         /// Transcode-session key (safe server vocabulary/id path, never a media title). Useful
         /// only for diagnostics/debug correlation; app progress attribution should prefer
         /// `ratingKey`.
         public let key: String?
 
         public init(progress: Int?, state: String?, speed: Double? = nil,
-                    ratingKey: String? = nil, key: String? = nil) {
+                    ratingKey: String? = nil, title: String? = nil,
+                    subtitle: String? = nil, key: String? = nil) {
             self.progress = progress
             self.state = state
             self.speed = speed
             self.ratingKey = ratingKey
+            self.title = title
+            self.subtitle = subtitle
             self.key = key
         }
 
@@ -104,6 +111,7 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
             case progress; case status = "Status"; case state
             case speed; case transcodeSpeed
             case ratingKey; case key
+            case title; case subtitle; case Title; case Subtitle
         }
         private struct StatusBox: Decodable { let state: String? }
 
@@ -126,7 +134,20 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
             // Speed: prefer `speed`, fall back to `transcodeSpeed`. Tolerate Double/Int/String.
             self.speed = Self.decodeSpeed(c, .speed) ?? Self.decodeSpeed(c, .transcodeSpeed)
             self.ratingKey = Self.string(c, .ratingKey)
+            self.title = Self.string(c, .title) ?? Self.string(c, .Title)
+            self.subtitle = Self.string(c, .subtitle) ?? Self.string(c, .Subtitle)
             self.key = (try? c.decodeIfPresent(String.self, forKey: .key)) ?? nil
+        }
+
+        public func matchesTitle(_ mediaTitle: String?) -> Bool {
+            guard let needle = mediaTitle?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
+                  !needle.isEmpty else { return false }
+            for field in [title, subtitle] {
+                guard let value = field?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty else { continue }
+                if value == needle || value.contains(needle) { return true }
+            }
+            return false
         }
 
         /// Lenient String decode tolerating String or Int (PMS JSON mixes both).
@@ -188,6 +209,13 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
         return jobs.first { job in
             job.ratingKey?.trimmingCharacters(in: .whitespacesAndNewlines) == wanted
         }
+    }
+
+    /// Unique title match fallback for PMS shapes that omit per-job rating keys. In-memory only:
+    /// title/subtitle values are privacy-sensitive and must not be logged.
+    public func uniqueJob(title mediaTitle: String?) -> Job? {
+        let matches = jobs.filter { $0.matchesTitle(mediaTitle) }
+        return matches.count == 1 ? matches.first : nil
     }
 }
 

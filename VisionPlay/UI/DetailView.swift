@@ -766,8 +766,8 @@ struct DetailView: View {
 
     private var isDownloading: Bool {
         let key = downloadManager.recordKey(for: detailed, backend: actionBackend.downloadBackendKind)
-        return downloadManager.records.contains {
-            $0.ratingKey == key && ($0.status == .queued || $0.status == .downloading)
+        return downloadManager.activeJobs.contains(key) || downloadManager.records.contains {
+            $0.ratingKey == key && $0.status.isActiveWork
         }
     }
 
@@ -778,8 +778,15 @@ struct DetailView: View {
             if rec.status == .paused { return "Download Paused" }
             if rec.isUnverified { return "Downloaded (Unverified)" }
             if rec.isComplete { return "Downloaded" }
+            if rec.status == .preparing { return "Preparing on Server" }
+            if rec.status == .queued {
+                return rec.metadata?.resolvedResumeMode(ratingKey: key) == .serverPrepThenStatic
+                    ? "Preparing on Server"
+                    : "Queued"
+            }
             return "Downloading \(Int(rec.progress * 100))%"
         }
+        if downloadManager.activeJobs.contains(key) { return "Starting Download" }
         return "Download"
     }
 

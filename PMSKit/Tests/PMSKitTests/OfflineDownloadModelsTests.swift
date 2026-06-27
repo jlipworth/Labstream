@@ -460,6 +460,17 @@ struct OfflineDownloadModelsTests {
         #expect(legacy.resumeDataRelativePath == nil)
     }
 
+
+    @Test("active work includes server-prep rows")
+    func activeWorkIncludesServerPrepRows() {
+        for status in [DownloadStatus.queued, .preparing, .downloading] {
+            #expect(status.isActiveWork)
+        }
+        for status in [DownloadStatus.complete, .unverified, .failed, .paused] {
+            #expect(!status.isActiveWork)
+        }
+    }
+
     @Test("a .preparing convert row survives relaunch and keeps polling (never a dead transfer)")
     func preparingRowSurvivesRelaunch() {
         // The convert job runs server-side and survives app death, so a `.preparing` row stays
