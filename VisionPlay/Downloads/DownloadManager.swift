@@ -503,12 +503,19 @@ public final class DownloadManager {
         refreshRecords()
     }
 
-    /// Resume queue processing and restart each paused row through the normal resume/retry path.
+    /// Resume queue processing with no memory of which rows the last global pause touched.
+    ///
+    /// "Resume Queue" is intentionally snowball-style: clear the persisted queue gate, retry every
+    /// idle incomplete row (`.paused` and `.failed`), then let queued/preparing server-side work
+    /// resume through its normal poller. Already-active rows are left alone so we do not duplicate
+    /// URLSession tasks.
     public func resumeQueue() {
         isQueuePaused = false
         UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
-        let pausedKeys = records.filter { $0.status == .paused }.map(\.ratingKey)
-        for key in pausedKeys { retry(ratingKey: key) }
+        let retryKeys = records
+            .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
+            .map(\.ratingKey)
+        for key in retryKeys { retry(ratingKey: key) }
         resumePendingServerPrepDownloads()
         refreshRecords()
     }
