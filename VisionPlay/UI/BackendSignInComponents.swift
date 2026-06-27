@@ -133,3 +133,77 @@ struct BackendAuthStartView: View {
         }
     }
 }
+
+struct BackendCredentialsSignInForm: View {
+    let serverURLPlaceholder: String?
+    let serverURLText: Binding<String>?
+    let username: Binding<String>
+    let password: Binding<String>
+    let isWorking: Bool
+    let signInTitle: String
+    let systemImage: String
+    let isSignInDisabled: Bool
+    let chooseDifferentTitle: String
+    let onSignIn: () -> Void
+    let onChooseDifferent: () -> Void
+
+    init(serverURLPlaceholder: String? = nil,
+         serverURLText: Binding<String>? = nil,
+         username: Binding<String>,
+         password: Binding<String>,
+         isWorking: Bool,
+         signInTitle: String,
+         systemImage: String = "person.crop.circle.badge.checkmark",
+         isSignInDisabled: Bool,
+         chooseDifferentTitle: String = "Choose a different sign-in method",
+         onSignIn: @escaping () -> Void,
+         onChooseDifferent: @escaping () -> Void) {
+        self.serverURLPlaceholder = serverURLPlaceholder
+        self.serverURLText = serverURLText
+        self.username = username
+        self.password = password
+        self.isWorking = isWorking
+        self.signInTitle = signInTitle
+        self.systemImage = systemImage
+        self.isSignInDisabled = isSignInDisabled
+        self.chooseDifferentTitle = chooseDifferentTitle
+        self.onSignIn = onSignIn
+        self.onChooseDifferent = onChooseDifferent
+    }
+
+    var body: some View {
+        VStack(spacing: DS.Space.md) {
+            if let serverURLPlaceholder, let serverURLText {
+                BackendServerURLField(placeholder: serverURLPlaceholder, text: serverURLText)
+            }
+
+            TextField("Username", text: username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.username)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+
+            SecureField("Password", text: password)
+                .textContentType(.password)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+
+            Button(action: onSignIn) {
+                if isWorking {
+                    ProgressView()
+                } else {
+                    Label(signInTitle, systemImage: systemImage)
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xs)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isSignInDisabled)
+
+            Button(chooseDifferentTitle, action: onChooseDifferent)
+                .buttonStyle(.bordered)
+        }
+    }
+}
