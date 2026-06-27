@@ -89,6 +89,11 @@ public final class DownloadManager {
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
+    var storageAudit: OfflineDownloadStorageAudit {
+        let inFlight = Set(activeJobs.compactMap { store.destinationsByRatingKey[$0]?.lastPathComponent })
+        return store.storageAudit(inFlightRelativePaths: inFlight)
+    }
+
     /// User-controlled queue pause. Persisted so a relaunch does not immediately restart
     /// server-prep polling or paused transfers the user intentionally stopped before refreshing.
     public private(set) var isQueuePaused: Bool = UserDefaults.standard.bool(forKey: queuePausedDefaultsKey)
