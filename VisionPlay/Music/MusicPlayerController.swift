@@ -564,12 +564,7 @@ final class MusicPlayerController {
                                 token: token,
                                 identity: appModel.identity,
                                 client: appModel.client,
-                                player: player,
-                                currentPositionMs: { [weak player] in
-                                    guard let seconds = player?.currentTime().seconds,
-                                          seconds.isFinite else { return 0 }
-                                    return Int(seconds * 1000)
-                                })
+                                player: player)
     }
 
     /// One-time (per controller life) session prep: activate the music-mode audio
