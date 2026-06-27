@@ -128,6 +128,52 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertTrue(report.contains("\"media_title\":\"[omitted]\""))
     }
 
+    func testReportSnapshotUsesLatestSourceFieldsEvenWhenEventsAreHidden() {
+        let olderSnapshot = DiagnosticEvent(timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+                                            category: .playback,
+                                            name: "playback.snapshot",
+                                            fields: [
+                                                "source_container": .label("old_mkv"),
+                                                "source_resolution": .label("1920x1080"),
+                                                "source_video_codec": .label("h264"),
+                                                "source_bitrate_kbps": .int(8000),
+                                            ])
+        let latestSnapshot = DiagnosticEvent(timestamp: Date(timeIntervalSince1970: 1_700_000_010),
+                                             category: .playback,
+                                             name: "playback.snapshot",
+                                             fields: [
+                                                "source_container": .label("mp4"),
+                                                "source_resolution": .label("3840x2160"),
+                                                "source_video_codec": .label("hevc"),
+                                                "source_audio_codec": .label("eac3"),
+                                                "source_audio_channels": .int(6),
+                                                "source_bitrate_kbps": .int(42_000),
+                                             ])
+        let report = DiagnosticReportRenderer.render(
+            context: DiagnosticReportContext(product: "VisionPlay",
+                                             appVersion: "1.0",
+                                             appBuild: "42",
+                                             operatingSystem: "visionOS 26.5",
+                                             deviceName: "Apple Vision Pro",
+                                             backend: "Plex",
+                                             selectedQuality: "Direct Play / Maximum",
+                                             loggingEnabled: true),
+            events: [olderSnapshot, latestSnapshot],
+            maxEvents: 0,
+            generatedAt: Date(timeIntervalSince1970: 1_700_000_020))
+
+        XCTAssertTrue(report.contains("Recent playback snapshot"))
+        XCTAssertTrue(report.contains("- source_container: mp4"))
+        XCTAssertTrue(report.contains("- source_resolution: 3840x2160"))
+        XCTAssertTrue(report.contains("- source_video_codec: hevc"))
+        XCTAssertTrue(report.contains("- source_audio_codec: eac3"))
+        XCTAssertTrue(report.contains("- source_audio_channels: 6"))
+        XCTAssertTrue(report.contains("- source_bitrate_kbps: 42000"))
+        XCTAssertTrue(report.contains("Ring buffer events: 2 total, showing last 0"))
+        XCTAssertFalse(report.contains("old_mkv"))
+        XCTAssertFalse(report.contains("1920x1080"))
+    }
+
     func testJSONLineDoesNotRedactSafeLongKeysOrEventNamesAsTokens() {
         let streamURL = URL(string: "https://plex.internal:32400/video/:/transcode/universal/start.m3u8?X-Plex-Token=secret")
         let event = DiagnosticEvent(category: .playback,
