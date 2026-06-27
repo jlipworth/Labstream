@@ -2364,12 +2364,14 @@ public final class DownloadManager {
             optimizeState[ratingKey] = "queued"
             optimizeProgress[ratingKey] = nil
             optimizeETA[ratingKey] = nil
+            refreshRecords()
             return
         }
         let p = min(1.0, Double(pct) / 100.0)
         optimizeProgress[ratingKey] = p
         optimizeState[ratingKey] = "transcoding"
         updateOptimizeETA(ratingKey: ratingKey, progress: p)
+        refreshRecords()
     }
 
     /// Fold the moving optimize percent into an EMA (same 0.75/0.25 weights as the transfer
@@ -2513,6 +2515,7 @@ public final class DownloadManager {
                 // activity feed can expose only one optimize activity even while PMS runs several
                 // background transcoders, so a row could show "Transcoding 7%" from this endpoint
                 // but never get a time estimate if ETA sampling stayed activity-only.
+                var didUpdateProgressState = false
                 if let pct = attributedJob?.progress, pct >= 0, pct <= 100 {
                     let bgFraction = min(1.0, Double(pct) / 100.0)
                     updateOptimizeETA(ratingKey: ratingKey, progress: bgFraction)
@@ -2520,6 +2523,7 @@ public final class DownloadManager {
                     // larger), so a brief disagreement with the activity match can't jitter the bar.
                     optimizeProgress[ratingKey] = max(bgFraction, optimizeProgress[ratingKey] ?? 0)
                     optimizeState[ratingKey] = "transcoding"
+                    didUpdateProgressState = true
                 }
 
                 // PREFERRED transcode-ETA source: remaining_video_seconds / speed (steadier than
@@ -2532,13 +2536,16 @@ public final class DownloadManager {
                                                            progressPercent: pct, speed: speed) {
                     optimizeETA[ratingKey] = etaSeconds
                     fields["bg_speed_eta_sec"] = .int(Int(etaSeconds))
+                    didUpdateProgressState = true
                 }
+                if didUpdateProgressState { refreshRecords() }
             } else if thisIsQueuedConversion {
                 // Waiting behind the active conversion — say so honestly ("Queued on server")
                 // instead of an indefinite "Preparing on server…". Never clobber a real % that's
                 // already showing (a row that briefly drops out of the active slot keeps its bar).
                 if optimizeProgress[ratingKey] == nil {
                     optimizeState[ratingKey] = "queued"
+                    refreshRecords()
                 }
             }
         }
