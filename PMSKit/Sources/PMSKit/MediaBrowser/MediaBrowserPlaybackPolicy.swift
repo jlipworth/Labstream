@@ -48,6 +48,35 @@ public struct MediaBrowserPlaybackQualityPolicy: Sendable, Equatable {
     }
 }
 
+/// Backend-resolved HLS buffering policy shared by Jellyfin/Emby playback callers.
+///
+/// Keep normal VOD playback biased toward an airplane-safe cushion. The short target is reserved
+/// only for post-seek remote HLS reopens, where Jellyfin may mint segments around realtime and a
+/// deep target can wedge first-frame resume.
+public enum MediaBrowserRemoteHLSBufferingPolicy {
+    /// Desired steady-state VOD cushion for normal playback/reloads.
+    public static let steadyStateForwardBufferSeconds: Double = 300
+    /// Recovery/reopen target for explicit out-of-buffer seeks.
+    public static let seekReopenForwardBufferSeconds: Double = 12
+
+    public static func preferredForwardBufferSeconds(isServerEncodedHLS: Bool,
+                                                     preferShortBuffer: Bool) -> Double {
+        guard isServerEncodedHLS else { return steadyStateForwardBufferSeconds }
+        return preferShortBuffer ? seekReopenForwardBufferSeconds : steadyStateForwardBufferSeconds
+    }
+
+    public static func automaticallyWaitsToMinimizeStalling(isServerEncodedHLS: Bool,
+                                                            preferredForwardBufferSeconds: Double) -> Bool {
+        guard isServerEncodedHLS else { return true }
+        return preferredForwardBufferSeconds > seekReopenForwardBufferSeconds
+    }
+
+    public static func usesShortRemoteBuffer(isServerEncodedHLS: Bool,
+                                             preferredForwardBufferSeconds: Double) -> Bool {
+        isServerEncodedHLS && preferredForwardBufferSeconds <= seekReopenForwardBufferSeconds
+    }
+}
+
 /// Shared interpretation for `/Videos/ActiveEncodings` cleanup. A transport failure or auth/server
 /// rejection means the encoder is not confirmed gone; session-unknown statuses mean there is no live
 /// job left to stop, so the caller can drop persisted retry state.

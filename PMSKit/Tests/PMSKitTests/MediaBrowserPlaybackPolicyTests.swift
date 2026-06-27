@@ -49,6 +49,30 @@ struct MediaBrowserPlaybackPolicyTests {
         #expect(MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: 123_456) == 1_234_560_000)
     }
 
+    @Test func remoteHLSBufferingPolicyUsesDeepBufferExceptExplicitShortReopens() {
+        #expect(MediaBrowserRemoteHLSBufferingPolicy.preferredForwardBufferSeconds(
+            isServerEncodedHLS: false,
+            preferShortBuffer: false) == MediaBrowserRemoteHLSBufferingPolicy.steadyStateForwardBufferSeconds)
+        #expect(MediaBrowserRemoteHLSBufferingPolicy.preferredForwardBufferSeconds(
+            isServerEncodedHLS: true,
+            preferShortBuffer: false) == MediaBrowserRemoteHLSBufferingPolicy.steadyStateForwardBufferSeconds)
+        #expect(MediaBrowserRemoteHLSBufferingPolicy.preferredForwardBufferSeconds(
+            isServerEncodedHLS: true,
+            preferShortBuffer: true) == MediaBrowserRemoteHLSBufferingPolicy.seekReopenForwardBufferSeconds)
+    }
+
+    @Test func remoteHLSBufferingPolicyWaitsOnlyForDeepBuffers() {
+        #expect(MediaBrowserRemoteHLSBufferingPolicy.automaticallyWaitsToMinimizeStalling(
+            isServerEncodedHLS: false,
+            preferredForwardBufferSeconds: MediaBrowserRemoteHLSBufferingPolicy.steadyStateForwardBufferSeconds))
+        #expect(MediaBrowserRemoteHLSBufferingPolicy.automaticallyWaitsToMinimizeStalling(
+            isServerEncodedHLS: true,
+            preferredForwardBufferSeconds: MediaBrowserRemoteHLSBufferingPolicy.steadyStateForwardBufferSeconds))
+        #expect(!MediaBrowserRemoteHLSBufferingPolicy.automaticallyWaitsToMinimizeStalling(
+            isServerEncodedHLS: true,
+            preferredForwardBufferSeconds: MediaBrowserRemoteHLSBufferingPolicy.seekReopenForwardBufferSeconds))
+    }
+
     @Test func activeEncodingStopPolicyConfirmsOnlySuccessfulOrGoneStatuses() {
         for status in [200, 204, 299, 400, 404, 410] {
             #expect(MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: status))

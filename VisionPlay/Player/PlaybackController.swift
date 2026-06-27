@@ -256,6 +256,8 @@ final class PlaybackController {
     /// (`willResumePlaybackAfterUserNavigatedFromTime:toTime:`) are `API_UNAVAILABLE(visionos)`,
     /// checked in the XROS 26.5 AVPlayerViewController.h.
     private var started = false
+    private var preferShortRemoteHLSBufferForNextLoad = false
+    private var activeForwardBufferTargetSeconds: Double = 0
     private var playbackStartupSpan: PerformanceSpan?
     private var playbackItemLoadSpan: PerformanceSpan?
     private var playbackTask: Task<Void, Never>?
@@ -1206,7 +1208,8 @@ final class PlaybackController {
                                  resetAdaptive: false,
                                  clearError: false,
                                  removeObservers: true,
-                                 swapRecoveryClient: false)
+                                 swapRecoveryClient: false,
+                                 preferShortRemoteHLSBuffer: false)
     }
 
     /// Persist a metadata-driven subtitle choice (Emby burn-in path) so the language preference
@@ -1590,7 +1593,8 @@ final class PlaybackController {
                                  resetAdaptive: false,
                                  clearError: false,
                                  removeObservers: true,
-                                 swapRecoveryClient: false)
+                                 swapRecoveryClient: false,
+                                 preferShortRemoteHLSBuffer: false)
     }
 
     // MARK: - Playback speed (R5)
@@ -1696,7 +1700,8 @@ final class PlaybackController {
                                  resetAdaptive: false,
                                  clearError: false,
                                  removeObservers: true,
-                                 swapRecoveryClient: false)
+                                 swapRecoveryClient: false,
+                                 preferShortRemoteHLSBuffer: false)
     }
 
     // MARK: - Failure / retry
@@ -1721,7 +1726,8 @@ final class PlaybackController {
                                  resetAdaptive: true,
                                  clearError: true,
                                  removeObservers: true,
-                                 swapRecoveryClient: true)
+                                 swapRecoveryClient: true,
+                                 preferShortRemoteHLSBuffer: false)
     }
 
     /// App-owned scrubber commit hook for the experimental custom player path (#38).
@@ -2501,16 +2507,25 @@ final class PlaybackController {
         // active and `installObservers()` no-ops on its second call.
         audioSession.activate()
         audioSession.installObservers()
-        // Forward-buffer tuning (#21 / #43). A deep buffer is useful for Plex/static/direct
-        // playback, where AVPlayer can pull media faster than realtime. It is actively harmful
-        // for Jellyfin live HLS transcodes after a seek: the transcoder can only mint segments
-        // around realtime, and with a 600s target AVPlayer often flips back to `.waiting` after
-        // the first post-seek frame even though Jellyfin/ffmpeg are healthy. Keep the deep
-        // buffer for non-Jellyfin-transcode paths, but use a small window and let playback run
-        // as soon as segments arrive for backend-resolved transcodes.
-        configureAdaptiveBitratePolicy(isRemoteTranscode: isRemoteTranscode)
-        playerItem.preferredForwardBufferDuration = isRemoteTranscode ? 12 : 600
-        player.automaticallyWaitsToMinimizeStalling = !isRemoteTranscode
+        // Forward-buffer tuning (#21 / #43 / #175). Normal remote-HLS VOD playback should keep
+        // an airplane-safe cushion. The short buffer is reserved for actual out-of-buffer seek
+        // reopens, where Jellyfin may only mint segments around realtime and a deep target can
+        // wedge first-frame resume.
+        let preferShortRemoteHLSBuffer = preferShortRemoteHLSBufferForNextLoad
+        preferShortRemoteHLSBufferForNextLoad = false
+        let preferredForwardBufferSeconds = MediaBrowserRemoteHLSBufferingPolicy.preferredForwardBufferSeconds(
+            isServerEncodedHLS: isRemoteTranscode,
+            preferShortBuffer: preferShortRemoteHLSBuffer)
+        configureAdaptiveBitratePolicy(usesShortRemoteBuffer: MediaBrowserRemoteHLSBufferingPolicy.usesShortRemoteBuffer(
+            isServerEncodedHLS: isRemoteTranscode,
+            preferredForwardBufferSeconds: preferredForwardBufferSeconds))
+        activeForwardBufferTargetSeconds = preferredForwardBufferSeconds
+        playerItem.preferredForwardBufferDuration = preferredForwardBufferSeconds
+        playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused =
+            isRemoteTranscode && !preferShortRemoteHLSBuffer
+        player.automaticallyWaitsToMinimizeStalling = MediaBrowserRemoteHLSBufferingPolicy.automaticallyWaitsToMinimizeStalling(
+            isServerEncodedHLS: isRemoteTranscode,
+            preferredForwardBufferSeconds: preferredForwardBufferSeconds)
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
         attachExternalMetadata(to: playerItem)
@@ -2531,6 +2546,8 @@ final class PlaybackController {
         recordPlaybackDiagnostic("playback.item_loaded", fields: [
             "resume": .millisecondsBucket(resumeOffsetMs),
             "preferred_forward_buffer_seconds": .int(Int(playerItem.preferredForwardBufferDuration)),
+            "automatically_waits_to_minimize_stalling": .bool(player.automaticallyWaitsToMinimizeStalling),
+            "short_remote_hls_buffer": .bool(preferShortRemoteHLSBuffer),
             "item_generation": .int(itemGeneration),
         ])
         installObservers(for: playerItem,
@@ -2556,12 +2573,29 @@ final class PlaybackController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.diagnostics.sample(player: self.player)
+                self.maintainForwardBufferTarget()
                 self.maybeAdaptBitrateAfterHealthyPlayback()
                 self.maybeRecordDiagnosticSnapshot()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         diagnosticsObservers.storeTimer(timer)
+    }
+
+    private func maintainForwardBufferTarget() {
+        guard isRemoteTranscode,
+              activeForwardBufferTargetSeconds > MediaBrowserRemoteHLSBufferingPolicy.seekReopenForwardBufferSeconds,
+              let currentItem = player.currentItem else { return }
+
+        if currentItem.preferredForwardBufferDuration != activeForwardBufferTargetSeconds {
+            currentItem.preferredForwardBufferDuration = activeForwardBufferTargetSeconds
+        }
+        if !currentItem.canUseNetworkResourcesForLiveStreamingWhilePaused {
+            currentItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        }
+        if !player.automaticallyWaitsToMinimizeStalling {
+            player.automaticallyWaitsToMinimizeStalling = true
+        }
     }
 
     private func installObservers(for playerItem: AVPlayerItem,
@@ -3579,13 +3613,12 @@ final class PlaybackController {
         _ = applyAdaptiveBitrateDecision(decision, baseFields: runtimeSnapshotFields())
     }
 
-    private func configureAdaptiveBitratePolicy(isRemoteTranscode: Bool) {
-        // Jellyfin remote transcodes intentionally keep AVPlayer's forward buffer short (#43):
-        // a 600s buffer can wedge first-frame/deep-seek playback. If the ABR policy kept its
-        // default 45s upshift-buffer requirement on that path, Jellyfin could downshift after a
+    private func configureAdaptiveBitratePolicy(usesShortRemoteBuffer: Bool) {
+        // Remote-HLS seek reopens intentionally use a short buffer (#43). If the ABR policy kept
+        // the normal upshift-buffer requirement on that path, Jellyfin could downshift after a
         // stall but practically never climb back up. Keep the anti-oscillation time gates, but
-        // align the buffer threshold with the remote-transcode buffer target.
-        adaptiveBitratePolicy.configuration.minimumBufferedAheadForUpshift = isRemoteTranscode
+        // align the buffer threshold with the active remote-HLS buffer mode.
+        adaptiveBitratePolicy.configuration.minimumBufferedAheadForUpshift = usesShortRemoteBuffer
             ? Self.remoteTranscodeAdaptiveUpshiftBufferSeconds
             : Self.defaultAdaptiveUpshiftBufferSeconds
     }
@@ -3619,7 +3652,8 @@ final class PlaybackController {
                                  resetAdaptive: false,
                                  clearError: false,
                                  removeObservers: true,
-                                 swapRecoveryClient: false)
+                                 swapRecoveryClient: false,
+                                 preferShortRemoteHLSBuffer: false)
         return true
     }
 
@@ -3723,7 +3757,8 @@ final class PlaybackController {
                                           resetAdaptive: Bool,
                                           clearError: Bool,
                                           removeObservers shouldRemoveObservers: Bool,
-                                          swapRecoveryClient: Bool) {
+                                          swapRecoveryClient: Bool,
+                                          preferShortRemoteHLSBuffer: Bool) {
         if resetFinalTarget { finalTargetRebuildPolicy.reset() }
         if resetAdaptive { adaptiveBitratePolicy.reset() }
         if clearError {
@@ -3732,14 +3767,18 @@ final class PlaybackController {
         }
         if shouldRemoveObservers { removeObservers() }
         if remoteStreamReopener != nil {
-            reopenRemoteStream(offsetMs: offsetMs, bitrateKbps: bitrateKbps)
+            reopenRemoteStream(offsetMs: offsetMs,
+                               bitrateKbps: bitrateKbps,
+                               preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer)
         } else {
             if swapRecoveryClient { switchToRecoveryControlClient() }
             beginStreaming(resumeOffsetMsOverride: offsetMs)
         }
     }
 
-    private func reopenRemoteStream(offsetMs: Int, bitrateKbps: Int) {
+    private func reopenRemoteStream(offsetMs: Int,
+                                    bitrateKbps: Int,
+                                    preferShortRemoteHLSBuffer: Bool = true) {
         guard let remoteStreamReopener else { return }
         // Hold the scrubber on the reopen target across the detach→renegotiate→ready window so the
         // label can't fall back to the stale offset while the item is nil (GH #110).
@@ -3803,6 +3842,7 @@ final class PlaybackController {
                 }
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false
+                self.preferShortRemoteHLSBufferForNextLoad = preferShortRemoteHLSBuffer
                 self.loadRemoteStream(playableURL, headers: reopened.headers, resumeOffsetMs: offsetMs)
                 switch RemoteStreamLifecyclePolicy.priorSessionStopDecision(
                     priorPlaySessionID: priorPlaySessionId,
