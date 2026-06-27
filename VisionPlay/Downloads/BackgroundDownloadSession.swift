@@ -50,6 +50,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         var totalBytes: Int { baseOffset + bytesThisTask }
     }
 
+    private final class PauseLookupState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var matchedTask = false
+        private var finishedLookups = 0
+
+        func markMatchedTask() {
+            lock.lock()
+            matchedTask = true
+            lock.unlock()
+        }
+
+        func finishLookup(expectedLookups: Int) -> Bool {
+            lock.lock()
+            finishedLookups += 1
+            let shouldMarkPausedWithoutTask = finishedLookups == expectedLookups && !matchedTask
+            lock.unlock()
+            return shouldMarkPausedWithoutTask
+        }
+    }
+
     /// Called on any progress/completion so the manager can refresh records.
     var onChange: (() -> Void)?
 
@@ -371,33 +391,34 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         AppDiagnostics.record(.downloads, "downloads.pause_requested", fields: [
             "download_id": .identifier(ratingKey),
         ])
-        urlSession.getAllTasks { tasks in
-            self.lock.lock()
-            let ids = Set(self.inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
-            let rangeIds = Set(self.rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
-            self.lock.unlock()
 
-            var matched = false
-            for task in tasks where ids.contains(task.taskIdentifier) || rangeIds.contains(task.taskIdentifier) {
-                matched = true
-                if rangeIds.contains(task.taskIdentifier) {
-                    self.lock.lock()
-                    let entry = self.rangeInflight.removeValue(forKey: task.taskIdentifier)
-                    self.lock.unlock()
-                    try? entry?.handle?.close()
-                    task.cancel()
-                    let bytes = (try? self.fileManager.attributesOfItem(atPath: entry?.destination.path ?? "")[.size] as? Int)
-                        ?? entry?.totalBytes
-                        ?? 0
-                    AppDiagnostics.record(.downloads, "downloads.range_checkpoint_paused", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "bytes": .bytes(bytes),
-                    ])
-                    guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
-                    self.store.setStatus(ratingKey: ratingKey, .paused)
-                    self.onError?(ratingKey, .interruptedResumable)
-                    self.onChange?()
-                } else if let downloadTask = task as? URLSessionDownloadTask {
+        lock.lock()
+        let ids = Set(inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+        let rangeIds = Set(rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+        inflight = inflight.filter { $0.value.ratingKey != ratingKey }
+        lock.unlock()
+
+        let pauseLookupState = PauseLookupState()
+
+        @Sendable func finishTaskLookup() {
+            if pauseLookupState.finishLookup(expectedLookups: 2),
+               self.pauseStillApplies(ratingKey: ratingKey) {
+                AppDiagnostics.record(.downloads, "downloads.pause_no_matching_task", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "background_task_ids": .int(ids.count),
+                    "range_task_ids": .int(rangeIds.count),
+                ])
+                self.store.setStatus(ratingKey: ratingKey, .paused)
+                self.onChange?()
+            }
+        }
+
+        urlSession.getAllTasks { tasks in
+            var matchedBackgroundTask = false
+            for task in tasks where ids.contains(task.taskIdentifier) {
+                matchedBackgroundTask = true
+                pauseLookupState.markMatchedTask()
+                if let downloadTask = task as? URLSessionDownloadTask {
                     downloadTask.cancel { resumeData in
                         let resumeBytes = resumeData?.count ?? 0
                         let supportsResume = self.store.supportsPersistedResumeData(ratingKey: ratingKey)
@@ -406,32 +427,94 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                             "resume_data_present": .bool(resumeBytes > 0),
                             "resume_blob_bytes": .bytes(resumeBytes),
                             "supports_resume": .bool(supportsResume),
+                            "task_type": .label("backgroundDownloadTask"),
                         ])
                         guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
                         if let resumeData, !resumeData.isEmpty, supportsResume {
                             self.store.setResumeData(ratingKey: ratingKey, resumeData)
                         }
-                        self.store.setStatus(ratingKey: ratingKey, .paused)
-                        self.onError?(ratingKey, .interruptedResumable)
-                        self.onChange?()
+                        self.markPausedAfterUserPause(ratingKey: ratingKey)
                     }
                 } else {
                     task.cancel()
-                    guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
-                    self.store.setStatus(ratingKey: ratingKey, .paused)
-                    self.onError?(ratingKey, .interruptedResumable)
-                    self.onChange?()
+                    self.markPausedAfterUserPause(ratingKey: ratingKey)
                 }
             }
 
-            if !matched, self.pauseStillApplies(ratingKey: ratingKey) {
-                self.store.setStatus(ratingKey: ratingKey, .paused)
-                self.onChange?()
+            if !matchedBackgroundTask, !ids.isEmpty {
+                AppDiagnostics.record(.downloads, "downloads.pause_no_task", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "task_type": .label("backgroundDownloadTask"),
+                ])
+            }
+            finishTaskLookup()
+        }
+
+        rangeURLSession.getAllTasks { tasks in
+            var matchedRangeTask = false
+            for task in tasks where rangeIds.contains(task.taskIdentifier) {
+                matchedRangeTask = true
+                pauseLookupState.markMatchedTask()
+                self.pauseRangeTask(task, ratingKey: ratingKey)
+            }
+
+            if !matchedRangeTask, !rangeIds.isEmpty {
+                for entry in self.removeRangeTransfers(taskIdentifiers: rangeIds) {
+                    try? entry.handle?.close()
+                }
+                AppDiagnostics.record(.downloads, "downloads.range_checkpoint_pause_no_task", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "task_type": .label("rangeDataTask"),
+                ])
+            }
+            finishTaskLookup()
+        }
+    }
+
+    private func pauseRangeTask(_ task: URLSessionTask, ratingKey: String) {
+        lock.lock()
+        let entry = rangeInflight.removeValue(forKey: task.taskIdentifier)
+        lock.unlock()
+
+        try? entry?.handle?.close()
+        task.cancel()
+
+        let partialFilePresent: Bool
+        if let destination = entry?.destination {
+            partialFilePresent = fileManager.fileExists(atPath: destination.path)
+        } else {
+            partialFilePresent = false
+        }
+        let bytes = (try? fileManager.attributesOfItem(atPath: entry?.destination.path ?? "")[.size] as? Int)
+            ?? entry?.totalBytes
+            ?? 0
+        AppDiagnostics.record(.downloads, "downloads.range_checkpoint_paused", fields: [
+            "download_id": .identifier(ratingKey),
+            "bytes": .bytes(bytes),
+            "expected_bytes": .bytes(entry?.expectedBytes),
+            "partial_file_present": .bool(partialFilePresent),
+            "task_type": .label("rangeDataTask"),
+        ])
+        markPausedAfterUserPause(ratingKey: ratingKey)
+    }
+
+    private func removeRangeTransfers(taskIdentifiers: Set<Int>) -> [RangeTransfer] {
+        lock.lock()
+        var removed: [RangeTransfer] = []
+        for id in taskIdentifiers {
+            if let entry = rangeInflight.removeValue(forKey: id) {
+                removed.append(entry)
             }
         }
-        lock.lock()
-        inflight = inflight.filter { $0.value.ratingKey != ratingKey }
         lock.unlock()
+        return removed
+    }
+
+    private func markPausedAfterUserPause(ratingKey: String) {
+        guard pauseStillApplies(ratingKey: ratingKey) else { return }
+        store.setStatus(ratingKey: ratingKey, .paused)
+        onError?(ratingKey, .interruptedResumable)
+        onChange?()
     }
 
     /// Cancel any in-flight transfer for a ratingKey.
