@@ -216,6 +216,23 @@ final class LibraryPagingModel {
         let window = PagingPageWindow(pageSize: source.pageSize)
         guard let page = window.page(containing: index),
               let start = window.startOffset(forPage: page) else { return }
+
+        // A rail jump can target a page whose placeholder `onAppear` already kicked off a
+        // prefetch. Previously that made the jump return immediately and scroll to still-nil
+        // slots; if the in-flight prefetch was then cancelled or failed, those placeholders
+        // could remain stranded until the user forced them to reappear. Wait for the existing
+        // page load, then retry once if the requested slot is still empty.
+        if loadingPages.contains(page) {
+            while loadingPages.contains(page),
+                  isCurrent(),
+                  activeIdentity == source.identity,
+                  activeLoadGeneration == generation {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else { return }
+            if slots.indices.contains(index), slots[index] != nil { return }
+        }
+
         guard !loadingPages.contains(page) else { return }
         loadingPages.insert(page)
         defer { loadingPages.remove(page) }
