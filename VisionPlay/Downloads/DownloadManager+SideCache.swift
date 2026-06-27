@@ -156,6 +156,36 @@ extension DownloadManager {
         cacheTextSubtitles(ratingKey: ratingKey, pending: pending)
     }
 
+    func cacheEmbyTextSubtitles(ratingKey: String,
+                                itemId: String,
+                                mediaSourceId: String?,
+                                part: Part?,
+                                server: URL,
+                                token: String,
+                                identity: EmbyClientIdentity,
+                                userId: String) {
+        guard let mediaSourceId, !mediaSourceId.isEmpty, let part else { return }
+        let pending: [PendingSubtitle] = part.subtitleStreams.enumerated()
+            .filter { OfflineTextSubtitleCachePlanner.isCompatibleTextSubtitle($0.element) }
+            .compactMap { fallbackIndex, stream in
+                let ext = OfflineTextSubtitleCachePlanner.fileExtension(for: stream)
+                let streamIndex = stream.index ?? stream.id
+                guard let request = try? EmbyLibrary.textSubtitleRequest(server: server, token: token,
+                                                                         identity: identity, userId: userId,
+                                                                         itemId: itemId,
+                                                                         mediaSourceId: mediaSourceId,
+                                                                         streamIndex: streamIndex, format: ext)
+                else { return nil }
+                let destination = store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: stream.id, ext: ext)
+                return PendingSubtitle(
+                    request: request, destination: destination,
+                    track: OfflineTextSubtitleCachePlanner.track(for: stream,
+                                                                 relativePath: destination.lastPathComponent,
+                                                                 fallbackIndex: fallbackIndex))
+            }
+        cacheTextSubtitles(ratingKey: ratingKey, pending: pending)
+    }
+
     /// One compatible text-subtitle stream resolved into the work needed to cache it offline: the
     /// already-backend-authenticated request, the on-disk destination, and the pre-computed
     /// `OfflineTextSubtitleTrack` (pure; its inputs are known before the fetch). Deliberately carries

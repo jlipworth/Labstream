@@ -66,7 +66,8 @@ extension DownloadManager {
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
         // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
         // onto the row after the decision is known (see below).
-        let embyMediaSourceHint = mediaSourceIDOverride ?? Self.embyMediaSourceID(media: media, part: part)
+        let sourceMediaSourceID = Self.embyMediaSourceID(media: media, part: part)
+        let embyMediaSourceHint = mediaSourceIDOverride ?? sourceMediaSourceID
         var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
@@ -323,6 +324,16 @@ extension DownloadManager {
         // encoder negotiation — so it is safe to fire here independent of the media transfer.
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .emby,
                            server: server, token: token)
+        // Emby optimized/converted downloads are often handed off as a new static MediaSource that
+        // does not carry subtitle streams. Cache compatible text sidecars from the source
+        // MediaSource when this call is a convert-then-static override; otherwise use the
+        // negotiated download source. This mirrors Jellyfin's sidecar path without relying on the
+        // server to bake subtitles into the optimized MP4.
+        let subtitleMediaSourceID = mediaSourceIDOverride == nil ? decision.mediaSourceId
+            : (sourceMediaSourceID ?? decision.mediaSourceId)
+        cacheEmbyTextSubtitles(ratingKey: ratingKey, itemId: itemId,
+                               mediaSourceId: subtitleMediaSourceID, part: part,
+                               server: server, token: token, identity: identity, userId: userId)
 
         beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Emby",
                                 choiceLabel: route == .original ? "original"
