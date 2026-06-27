@@ -4,6 +4,59 @@ import SwiftUI
 ///
 /// These are deliberately presentation-only: callers own validation, auth-manager actions,
 /// cancellation, and credential storage semantics.
+
+struct PlexLinkCodeView: View {
+    let code: String
+    let onOpenInHeadset: () -> Void
+
+    var body: some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
+                    .font(.title3)
+                Text("on your phone, tablet, or computer")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            PairingCodeCells(code: code, width: 76, height: 96, fontSize: 54)
+
+            HStack(spacing: DS.Space.sm) {
+                ProgressView()
+                Text("Waiting for authorization…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Open Plex sign-in in this headset instead", action: onOpenInHeadset)
+                .buttonStyle(.bordered)
+        }
+    }
+}
+
+struct PlexSignInStartView: View {
+    let isWorking: Bool
+    let onStart: () -> Void
+
+    var body: some View {
+        VStack(spacing: DS.Space.md) {
+            Button(action: onStart) {
+                Label("Sign in with Plex", systemImage: "person.crop.circle")
+                    .font(.title3.weight(.semibold))
+                    .padding(.horizontal, DS.Space.lg)
+                    .padding(.vertical, DS.Space.xs)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isWorking)
+
+            Text("Uses a code at plex.tv/link.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+}
+
 struct BackendServerURLField: View {
     let placeholder: String
     @Binding var text: String
