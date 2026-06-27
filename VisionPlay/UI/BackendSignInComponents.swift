@@ -5,6 +5,10 @@ import SwiftUI
 /// These are deliberately presentation-only: callers own validation, auth-manager actions,
 /// cancellation, and credential storage semantics.
 
+enum JellyfinSignInMethod: Equatable {
+    case quickConnect
+    case credentials
+}
 
 struct BackendSelectionPicker: View {
     let selection: MediaBackendKind
@@ -138,6 +142,87 @@ struct EmbyConnectPinCodeView: View {
                         .frame(maxWidth: 420)
                 }
             }
+    }
+}
+
+struct JellyfinSignInFlow: View {
+    let state: AuthManager.State
+    @Binding var server: String
+    @Binding var username: String
+    @Binding var password: String
+    @Binding var signInMethod: JellyfinSignInMethod?
+    let isWorking: Bool
+    let onUseCredentialsFallback: () -> Void
+    let onChooseQuickConnect: () -> Void
+    let onChooseCredentials: () -> Void
+    let onStartQuickConnect: () -> Void
+    let onSignInWithCredentials: () -> Void
+    let onChooseDifferentFromQuickConnect: () -> Void
+    let onChooseDifferentFromCredentials: () -> Void
+
+    var body: some View {
+        switch state {
+        case .awaitingJellyfinQuickConnect(let code):
+            JellyfinQuickConnectCodeView(code: code, onUseCredentials: onUseCredentialsFallback)
+        default:
+            credentialsForm
+        }
+    }
+
+    private var hasServerInput: Bool {
+        !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder
+    private var credentialsForm: some View {
+        VStack(spacing: DS.Space.md) {
+            BackendServerURLField(placeholder: "https://jellyfin.example.com", text: $server)
+
+            switch signInMethod {
+            case nil:
+                methodChooser
+            case .quickConnect:
+                quickConnectStart
+            case .credentials:
+                usernamePasswordForm
+            }
+        }
+    }
+
+    private var methodChooser: some View {
+        BackendSignInMethodChooser(
+            primaryTitle: "Quick Connect",
+            primarySystemImage: "link.badge.plus",
+            secondaryTitle: "Username / Password",
+            secondarySystemImage: "person.crop.circle.badge.checkmark",
+            primaryDisabled: isWorking || !hasServerInput,
+            secondaryDisabled: isWorking || !hasServerInput,
+            disabledHint: hasServerInput ? nil : "Enter your Jellyfin server URL first.",
+            onPrimary: onChooseQuickConnect,
+            onSecondary: onChooseCredentials)
+    }
+
+    private var quickConnectStart: some View {
+        BackendAuthStartView(
+            isWorking: isWorking,
+            workingTitle: "Starting Quick Connect…",
+            startTitle: "Start Quick Connect",
+            systemImage: "link.badge.plus",
+            isStartDisabled: !hasServerInput,
+            chooseDifferentTitle: "Choose a different sign-in method",
+            onStart: onStartQuickConnect,
+            onChooseDifferent: onChooseDifferentFromQuickConnect)
+    }
+
+    private var usernamePasswordForm: some View {
+        BackendCredentialsSignInForm(
+            username: $username,
+            password: $password,
+            isWorking: isWorking,
+            signInTitle: "Sign in with Jellyfin",
+            isSignInDisabled: isWorking,
+            onSignIn: onSignInWithCredentials,
+            onChooseDifferent: onChooseDifferentFromCredentials)
     }
 }
 
