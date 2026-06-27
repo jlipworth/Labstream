@@ -2513,19 +2513,15 @@ final class PlaybackController {
         // wedge first-frame resume.
         let preferShortRemoteHLSBuffer = preferShortRemoteHLSBufferForNextLoad
         preferShortRemoteHLSBufferForNextLoad = false
-        let preferredForwardBufferSeconds = MediaBrowserRemoteHLSBufferingPolicy.preferredForwardBufferSeconds(
-            isServerEncodedHLS: isRemoteTranscode,
-            preferShortBuffer: preferShortRemoteHLSBuffer)
-        configureAdaptiveBitratePolicy(usesShortRemoteBuffer: MediaBrowserRemoteHLSBufferingPolicy.usesShortRemoteBuffer(
-            isServerEncodedHLS: isRemoteTranscode,
-            preferredForwardBufferSeconds: preferredForwardBufferSeconds))
-        activeForwardBufferTargetSeconds = preferredForwardBufferSeconds
-        playerItem.preferredForwardBufferDuration = preferredForwardBufferSeconds
+        let bufferingConfig = PlaybackBufferingPolicy.configuration(
+            isRemoteServerEncodedHLS: isRemoteTranscode,
+            preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer)
+        configureAdaptiveBitratePolicy(usesShortRemoteBuffer: bufferingConfig.usesShortRemoteHLSBuffer)
+        activeForwardBufferTargetSeconds = bufferingConfig.preferredForwardBufferSeconds
+        playerItem.preferredForwardBufferDuration = bufferingConfig.preferredForwardBufferSeconds
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused =
-            isRemoteTranscode && !preferShortRemoteHLSBuffer
-        player.automaticallyWaitsToMinimizeStalling = MediaBrowserRemoteHLSBufferingPolicy.automaticallyWaitsToMinimizeStalling(
-            isServerEncodedHLS: isRemoteTranscode,
-            preferredForwardBufferSeconds: preferredForwardBufferSeconds)
+            bufferingConfig.canUseNetworkResourcesForLiveStreamingWhilePaused
+        player.automaticallyWaitsToMinimizeStalling = bufferingConfig.automaticallyWaitsToMinimizeStalling
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
         attachExternalMetadata(to: playerItem)
@@ -2545,9 +2541,9 @@ final class PlaybackController {
                                                                 ])
         recordPlaybackDiagnostic("playback.item_loaded", fields: [
             "resume": .millisecondsBucket(resumeOffsetMs),
-            "preferred_forward_buffer_seconds": .int(Int(playerItem.preferredForwardBufferDuration)),
+            "preferred_forward_buffer_seconds": .int(Int(bufferingConfig.preferredForwardBufferSeconds)),
             "automatically_waits_to_minimize_stalling": .bool(player.automaticallyWaitsToMinimizeStalling),
-            "short_remote_hls_buffer": .bool(preferShortRemoteHLSBuffer),
+            "short_remote_hls_buffer": .bool(bufferingConfig.usesShortRemoteHLSBuffer),
             "item_generation": .int(itemGeneration),
         ])
         installObservers(for: playerItem,
@@ -2584,7 +2580,7 @@ final class PlaybackController {
 
     private func maintainForwardBufferTarget() {
         guard isRemoteTranscode,
-              activeForwardBufferTargetSeconds > MediaBrowserRemoteHLSBufferingPolicy.seekReopenForwardBufferSeconds,
+              activeForwardBufferTargetSeconds > PlaybackBufferingPolicy.remoteHLSSeekReopenForwardBufferSeconds,
               let currentItem = player.currentItem else { return }
 
         if currentItem.preferredForwardBufferDuration != activeForwardBufferTargetSeconds {
