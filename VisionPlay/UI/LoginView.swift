@@ -287,41 +287,18 @@ struct LoginView: View {
     }
 
     private var jellyfinUsernamePasswordForm: some View {
-        VStack(spacing: DS.Space.md) {
-            TextField("Username", text: $jellyfinUsername)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.username)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-
-            SecureField("Password", text: $jellyfinPassword)
-                .textContentType(.password)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-
-            Button {
-                Task { await startJellyfinLogin() }
-            } label: {
-                if working {
-                    ProgressView()
-                } else {
-                    Label("Sign in with Jellyfin", systemImage: "person.crop.circle.badge.checkmark")
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(working)
-
-            Button("Choose a different sign-in method") {
+        BackendCredentialsSignInForm(
+            username: $jellyfinUsername,
+            password: $jellyfinPassword,
+            isWorking: working,
+            signInTitle: "Sign in with Jellyfin",
+            isSignInDisabled: working,
+            onSignIn: { Task { await startJellyfinLogin() } },
+            onChooseDifferent: {
                 errorMessage = nil
                 working = false
                 jellyfinSignInMethod = nil
-            }
-            .buttonStyle(.bordered)
-        }
+            })
     }
 
     private func jellyfinQuickConnectWaiting(code: String) -> some View {
@@ -496,43 +473,20 @@ struct LoginView: View {
     }
 
     private var embyCredentialsForm: some View {
-        VStack(spacing: DS.Space.md) {
-            BackendServerURLField(placeholder: "https://emby.example.com", text: $embyServer)
-
-            TextField("Username", text: $embyUsername)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.username)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-
-            SecureField("Password", text: $embyPassword)
-                .textContentType(.password)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-
-            Button {
-                Task { await startEmbyLogin() }
-            } label: {
-                if working {
-                    ProgressView()
-                } else {
-                    Label("Sign in with Emby", systemImage: "person.crop.circle.badge.checkmark")
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(working || !hasEmbyServerInput)
-
-            Button("Choose a different sign-in method") {
+        BackendCredentialsSignInForm(
+            serverURLPlaceholder: "https://emby.example.com",
+            serverURLText: $embyServer,
+            username: $embyUsername,
+            password: $embyPassword,
+            isWorking: working,
+            signInTitle: "Sign in with Emby",
+            isSignInDisabled: working || !hasEmbyServerInput,
+            onSignIn: { Task { await startEmbyLogin() } },
+            onChooseDifferent: {
                 errorMessage = nil
                 working = false
                 embySignInMethod = nil
-            }
-            .buttonStyle(.bordered)
-        }
+            })
     }
 
     private var hasEmbyServerInput: Bool {
