@@ -820,9 +820,14 @@ final class PlaybackController {
     }
 
     private func stopRemoteSessionIfNeeded() {
-        guard remoteStreamURL != nil, !didStopRemoteSession else { return }
-        didStopRemoteSession = true
-        onStopRemoteSession?()
+        switch RemoteStreamLifecyclePolicy.finalSessionStopDecision(hasRemoteStream: remoteStreamURL != nil,
+                                                                    didAlreadyStop: didStopRemoteSession) {
+        case .stop:
+            didStopRemoteSession = true
+            onStopRemoteSession?()
+        case .skip:
+            return
+        }
     }
 
     /// Whether the final `/video/:/transcode/universal/stop` was already fired, so
