@@ -690,43 +690,12 @@ struct DetailView: View {
         if let remote = remotePlayback {
             CustomPlayerView(item: playing,
                              controllerFactory: {
-                                 PlaybackController(remoteStreamURL: remote.url,
-                                                    item: playing,
-                                                    identity: appModel.identity,
-                                                    client: appModel.client,
-                                                    remoteBackendLabel: "Jellyfin",
-                                                    httpHeaders: remote.headers,
-                                                    remotePlaySessionId: remote.playSessionId,
-                                                    sourceMetadata: remote.sourceMetadata,
-                                                    playMethod: remote.playMethod,
-                                                    onStopRemoteSession: {
-                                                        Task {
-                                                            await JellyfinBrowseService(appModel: appModel)
-                                                                .stopActiveEncoding(playSessionId: remote.playSessionId)
-                                                        }
-                                                    },
-                                                    remoteStreamReopener: { request in
-                                                        let result = try await JellyfinBrowseService(appModel: appModel)
-                                                            .playbackOpen(item: playing,
-                                                                          maxVideoBitrateKbps: request.bitrateKbps,
-                                                                          resumeOffsetMs: request.offsetMs,
-                                                                          audioStreamIndex: request.audioStreamIndex,
-                                                                          subtitleStreamIndex: request.subtitleStreamIndex)
-                                                        return RemoteStreamOpenResult(
-                                                            url: result.url,
-                                                            headers: result.requiredHTTPHeaders,
-                                                            playSessionId: result.playSessionId,
-                                                            sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-                                                            playMethod: MediaBrowserPlayMethod(result.playMethod),
-                                                            onStop: {
-                                                                Task {
-                                                                    await JellyfinBrowseService(appModel: appModel)
-                                                                        .stopActiveEncoding(playSessionId: result.playSessionId)
-                                                                }
-                                                            })
-                                                    },
-                                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
-                                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
+                                 DetailPlaybackLauncher.jellyfinPlaybackController(
+                                    remote: remote,
+                                    item: playing,
+                                    appModel: appModel,
+                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
                              },
                              trickPlayProvider: JellyfinTrickPlayThumbnailProvider(
                                 item: playing,
@@ -741,49 +710,12 @@ struct DetailView: View {
         } else if let remote = embyRemotePlayback {
             CustomPlayerView(item: playing,
                              controllerFactory: {
-                                 PlaybackController(remoteStreamURL: remote.url,
-                                                    item: playing,
-                                                    identity: appModel.identity,
-                                                    client: appModel.client,
-                                                    remoteBackendLabel: "Emby",
-                                                    httpHeaders: remote.headers,
-                                                    remotePlaySessionId: remote.playSessionId,
-                                                    sourceMetadata: remote.sourceMetadata,
-                                                    playMethod: remote.playMethod,
-                                                    onStopRemoteSession: {
-                                                        Task {
-                                                            if remote.usesServerEncoding {
-                                                                await EmbyBrowseService(appModel: appModel)
-                                                                    .stopActiveEncoding(playSessionId: remote.playSessionId)
-                                                            }
-                                                        }
-                                                    },
-                                                    remoteStreamReopener: { request in
-                                                        let result = try await EmbyBrowseService(appModel: appModel)
-                                                            .playbackOpen(item: playing,
-                                                                          maxVideoBitrateKbps: request.bitrateKbps,
-                                                                          resumeOffsetMs: request.offsetMs,
-                                                                          audioStreamIndex: request.audioStreamIndex,
-                                                                          subtitleStreamIndex: request.subtitleStreamIndex)
-                                                        return RemoteStreamOpenResult(
-                                                            url: result.url,
-                                                            headers: result.requiredHTTPHeaders,
-                                                            playSessionId: result.playSessionId,
-                                                            sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-                                                            playMethod: MediaBrowserPlayMethod(result.playMethod),
-                                                            onStop: {
-                                                                // Active-encoding cleanup only when the source used
-                                                                // server-side encoding; harmless no-op otherwise.
-                                                                Task {
-                                                                    if result.usesServerEncoding {
-                                                                        await EmbyBrowseService(appModel: appModel)
-                                                                            .stopActiveEncoding(playSessionId: result.playSessionId)
-                                                                    }
-                                                                }
-                                                            })
-                                                    },
-                                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
-                                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
+                                 DetailPlaybackLauncher.embyPlaybackController(
+                                    remote: remote,
+                                    item: playing,
+                                    appModel: appModel,
+                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
                              },
                              // Emby has no Jellyfin-style trickplay tiles; serve coarse,
                              // chapter-granularity scrub previews from the per-chapter image
