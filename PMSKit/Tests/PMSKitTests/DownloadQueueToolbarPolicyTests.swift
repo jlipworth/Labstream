@@ -15,19 +15,23 @@ struct DownloadQueueToolbarPolicyTests {
         }
     }
 
-    @Test("paused downloads show Resume Queue")
-    func pausedDownloadsShowResumeQueue() throws {
-        let action = try #require(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                                    statuses: [.paused]))
-        #expect(action == .resumeQueue)
-        #expect(action.title == "Resume Queue")
-        #expect(action.systemImage == "play.circle")
+    @Test("idle incomplete downloads show Resume Queue")
+    func idleIncompleteDownloadsShowResumeQueue() throws {
+        for incomplete in [DownloadStatus.paused, .failed] {
+            let action = try #require(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
+                                                                        statuses: [incomplete]))
+            #expect(action == .resumeQueue)
+            #expect(action.title == "Resume Queue")
+            #expect(action.systemImage == "play.circle")
+        }
     }
 
-    @Test("active downloads dominate paused mixed state")
-    func activeDownloadsDominatePausedMixedState() {
+    @Test("active downloads dominate incomplete mixed state")
+    func activeDownloadsDominateIncompleteMixedState() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
                                                   statuses: [.paused, .downloading]) == .pauseQueue)
+        #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
+                                                  statuses: [.failed, .downloading]) == .pauseQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
                                                   statuses: [.paused, .queued]) == .pauseQueue)
     }
@@ -40,11 +44,23 @@ struct DownloadQueueToolbarPolicyTests {
                                                   statuses: []) == .resumeQueue)
     }
 
-    @Test("terminal rows with running queue hide toolbar action")
-    func terminalRowsWithRunningQueueHideToolbarAction() {
+    @Test("finished rows with running queue hide toolbar action")
+    func finishedRowsWithRunningQueueHideToolbarAction() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [DownloadStatus.complete, .unverified, .failed]) == nil)
+                                                  statuses: [DownloadStatus.complete, .unverified]) == nil)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
                                                   statuses: []) == nil)
+    }
+
+    @Test("resume queue retry target policy is memoryless")
+    func resumeQueueRetryTargetPolicyIsMemoryless() {
+        #expect(DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.paused))
+        #expect(DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.failed))
+
+        #expect(!DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.queued))
+        #expect(!DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.preparing))
+        #expect(!DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.downloading))
+        #expect(!DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.complete))
+        #expect(!DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue(.unverified))
     }
 }
