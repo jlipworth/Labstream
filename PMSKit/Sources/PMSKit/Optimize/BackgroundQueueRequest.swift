@@ -140,14 +140,24 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
         }
 
         public func matchesTitle(_ mediaTitle: String?) -> Bool {
-            guard let needle = mediaTitle?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
-                  !needle.isEmpty else { return false }
+            guard let needle = Self.normalizedTitle(mediaTitle), !needle.isEmpty else { return false }
             for field in [title, subtitle] {
-                guard let value = field?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
-                      !value.isEmpty else { continue }
-                if value == needle || value.contains(needle) { return true }
+                guard let value = Self.normalizedTitle(field), !value.isEmpty else { continue }
+                // Exact-only: substring matching can attribute "The Matrix Reloaded" progress to
+                // "The Matrix" (or collide on common episode titles). RatingKey / active-conversion
+                // attribution remains preferred; title is only a last-resort exact fallback.
+                if value == needle { return true }
             }
             return false
+        }
+
+        private static func normalizedTitle(_ value: String?) -> String? {
+            guard let value else { return nil }
+            return value
+                .lowercased()
+                .split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         /// Lenient String decode tolerating String or Int (PMS JSON mixes both).

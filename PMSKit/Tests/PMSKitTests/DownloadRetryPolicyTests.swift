@@ -105,4 +105,23 @@ struct DownloadRetryPolicyTests {
         #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { _ in false }))
     }
 
+    @Test("Plex static partial uses same stale queued demotion policy")
+    func plexStaticPartialUsesSamePolicy() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-plex-partial.mp4")
+        let metadata = OfflineMetadata(ratingKey: "12345",
+                                       title: "Plex Static",
+                                       type: "movie",
+                                       downloadLane: .original,
+                                       resumeMode: .staticByteRange)
+        let record = DownloadRecord(ratingKey: "12345",
+                                    title: "Plex Static",
+                                    localURL: url,
+                                    bytes: 10 * 1_024 * 1_024,
+                                    progress: 0.10,
+                                    status: .queued,
+                                    metadata: metadata)
+
+        #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { $0 == url }))
+    }
+
 }
