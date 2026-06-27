@@ -31,4 +31,14 @@ struct RemoteStreamLifecyclePolicyTests {
         #expect(RemoteStreamLifecyclePolicy.priorSessionStopDecision(priorPlaySessionID: "session-1",
                                                                     reopenedPlaySessionID: nil) == .deferStop(reason: "after_reopen_item_detached"))
     }
+
+    @Test("Final teardown stops active remote session exactly once")
+    func finalTeardownStopsActiveRemoteSessionExactlyOnce() {
+        #expect(RemoteStreamLifecyclePolicy.finalSessionStopDecision(hasRemoteStream: true,
+                                                                    didAlreadyStop: false) == .stop)
+        #expect(RemoteStreamLifecyclePolicy.finalSessionStopDecision(hasRemoteStream: true,
+                                                                    didAlreadyStop: true) == .skip(reason: "already_stopped"))
+        #expect(RemoteStreamLifecyclePolicy.finalSessionStopDecision(hasRemoteStream: false,
+                                                                    didAlreadyStop: false) == .skip(reason: "not_remote_stream"))
+    }
 }
