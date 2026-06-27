@@ -174,24 +174,23 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let snapshot = Array(rows.values)
         lock.unlock()
-        return snapshot
-            .map { row in
-                DownloadRecord(ratingKey: row.ratingKey,
-                               title: row.title,
-                               localURL: baseDirectory.appendingPathComponent(row.relativePath),
-                               bytes: row.bytes,
-                               progress: row.progress,
-                               status: row.status,
-                               metadata: row.metadata,
-                               posterURL: resolvedDownloadAssetURL(row.metadata?.posterRelativePath),
-                               plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
-                               jellyfinTrickPlayPlaylistURL: resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
-                               chapterImageURLs: Self.resolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
-                                                                              baseDirectory: baseDirectory,
-                                                                              fileManager: fileManager),
-                               sideAssetBytes: sideAssetBytes(for: row.metadata))
-            }
-            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let hydrated = snapshot.map { row in
+            DownloadRecord(ratingKey: row.ratingKey,
+                           title: row.title,
+                           localURL: baseDirectory.appendingPathComponent(row.relativePath),
+                           bytes: row.bytes,
+                           progress: row.progress,
+                           status: row.status,
+                           metadata: row.metadata,
+                           posterURL: resolvedDownloadAssetURL(row.metadata?.posterRelativePath),
+                           plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
+                           jellyfinTrickPlayPlaylistURL: resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
+                           chapterImageURLs: Self.resolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
+                                                                          baseDirectory: baseDirectory,
+                                                                          fileManager: fileManager),
+                           sideAssetBytes: sideAssetBytes(for: row.metadata))
+        }
+        return OfflineDownloadSort.sorted(hydrated)
     }
 
     /// The set of indexed ratingKeys, WITHOUT touching the filesystem. Use this when
