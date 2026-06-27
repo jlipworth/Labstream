@@ -1,11 +1,12 @@
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
+import PMSKit
 
 /// Shared wrappers for copy/export/share variants of the redacted diagnostics report.
 enum DiagnosticReportArtifact {
-    static let exportFilename = "VisionPlay-Diagnostic-Report"
-    static let feedbackFilename = "VisionPlay-Feedback.txt"
+    static let exportFilename = DiagnosticReportArtifactMetadata.exportFilename
+    static let feedbackFilename = DiagnosticReportArtifactMetadata.feedbackFilename
 
     struct Document: FileDocument {
         static var readableContentTypes: [UTType] { [.plainText] }
