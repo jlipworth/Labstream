@@ -777,7 +777,8 @@ struct SettingsView: View {
     /// connection SCHEME only — never tokens, client identifiers, URLs/hosts, media titles,
     /// filenames, usernames, or library paths.
     private var diagnosticReportText: String {
-        AppDiagnostics.report(context: DiagnosticReportContext(
+        let storageAudit = downloadManager.storageAudit
+        return AppDiagnostics.report(context: DiagnosticReportContext(
             product: appModel.identity.product,
             appVersion: Self.appVersion,
             appBuild: Self.appBuild,
@@ -790,6 +791,11 @@ struct SettingsView: View {
             connectionScheme: diagnosticConnectionScheme,
             selectedQuality: "Home: \(StreamingQuality.label(kbps: homeMaxVideoBitrateKbps)); Remote: \(StreamingQuality.label(kbps: remoteMaxVideoBitrateKbps))",
             adaptiveBitrateEnabled: adaptiveBitrateEnabled,
+            downloadReferencedBytes: storageAudit.referencedBytes,
+            downloadDirectoryBytes: storageAudit.directoryBytes,
+            downloadUnreferencedBytes: storageAudit.unreferencedBytes,
+            downloadOrphanCandidateCount: storageAudit.orphanCandidates.count,
+            downloadOrphanCandidateBytes: storageAudit.orphanCandidateBytes,
             loggingEnabled: diagnosticLoggingEnabled
         ))
     }

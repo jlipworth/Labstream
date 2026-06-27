@@ -108,6 +108,11 @@ final class DiagnosticLoggingTests: XCTestCase {
                                               connectionScheme: "https",
                                               selectedQuality: "8 Mbps",
                                               adaptiveBitrateEnabled: false,
+                                              downloadReferencedBytes: 2_000_000,
+                                              downloadDirectoryBytes: 5_000_000,
+                                              downloadUnreferencedBytes: 3_000_000,
+                                              downloadOrphanCandidateCount: 2,
+                                              downloadOrphanCandidateBytes: 3_000_000,
                                               loggingEnabled: true)
         let report = DiagnosticReportRenderer.render(context: context,
                                                      events: store.snapshot(),
@@ -116,6 +121,11 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertTrue(report.contains("VisionPlay Diagnostic Report"))
         XCTAssertTrue(report.contains("Diagnostic logging enabled: yes"))
         XCTAssertTrue(report.contains("Adaptive Bitrate: disabled"))
+        XCTAssertTrue(report.contains("Downloads"))
+        XCTAssertTrue(report.contains("Referenced bytes: 1-10MB"))
+        XCTAssertTrue(report.contains("Directory bytes: 1-10MB"))
+        XCTAssertTrue(report.contains("Unreferenced bytes: 1-10MB"))
+        XCTAssertTrue(report.contains("Conservative orphan candidates: 2 (1-10MB)"))
         XCTAssertTrue(report.contains("observed_bitrate_kbps"))
         XCTAssertTrue(report.contains("Recent redacted events"))
         XCTAssertFalse(report.contains("topsecret"))

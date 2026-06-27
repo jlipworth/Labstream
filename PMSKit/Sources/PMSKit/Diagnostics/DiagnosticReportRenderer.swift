@@ -13,6 +13,11 @@ public struct DiagnosticReportContext: Sendable, Equatable {
     public var connectionScheme: String?
     public var selectedQuality: String
     public var adaptiveBitrateEnabled: Bool?
+    public var downloadReferencedBytes: Int?
+    public var downloadDirectoryBytes: Int?
+    public var downloadUnreferencedBytes: Int?
+    public var downloadOrphanCandidateCount: Int?
+    public var downloadOrphanCandidateBytes: Int?
     public var loggingEnabled: Bool
 
     public init(product: String,
@@ -27,6 +32,11 @@ public struct DiagnosticReportContext: Sendable, Equatable {
                 connectionScheme: String? = nil,
                 selectedQuality: String,
                 adaptiveBitrateEnabled: Bool? = nil,
+                downloadReferencedBytes: Int? = nil,
+                downloadDirectoryBytes: Int? = nil,
+                downloadUnreferencedBytes: Int? = nil,
+                downloadOrphanCandidateCount: Int? = nil,
+                downloadOrphanCandidateBytes: Int? = nil,
                 loggingEnabled: Bool) {
         self.product = product
         self.appVersion = appVersion
@@ -40,6 +50,11 @@ public struct DiagnosticReportContext: Sendable, Equatable {
         self.connectionScheme = connectionScheme
         self.selectedQuality = selectedQuality
         self.adaptiveBitrateEnabled = adaptiveBitrateEnabled
+        self.downloadReferencedBytes = downloadReferencedBytes
+        self.downloadDirectoryBytes = downloadDirectoryBytes
+        self.downloadUnreferencedBytes = downloadUnreferencedBytes
+        self.downloadOrphanCandidateCount = downloadOrphanCandidateCount
+        self.downloadOrphanCandidateBytes = downloadOrphanCandidateBytes
         self.loggingEnabled = loggingEnabled
     }
 }
@@ -74,6 +89,17 @@ public enum DiagnosticReportRenderer {
         if let adaptiveBitrateEnabled = context.adaptiveBitrateEnabled {
             lines.append("- Adaptive Bitrate: \(adaptiveBitrateEnabled ? "enabled" : "disabled")")
         }
+        if context.downloadReferencedBytes != nil
+            || context.downloadDirectoryBytes != nil
+            || context.downloadOrphanCandidateCount != nil {
+            lines.append("")
+            lines.append("Downloads")
+            lines.append("- Referenced bytes: \(byteBucket(context.downloadReferencedBytes))")
+            lines.append("- Directory bytes: \(byteBucket(context.downloadDirectoryBytes))")
+            lines.append("- Unreferenced bytes: \(byteBucket(context.downloadUnreferencedBytes))")
+            let orphanCount = context.downloadOrphanCandidateCount ?? 0
+            lines.append("- Conservative orphan candidates: \(orphanCount) (\(byteBucket(context.downloadOrphanCandidateBytes)))")
+        }
         lines.append("")
         lines.append("Diagnostics")
         lines.append("- Diagnostic logging enabled: \(context.loggingEnabled ? "yes" : "no")")
@@ -98,6 +124,11 @@ public enum DiagnosticReportRenderer {
             lines.append(contentsOf: shownEvents.map { $0.jsonLine() })
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func byteBucket(_ bytes: Int?) -> String {
+        guard let bytes else { return "unknown" }
+        return DiagnosticRedactor.byteBucket(bytes)
     }
 
     private static func latestPlaybackSnapshot(in events: [DiagnosticEvent]) -> DiagnosticEvent? {

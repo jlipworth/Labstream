@@ -209,6 +209,23 @@ final class DownloadStore: @unchecked Sendable {
         return rows.mapValues { baseDirectory.appendingPathComponent($0.relativePath) }
     }
 
+    /// Privacy-safe storage accounting for diagnostics/settings (#171). This reports aggregate
+    /// bytes and conservative orphan candidates only; it does not delete anything.
+    func storageAudit(inFlightRelativePaths: Set<String> = []) -> OfflineDownloadStorageAudit {
+        lock.lock()
+        let snapshot = Array(rows.values)
+        lock.unlock()
+
+        let referenced = OfflineDownloadFileInventory.referencedRelativePaths(
+            mainRelativePaths: snapshot.map(\.relativePath),
+            metadata: snapshot.map(\.metadata)
+        )
+        let files = directoryFileSnapshots()
+        return OfflineDownloadFileInventory.audit(directoryFiles: files,
+                                                  referencedRelativePaths: referenced,
+                                                  inFlightRelativePaths: inFlightRelativePaths)
+    }
+
     /// Absolute local URL for a completed download, if indexed AND present on disk.
     func localURL(for ratingKey: String) -> URL? {
         lock.lock(); defer { lock.unlock() }
@@ -269,6 +286,21 @@ final class DownloadStore: @unchecked Sendable {
             let url = baseDirectory.appendingPathComponent(relative)
             let attrs = try? fileManager.attributesOfItem(atPath: url.path)
             return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
+        }
+    }
+
+    private func directoryFileSnapshots() -> [OfflineDownloadFileSnapshot] {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: baseDirectory,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return urls.compactMap { url in
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                return nil
+            }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            return OfflineDownloadFileSnapshot(relativePath: url.lastPathComponent, byteCount: size)
         }
     }
 
