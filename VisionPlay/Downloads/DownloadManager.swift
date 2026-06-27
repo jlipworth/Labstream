@@ -95,8 +95,6 @@ public final class DownloadManager {
     public internal(set) var activeJobs: Set<String> = []
     private var retryingRows: Set<String> = []
     private var serverPrepResumeRetryTask: Task<Void, Never>?
-    @ObservationIgnored private var serverPrepProgressProbeTasks: [String: Task<Void, Never>] = [:]
-    private var serverPrepProgressProbeIDs: [String: UUID] = [:]
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -1530,8 +1528,6 @@ public final class DownloadManager {
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
         ensureJellyfinDownloadKeepalives(for: fresh)
-        ensureServerPrepProgressProbeTasks(for: fresh)
-        scheduleMissingServerPrepPollersIfNeeded(for: fresh)
 
         // Release the in-flight protection for any job whose download has reached a terminal
         // state (complete / failed). The optimize-queue title and `activeJobs` slot must stay
@@ -1548,91 +1544,6 @@ public final class DownloadManager {
                 || $0.status == .failed || $0.status == .paused
         }.map(\.ratingKey))
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
-    }
-
-
-    private func scheduleMissingServerPrepPollersIfNeeded(for records: [DownloadRecord]) {
-        guard !isQueuePaused else { return }
-        let hasUnattachedPlexPrep = records.contains { record in
-            record.status == .queued
-                && record.bytes == 0
-                && record.progress == 0
-                && !activeJobs.contains(record.ratingKey)
-                && record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey) == .plex
-                && record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
-                && record.metadata?.optimizeTargetName?.isEmpty == false
-        }
-        guard hasUnattachedPlexPrep else { return }
-        scheduleServerPrepResumeRetries()
-    }
-
-    private func ensureServerPrepProgressProbeTasks(for records: [DownloadRecord]) {
-        guard !isQueuePaused else {
-            cancelServerPrepProgressProbeTasks(except: [])
-            return
-        }
-        let eligibleRecords = records.filter(Self.isPlexServerPrepProgressProbeCandidate)
-        let eligibleKeys = Set(eligibleRecords.map(\.ratingKey))
-        cancelServerPrepProgressProbeTasks(except: eligibleKeys)
-
-        for record in eligibleRecords where serverPrepProgressProbeTasks[record.ratingKey] == nil {
-            guard let backendSession = appModel.backendSession(for: .plex) else { continue }
-            let ratingKey = record.ratingKey
-            let mediaTitle = record.title
-            let server = backendSession.baseURL
-            let token = backendSession.token
-            let identity = appModel.identity
-            let probeID = UUID()
-            serverPrepProgressProbeIDs[ratingKey] = probeID
-            serverPrepProgressProbeTasks[ratingKey] = Task { [weak self] in
-                guard let self else { return }
-                defer {
-                    if self.serverPrepProgressProbeIDs[ratingKey] == probeID {
-                        self.serverPrepProgressProbeTasks.removeValue(forKey: ratingKey)
-                        self.serverPrepProgressProbeIDs.removeValue(forKey: ratingKey)
-                    }
-                }
-                while !Task.isCancelled {
-                    guard !self.isQueuePaused,
-                          let current = self.records.first(where: { $0.ratingKey == ratingKey }),
-                          Self.isPlexServerPrepProgressProbeCandidate(current) else {
-                        return
-                    }
-                    // Watch-only progress publisher. The lifecycle poller still owns optimized-part
-                    // discovery and transfer start; this task only keeps the visible percentage/ETA
-                    // fresh when relaunch/auth races leave a row in server prep without a reliable
-                    // UI progress feed. It never creates, moves, deletes, or downloads a Plex job.
-                    await self.pollOptimizeActivity(ratingKey: ratingKey, mediaTitle: mediaTitle,
-                                                    allowSoleFallback: false,
-                                                    server: server, token: token, identity: identity)
-                    await self.recordServerQueueProbe(ratingKey: ratingKey, mediaTitle: mediaTitle,
-                                                      server: server, token: token, identity: identity)
-                    do {
-                        try await Task.sleep(nanoseconds: UInt64(self.optimizePollInterval * 1_000_000_000))
-                    } catch {
-                        return
-                    }
-                }
-            }
-        }
-    }
-
-    private func cancelServerPrepProgressProbeTasks(except liveKeys: Set<String>) {
-        let staleKeys = serverPrepProgressProbeTasks.keys.filter { !liveKeys.contains($0) }
-        for key in staleKeys {
-            guard let task = serverPrepProgressProbeTasks.removeValue(forKey: key) else { continue }
-            serverPrepProgressProbeIDs.removeValue(forKey: key)
-            task.cancel()
-        }
-    }
-
-    private static func isPlexServerPrepProgressProbeCandidate(_ record: DownloadRecord) -> Bool {
-        (record.status == .queued || record.status == .preparing)
-            && record.bytes == 0
-            && record.progress == 0
-            && record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey) == .plex
-            && record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
-            && record.metadata?.optimizeTargetName?.isEmpty == false
     }
 
     private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
@@ -1743,8 +1654,6 @@ public final class DownloadManager {
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
         embyConvertAttemptByRatingKey.removeValue(forKey: ratingKey)
-        serverPrepProgressProbeIDs.removeValue(forKey: ratingKey)
-        serverPrepProgressProbeTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
         if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
             activeQueueTitles.remove(title)
