@@ -83,6 +83,14 @@ public final class DownloadManager {
     /// Live records (in-progress + completed), backed by `DownloadStore`.
     public private(set) var records: [DownloadRecord] = []
 
+    /// Coarse, pre-derived UI state for `OfflineLibraryView`.
+    ///
+    /// Rows used to read `records`, progress dictionaries, ETA dictionaries, active jobs, and
+    /// errors directly from SwiftUI. Under Observation that makes every progress tick invalidate a
+    /// broad part of the list. Keep the hot derived strings/fractions in one snapshot so the view
+    /// observes a single value and row bodies stay manager-free.
+    var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
+
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
     private var retryingRows: Set<String> = []
@@ -196,6 +204,7 @@ public final class DownloadManager {
         self.store = store
         self.session = BackgroundDownloadSession(store: store)
         self.records = store.records
+        self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
         self.session.onChange = { [weak self] in
             Task { @MainActor in self?.refreshRecords() }
@@ -315,7 +324,11 @@ public final class DownloadManager {
               record.status == .downloading else { return false }
         // #123 / #135 Stage 1c: the lane × backend × progress classification lives in the pure,
         // tested `DownloadDisplayClassifier`.
-        return DownloadDisplayClassifier.isLiveTranscoderSourced(record)
+        return Self.isDownloadTranscodeLimited(record)
+    }
+
+    private static func isDownloadTranscodeLimited(_ record: DownloadRecord) -> Bool {
+        record.status == .downloading && DownloadDisplayClassifier.isLiveTranscoderSourced(record)
     }
 
     /// #84: whether the backend lane a row needs is currently configured/authenticated. The
@@ -1425,6 +1438,7 @@ public final class DownloadManager {
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         records = fresh
+        offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
         ensureJellyfinDownloadKeepalives(for: fresh)
 
         // Release the in-flight protection for any job whose download has reached a terminal
@@ -1818,6 +1832,178 @@ public final class DownloadManager {
         DownloadProgressDisplay.fraction(progress: record.progress,
                                          bytes: record.bytes,
                                          estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
+    }
+
+    private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
+        let backendsByKey = Dictionary(uniqueKeysWithValues: records.map { record in
+            (record.ratingKey, backendKind(for: record))
+        })
+        let hasMixedBackends = Set(backendsByKey.values.map(\.rawValue)).count > 1
+
+        let rows = records.map { record in
+            let backend = backendsByKey[record.ratingKey] ?? backendKind(for: record)
+            return OfflineDownloadRowSnapshot(
+                record: record,
+                showBackendBadge: hasMixedBackends,
+                backendName: backend.displayName,
+                errorMessage: record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil,
+                displayProgress: displayFraction(for: record)?.value,
+                statusCaption: statusCaption(for: record, backend: backend)
+            )
+        }
+
+        return OfflineLibrarySnapshot(
+            rows: rows,
+            queueToolbarAction: DownloadQueueToolbarPolicy.action(
+                isQueuePaused: isQueuePaused,
+                statuses: records.map(\.status)
+            ),
+            isQueuePaused: isQueuePaused
+        )
+    }
+
+    /// Backend that owns this row, via the single migration fallback on the
+    /// persisted snapshot (#84): a stored `backendKind` wins; pre-#84 rows fall
+    /// back to the ratingKey prefix. Kept in the manager's UI snapshot so the
+    /// hot Offline row bodies don't repeatedly re-scan all records or manager state.
+    private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
+        record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+    }
+
+    private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
+        switch record.status {
+        case .failed:
+            return lastError[record.ratingKey].map(message(for:)) ?? "Download failed. Tap to retry."
+        case .paused:
+            return pausedCaption(for: record)
+        case .complete, .unverified:
+            return completeCaption(for: record)
+        case .queued, .preparing, .downloading:
+            return progressCaption(for: record, backend: backend)
+        }
+    }
+
+    private func message(for error: DownloadError) -> String {
+        switch error {
+        case .notAuthenticated:        return "Sign in to download."
+        case .optimizeFailed(let m):   return "Optimize failed: \(m)"
+        case .optimizeTimedOut:        return "Optimize timed out on the server."
+        case .noOptimizedPart:         return "No optimized version was produced."
+        case .storageFull:             return "Not enough free space."
+        case .storageLimitExceeded(let m): return m
+        case .transferFailed(let m):   return "Download failed: \(m)"
+        case .invalidDownload(let m):  return "Download invalid: \(m)"
+        case .interruptedResumable:    return "Download paused — tap Resume to continue."
+        }
+    }
+
+    /// #95: caption for a paused (recoverably-interrupted) row: how far it got + that it resumes.
+    private func pausedCaption(for record: DownloadRecord) -> String {
+        var pieces = ["Paused — tap to resume"]
+        if let f = displayFraction(for: record) {
+            let pct = "\(Int(f.value * 100))%"
+            pieces.append(f.isEstimated ? "~\(pct)" : pct)
+        }
+        if record.bytes > 0 { pieces.append(byteString(record.bytes)) }
+        return pieces.joined(separator: " • ")
+    }
+
+    /// Caption under the in-progress bar, e.g. "23% • 106.5 MB • 12 MB/s • 1080p".
+    /// Each piece is included only when known. Speed comes from the smoothed EMA in
+    /// `refreshRecords`; the percentage is read from the same unified `displayFraction`
+    /// source that drives the bar.
+    private func progressCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
+        let isActive = activeJobs.contains(record.ratingKey)
+        if record.bytes == 0 {
+            let prepHead = record.status == .preparing ? "Preparing on server…" : "Transcoding"
+            if let p = optimizeProgress[record.ratingKey] {
+                var caption = "\(prepHead) \(Int(p * 100))%"
+                if let eta = optimizeETA[record.ratingKey], eta > 0,
+                   let left = timeLeftString(eta) {
+                    caption += " • ~\(left) left"
+                }
+                return caption
+            }
+            if optimizeState[record.ratingKey] == "queued" {
+                return record.status == .preparing ? "Preparing on server…" : "Queued on server"
+            }
+            // #84: a server-prep row whose backend lane is signed out isn't really "preparing" —
+            // say so honestly. It stays queued and resumes automatically once the lane returns.
+            if !isActive, !isBackendConfigured(for: record) {
+                return "Paused — \(backend.displayName) signed out"
+            }
+            if isActive { return "Preparing on server…" }
+            if record.metadata?.optimizeQueueTitle?.isEmpty == false {
+                return "Queued on server"
+            }
+            return "Queued…"
+        }
+
+        // Phase 2 — file download of the rendered/original Part. When the byte stream is gated
+        // by the server's transcoder, a slow rate means the server is still transcoding — not a
+        // network bottleneck — so suppress the "/s" rate in that case.
+        let transcodeLimited = Self.isDownloadTranscodeLimited(record)
+        var pieces: [String] = []
+        let fraction = displayFraction(for: record)
+        let percentPiece = fraction.map { f -> String in
+            let pct = "\(Int(f.value * 100))%"
+            return f.isEstimated ? "~\(pct)" : pct
+        }
+        if isActive {
+            var head: String
+            switch record.metadata?.resolvedDownloadLane() ?? .original {
+            case .original where record.metadata?.isServerPreparedVersion == true:
+                head = "Downloading transcode"
+            case .original:
+                head = "Downloading original"
+            case .compatibleRemux:
+                head = "Remuxing + downloading"
+            case .optimize:
+                head = backend == .plex ? "Downloading transcode" : "Transcoding + downloading"
+            }
+            if let percentPiece { head += " • \(percentPiece)" }
+            if let eta = downloadETA[record.ratingKey], eta > 0,
+               let left = timeLeftString(eta) {
+                head += " • ~\(left) left"
+            }
+            pieces.append(head)
+        } else if let percentPiece {
+            pieces.append(percentPiece)
+        }
+        pieces.append(byteString(record.bytes))
+        if isActive, !transcodeLimited,
+           let speed = downloadSpeed[record.ratingKey], speed > 0 {
+            pieces.append("\(byteString(Int(speed)))/s")
+        }
+        if let r = record.metadata?.resolutionLabel { pieces.append(r) }
+        return pieces.joined(separator: " • ")
+    }
+
+    /// Human estimated-time-remaining string ("under a min" / "N min" / "Nh Mm") for a
+    /// transcode or download ETA, or nil when the estimate is out of the trustworthy band.
+    private func timeLeftString(_ seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds > 0, seconds < 60 * 60 * 12 else { return nil }
+        if seconds < 60 { return "under a min" }
+        let totalMinutes = Int((seconds / 60).rounded())
+        guard totalMinutes >= 1 else { return nil }
+        if totalMinutes < 60 { return "\(totalMinutes) min" }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+    }
+
+    /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
+    private func completeCaption(for record: DownloadRecord) -> String {
+        var parts = record.isUnverified
+            ? ["Downloaded — playback not verified", byteString(record.bytes)]
+            : [byteString(record.bytes)]
+        if let r = record.metadata?.resolutionLabel { parts.append(r) }
+        return parts.joined(separator: " • ")
+    }
+
+    private func byteString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {

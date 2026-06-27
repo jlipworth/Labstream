@@ -201,7 +201,7 @@ private struct HubRail: View {
                 .font(.title2.bold())
                 .padding(.horizontal, DS.Space.xxl)
 
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
@@ -215,8 +215,7 @@ private struct HubRail: View {
             // Inset the scroll content via contentMargins, not .padding on the stack —
             // keeps the inset out of the cards' own geometry (see the gaze-routing
             // gotcha in docs/DEVELOPMENT.md).
-            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
-            .scrollClipDisabled() // let hover-lifted posters breathe past the rail edge
+            .mediaRailScrollStyle() // let hover-lifted posters breathe past the rail edge
         }
     }
 }
@@ -361,7 +360,7 @@ struct SkeletonRails: View {
                         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
                         .padding(.horizontal, DS.Space.xxl)
 
-                    ScrollView(.horizontal) {
+                    ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: DS.Space.xl) {
                             ForEach(0..<5, id: \.self) { _ in
                                 RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
@@ -372,8 +371,8 @@ struct SkeletonRails: View {
                                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
                             }
                         }
-                        .padding(.horizontal, DS.Space.xxl)
                     }
+                    .mediaRailScrollStyle(clipDisabled: false)
                     .scrollDisabled(true)
                 }
             }
