@@ -359,6 +359,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// The source part id selected when the download was enqueued. Used to distinguish original
     /// source parts from later server-rendered optimized parts after an app relaunch.
     public var sourcePartID: Int?
+    /// Byte size of the selected source part when the server exposed one. Used as the best
+    /// available expected size for compatible-remux streams that copy video but have no
+    /// Content-Length, so progress/ETA can survive relaunch.
+    public var sourcePartSize: Int?
     /// Non-nil while/when this row represents a server-side optimize/download route. Lets the
     /// app resume "Preparing on server…" rows that have no URLSession task yet.
     public var optimizeTargetName: String?
@@ -473,6 +477,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 mediaIndex: Int? = nil,
                 partIndex: Int? = nil,
                 sourcePartID: Int? = nil,
+                sourcePartSize: Int? = nil,
                 optimizeTargetName: String? = nil,
                 optimizeQueueTitle: String? = nil,
                 optimizeBaselinePartIDs: [Int]? = nil,
@@ -524,6 +529,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
         self.sourcePartID = sourcePartID
+        self.sourcePartSize = sourcePartSize
         self.optimizeTargetName = optimizeTargetName
         self.optimizeQueueTitle = optimizeQueueTitle
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
@@ -579,6 +585,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
         partIndex = try c.decodeIfPresent(Int.self, forKey: .partIndex)
         sourcePartID = try c.decodeIfPresent(Int.self, forKey: .sourcePartID)
+        sourcePartSize = try c.decodeIfPresent(Int.self, forKey: .sourcePartSize)
         optimizeTargetName = try c.decodeIfPresent(String.self, forKey: .optimizeTargetName)
         optimizeQueueTitle = try c.decodeIfPresent(String.self, forKey: .optimizeQueueTitle)
         optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)

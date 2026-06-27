@@ -195,6 +195,7 @@ struct OfflineDownloadModelsTests {
             mediaIndex: 0,
             partIndex: 1,
             sourcePartID: 42,
+            sourcePartSize: 1_234_567_890,
             optimizeTargetName: "Original video quality",
             optimizeQueueTitle: "Round Trip [VisionPlay 12345678]",
             optimizeBaselinePartIDs: [42, 43, 44],
@@ -494,6 +495,7 @@ struct OfflineDownloadModelsTests {
         let legacy = try decode(OfflineMetadata.self,
                                 from: #"{"ratingKey":"x","title":"T","type":"movie"}"#)
         #expect(legacy.embyConvertJobID == nil)
+        #expect(legacy.sourcePartSize == nil)
     }
 
     @Test("validation policy shortens required playback for short clips")

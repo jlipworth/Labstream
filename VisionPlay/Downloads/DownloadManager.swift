@@ -1656,7 +1656,9 @@ public final class DownloadManager {
                                         mediaSourceID: String? = nil,
                                         downloadLane: DownloadLane? = nil,
                                         serverPreparedVersion: Bool = false) -> OfflineMetadata {
-        let sourcePartID = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id
+        let sourcePart = item.media?[safe: mediaIndex]?.part[safe: partIndex]
+        let sourcePartID = sourcePart?.id
+        let sourcePartSize = sourcePart?.size
         let lane = downloadLane ?? ((optimizeTargetName?.isEmpty == false) ? .optimize : .original)
         let resumeMode = DownloadResumeMode.resolved(backend: session.kind,
                                                      lane: lane,
@@ -1690,6 +1692,7 @@ public final class DownloadManager {
                                mediaIndex: mediaIndex,
                                partIndex: partIndex,
                                sourcePartID: sourcePartID,
+                               sourcePartSize: sourcePartSize,
                                optimizeTargetName: optimizeTargetName,
                                optimizeQueueTitle: optimizeQueueTitle,
                                posterRelativePath: nil,
@@ -1844,6 +1847,11 @@ public final class DownloadManager {
     }
 
     private static func estimatedTranscodeBytes(for record: DownloadRecord) -> Int? {
+        if record.metadata?.resolvedDownloadLane() == .compatibleRemux {
+            // Compatible remux copies the source video and usually transcodes only audio/container,
+            // so the original source part size is the closest expected-total estimate.
+            if let size = record.metadata?.sourcePartSize, size > 0 { return size }
+        }
         guard let targetName = record.metadata?.optimizeTargetName, !targetName.isEmpty else {
             return nil
         }
@@ -1948,7 +1956,7 @@ public final class DownloadManager {
     /// `refreshRecords`; the percentage is read from the same unified `displayFraction`
     /// source that drives the bar.
     private func progressCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
-        let isActive = activeJobs.contains(record.ratingKey)
+        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
         let isServerPrep = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
         if record.bytes == 0 {
             let prepHead = (isServerPrep || record.status == .preparing) ? "Preparing on server…" : "Transcoding"
@@ -2009,9 +2017,9 @@ public final class DownloadManager {
             pieces.append(percentPiece)
         }
         pieces.append(byteString(record.bytes))
-        if isActive, !transcodeLimited,
-           let speed = downloadSpeed[record.ratingKey], speed > 0 {
-            pieces.append("\(byteString(Int(speed)))/s")
+        if isActive, let speed = downloadSpeed[record.ratingKey], speed > 0 {
+            let rate = "\(byteString(Int(speed)))/s"
+            pieces.append(transcodeLimited ? "\(rate) server-paced" : rate)
         }
         if let r = record.metadata?.resolutionLabel { pieces.append(r) }
         return pieces.joined(separator: " • ")
