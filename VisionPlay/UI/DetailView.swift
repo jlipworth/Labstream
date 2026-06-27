@@ -184,47 +184,7 @@ struct DetailView: View {
                     .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
 
                 VStack(alignment: .leading, spacing: DS.Space.xl) {
-                    // For an episode, keep the small contextual "eyebrow" (show + S/E code)
-                    // separate from the large episode title. Putting S58E2 and a long title in
-                    // one HStack makes the title wrap awkwardly beside the code instead of using
-                    // the full text column width (GH #101/#106 live-test polish).
-                    if detailed.kind == .episode {
-                        VStack(alignment: .leading, spacing: DS.Space.xs) {
-                            HStack(spacing: DS.Space.sm) {
-                                if let show = detailed.grandparentTitle, !show.isEmpty {
-                                    // Tappable like the music pages' artist links: pushes
-                                    // the show's season browser onto the same stack.
-                                    if let showItem {
-                                        NavigationLink(value: showItem) {
-                                            Text(show)
-                                                .font(.title3.weight(.semibold))
-                                                .foregroundStyle(.secondary)
-                                                .padding(.horizontal, DS.Space.sm)
-                                                .contentShape(Capsule())
-                                        }
-                                        .buttonStyle(.plain)
-                                        .hoverEffect(.highlight)
-                                        .padding(.leading, -DS.Space.sm)
-                                    } else {
-                                        Text(show)
-                                            .font(.title3.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                if let code = detailed.seasonEpisodeCode {
-                                    Text(code)
-                                        .font(.title3.weight(.bold))
-                                        .foregroundStyle(.tint)
-                                }
-                            }
-                            Text(detailed.title)
-                                .font(.largeTitle.bold())
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    } else {
-                        Text(detailed.title)
-                            .font(.largeTitle.bold())
-                    }
+                    DetailTitleHeader(item: detailed, showItem: showItem)
 
                     if let tagline = detailed.tagline, !tagline.isEmpty {
                         Text(tagline)
@@ -233,7 +193,12 @@ struct DetailView: View {
                             .italic()
                     }
 
-                    metadataRow
+                    DetailMetadataRow(year: detailed.year,
+                                      runtimeMinutes: runtimeMinutes,
+                                      contentRating: detailed.contentRating,
+                                      rating: detailed.rating,
+                                      criticRating: detailed.criticRating,
+                                      isWatched: isWatched)
 
                     if let genres = detailed.genres, !genres.isEmpty {
                         Text(genres.map(\.tag).joined(separator: " · "))
@@ -241,11 +206,16 @@ struct DetailView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    creditsSection
+                    DetailCreditsSection(roles: detailed.roles,
+                                         directors: detailed.directors,
+                                         studios: detailed.studios)
 
                     actionButtons
 
-                    mediaInfoSummary
+                    if let media = selectedMedia {
+                        DetailMediaInfoSummary(specBadges: mediaSpecBadges(media),
+                                               chapterCount: detailed.chapters?.count)
+                    }
 
                     if let summary = detailed.summary, !summary.isEmpty {
                         Text(summary)
@@ -326,89 +296,6 @@ struct DetailView: View {
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
-        }
-    }
-
-    // MARK: - Metadata header
-
-    /// Year · runtime · content-rating capsule · critic rating · watched badge.
-    @ViewBuilder
-    private var metadataRow: some View {
-        HStack(spacing: 16) {
-            if let year = detailed.year {
-                Text(String(year))
-            }
-            if let mins = runtimeMinutes {
-                Text("\(mins) min")
-            }
-            if let cr = detailed.contentRating, !cr.isEmpty {
-                Text(cr)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, DS.Space.sm)
-                    .padding(.vertical, 3)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(.secondary, lineWidth: 1)
-                    )
-            }
-            if let rating = detailed.rating, rating > 0 {
-                Label(String(format: "%.1f", rating), systemImage: "star.fill")
-                    .foregroundStyle(.yellow)
-            }
-            // Critic rating sits next to the star only when the backend exposes a distinct
-            // critic/aggregate field. Plex `audienceRating` is intentionally not mapped here.
-            if let critic = detailed.criticRating, critic > 0 {
-                Label(String(format: "%.1f", critic), systemImage: "rosette")
-                    .foregroundStyle(.orange)
-            }
-            if isWatched {
-                Label("Watched", systemImage: "checkmark.circle.fill")
-            }
-        }
-        .font(.title3)
-        .foregroundStyle(.secondary)
-    }
-
-    /// Cast / director / studio credits (#76). Each line renders only when its tag list is
-    /// non-empty, so movies-without-cast or backends-without-people degrade to nothing.
-    @ViewBuilder
-    private var creditsSection: some View {
-        VStack(alignment: .leading, spacing: DS.Space.xs) {
-            creditLine(label: "Cast", tags: detailed.roles, limit: 6)
-            creditLine(label: "Director", tags: detailed.directors, limit: 3)
-            creditLine(label: "Studio", tags: detailed.studios, limit: 3)
-        }
-    }
-
-    @ViewBuilder
-    private func creditLine(label: String, tags: [Tag]?, limit: Int) -> some View {
-        if let tags, !tags.isEmpty {
-            let names = tags.prefix(limit).map(\.tag).joined(separator: ", ")
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(label):").foregroundStyle(.secondary)
-                Text(names).foregroundStyle(.primary.opacity(0.85))
-            }
-            .font(.callout)
-        }
-    }
-
-    /// A tasteful, INFORMATIONAL summary of the selected version's tech specs plus a
-    /// chapter/subtitle count when PMS exposes them. Deep chapter/subtitle CONTROL lives
-    /// in the player — this is just a glance-able readout.
-    @ViewBuilder
-    private var mediaInfoSummary: some View {
-        if let media = selectedMedia {
-            HStack(spacing: DS.Space.sm) {
-                ForEach(mediaSpecBadges(media), id: \.self) { spec in
-                    SpecChip(text: spec, monospaced: true)
-                }
-                if let chapters = detailed.chapters, !chapters.isEmpty {
-                    Label("\(chapters.count) chapters", systemImage: "list.bullet")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.top, DS.Space.xs)
         }
     }
 
