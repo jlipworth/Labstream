@@ -177,49 +177,12 @@ struct LoginView: View {
             // Linking-code-first (#16): the code is the primary state so the user
             // can finish auth from a phone/laptop at plex.tv/link. Polling runs in
             // the background the whole time; the in-headset browser is opt-in.
-            VStack(spacing: DS.Space.lg) {
-                VStack(spacing: DS.Space.xs) {
-                    Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
-                        .font(.title3)
-                    Text("on your phone, tablet, or computer")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-
-                // The hero moment of sign-in: one glass cell per character (the
-                // link PIN is always 4 chars), Apple-pairing-code style, instead
-                // of a single cramped chip.
-                PairingCodeCells(code: code, width: 76, height: 96, fontSize: 54)
-
-                HStack(spacing: DS.Space.sm) {
-                    ProgressView()
-                    Text("Waiting for authorization…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-
-                Button("Open Plex sign-in in this headset instead") {
-                    webAuth.start(url) { }
-                }
-                .buttonStyle(.bordered)
+            PlexLinkCodeView(code: code) {
+                webAuth.start(url) { }
             }
         default:
-            VStack(spacing: DS.Space.md) {
-                Button {
-                    Task { await startLogin() }
-                } label: {
-                    Label("Sign in with Plex", systemImage: "person.crop.circle")
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(working)
-
-                Text("Uses a code at plex.tv/link.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+            PlexSignInStartView(isWorking: working) {
+                Task { await startLogin() }
             }
         }
     }
