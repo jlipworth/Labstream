@@ -100,26 +100,10 @@ struct MediaBrowserMusicView: View {
 private struct MediaBrowserMusicLibraryView: View {
     let library: MusicLibrary
 
-    private enum Pivot: String, CaseIterable, Identifiable {
-        case home = "Home"
-        case artists = "Artists"
-        case albums = "Albums"
-        case playlists = "Playlists"
-        var id: String { rawValue }
-    }
-
-    @State private var pivot: Pivot = .home
+    @State private var pivot: MusicPivot = .home
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Browse", selection: $pivot) {
-                ForEach(Pivot.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 460)
-            .padding(.top, DS.Space.md)
-            .padding(.bottom, DS.Space.sm)
-
+        MusicPivotShell(pivot: $pivot) { pivot in
             switch pivot {
             case .home:
                 MediaBrowserMusicHome(library: library).id("home")

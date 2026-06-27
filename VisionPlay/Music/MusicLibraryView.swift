@@ -132,18 +132,6 @@ func musicDestination(for item: MediaItem, sectionKey: String?) -> some View {
 
 // MARK: - Pivot shell
 
-/// The four-way (v1: three-way) pivot inside the Music tab — MUSIC-DESIGN §2 chose a
-/// pivot over a sidebar: one control + a `switch`, near-zero regression surface, and
-/// each pivot view is self-contained so a later sidebar swap stays cheap.
-private enum MusicPivot: String, CaseIterable, Identifiable {
-    case home = "Home"
-    case artists = "Artists"
-    case albums = "Albums"
-    case playlists = "Playlists"
-
-    var id: String { rawValue }
-}
-
 /// One music section: pivot control on top, the selected pivot below. Replaces the
 /// old single-scroll MusicSectionBrowseView (rail + full artist dump).
 private struct MusicHomeView: View {
@@ -152,17 +140,7 @@ private struct MusicHomeView: View {
     @State private var pivot: MusicPivot = .home
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Browse", selection: $pivot) {
-                ForEach(MusicPivot.allCases) { p in
-                    Text(p.rawValue).tag(p)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 460)
-            .padding(.top, DS.Space.md)
-            .padding(.bottom, DS.Space.sm)
-
+        MusicPivotShell(pivot: $pivot) { pivot in
             // Each pivot owns its load state and scroll position; `id` keeps them
             // alive across switches only within one section (parent resets by key).
             switch pivot {
