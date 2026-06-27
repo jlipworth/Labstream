@@ -22,6 +22,7 @@ final class TimelineReporter {
     private let identity: ClientIdentity
     private var client: PlexClient
     private let player: AVPlayer
+    private let currentPositionMs: () -> Int
 
     /// True once the current item has reached `.readyToPlay` with a real duration.
     /// Set by the controller's status observer; reset on each item (re)load. Gates
@@ -58,13 +59,15 @@ final class TimelineReporter {
          token: String?,
          identity: ClientIdentity,
          client: PlexClient,
-         player: AVPlayer) {
+         player: AVPlayer,
+         currentPositionMs: @escaping () -> Int) {
         self.item = item
         self.server = server
         self.token = token
         self.identity = identity
         self.client = client
         self.player = player
+        self.currentPositionMs = currentPositionMs
     }
 
     /// Swap future timeline/scrobble sends to a fresh control-plane client after player
@@ -91,7 +94,7 @@ final class TimelineReporter {
         // the gate opened with no known item duration).
         guard durationMs > 0 || state == .stopped else { return }
 
-        let currentMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
+        let currentMs = currentPositionMs()
         let currentSecond = currentMs / 1000
 
         if !force,
@@ -138,8 +141,7 @@ final class TimelineReporter {
         guard !didScrobble, isReadyForReporting else { return }
         let durSecs = player.currentItem?.duration.seconds ?? 0
         guard durSecs.isFinite, durSecs > 0 else { return }
-        let curSecs = player.currentTime().seconds
-        guard curSecs.isFinite else { return }
+        let curSecs = Double(currentPositionMs()) / 1000.0
         if curSecs / durSecs >= 0.90 {
             scrobble()
         }
