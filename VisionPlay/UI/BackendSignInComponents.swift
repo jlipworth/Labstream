@@ -96,6 +96,51 @@ struct PlexSignInStartView: View {
     }
 }
 
+
+struct JellyfinQuickConnectCodeView: View {
+    let code: String
+    let onUseCredentials: () -> Void
+
+    var body: some View {
+        PairingCodeView(
+            code: code,
+            fallbackTitle: "Use username and password instead",
+            onFallback: onUseCredentials) {
+                VStack(spacing: DS.Space.xs) {
+                    Text("Enter this code in Jellyfin")
+                        .font(.title3.weight(.semibold))
+                    Text("In an already signed-in Jellyfin app or web UI, open Quick Connect and enter the code.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                }
+            }
+    }
+}
+
+struct EmbyConnectPinCodeView: View {
+    let code: String
+    let onUseServerURL: () -> Void
+
+    var body: some View {
+        PairingCodeView(
+            code: code,
+            fallbackTitle: "Use a server URL instead",
+            onFallback: onUseServerURL) {
+                VStack(spacing: DS.Space.xs) {
+                    Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
+                        .font(.title3)
+                    Text("on your phone, tablet, or computer — sign in to Emby Connect there")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                }
+            }
+    }
+}
+
 struct BackendServerURLField: View {
     let placeholder: String
     @Binding var text: String
