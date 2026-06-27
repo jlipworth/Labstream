@@ -70,12 +70,12 @@ public final class DownloadManager {
         case existingVersion
     }
 
-    /// Internal control-flow error for async optimize work that outlived the row it belonged to.
+    /// Internal control-flow error for async server-prep work that outlived the row it belonged to.
     ///
-    /// Deleting/retrying a Plex optimize row removes the visible row and can immediately enqueue a
-    /// replacement with a new queue title. The old async poller is not a URLSession task, so it may
-    /// wake up later after Plex has produced a Part. Treat that as a no-op, not as a user-visible
-    /// failure, and never let it overwrite the newer row or start a duplicate transfer.
+    /// Deleting/retrying a server-prep row removes the visible row and can immediately enqueue a
+    /// replacement with a new attempt identity. The old async poller is not a URLSession task, so it
+    /// may wake up later after the server has produced a file. Treat that as a no-op, not as a
+    /// user-visible failure, and never let it overwrite the newer row or start a duplicate transfer.
     enum DownloadLifecycleCancellation: Error {
         case staleOptimizeAttempt
     }
@@ -94,6 +94,7 @@ public final class DownloadManager {
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
     private var retryingRows: Set<String> = []
+    private var serverPrepResumeRetryTask: Task<Void, Never>?
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -118,6 +119,11 @@ public final class DownloadManager {
     /// returns would leave the rendered Part unprotected while it is still downloading, and
     /// a concurrent job's `cleanStaleOptimizeJobs` could then delete that Part out from under it.
     var queueTitleByRatingKey: [String: String] = [:]
+
+    /// Per-attempt identity for Emby convert preflight/poll tasks. Unlike Plex, Emby does not
+    /// preserve our submitted queue title, so a ratingKey-only active slot cannot distinguish an old
+    /// async preflight from a newer retry of the same item.
+    var embyConvertAttemptByRatingKey: [String: UUID] = [:]
 
     /// Last error per ratingKey, for UI surfacing.
     public internal(set) var lastError: [String: DownloadError] = [:]
@@ -549,10 +555,14 @@ public final class DownloadManager {
     /// poller is attached to publish server progress. Retry a few times after launch/ready edges;
     /// `resumePendingServerPrepDownloads` is idempotent because it skips rows already in `activeJobs`.
     public func scheduleServerPrepResumeRetries() {
-        Task { [weak self] in
-            for delay in [1.0, 5.0, 15.0] {
+        serverPrepResumeRetryTask?.cancel()
+        serverPrepResumeRetryTask = Task { [weak self] in
+            // Plex inactive-lane hydration can be slower than the selected backend restore on a cold
+            // launch, so keep retrying long enough to catch the lane becoming available. Calls are
+            // idempotent and this task is debounced above so multiple UI edges do not stack scans.
+            for delay in [1.0, 5.0, 15.0, 30.0, 60.0] {
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                await MainActor.run { self?.resumePendingServerPrepDownloads() }
+                await self?.resumePendingServerPrepDownloads()
             }
         }
     }
@@ -973,6 +983,7 @@ public final class DownloadManager {
             let ratingKey = record.ratingKey
             let targetName = metadata.optimizeTargetName ?? ""
             activeJobs.insert(ratingKey)
+            let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
             recordDownloadDiagnostic("downloads.convert_resume", fields: [
                 "download_id": .identifier(ratingKey),
                 "job_id": .int(jobId),
@@ -990,7 +1001,7 @@ public final class DownloadManager {
                                                           jobId: jobId, snapshotIds: resumeSnapshot,
                                                           targetName: targetName, server: server,
                                                           token: token, identity: identity,
-                                                          userId: userId)
+                                                          userId: userId, attemptID: attemptID)
             }
         }
     }
@@ -1629,6 +1640,7 @@ public final class DownloadManager {
         retryingRows.remove(ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
+        embyConvertAttemptByRatingKey.removeValue(forKey: ratingKey)
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
         if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
             activeQueueTitles.remove(title)
@@ -2556,9 +2568,10 @@ public final class DownloadManager {
                 }
                 if didUpdateProgressState { refreshRecords() }
             } else if thisIsQueuedConversion {
-                // Waiting behind the active conversion — say so honestly ("Queued on server")
-                // instead of an indefinite "Preparing on server…". Never clobber a real % that's
-                // already showing (a row that briefly drops out of the active slot keeps its bar).
+                // Waiting behind the active conversion, with no measurable progress yet. Keep the
+                // public caption flattened to "Preparing on server…" for a stable user-facing phase,
+                // but remember the coarse queued state so a real % is never clobbered if the row
+                // briefly drops out of the active slot.
                 if optimizeProgress[ratingKey] == nil {
                     optimizeState[ratingKey] = "queued"
                     refreshRecords()

@@ -15,6 +15,32 @@ extension DownloadManager {
 
     // MARK: - Emby convert-then-download (server-side prepare → resumable download)
 
+    func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
+        let attemptID = UUID()
+        embyConvertAttemptByRatingKey[ratingKey] = attemptID
+        return attemptID
+    }
+
+    func embyConvertAttemptIsCurrent(ratingKey: String, attemptID: UUID,
+                                     targetName: String? = nil, jobId: Int? = nil) -> Bool {
+        guard activeJobs.contains(ratingKey),
+              embyConvertAttemptByRatingKey[ratingKey] == attemptID,
+              let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+              row.status == .preparing else { return false }
+        if let targetName, row.metadata?.optimizeTargetName != targetName { return false }
+        if let jobId, row.metadata?.embyConvertJobID != jobId { return false }
+        return true
+    }
+
+    func recordStaleEmbyConvertAttempt(ratingKey: String, phase: String, jobId: Int? = nil) {
+        var fields: [String: DiagnosticFieldValue] = [
+            "download_id": .identifier(ratingKey),
+            "phase": .label(phase),
+        ]
+        if let jobId { fields["job_id"] = .int(jobId) }
+        recordDownloadDiagnostic("downloads.convert_abandoned", fields: fields)
+    }
+
     /// Emby parity with the Plex optimize lane: create a server-side "Convert Media" Sync job that
     /// renders a PERSISTENT converted file (next-to-original, `targetId:"originalmediafolder"`),
     /// poll it to completion surfacing "Preparing on server… N%", then hand the freshly-converted
@@ -45,6 +71,7 @@ extension DownloadManager {
             failEmbyConvert(ratingKey: ratingKey, .notAuthenticated)
             return
         }
+        let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
 
         // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
         // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
@@ -70,6 +97,11 @@ extension DownloadManager {
         // completes (a second `File` source appears on the same item).
         let fileSources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "preflight_sources")
+            return
+        }
         let snapshotIds = Set(fileSources.compactMap { $0.id })
 
         // REUSE PREFLIGHT (#126 on the auto-convert path): if a server-prepared converted version that
@@ -88,6 +120,11 @@ extension DownloadManager {
                 "target": .label(targetName),
                 "source_count": .int(fileSources.count),
             ])
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "preflight_reuse")
+                return
+            }
             // We hold the in-flight slot from `downloadEmby`; release it so the `.existingVersion`
             // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). The
             // temporary `.preparing` row was only preflight feedback; remove it before the static lane
@@ -108,13 +145,18 @@ extension DownloadManager {
             ratingKey: ratingKey, requestedHeight: requestedHeight,
             primaryMediaSourceId: metadata.mediaSourceID,
             initialSourceCount: fileSources.count,
-            phase: "pre_create"),
+            phase: "pre_create", attemptID: attemptID),
            let reuseId = refreshedReuse.id {
             recordDownloadDiagnostic("downloads.convert_reuse", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
                 "phase": .label("post_refresh"),
             ])
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_refresh_reuse")
+                return
+            }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
@@ -122,6 +164,11 @@ extension DownloadManager {
             return
         }
 
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "pre_create")
+            return
+        }
         // Persist the FULL pre-conversion id set (not just the original) so a relaunch-resume still
         // excludes any PRIOR converted version — otherwise a stale version could be mistaken for the new one.
         convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
@@ -165,6 +212,11 @@ extension DownloadManager {
             // envelope, NOT the bare top-level shape the single-job poll GET returns.
             job = try EmbyConvertRequest.decodeCreatedJob(from: data)
         } catch {
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "create_error")
+                return
+            }
             recordDownloadDiagnostic("downloads.convert_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "phase": .label("create"),
@@ -181,16 +233,11 @@ extension DownloadManager {
         // cancel the server-side job (`DELETE /Sync/Jobs/{id}`). If the user deleted/cancelled the
         // row while `POST /Sync/Jobs` was in flight, do NOT upsert it back into existence; cancel the
         // server job best-effort and leave the row gone.
-        guard activeJobs.contains(ratingKey),
-              store.records.first(where: { $0.ratingKey == ratingKey })?.status == .preparing else {
-            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(job.id),
-                "phase": .label("post_create"),
-            ])
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_create", jobId: job.id)
             cancelEmbyConvertJob(jobId: job.id, ratingKey: ratingKey,
                                  server: server, token: token, identity: identity)
-            releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return
         }
@@ -203,7 +250,7 @@ extension DownloadManager {
         await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
-                                            userId: userId)
+                                            userId: userId, attemptID: attemptID)
     }
 
     /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
@@ -212,18 +259,16 @@ extension DownloadManager {
     func pollAndDownloadEmbyConvertJob(item: MediaItem, ratingKey: String, jobId: Int,
                                                snapshotIds: Set<String>, targetName: String,
                                                server: URL, token: String,
-                                               identity: EmbyClientIdentity, userId: String) async {
+                                               identity: EmbyClientIdentity, userId: String,
+                                               attemptID: UUID) async {
         // 2. Poll (reuse `optimizePollInterval`; no wall-clock timeout — the conversion is
         //    server-side and may legitimately take a long time for large media).
         while true {
             // Bail if the row was deleted/cancelled out from under us (delete() also fires the
             // server-side DELETE /Sync/Jobs).
-            guard activeJobs.contains(ratingKey),
-                  store.records.first(where: { $0.ratingKey == ratingKey })?.status == .preparing else {
-                recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "job_id": .int(jobId),
-                ])
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                                  targetName: targetName, jobId: jobId) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "poll", jobId: jobId)
                 return
             }
 
@@ -283,18 +328,16 @@ extension DownloadManager {
                     // activeJobs slot, resurrecting a cancelled download). All these methods are
                     // @MainActor, so a plain guard is sufficient — no TOCTOU between this check and
                     // finishEmbyConvert's own top-of-method guard.
-                    guard activeJobs.contains(ratingKey) else {
-                        recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                            "download_id": .identifier(ratingKey),
-                            "job_id": .int(jobId),
-                            "phase": .label("post_status_completed"),
-                        ])
+                    guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                                          targetName: targetName, jobId: jobId) else {
+                        recordStaleEmbyConvertAttempt(ratingKey: ratingKey,
+                                                      phase: "post_status_completed", jobId: jobId)
                         return
                     }
                     await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
-                                            userId: userId)
+                                            userId: userId, attemptID: attemptID)
                 } else {
                     // Server-side Failed/Cancelled → fail the row (retry-only; keep the marker job
                     // for diagnostics — deleting it wouldn't delete a partial file anyway).
@@ -364,14 +407,12 @@ extension DownloadManager {
     private func finishEmbyConvert(item: MediaItem, ratingKey: String, jobId: Int,
                                    snapshotIds: Set<String>, targetName: String,
                                    server: URL, token: String,
-                                   identity: EmbyClientIdentity, userId: String) async {
+                                   identity: EmbyClientIdentity, userId: String,
+                                   attemptID: UUID) async {
         // Cancel race (entry guard): bail if the row was deleted/cancelled before we got here.
-        guard activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "phase": .label("finish_entry"),
-            ])
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName, jobId: jobId) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "finish_entry", jobId: jobId)
             return
         }
         let itemId = item.ratingKey
@@ -401,12 +442,9 @@ extension DownloadManager {
         for attempt in 0..<maxAttempts {
             // Cancel race: the user may delete the row during the wait (delete() also fires the
             // server-side DELETE /Sync/Jobs and releases the slot).
-            guard activeJobs.contains(ratingKey) else {
-                recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "job_id": .int(jobId),
-                    "phase": .label("finish_poll"),
-                ])
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                                  targetName: targetName, jobId: jobId) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "finish_poll", jobId: jobId)
                 return
             }
             // `embyFileSources` returns only on-disk (`File`) sources with a non-empty id, unfiltered
@@ -446,12 +484,9 @@ extension DownloadManager {
         // Cancel race (final guard): the unfiltered PlaybackInfo fetch above is an `await`, so the
         // user could have deleted the row during it. If they did (slot released, row gone), do NOT
         // re-seed a download via the handoff below — that would resurrect a cancelled download.
-        guard activeJobs.contains(ratingKey) else {
-            recordDownloadDiagnostic("downloads.convert_abandoned", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "phase": .label("finish_pre_handoff"),
-            ])
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName, jobId: jobId) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "finish_pre_handoff", jobId: jobId)
             return
         }
 
@@ -545,13 +580,15 @@ extension DownloadManager {
                                                            requestedHeight: Int?,
                                                            primaryMediaSourceId: String?,
                                                            initialSourceCount: Int,
-                                                           phase: String) async -> EmbyMediaSourceInfo? {
+                                                           phase: String,
+                                                           attemptID: UUID) async -> EmbyMediaSourceInfo? {
         await requestEmbyItemRefresh(server: server, token: token, identity: identity, userId: userId,
                                      itemId: itemId, ratingKey: ratingKey, phase: phase)
 
         let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
         for attempt in 0..<maxAttempts {
-            guard activeJobs.contains(ratingKey) else { return nil }
+            guard embyConvertAttemptByRatingKey[ratingKey] == attemptID,
+                  activeJobs.contains(ratingKey) else { return nil }
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)
             if let reuse = Self.reusableConvertedSource(sources, requestedHeight: requestedHeight,

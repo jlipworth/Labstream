@@ -132,6 +132,30 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     #expect(garbage.firstSpeed == nil)
 }
 
+
+@Test func uniqueJobTitleFallbackRejectsSubstringCollisions() throws {
+    let json = """
+    {"MediaContainer":{"TranscodeJob":[
+      {"title":"The Matrix Reloaded","progress":26},
+      {"title":"The Matrix Revolutions","progress":10}
+    ]}}
+    """.data(using: .utf8)!
+    let jobs = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: json)
+    #expect(jobs.uniqueJob(title: "The Matrix") == nil)
+    #expect(jobs.uniqueJob(title: "  THE   MATRIX   RELOADED ")?.progress == 26)
+}
+
+@Test func uniqueJobTitleFallbackRejectsDuplicateExactMatches() throws {
+    let json = """
+    {"MediaContainer":{"TranscodeJob":[
+      {"title":"Pilot","progress":5},
+      {"subtitle":"Pilot","progress":15}
+    ]}}
+    """.data(using: .utf8)!
+    let jobs = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: json)
+    #expect(jobs.uniqueJob(title: "Pilot") == nil)
+}
+
 // MARK: - ConversionQueue (ordered conversion queue)
 
 @Test func decodesConversionQueueFromVideoElementsWithActiveMarker() throws {
