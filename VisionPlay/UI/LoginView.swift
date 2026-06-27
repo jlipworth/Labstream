@@ -16,11 +16,6 @@ import PMSKit
 /// foreground that ships as the visionOS app-icon Front layer. The full wordmark
 /// stays out of the circular icon crop, while the sign-in screen pairs the mark
 /// with a native SwiftUI VisionPlay title treatment.
-private enum JellyfinSignInMethod: Equatable {
-    case quickConnect
-    case credentials
-}
-
 private enum EmbySignInMethod: Equatable {
     case connectPin
     case credentials
@@ -125,79 +120,20 @@ struct LoginView: View {
 
     @ViewBuilder
     private var jellyfinLoginForm: some View {
-        switch authManager.state {
-        case .awaitingJellyfinQuickConnect(let code):
-            JellyfinQuickConnectCodeView(code: code, onUseCredentials: useJellyfinCredentialsFallback)
-        default:
-            jellyfinCredentialsForm
-        }
-    }
-
-    @ViewBuilder
-    private var jellyfinCredentialsForm: some View {
-        VStack(spacing: DS.Space.md) {
-            BackendServerURLField(placeholder: "https://jellyfin.example.com", text: $jellyfinServer)
-
-            switch jellyfinSignInMethod {
-            case nil:
-                jellyfinMethodChooser
-            case .quickConnect:
-                jellyfinQuickConnectStart
-            case .credentials:
-                jellyfinUsernamePasswordForm
-            }
-        }
-    }
-
-    private var jellyfinMethodChooser: some View {
-        BackendSignInMethodChooser(
-            primaryTitle: "Quick Connect",
-            primarySystemImage: "link.badge.plus",
-            secondaryTitle: "Username / Password",
-            secondarySystemImage: "person.crop.circle.badge.checkmark",
-            primaryDisabled: working || !hasJellyfinServerInput,
-            secondaryDisabled: working || !hasJellyfinServerInput,
-            disabledHint: hasJellyfinServerInput ? nil : "Enter your Jellyfin server URL first.",
-            onPrimary: {
-                jellyfinSignInMethod = .quickConnect
-                Task { await startJellyfinQuickConnect() }
-            },
-            onSecondary: {
-                errorMessage = nil
-                jellyfinSignInMethod = .credentials
-            })
-    }
-
-    private var jellyfinQuickConnectStart: some View {
-        BackendAuthStartView(
-            isWorking: working,
-            workingTitle: "Starting Quick Connect…",
-            startTitle: "Start Quick Connect",
-            systemImage: "link.badge.plus",
-            isStartDisabled: !hasJellyfinServerInput,
-            chooseDifferentTitle: "Choose a different sign-in method",
-            onStart: { Task { await startJellyfinQuickConnect() } },
-            onChooseDifferent: {
-                errorMessage = nil
-                working = false
-                authManager.cancelCurrentAuthorization()
-                jellyfinSignInMethod = nil
-            })
-    }
-
-    private var jellyfinUsernamePasswordForm: some View {
-        BackendCredentialsSignInForm(
+        JellyfinSignInFlow(
+            state: authManager.state,
+            server: $jellyfinServer,
             username: $jellyfinUsername,
             password: $jellyfinPassword,
+            signInMethod: $jellyfinSignInMethod,
             isWorking: working,
-            signInTitle: "Sign in with Jellyfin",
-            isSignInDisabled: working,
-            onSignIn: { Task { await startJellyfinLogin() } },
-            onChooseDifferent: {
-                errorMessage = nil
-                working = false
-                jellyfinSignInMethod = nil
-            })
+            onUseCredentialsFallback: useJellyfinCredentialsFallback,
+            onChooseQuickConnect: chooseJellyfinQuickConnect,
+            onChooseCredentials: chooseJellyfinCredentials,
+            onStartQuickConnect: { Task { await startJellyfinQuickConnect() } },
+            onSignInWithCredentials: { Task { await startJellyfinLogin() } },
+            onChooseDifferentFromQuickConnect: cancelJellyfinAuthorizationAndResetMethod,
+            onChooseDifferentFromCredentials: resetJellyfinCredentialsMethod)
     }
 
     // MARK: - Emby (Emby Connect PIN — primary — or server URL + username/password)
@@ -296,6 +232,29 @@ struct LoginView: View {
         working = false
     }
 
+    private func chooseJellyfinQuickConnect() {
+        jellyfinSignInMethod = .quickConnect
+        Task { await startJellyfinQuickConnect() }
+    }
+
+    private func chooseJellyfinCredentials() {
+        errorMessage = nil
+        jellyfinSignInMethod = .credentials
+    }
+
+    private func cancelJellyfinAuthorizationAndResetMethod() {
+        errorMessage = nil
+        working = false
+        authManager.cancelCurrentAuthorization()
+        jellyfinSignInMethod = nil
+    }
+
+    private func resetJellyfinCredentialsMethod() {
+        errorMessage = nil
+        working = false
+        jellyfinSignInMethod = nil
+    }
+
     private func useEmbyServerURLFallback() {
         authManager.cancelCurrentAuthorization()
         embySignInMethod = .credentials
@@ -325,10 +284,6 @@ struct LoginView: View {
 
     private var hasEmbyServerInput: Bool {
         !embyServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var hasJellyfinServerInput: Bool {
-        !jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func selectBackend(_ backend: MediaBackendKind) {
