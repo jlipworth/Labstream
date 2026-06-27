@@ -39,6 +39,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
 
     private struct RangeTransfer {
         let ratingKey: String
+        let request: URLRequest
         let destination: URL
         let expectedBytes: Int?
         var responseStatus: Int?
@@ -266,7 +267,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         }
         if byteRangeCheckpoint {
             try startRangeCheckpoint(ratingKey: ratingKey, with: request, to: destination,
-                                     expectedBytes: expectedBytes)
+                                     expectedBytes: expectedBytes,
+                                     resetsRetryCount: true)
             return
         }
 
@@ -296,7 +298,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
     /// with HTTP 200, we truncate and restart honestly from 0; if it honors Range with 206, progress
     /// never jumps backwards.
     private func startRangeCheckpoint(ratingKey: String, with request: URLRequest, to destination: URL,
-                                      expectedBytes: Int?) throws {
+                                      expectedBytes: Int?,
+                                      resetsRetryCount: Bool) throws {
         try fileManager.createDirectory(at: destination.deletingLastPathComponent(),
                                         withIntermediateDirectories: true)
         var offset = 0
@@ -324,11 +327,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         let task = rangeURLSession.dataTask(with: ranged)
         task.taskDescription = ratingKey
         lock.lock()
-        retryCounts[ratingKey] = 0
+        if resetsRetryCount {
+            retryCounts[ratingKey] = 0
+        }
         lastProgressNotify[ratingKey] = nil
         loggedProgressMilestones[task.taskIdentifier] = []
         rangeInflight[task.taskIdentifier] = RangeTransfer(
             ratingKey: ratingKey,
+            request: request,
             destination: destination,
             expectedBytes: expectedBytes,
             responseStatus: nil,
@@ -615,6 +621,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             : 0
         lock.lock()
         rangeInflight[dataTask.taskIdentifier] = entry
+        retryCounts[entry.ratingKey] = 0
         lock.unlock()
         store.updateProgress(ratingKey: entry.ratingKey, bytes: total, progress: progress)
         notifyProgressChangeIfNeeded(ratingKey: entry.ratingKey, progress: progress)
@@ -952,6 +959,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                         "bytes": .bytes(rangeEntry.totalBytes),
                     ])
                 } else {
+                    if retryTransientRangeFailure(error as NSError,
+                                                 task: task,
+                                                 entry: rangeEntry) {
+                        return
+                    }
                     let summary = DiagnosticRedactor.safeErrorSummary(error)
                     downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
                     AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
@@ -1136,6 +1148,51 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         retryTask.resume()
         onChange?()
         return true
+    }
+
+    /// App-managed Range downloads write into the final partial file, so a transient connection
+    /// loss can be retried by issuing a fresh Range request from the now-durable file size. Do that
+    /// before surfacing `.paused`; otherwise fragile long HTTPS range streams can force the user to
+    /// tap Resume every couple of megabytes even though each retry is making forward progress.
+    private func retryTransientRangeFailure(_ error: NSError,
+                                            task: URLSessionTask,
+                                            entry: RangeTransfer) -> Bool {
+        guard error.domain == NSURLErrorDomain,
+              Self.transientDownloadErrorCodes.contains(error.code) else { return false }
+
+        lock.lock()
+        let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1
+        guard nextAttempt <= maxTransientRetries else {
+            lock.unlock()
+            return false
+        }
+        retryCounts[entry.ratingKey] = nextAttempt
+        lock.unlock()
+
+        downloadLog.error("range-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytes=\(entry.totalBytes, privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.range_retry", fields: [
+            "download_id": .identifier(entry.ratingKey),
+            "attempt": .int(nextAttempt),
+            "error": .error(error),
+            "bytes": .bytes(entry.totalBytes),
+        ])
+
+        do {
+            try startRangeCheckpoint(ratingKey: entry.ratingKey,
+                                     with: entry.request,
+                                     to: entry.destination,
+                                     expectedBytes: entry.expectedBytes,
+                                     resetsRetryCount: false)
+            onChange?()
+            return true
+        } catch {
+            AppDiagnostics.record(.downloads, "downloads.range_retry_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "attempt": .int(nextAttempt),
+                "error": .error(error),
+            ])
+            return false
+        }
     }
 
     private static let transientDownloadErrorCodes: Set<Int> = [
