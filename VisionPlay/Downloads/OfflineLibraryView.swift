@@ -56,17 +56,18 @@ public struct OfflineLibraryView: View {
                 }
                 .navigationTitle("Offline")
                 .toolbar {
-                    if hasPausableDownloads || hasPausedDownloads {
+                    if let queueToolbarAction {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button {
-                                if manager.isQueuePaused || hasPausedDownloads {
-                                    manager.resumeQueue()
-                                } else {
+                                switch queueToolbarAction {
+                                case .pauseQueue:
                                     manager.pauseQueue()
+                                case .resumeQueue:
+                                    manager.resumeQueue()
                                 }
                             } label: {
-                                Label(manager.isQueuePaused || hasPausedDownloads ? "Resume Queue" : "Pause Queue",
-                                      systemImage: manager.isQueuePaused || hasPausedDownloads ? "play.circle" : "pause.circle")
+                                Label(queueToolbarAction.title,
+                                      systemImage: queueToolbarAction.systemImage)
                             }
                         }
                     }
@@ -306,12 +307,9 @@ public struct OfflineLibraryView: View {
         Set(manager.records.map { backendKind(for: $0) }).count > 1
     }
 
-    private var hasPausableDownloads: Bool {
-        manager.records.contains { $0.status == .queued || $0.status == .preparing || $0.status == .downloading }
-    }
-
-    private var hasPausedDownloads: Bool {
-        manager.records.contains { $0.status == .paused }
+    private var queueToolbarAction: DownloadQueueToolbarPolicy.Action? {
+        DownloadQueueToolbarPolicy.action(isQueuePaused: manager.isQueuePaused,
+                                          statuses: manager.records.map(\.status))
     }
 
     private func tileGlyph(isComplete: Bool, isFailed: Bool, isUnverified: Bool) -> String {
