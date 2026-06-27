@@ -55,44 +55,15 @@ enum DebugJellyfinPlaybackProbe {
             let detailed = (try? await service.metadata(itemId: item.ratingKey)) ?? item
             log.notice("probe.item_resolved type=\(detailed.type, privacy: .public) duration_ms=\(detailed.duration ?? 0, privacy: .public) chapters=\((detailed.chapters?.count ?? 0), privacy: .public)")
 
-            let initial = try await service.playbackOpen(item: detailed, maxVideoBitrateKbps: bitrateKbps)
-            let playback = PlaybackController(remoteStreamURL: initial.url,
-                                              item: detailed,
-                                              identity: appModel.identity,
-                                              client: appModel.client,
-                                              remoteBackendLabel: "Jellyfin",
-                                              httpHeaders: initial.requiredHTTPHeaders,
-                                              remotePlaySessionId: initial.playSessionId,
-                                              sourceMetadata: MediaBrowserPlaybackSourceMetadata(initial.sourceMetadata),
-                                              playMethod: MediaBrowserPlayMethod(initial.playMethod),
-                                              onStopRemoteSession: {
-                                                  Task {
-                                                      await JellyfinBrowseService(appModel: appModel)
-                                                          .stopActiveEncoding(playSessionId: initial.playSessionId)
-                                                  }
-                                              },
-                                              remoteStreamReopener: { request in
-                                                  let reopened = try await JellyfinBrowseService(appModel: appModel)
-                                                      .playbackOpen(item: detailed,
-                                                                    maxVideoBitrateKbps: request.bitrateKbps,
-                                                                    resumeOffsetMs: request.offsetMs,
-                                                                    audioStreamIndex: request.audioStreamIndex,
-                                                                    subtitleStreamIndex: request.subtitleStreamIndex)
-                                                  return RemoteStreamOpenResult(
-                                                      url: reopened.url,
-                                                      headers: reopened.requiredHTTPHeaders,
-                                                      playSessionId: reopened.playSessionId,
-                                                      sourceMetadata: MediaBrowserPlaybackSourceMetadata(reopened.sourceMetadata),
-                                                      playMethod: MediaBrowserPlayMethod(reopened.playMethod),
-                                                      onStop: {
-                                                          Task {
-                                                              await JellyfinBrowseService(appModel: appModel)
-                                                                  .stopActiveEncoding(playSessionId: reopened.playSessionId)
-                                                          }
-                                                      })
-                                              },
-                                              maxVideoBitrateKbps: bitrateKbps,
-                                              qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
+            let opened = try await DetailPlaybackLauncher.openJellyfin(item: detailed,
+                                                                      appModel: appModel,
+                                                                      maxVideoBitrateKbps: bitrateKbps)
+            let playback = DetailPlaybackLauncher.jellyfinPlaybackController(
+                remote: opened.playback,
+                item: detailed,
+                appModel: appModel,
+                maxVideoBitrateKbps: bitrateKbps,
+                qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
             controller = playback
             playback.start()
 
