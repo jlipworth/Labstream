@@ -177,7 +177,7 @@ struct LoginView: View {
     private var jellyfinLoginForm: some View {
         switch authManager.state {
         case .awaitingJellyfinQuickConnect(let code):
-            jellyfinQuickConnectWaiting(code: code)
+            JellyfinQuickConnectCodeView(code: code, onUseCredentials: useJellyfinCredentialsFallback)
         default:
             jellyfinCredentialsForm
         }
@@ -250,34 +250,13 @@ struct LoginView: View {
             })
     }
 
-    private func jellyfinQuickConnectWaiting(code: String) -> some View {
-        PairingCodeView(
-            code: code,
-            fallbackTitle: "Use username and password instead",
-            onFallback: {
-                authManager.cancelCurrentAuthorization()
-                jellyfinSignInMethod = .credentials
-                working = false
-            }) {
-                VStack(spacing: DS.Space.xs) {
-                    Text("Enter this code in Jellyfin")
-                        .font(.title3.weight(.semibold))
-                    Text("In an already signed-in Jellyfin app or web UI, open Quick Connect and enter the code.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
-                }
-            }
-    }
-
     // MARK: - Emby (Emby Connect PIN — primary — or server URL + username/password)
 
     @ViewBuilder
     private var embyLoginForm: some View {
         switch authManager.state {
         case .awaitingEmbyConnectPin(let code):
-            embyConnectWaiting(code: code)
+            EmbyConnectPinCodeView(code: code, onUseServerURL: useEmbyServerURLFallback)
         case .awaitingEmbyServerSelection(let servers):
             embyServerPicker(servers)
         default:
@@ -335,27 +314,6 @@ struct LoginView: View {
             })
     }
 
-    private func embyConnectWaiting(code: String) -> some View {
-        PairingCodeView(
-            code: code,
-            fallbackTitle: "Use a server URL instead",
-            onFallback: {
-                authManager.cancelCurrentAuthorization()
-                embySignInMethod = .credentials
-                working = false
-            }) {
-                VStack(spacing: DS.Space.xs) {
-                    Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
-                        .font(.title3)
-                    Text("on your phone, tablet, or computer — sign in to Emby Connect there")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
-                }
-            }
-    }
-
     private func embyServerPicker(_ servers: [AuthManager.EmbyConnectServerChoice]) -> some View {
         EmbyConnectServerPicker(
             servers: servers,
@@ -380,6 +338,18 @@ struct LoginView: View {
                 working = false
                 embySignInMethod = nil
             })
+    }
+
+    private func useJellyfinCredentialsFallback() {
+        authManager.cancelCurrentAuthorization()
+        jellyfinSignInMethod = .credentials
+        working = false
+    }
+
+    private func useEmbyServerURLFallback() {
+        authManager.cancelCurrentAuthorization()
+        embySignInMethod = .credentials
+        working = false
     }
 
     private func selectEmbyConnectServer(_ server: AuthManager.EmbyConnectServerChoice) {
