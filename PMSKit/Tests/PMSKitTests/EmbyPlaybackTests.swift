@@ -111,6 +111,35 @@ struct EmbyPlaybackTests {
         #expect(result.sourceMetadata.bitrate == 8200)
     }
 
+    @Test func resolveStreamClassifiesTranscodingURLAsTranscodeEvenWhenDirectStreamSupported() throws {
+        let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-hls-direct-stream",
+          "MediaSources": [{
+            "Id": "mediasource_hls",
+            "Container": "mkv",
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": true,
+            "SupportsTranscoding": true,
+            "TranscodingUrl": "/videos/movie-hls/master.m3u8?DeviceId=device-123&MediaSourceId=mediasource_hls&PlaySessionId=play-hls-direct-stream&api_key=server-token",
+            "TranscodingSubProtocol": "hls",
+            "TranscodingContainer": "ts"
+          }]
+        }
+        """#.utf8))
+
+        let result = try EmbyPlayback.resolveStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: "token-abc",
+            userId: "user-9",
+            itemId: "movie-hls")
+
+        #expect(result.playMethod == .transcode)
+        #expect(result.usesServerEncoding)
+    }
+
     @Test func resolveStreamFallsBackToDirectStreamURLAndAddsApiKeyWhenRequested() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {

@@ -521,12 +521,14 @@ public enum EmbyPlayback {
             let resolvedAudioStreamIndex = audioStreamIndex ??
                 (audioBitrate == nil ? nil : source.preferredCompatibleAudioStreamIndexForCappedTranscode())
             let url = try embyURL(server: server, pathOrURLString: transcodingURL)
-            let method: EmbyPlayMethod = source.supportsDirectStream && !source.supportsDirectPlay ? .directStream : .transcode
             return EmbyPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
-                playMethod: method,
+                // The selected URL is the source of truth. A server-minted HLS `TranscodingUrl`
+                // is server-encoded even when Emby also advertises SupportsDirectStream, so report
+                // it as transcode and let the app use the remote-HLS buffering/session policy.
+                playMethod: .transcode,
                 // HLS children inherit api_key from the query — do NOT inject Authorization.
                 requiredHTTPHeaders: source.requiredHTTPHeaders ?? [:],
                 sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: resolvedAudioStreamIndex),
