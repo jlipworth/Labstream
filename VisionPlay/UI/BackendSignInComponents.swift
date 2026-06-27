@@ -10,6 +10,11 @@ enum JellyfinSignInMethod: Equatable {
     case credentials
 }
 
+enum EmbySignInMethod: Equatable {
+    case connectPin
+    case credentials
+}
+
 struct BackendSelectionPicker: View {
     let selection: MediaBackendKind
     let onSelect: (MediaBackendKind) -> Void
@@ -221,6 +226,97 @@ struct JellyfinSignInFlow: View {
             isWorking: isWorking,
             signInTitle: "Sign in with Jellyfin",
             isSignInDisabled: isWorking,
+            onSignIn: onSignInWithCredentials,
+            onChooseDifferent: onChooseDifferentFromCredentials)
+    }
+}
+
+struct EmbySignInFlow: View {
+    let state: AuthManager.State
+    @Binding var server: String
+    @Binding var username: String
+    @Binding var password: String
+    @Binding var signInMethod: EmbySignInMethod?
+    let isWorking: Bool
+    @Binding var selectingServerID: String?
+    let onUseServerURLFallback: () -> Void
+    let onChooseConnectPin: () -> Void
+    let onChooseServerCredentials: () -> Void
+    let onStartConnectPin: () -> Void
+    let onSelectServer: (AuthManager.EmbyConnectServerChoice) -> Void
+    let onCancelServerSelection: () -> Void
+    let onSignInWithCredentials: () -> Void
+    let onChooseDifferentFromConnect: () -> Void
+    let onChooseDifferentFromCredentials: () -> Void
+
+    var body: some View {
+        switch state {
+        case .awaitingEmbyConnectPin(let code):
+            EmbyConnectPinCodeView(code: code, onUseServerURL: onUseServerURLFallback)
+        case .awaitingEmbyServerSelection(let servers):
+            EmbyConnectServerPicker(
+                servers: servers,
+                isWorking: isWorking,
+                selectingServerID: $selectingServerID,
+                onSelect: onSelectServer,
+                onCancel: onCancelServerSelection)
+        default:
+            methodForm
+        }
+    }
+
+    private var hasServerInput: Bool {
+        !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder
+    private var methodForm: some View {
+        switch signInMethod {
+        case nil:
+            methodChooser
+        case .connectPin:
+            connectStart
+        case .credentials:
+            credentialsForm
+        }
+    }
+
+    /// Emby Connect PIN is the headset-friendly primary path (needs no server address);
+    /// the server-URL + username/password form is the secondary option.
+    private var methodChooser: some View {
+        BackendSignInMethodChooser(
+            primaryTitle: "Sign in with Emby Connect",
+            primarySystemImage: "link.badge.plus",
+            secondaryTitle: "Sign in with server URL",
+            secondarySystemImage: "server.rack",
+            primaryDisabled: isWorking,
+            secondaryDisabled: isWorking,
+            footer: "Emby Connect uses a code at emby.media/pin.html — no server address needed.",
+            onPrimary: onChooseConnectPin,
+            onSecondary: onChooseServerCredentials)
+    }
+
+    private var connectStart: some View {
+        BackendAuthStartView(
+            isWorking: isWorking,
+            workingTitle: "Starting Emby Connect…",
+            startTitle: "Start Emby Connect",
+            systemImage: "link.badge.plus",
+            isStartDisabled: false,
+            chooseDifferentTitle: "Choose a different sign-in method",
+            onStart: onStartConnectPin,
+            onChooseDifferent: onChooseDifferentFromConnect)
+    }
+
+    private var credentialsForm: some View {
+        BackendCredentialsSignInForm(
+            serverURLPlaceholder: "https://emby.example.com",
+            serverURLText: $server,
+            username: $username,
+            password: $password,
+            isWorking: isWorking,
+            signInTitle: "Sign in with Emby",
+            isSignInDisabled: isWorking || !hasServerInput,
             onSignIn: onSignInWithCredentials,
             onChooseDifferent: onChooseDifferentFromCredentials)
     }

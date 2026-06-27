@@ -16,11 +16,6 @@ import PMSKit
 /// foreground that ships as the visionOS app-icon Front layer. The full wordmark
 /// stays out of the circular icon crop, while the sign-in screen pairs the mark
 /// with a native SwiftUI VisionPlay title treatment.
-private enum EmbySignInMethod: Equatable {
-    case connectPin
-    case credentials
-}
-
 struct LoginView: View {
     let authManager: AuthManager
 
@@ -140,90 +135,23 @@ struct LoginView: View {
 
     @ViewBuilder
     private var embyLoginForm: some View {
-        switch authManager.state {
-        case .awaitingEmbyConnectPin(let code):
-            EmbyConnectPinCodeView(code: code, onUseServerURL: useEmbyServerURLFallback)
-        case .awaitingEmbyServerSelection(let servers):
-            embyServerPicker(servers)
-        default:
-            embyMethodForm
-        }
-    }
-
-    @ViewBuilder
-    private var embyMethodForm: some View {
-        switch embySignInMethod {
-        case nil:
-            embyMethodChooser
-        case .connectPin:
-            embyConnectStart
-        case .credentials:
-            embyCredentialsForm
-        }
-    }
-
-    /// Emby Connect PIN is the headset-friendly primary path (needs no server address);
-    /// the server-URL + username/password form is the secondary option.
-    private var embyMethodChooser: some View {
-        BackendSignInMethodChooser(
-            primaryTitle: "Sign in with Emby Connect",
-            primarySystemImage: "link.badge.plus",
-            secondaryTitle: "Sign in with server URL",
-            secondarySystemImage: "server.rack",
-            primaryDisabled: working,
-            secondaryDisabled: working,
-            footer: "Emby Connect uses a code at emby.media/pin.html — no server address needed.",
-            onPrimary: {
-                embySignInMethod = .connectPin
-                Task { await startEmbyConnect() }
-            },
-            onSecondary: {
-                errorMessage = nil
-                embySignInMethod = .credentials
-            })
-    }
-
-    private var embyConnectStart: some View {
-        BackendAuthStartView(
-            isWorking: working,
-            workingTitle: "Starting Emby Connect…",
-            startTitle: "Start Emby Connect",
-            systemImage: "link.badge.plus",
-            isStartDisabled: false,
-            chooseDifferentTitle: "Choose a different sign-in method",
-            onStart: { Task { await startEmbyConnect() } },
-            onChooseDifferent: {
-                errorMessage = nil
-                working = false
-                authManager.cancelCurrentAuthorization()
-                embySignInMethod = nil
-            })
-    }
-
-    private func embyServerPicker(_ servers: [AuthManager.EmbyConnectServerChoice]) -> some View {
-        EmbyConnectServerPicker(
-            servers: servers,
-            isWorking: working,
-            selectingServerID: $selectingEmbyConnectServerID,
-            onSelect: selectEmbyConnectServer,
-            onCancel: cancelEmbyServerSelection)
-    }
-
-    private var embyCredentialsForm: some View {
-        BackendCredentialsSignInForm(
-            serverURLPlaceholder: "https://emby.example.com",
-            serverURLText: $embyServer,
+        EmbySignInFlow(
+            state: authManager.state,
+            server: $embyServer,
             username: $embyUsername,
             password: $embyPassword,
+            signInMethod: $embySignInMethod,
             isWorking: working,
-            signInTitle: "Sign in with Emby",
-            isSignInDisabled: working || !hasEmbyServerInput,
-            onSignIn: { Task { await startEmbyLogin() } },
-            onChooseDifferent: {
-                errorMessage = nil
-                working = false
-                embySignInMethod = nil
-            })
+            selectingServerID: $selectingEmbyConnectServerID,
+            onUseServerURLFallback: useEmbyServerURLFallback,
+            onChooseConnectPin: chooseEmbyConnectPin,
+            onChooseServerCredentials: chooseEmbyServerCredentials,
+            onStartConnectPin: { Task { await startEmbyConnect() } },
+            onSelectServer: selectEmbyConnectServer,
+            onCancelServerSelection: cancelEmbyServerSelection,
+            onSignInWithCredentials: { Task { await startEmbyLogin() } },
+            onChooseDifferentFromConnect: cancelEmbyAuthorizationAndResetMethod,
+            onChooseDifferentFromCredentials: resetEmbyCredentialsMethod)
     }
 
     private func useJellyfinCredentialsFallback() {
@@ -261,6 +189,29 @@ struct LoginView: View {
         working = false
     }
 
+    private func chooseEmbyConnectPin() {
+        embySignInMethod = .connectPin
+        Task { await startEmbyConnect() }
+    }
+
+    private func chooseEmbyServerCredentials() {
+        errorMessage = nil
+        embySignInMethod = .credentials
+    }
+
+    private func cancelEmbyAuthorizationAndResetMethod() {
+        errorMessage = nil
+        working = false
+        authManager.cancelCurrentAuthorization()
+        embySignInMethod = nil
+    }
+
+    private func resetEmbyCredentialsMethod() {
+        errorMessage = nil
+        working = false
+        embySignInMethod = nil
+    }
+
     private func selectEmbyConnectServer(_ server: AuthManager.EmbyConnectServerChoice) {
         Task {
             guard selectingEmbyConnectServerID == nil else { return }
@@ -280,10 +231,6 @@ struct LoginView: View {
         embySignInMethod = nil
         working = false
         selectingEmbyConnectServerID = nil
-    }
-
-    private var hasEmbyServerInput: Bool {
-        !embyServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func selectBackend(_ backend: MediaBackendKind) {
