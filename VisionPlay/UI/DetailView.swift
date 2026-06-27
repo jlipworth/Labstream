@@ -273,7 +273,7 @@ struct DetailView: View {
             if SystemEntryRouter.shared.consumeAutoPlay(for: detailed.ratingKey),
                !detailed.isMusic {
                 musicPlayer.pauseForVideo()
-                playingItem = itemWithResumeRewind(detailed)
+                playingItem = DetailPlaybackLauncher.itemWithResumeRewind(detailed, resumeRewindSeconds: resumeRewindSeconds)
                 presentingPlayer = true
             }
         }
@@ -499,7 +499,7 @@ struct DetailView: View {
                 playingItem = nil
                 presentingPlayer = false
                 localPlaybackRequest = LocalPlaybackRequest(url: local,
-                                                            item: itemWithResumeRewind(offlineItem),
+                                                            item: DetailPlaybackLauncher.itemWithResumeRewind(offlineItem, resumeRewindSeconds: resumeRewindSeconds),
                                                             trickPlayURL: trickPlayURL,
                                                             trickPlayKind: trickPlayKind,
                                                             chapterImageURLs: chapterImageURLs,
@@ -901,7 +901,7 @@ struct DetailView: View {
                                                      ])
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
-        playingItem = itemWithResumeRewind(detailed)
+        playingItem = DetailPlaybackLauncher.itemWithResumeRewind(detailed, resumeRewindSeconds: resumeRewindSeconds)
         switch launchBackend {
         case .plex:
             remotePlayback = nil
@@ -911,29 +911,28 @@ struct DetailView: View {
         case .jellyfin:
             embyRemotePlayback = nil
             do {
-                let service = JellyfinBrowseService(appModel: appModel)
-                let fetched = (try? await service.metadata(itemId: launchRatingKey)) ?? detailed
+                let playbackItem = await DetailPlaybackLauncher.metadataItem(ratingKey: launchRatingKey,
+                                                                             fallback: detailed,
+                                                                             backend: launchBackend,
+                                                                             appModel: appModel,
+                                                                             resumeRewindSeconds: resumeRewindSeconds)
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
-                let playbackItem = itemWithResumeRewind(fetched)
                 playingItem = playbackItem
-                let result = try await service
-                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
+                let opened = try await DetailPlaybackLauncher.openJellyfin(item: playbackItem,
+                                                                          appModel: appModel,
+                                                                          maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
-                remotePlayback = JellyfinRemotePlayback(url: result.url,
-                                                        headers: result.requiredHTTPHeaders,
-                                                        playSessionId: result.playSessionId,
-                                                        sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-                                                        playMethod: MediaBrowserPlayMethod(result.playMethod))
+                remotePlayback = opened.playback
                 presentingPlayer = true
                 span.end(fields: [
                     "path_mode": "remote_stream",
-                    "play_method": result.playMethod.rawValue,
+                    "play_method": opened.playMethod,
                 ])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
@@ -942,30 +941,28 @@ struct DetailView: View {
         case .emby:
             remotePlayback = nil
             do {
-                let service = EmbyBrowseService(appModel: appModel)
-                let fetched = (try? await service.metadata(itemId: launchRatingKey)) ?? detailed
+                let playbackItem = await DetailPlaybackLauncher.metadataItem(ratingKey: launchRatingKey,
+                                                                             fallback: detailed,
+                                                                             backend: launchBackend,
+                                                                             appModel: appModel,
+                                                                             resumeRewindSeconds: resumeRewindSeconds)
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
-                let playbackItem = itemWithResumeRewind(fetched)
                 playingItem = playbackItem
-                let result = try await service
-                    .playbackOpen(item: playbackItem, maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
+                let opened = try await DetailPlaybackLauncher.openEmby(item: playbackItem,
+                                                                      appModel: appModel,
+                                                                      maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
-                embyRemotePlayback = EmbyRemotePlayback(url: result.url,
-                                                        headers: result.requiredHTTPHeaders,
-                                                        playSessionId: result.playSessionId,
-                                                        sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-                                                        playMethod: MediaBrowserPlayMethod(result.playMethod),
-                                                        usesServerEncoding: result.usesServerEncoding)
+                embyRemotePlayback = opened.playback
                 presentingPlayer = true
                 span.end(fields: [
                     "path_mode": "remote_stream",
-                    "play_method": result.playMethod.rawValue,
+                    "play_method": opened.playMethod,
                 ])
             } catch {
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
@@ -982,16 +979,6 @@ struct DetailView: View {
         _ = homeMaxVideoBitrateKbps
         _ = remoteMaxVideoBitrateKbps
         return appModel.activeStreamingQualityKbps
-    }
-
-    private func adjustedResumeOffsetMs(_ offset: Int?) -> Int? {
-        guard let offset, offset > 0, resumeRewindSeconds > 0 else { return offset }
-        return max(0, offset - resumeRewindSeconds * 1000)
-    }
-
-    private func itemWithResumeRewind(_ item: MediaItem) -> MediaItem {
-        guard item.viewOffset != nil, resumeRewindSeconds > 0 else { return item }
-        return item.copyWith(viewOffset: adjustedResumeOffsetMs(item.viewOffset))
     }
 
     private enum LocalTrickPlayKind {
@@ -1119,24 +1106,6 @@ struct DetailView: View {
     }
 }
 
-private struct JellyfinRemotePlayback: Identifiable, Equatable {
-    let id = UUID()
-    let url: URL
-    let headers: [String: String]
-    let playSessionId: String
-    let sourceMetadata: MediaBrowserPlaybackSourceMetadata
-    let playMethod: MediaBrowserPlayMethod
-}
-
-private struct EmbyRemotePlayback: Identifiable, Equatable {
-    let id = UUID()
-    let url: URL
-    let headers: [String: String]
-    let playSessionId: String
-    let sourceMetadata: MediaBrowserPlaybackSourceMetadata
-    let playMethod: MediaBrowserPlayMethod
-    let usesServerEncoding: Bool
-}
 
 /// Browser for a TV CONTAINER (a `show` or a `season`).
 ///
@@ -1376,27 +1345,5 @@ struct EpisodeRow: View {
 extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
-    }
-}
-
-
-private extension MediaItem {
-    func copyWith(viewOffset: Int?) -> MediaItem {
-        MediaItem(ratingKey: ratingKey, key: key, title: title, type: type,
-                  duration: duration, viewOffset: viewOffset, viewCount: viewCount,
-                  year: year, summary: summary, thumb: thumb, art: art, media: media,
-                  librarySectionID: librarySectionID, librarySectionKey: librarySectionKey,
-                  chapters: chapters, markers: markers, rating: rating,
-                  contentRating: contentRating, tagline: tagline, genres: genres,
-                  criticRating: criticRating, roles: roles, directors: directors,
-                  studios: studios, logo: logo,
-                  grandparentTitle: grandparentTitle, grandparentRatingKey: grandparentRatingKey,
-                  grandparentThumb: grandparentThumb, parentTitle: parentTitle,
-                  parentRatingKey: parentRatingKey, parentThumb: parentThumb,
-                  parentIndex: parentIndex, index: index, originalTitle: originalTitle,
-                  lastViewedAt: lastViewedAt, parentYear: parentYear,
-                  ratingCount: ratingCount, composite: composite, leafCount: leafCount,
-                  playlistType: playlistType,
-                  primaryImageAspectRatio: primaryImageAspectRatio)
     }
 }
