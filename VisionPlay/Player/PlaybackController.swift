@@ -263,6 +263,10 @@ final class PlaybackController {
     private var playbackGeneration = 0
     private var remoteHLSProxy: MediaSessionProxy?
     private var remoteHLSProxyGeneration: Int?
+    /// Absolute media offset used to open the current remote backend stream. Some Jellyfin/Emby
+    /// HLS transcodes expose an item-relative AVPlayer clock even when the stream is primed at a
+    /// non-zero position; timeline/progress reporting must add this base back (#174).
+    private var remoteStreamBaseOffsetMs: Int?
     /// User transport intent, independent of AVPlayer's transient loading state.
     ///
     /// During initial HLS priming AVPlayer sits in `.waitingToPlayAtSpecifiedRate`, so a quick
@@ -332,7 +336,10 @@ final class PlaybackController {
                                                  token: token,
                                                  identity: identity,
                                                  client: client,
-                                                 player: player)
+                                                 player: player,
+                                                 currentPositionMs: { [weak self] in
+                                                     self?.currentResumeMs ?? 0
+                                                 })
 
     /// One-shot guard for the resume seek. Replaces the old "self-nil the observation
     /// inside its own callback" pattern (P4 #8): nilling the observation there meant a
@@ -489,9 +496,16 @@ final class PlaybackController {
     /// Best-effort current playhead (ms), used to rebuild the player after a failure without
     /// losing the user's position. Prefers the live time when it's valid, then the pending
     /// resume target, then the item's saved offset, then 0.
+    ///
+    /// For backend-resolved remote transcodes, AVPlayer may report an item-relative clock after
+    /// opening a stream at a non-zero server offset. Normalize it back to the absolute media
+    /// position before using it for timeline/progress, stop, retry, quality reload, or UI chrome.
     var currentResumeMs: Int {
         let secs = player.currentTime().seconds
-        if secs.isFinite, secs > 0 { return Int(secs * 1000) }
+        if secs.isFinite, secs >= 0 {
+            return RemotePlaybackPositionPolicy.absolutePositionMs(playerTimeMs: Int(secs * 1000),
+                                                                   streamBaseMs: remoteStreamBaseOffsetMs)
+        }
         // During an in-flight user seek the live clock is briefly invalid (item detached for a
         // reopen, or pre-prime); fall back to the seek target rather than the stale offset so the
         // scrubber/resume position never regresses to the OLD position (GH #110).
@@ -2141,6 +2155,7 @@ final class PlaybackController {
     // MARK: - Local-file path
 
     private func loadLocalFile(_ url: URL) {
+        remoteStreamBaseOffsetMs = nil
         // Seed static facts for the Stats overlay; offline playback is always a local
         // direct file (no transcode decision, no remote host).
         diagnostics.applyStatic(item: item,
@@ -2162,6 +2177,11 @@ final class PlaybackController {
     }
 
     private func loadRemoteStream(_ url: URL, headers: [String: String], resumeOffsetMs: Int? = nil) {
+        let effectiveResumeMs = resumeOffsetMs ?? item.viewOffset
+        remoteStreamBaseOffsetMs = {
+            guard isRemoteTranscode, let effectiveResumeMs, effectiveResumeMs > 0 else { return nil }
+            return effectiveResumeMs
+        }()
         // Seed static facts for the Stats overlay. The stream has already been resolved by the
         // backend, so there is no Plex decision/proxy state to report here.
         diagnostics.applyStatic(item: item,
@@ -2195,7 +2215,7 @@ final class PlaybackController {
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
         let asset = AVURLAsset(url: url, options: options)
         let playerItem = AVPlayerItem(asset: asset)
-        load(playerItem, resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
+        load(playerItem, resumeOffsetMs: effectiveResumeMs)
     }
 
     private func playableRemoteStreamURL(_ url: URL,
