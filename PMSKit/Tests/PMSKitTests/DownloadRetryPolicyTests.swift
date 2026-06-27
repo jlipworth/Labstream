@@ -82,4 +82,27 @@ struct DownloadRetryPolicyTests {
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(complete, fileExists: { _ in true }))
         #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(unstarted, fileExists: { _ in true }))
     }
+    @Test("Stale queued static partial demotes only when no live task owns it")
+    func staleQueuedStaticPartialDemotesOnlyWhenInactive() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-queued-partial.mp4")
+        let metadata = OfflineMetadata(ratingKey: "emby:item-queued",
+                                       title: "Queued Partial",
+                                       type: "movie",
+                                       mediaSourceID: "converted-source",
+                                       downloadLane: .original,
+                                       resumeMode: .staticByteRange,
+                                       serverPreparedVersion: true)
+        let record = DownloadRecord(ratingKey: "emby:item-queued",
+                                    title: "Queued Partial",
+                                    localURL: url,
+                                    bytes: 25 * 1_024 * 1_024,
+                                    progress: 0.25,
+                                    status: .queued,
+                                    metadata: metadata)
+
+        #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { $0 == url }))
+        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: true, fileExists: { $0 == url }))
+        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { _ in false }))
+    }
+
 }

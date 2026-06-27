@@ -613,8 +613,12 @@ public final class DownloadManager {
         // pass through `retryAttemptCanContinue`; if the row is still `.paused`, that async guard
         // treats the user's Resume tap as cancelled and silently no-ops.
         if record.status == .paused, Self.hasIncompleteStaticPartial(record) {
-            store.setStatus(ratingKey: ratingKey, .queued)
-            refreshRecords()
+            // The backend download entry points reject existing `.queued`/`.downloading` rows as
+            // duplicate active work. A partial static retry is not active yet; it is about to
+            // re-acquire a URLSession task against the same destination file. Keep the row inactive
+            // for that handoff so `downloadEmby`/`downloadJellyfin` can start the Range request
+            // instead of no-oping and stranding the row as queued.
+            store.setStatus(ratingKey: ratingKey, .failed)
         }
         if Self.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record)
@@ -1457,7 +1461,19 @@ public final class DownloadManager {
 
     func refreshRecords() {
         let now = Date()
-        let fresh = store.records
+        var fresh = store.records
+        let staleQueuedStaticPartials = fresh.filter { record in
+            DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+                record,
+                isActive: activeJobs.contains(record.ratingKey)
+            )
+        }
+        if !staleQueuedStaticPartials.isEmpty {
+            for record in staleQueuedStaticPartials {
+                store.setStatus(ratingKey: record.ratingKey, .paused)
+            }
+            fresh = store.records
+        }
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
         // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
         // cumulative byte count. The estimator owns ALL the speed/ETA math — first-emit window,
