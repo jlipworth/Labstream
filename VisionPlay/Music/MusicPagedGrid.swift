@@ -33,6 +33,7 @@ struct MusicPagedGrid: View {
 
     private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
                                     spacing: DS.Space.xl)]
+    private let alphabetRailSortClearance: CGFloat = 72
 
     private var pagingSource: LibraryPagingSource {
         .music(kind: kind, libraryID: libraryID, libraryTitle: libraryTitle,
@@ -82,7 +83,8 @@ struct MusicPagedGrid: View {
                 Spacer()
                 sortMenu
             }
-            .padding(.horizontal, DS.Space.xxl)
+            .padding(.leading, DS.Space.xxl)
+            .padding(.trailing, sortTrailingPadding)
 
             LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
                 // Position-keyed: a slot's identity is its place in the listing; its content
@@ -116,6 +118,13 @@ struct MusicPagedGrid: View {
                 .font(.callout)
         }
         .buttonStyle(.bordered)
+    }
+
+    private var sortTrailingPadding: CGFloat {
+        guard paging.alphabetBuckets.count > 1, case .loaded = paging.loadState else {
+            return DS.Space.xxl
+        }
+        return DS.Space.xxl + alphabetRailSortClearance
     }
 
     /// "Artist · 1973" on albums, dropping whichever half is missing; nil for artists.
