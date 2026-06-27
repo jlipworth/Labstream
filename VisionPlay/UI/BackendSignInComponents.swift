@@ -5,6 +5,45 @@ import SwiftUI
 /// These are deliberately presentation-only: callers own validation, auth-manager actions,
 /// cancellation, and credential storage semantics.
 
+
+struct BackendSelectionPicker: View {
+    let selection: MediaBackendKind
+    let onSelect: (MediaBackendKind) -> Void
+
+    var body: some View {
+        Picker("Media Server", selection: Binding(
+            get: { selection },
+            set: { backend in onSelect(backend) })) {
+                ForEach(MediaBackendKind.allCases) { backend in
+                    Text(backend.displayName).tag(backend)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 360)
+    }
+}
+
+struct BackendAuthErrorBanner: View {
+    let message: String
+
+    var body: some View {
+        Label {
+            Text(message)
+                .foregroundStyle(.primary)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+        .font(.callout)
+        .multilineTextAlignment(.leading)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.vertical, DS.Space.md)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+            .strokeBorder(.red.opacity(0.35), lineWidth: 0.5))
+    }
+}
+
 struct PlexLinkCodeView: View {
     let code: String
     let onOpenInHeadset: () -> Void

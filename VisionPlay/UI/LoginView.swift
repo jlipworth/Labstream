@@ -54,7 +54,7 @@ struct LoginView: View {
             content
 
             if let errorMessage {
-                errorBanner(errorMessage)
+                BackendAuthErrorBanner(message: errorMessage)
             }
         }
         .padding(.horizontal, DS.Space.xxxl)
@@ -138,22 +138,8 @@ struct LoginView: View {
     }
 
     private var backendPicker: some View {
-        Picker("Media Server", selection: Binding(
-            get: { appModel.activeBackend },
-            set: { backend in
-                errorMessage = nil
-                working = false
-                webAuth.cancel()
-                jellyfinSignInMethod = nil
-                embySignInMethod = nil
-                authManager.selectBackend(backend)
-            })) {
-                ForEach(MediaBackendKind.allCases) { backend in
-                    Text(backend.displayName).tag(backend)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 360)
+        BackendSelectionPicker(selection: appModel.activeBackend,
+                               onSelect: selectBackend)
     }
 
     // MARK: - Flow states
@@ -425,26 +411,13 @@ struct LoginView: View {
         !jellyfinServer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    // MARK: - Error presentation
-
-    /// Glass banner consistent with the DS chip family: material background with
-    /// a red hairline + icon, primary-colored text (legible on glass, unlike the
-    /// old all-red label on a red wash).
-    private func errorBanner(_ message: String) -> some View {
-        Label {
-            Text(message)
-                .foregroundStyle(.primary)
-        } icon: {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-        }
-        .font(.callout)
-        .multilineTextAlignment(.leading)
-        .padding(.horizontal, DS.Space.lg)
-        .padding(.vertical, DS.Space.md)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
-            .strokeBorder(.red.opacity(0.35), lineWidth: 0.5))
+    private func selectBackend(_ backend: MediaBackendKind) {
+        errorMessage = nil
+        working = false
+        webAuth.cancel()
+        jellyfinSignInMethod = nil
+        embySignInMethod = nil
+        authManager.selectBackend(backend)
     }
 
     private func startLogin() async {
