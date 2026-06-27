@@ -412,4 +412,10 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertEqual(once, twice, "redacting an already-redacted string must be a no-op")
     }
 
+    func testDiagnosticReportArtifactFilenamesAreStable() {
+        XCTAssertEqual(DiagnosticReportArtifactMetadata.exportFilename, "VisionPlay-Diagnostic-Report")
+        XCTAssertEqual(DiagnosticReportArtifactMetadata.feedbackFilename, "VisionPlay-Feedback.txt")
+        XCTAssertTrue(DiagnosticReportArtifactMetadata.feedbackFilename.hasSuffix(".txt"))
+    }
+
 }
