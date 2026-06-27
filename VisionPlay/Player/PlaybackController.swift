@@ -9,6 +9,7 @@ struct RemoteStreamOpenResult {
     let url: URL
     let headers: [String: String]
     let playSessionId: String?
+    let mediaSourceId: String?
     let sourceMetadata: MediaBrowserPlaybackSourceMetadata?
     let playMethod: MediaBrowserPlayMethod?
     let onStop: (() -> Void)?
@@ -16,12 +17,14 @@ struct RemoteStreamOpenResult {
     init(url: URL,
          headers: [String: String],
          playSessionId: String? = nil,
+         mediaSourceId: String? = nil,
          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
          playMethod: MediaBrowserPlayMethod? = nil,
          onStop: (() -> Void)? = nil) {
         self.url = url
         self.headers = headers
         self.playSessionId = playSessionId
+        self.mediaSourceId = mediaSourceId
         self.sourceMetadata = sourceMetadata
         self.playMethod = playMethod
         self.onStop = onStop
@@ -150,6 +153,7 @@ final class PlaybackController {
     private var remoteSourceMetadata: MediaBrowserPlaybackSourceMetadata?
     private var remotePlayMethod: MediaBrowserPlayMethod?
     private var remotePlaySessionId: String?
+    private var mediaBrowserProgressSession: MediaBrowserPlaybackProgressSession?
     private var onStopRemoteSession: (() -> Void)?
     private let remoteStreamReopener: RemoteStreamReopener?
     private var didStopRemoteSession = false
@@ -334,7 +338,10 @@ final class PlaybackController {
                                                  token: token,
                                                  identity: identity,
                                                  client: client,
-                                                 player: player)
+                                                 player: player,
+                                                 mediaBrowserProgressSession: { [weak self] in
+                                                     self?.mediaBrowserProgressSession
+                                                 })
 
     /// One-shot guard for the resume seek. Replaces the old "self-nil the observation
     /// inside its own callback" pattern (P4 #8): nilling the observation there meant a
@@ -505,9 +512,9 @@ final class PlaybackController {
     /// player surface offers (quality reload only makes sense for streaming).
     var isStreaming: Bool { localFile == nil && server != nil && token != nil }
 
-    /// Whether this session can reopen its media stream at a new offset/quality.
-    /// Plex uses the media-session proxy; backend-resolved playback (Jellyfin/Emby) can
-    /// provide a reopener closure without pretending to be a Plex timeline session.
+    /// Whether this session can reopen its media stream at a new quality.
+    /// Plex uses its universal-transcode start path; backend-resolved playback (Jellyfin/Emby)
+    /// can provide a reopener closure without pretending to be a Plex timeline session.
     var supportsQualityReload: Bool { isStreaming || remoteStreamReopener != nil }
 
     /// Whether the Audio tab should use backend/container metadata instead of AVFoundation's
@@ -516,7 +523,16 @@ final class PlaybackController {
     /// AVFoundation because the whole playable file is already on disk.
     var supportsMetadataAudioSelection: Bool { isStreaming || remoteStreamReopener != nil }
 
-    private var supportsSeekReprime: Bool { isStreaming || remoteStreamReopener != nil }
+    private var seekStreamKind: RemoteSeekModePolicy.StreamKind {
+        RemoteSeekModePolicy.streamKind(isLocalFile: localFile != nil,
+                                        isPlexStreaming: isStreaming,
+                                        hasRemoteStream: remoteStreamURL != nil,
+                                        mediaBrowserPlayMethod: remotePlayMethod)
+    }
+
+    private var supportsSeekReprime: Bool {
+        RemoteSeekModePolicy.supportsOutOfBufferReopen(streamKind: seekStreamKind)
+    }
 
     /// Chapter markers for the current item, if Plex provided any. Empty when none —
     /// the player hides the Chapters menu in that case.
@@ -636,6 +652,7 @@ final class PlaybackController {
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
         self.remotePlaySessionId = nil
+        self.mediaBrowserProgressSession = nil
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
@@ -674,6 +691,7 @@ final class PlaybackController {
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
         self.remotePlaySessionId = nil
+        self.mediaBrowserProgressSession = nil
         self.onStopRemoteSession = nil
         self.remoteStreamReopener = nil
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
@@ -701,6 +719,7 @@ final class PlaybackController {
          remotePlaySessionId: String? = nil,
          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
          playMethod: MediaBrowserPlayMethod? = nil,
+         mediaBrowserProgressSession: MediaBrowserPlaybackProgressSession? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
          remoteStreamReopener: RemoteStreamReopener? = nil,
          maxVideoBitrateKbps: Int = 0,
@@ -717,6 +736,7 @@ final class PlaybackController {
         self.remotePlaySessionId = remotePlaySessionId
         self.remoteSourceMetadata = sourceMetadata
         self.remotePlayMethod = playMethod
+        self.mediaBrowserProgressSession = mediaBrowserProgressSession
         self.onStopRemoteSession = onStopRemoteSession
         self.remoteStreamReopener = remoteStreamReopener
         self.identity = identity
@@ -1734,15 +1754,25 @@ final class PlaybackController {
     ///
     /// Native AVKit scrubber callbacks are unavailable on visionOS, so `PlayerView` has to infer
     /// user intent from `AVPlayerItem.timeJumpedNotification`. The fallback player owns the
-    /// scrubber directly and can pass the user's intended target here. In-buffer targets still use
-    /// a native `AVPlayer.seek`; out-of-buffer streaming targets bypass the doomed native seek and
-    /// enter the same server-safe final-target rebuild policy that current `main` uses for #33/#25.
+    /// scrubber directly and can pass the user's intended target here. A pure seek policy chooses
+    /// native `AVPlayer.seek` for buffered/local/static-range targets and reserves server reopen for
+    /// out-of-buffer HLS streams whose segment window cannot satisfy a deep target.
     func performUserSeek(toMs targetMs: Int) {
         let clamped = max(0, targetMs)
         let target = CMTime(value: CMTimeValue(clamped), timescale: 1000)
         let seconds = Double(clamped) / 1000
+        let targetIsWithinLoadedRange = isWithinLoadedRanges(seconds: seconds)
+        let streamKind = seekStreamKind
+        let seekMode = RemoteSeekModePolicy.seekMode(streamKind: streamKind,
+                                                     targetIsWithinLoadedRange: targetIsWithinLoadedRange)
 
-        guard supportsSeekReprime, !playbackError.isFailed else {
+        guard seekMode == .reopenStreamAtTarget, !playbackError.isFailed else {
+            cancelPendingFinalTargetRebuild()
+            recordPlaybackDiagnostic("playback.user_seek", fields: [
+                "seek_mode": .label(targetIsWithinLoadedRange ? "native_buffered" : "native_direct"),
+                "seek_stream_kind": .label(String(describing: streamKind)),
+                "target": .millisecondsBucket(clamped),
+            ])
             // Native seek (no reprime support, or already failed). Hold the scrubber on the target
             // until AVPlayer reports completion (GH #110).
             setSeeking(true, targetMs: clamped)
@@ -1754,30 +1784,15 @@ final class PlaybackController {
             return
         }
 
-        if isWithinLoadedRanges(seconds: seconds) {
-            cancelPendingFinalTargetRebuild()
-            recordPlaybackDiagnostic("playback.user_seek", fields: [
-                "seek_mode": .label("native_buffered"),
-                "target": .millisecondsBucket(clamped),
-            ])
-            // In-buffer native seek is fast; hold the scrubber until AVPlayer's own completion
-            // handler fires so even the short window can't bounce.
-            setSeeking(true, targetMs: clamped)
-            let gen = seekGeneration
-            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero,
-                        completionHandler: { [weak self] _ in
-                            Task { @MainActor [weak self] in self?.clearSeekHold(ifGeneration: gen) }
-                        })
-        } else {
-            recordPlaybackDiagnostic("playback.user_seek", fields: [
-                "seek_mode": .label("server_rebuild"),
-                "target": .millisecondsBucket(clamped),
-            ])
-            // Out-of-buffer: hold the scrubber across the debounced rebuild/reopen. The hold is
-            // released by the post-rebuild `.readyToPlay` (clearSeekHoldIfLanded) or any failure.
-            setSeeking(true, targetMs: clamped)
-            scheduleFinalTargetRebuild(toMs: clamped)
-        }
+        recordPlaybackDiagnostic("playback.user_seek", fields: [
+            "seek_mode": .label("server_rebuild"),
+            "seek_stream_kind": .label(String(describing: streamKind)),
+            "target": .millisecondsBucket(clamped),
+        ])
+        // Out-of-buffer: hold the scrubber across the debounced rebuild/reopen. The hold is
+        // released by the post-rebuild `.readyToPlay` (clearSeekHoldIfLanded) or any failure.
+        setSeeking(true, targetMs: clamped)
+        scheduleFinalTargetRebuild(toMs: clamped)
     }
 
     /// App-owned relative seek hook for fixed transport jumps (±10/±30). It deliberately
@@ -3655,11 +3670,11 @@ final class PlaybackController {
 
     // MARK: - Seek final-target rebuild (#33 reset)
 
-    /// Handle a playhead jump on the current item. Streaming only. If the target is already
-    /// buffered, AVKit owns the seek natively. If it is outside the loaded range, record the target
-    /// and debounce so a drag collapses to one final-target rebuild.
+    /// Handle a playhead jump on the current item. If the target is already buffered or the stream is
+    /// local/static/range-friendly, AVKit owns the seek natively. If it is outside a server-encoded
+    /// HLS window, record the target and debounce so a drag collapses to one final-target rebuild.
     private func handleSeekJump() {
-        guard supportsSeekReprime, !playbackError.isFailed else { return }
+        guard !playbackError.isFailed else { return }
         let now = player.currentTime().seconds
         guard now.isFinite, now >= 0 else { return }
         let targetMs = Int(now * 1000)
@@ -3680,7 +3695,10 @@ final class PlaybackController {
             return
         }
 
-        if isWithinLoadedRanges(seconds: now) {
+        let targetIsWithinLoadedRange = isWithinLoadedRanges(seconds: now)
+        let seekMode = RemoteSeekModePolicy.seekMode(streamKind: seekStreamKind,
+                                                     targetIsWithinLoadedRange: targetIsWithinLoadedRange)
+        guard seekMode == .reopenStreamAtTarget else {
             cancelPendingFinalTargetRebuild()
             return
         }
@@ -3830,6 +3848,18 @@ final class PlaybackController {
                 }
                 self.remoteHTTPHeaders = reopened.headers
                 self.remotePlaySessionId = reopened.playSessionId
+                if var progressSession = self.mediaBrowserProgressSession {
+                    if let playSessionId = reopened.playSessionId {
+                        progressSession.playSessionID = playSessionId
+                    }
+                    if let mediaSourceId = reopened.mediaSourceId {
+                        progressSession.mediaSourceID = mediaSourceId
+                    }
+                    if let nextPlayMethod {
+                        progressSession.playMethod = nextPlayMethod
+                    }
+                    self.mediaBrowserProgressSession = progressSession
+                }
                 if let sourceMetadata = reopened.sourceMetadata {
                     self.remoteSourceMetadata = sourceMetadata
                 }
@@ -3869,6 +3899,7 @@ final class PlaybackController {
                 self.didStopRemoteSession = true
                 self.onStopRemoteSession = nil
                 self.remotePlaySessionId = nil
+                self.mediaBrowserProgressSession = nil
                 self.scheduleDeferredRemoteSessionStop(priorStop,
                                                        reason: "reopen_failed_after_detach",
                                                        delaySeconds: 2.0)

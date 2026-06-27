@@ -358,6 +358,27 @@ struct JellyfinPlaybackTests {
         #expect(pingComps.path == "/base/Sessions/Playing/Ping")
         #expect(pingComps.queryItems?.first(where: { $0.name == "PlaySessionId" })?.value == "play-1")
         #expect(ping.httpMethod == "POST")
+
+        let stopped = try JellyfinPlayback.stoppedRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-1",
+            itemId: "movie-1",
+            mediaSourceId: "source-1",
+            playSessionId: "play-1",
+            playMethod: .transcode,
+            positionTicks: 60_000_000)
+        #expect(stopped.url?.path == "/base/Sessions/Playing/Stopped")
+        #expect(stopped.httpMethod == "POST")
+        let stoppedBody = try #require(stopped.httpBody)
+        let stoppedObject = try #require(JSONSerialization.jsonObject(with: stoppedBody) as? [String: Any])
+        #expect(stoppedObject["ItemId"] as? String == "movie-1")
+        #expect(stoppedObject["MediaSourceId"] as? String == "source-1")
+        #expect(stoppedObject["PlaySessionId"] as? String == "play-1")
+        #expect(stoppedObject["PositionTicks"] as? Int == 60_000_000)
+        #expect(stoppedObject["IsPaused"] as? Bool == false)
+        #expect(stoppedObject["PlayMethod"] as? String == "Transcode")
     }
 
 }
