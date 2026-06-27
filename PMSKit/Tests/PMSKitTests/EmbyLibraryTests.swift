@@ -212,4 +212,24 @@ struct EmbyLibraryTests {
         #expect(q["PlaySessionId"] == "play-1")
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
     }
+
+    @Test func textSubtitleRequestUsesHeaderAuthAndPathStyle() throws {
+        let request = try EmbyLibrary.textSubtitleRequest(server: server,
+                                                          token: "token-abc",
+                                                          identity: identity,
+                                                          userId: "user-9",
+                                                          itemId: "item-1",
+                                                          mediaSourceId: "source-1",
+                                                          streamIndex: 4,
+                                                          format: "srt")
+        let url = try #require(request.url)
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+
+        #expect(comps.path == "/emby/Videos/item-1/source-1/Subtitles/4/Stream.srt")
+        #expect(comps.queryItems?.isEmpty ?? true)
+        #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("UserId=\"user-9\"") == true)
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+        #expect(request.value(forHTTPHeaderField: "Accept")?.contains("subrip") == true)
+    }
 }

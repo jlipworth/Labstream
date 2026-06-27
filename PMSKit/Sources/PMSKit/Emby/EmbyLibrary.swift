@@ -239,6 +239,32 @@ public enum EmbyLibrary {
         return req
     }
 
+    /// `GET /Videos/{itemId}/{mediaSourceId}/Subtitles/{streamIndex}/Stream.{srt|vtt}`.
+    ///
+    /// Offline downloads cache external text subtitles as sidecars. Emby online playback burns
+    /// selected subtitles into a reopened stream, but an optimized/converted offline MP4 should not
+    /// rely on the server having embedded those subtitles into the converted file. Auth rides in
+    /// headers; no token-bearing URL is persisted.
+    public static func textSubtitleRequest(server: URL,
+                                           token: String,
+                                           identity: EmbyClientIdentity,
+                                           userId: String,
+                                           itemId: String,
+                                           mediaSourceId: String,
+                                           streamIndex: Int,
+                                           format: String) throws -> URLRequest {
+        let cleanFormat = format.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let ext = ["srt", "vtt"].contains(cleanFormat) ? cleanFormat : "vtt"
+        let url = try EmbyPlayback.embyURL(
+            server: server,
+            path: "/Videos/\(itemId)/\(mediaSourceId)/Subtitles/\(streamIndex)/Stream.\(ext)"
+        )
+        var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
+        req.setValue(ext == "srt" ? "application/x-subrip,text/plain,*/*" : "text/vtt,text/plain,*/*",
+                     forHTTPHeaderField: "Accept")
+        return req
+    }
+
     /// Build the transcoded-download request from the server-minted `TranscodingUrl` returned by
     /// `EmbyPlayback.downloadPlaybackInfoRequest`.
     ///
