@@ -310,28 +310,26 @@ struct JellyfinBrowseService {
 
     @discardableResult
     func stopActiveEncoding(playSessionId: String, session: BackendSession) async -> Bool {
-        guard !playSessionId.isEmpty else { return false }
         // Authenticate against the EXPLICIT session the caller resolved/validated for this job's
         // backend — never re-read the live `context()` lane, which may have been re-pointed at a
         // different server since (the #84 launch sweep validates the server match before calling;
         // `releaseInFlight` passes the job's own lane, which may not be the active one).
-        guard let req = try? JellyfinLibrary.activeEncodingStopRequest(server: session.baseURL,
-                                                                       token: session.token,
-                                                                       identity: jellyfinIdentity,
-                                                                       deviceId: appModel.identity.clientIdentifier,
-                                                                       playSessionId: playSessionId) else { return false }
-        do {
-            _ = try await send(req)
-            return true
-        } catch ServiceError.http(let status) {
-            // Only treat the session-is-unknown answers as "gone": 400/404/410. An auth
-            // rejection (401/403) or a server error (5xx) means the DELETE did NOT confirm
-            // the job is dead — the encoder may still be live, so keep the psid and retry on
-            // a later launch rather than orphaning it (#84).
-            return MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: status)
-        } catch {
-            return false   // transport failure — keep the psid for a later launch
-        }
+        return await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: playSessionId,
+            makeRequest: {
+                try JellyfinLibrary.activeEncodingStopRequest(server: session.baseURL,
+                                                              token: session.token,
+                                                              identity: jellyfinIdentity,
+                                                              deviceId: appModel.identity.clientIdentifier,
+                                                              playSessionId: playSessionId)
+            },
+            send: { req in _ = try await send(req) },
+            httpStatus: Self.httpStatus(fromActiveEncodingStopError:))
+    }
+
+    nonisolated private static func httpStatus(fromActiveEncodingStopError error: Error) -> Int? {
+        guard case ServiceError.http(let status) = error else { return nil }
+        return status
     }
 
     private func context() throws -> (server: URL, token: String, userID: String) {

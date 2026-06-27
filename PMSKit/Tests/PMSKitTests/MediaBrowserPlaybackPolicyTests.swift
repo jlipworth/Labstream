@@ -54,4 +54,71 @@ struct MediaBrowserPlaybackPolicyTests {
             #expect(!MediaBrowserActiveEncodingStopPolicy.isConfirmedStopped(httpStatus: status))
         }
     }
+
+    @Test func activeEncodingStopExecutorSendsRequestAndInterpretsHTTPStatus() async {
+        enum StubError: Error { case http(Int), transport }
+        let url = URL(string: "https://media.example.test/Videos/ActiveEncodings")!
+        let request = URLRequest(url: url)
+        var sentRequests: [URLRequest] = []
+
+        let success = await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: "play-session",
+            makeRequest: { request },
+            send: { sentRequests.append($0) },
+            httpStatus: { _ in nil })
+        #expect(success)
+        #expect(sentRequests.map(\.url) == [url])
+
+        let gone = await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: "play-session",
+            makeRequest: { request },
+            send: { _ in throw StubError.http(404) },
+            httpStatus: { error in
+                guard case StubError.http(let status) = error else { return nil }
+                return status
+            })
+        #expect(gone)
+
+        let unauthorized = await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: "play-session",
+            makeRequest: { request },
+            send: { _ in throw StubError.http(401) },
+            httpStatus: { error in
+                guard case StubError.http(let status) = error else { return nil }
+                return status
+            })
+        #expect(!unauthorized)
+
+        let transport = await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: "play-session",
+            makeRequest: { request },
+            send: { _ in throw StubError.transport },
+            httpStatus: { _ in nil })
+        #expect(!transport)
+    }
+
+    @Test func activeEncodingStopExecutorRejectsEmptySessionAndBuilderFailure() async {
+        struct BuilderError: Error {}
+        let request = URLRequest(url: URL(string: "https://media.example.test/Videos/ActiveEncodings")!)
+        var didBuild = false
+        var didSend = false
+
+        let emptySession = await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: "",
+            makeRequest: { didBuild = true; return request },
+            send: { _ in didSend = true },
+            httpStatus: { _ in nil })
+        #expect(!emptySession)
+        #expect(!didBuild)
+        #expect(!didSend)
+
+        let builderFailure = await MediaBrowserActiveEncodingStopExecutor.stop(
+            playSessionId: "play-session",
+            makeRequest: { throw BuilderError() },
+            send: { _ in didSend = true },
+            httpStatus: { _ in nil })
+        #expect(!builderFailure)
+        #expect(!didSend)
+    }
+
 }
