@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Shared executor for MediaBrowser `/Videos/ActiveEncodings` teardown.
 ///
