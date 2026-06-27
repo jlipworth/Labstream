@@ -68,6 +68,7 @@ struct ContentView: View {
             await authManager.restoreSession()
             bootstrap.isRestoring = false
             downloadManager.resumePendingServerPrepDownloads()
+            downloadManager.scheduleServerPrepResumeRetries()
             downloadManager.teardownOrphanedEncodersOnLaunch()
 #if DEBUG
             let debugArgs = ProcessInfo.processInfo.arguments
@@ -103,6 +104,7 @@ struct ContentView: View {
                 // mounted (BrowseUIGate) instead of bouncing through the restore splash.
                 bootstrap.hasEverBeenBrowseReady = true
                 downloadManager.resumePendingServerPrepDownloads()
+                downloadManager.scheduleServerPrepResumeRetries()
             }
         }
         .onChange(of: appModel.activeBackend) { _, backend in
@@ -129,6 +131,7 @@ struct ContentView: View {
         .onChange(of: appModel.isSwitchingBackend) { wasSwitching, isSwitching in
             guard wasSwitching, !isSwitching, appModel.isBrowseReady else { return }
             downloadManager.resumePendingServerPrepDownloads()
+            downloadManager.scheduleServerPrepResumeRetries()
             downloadManager.teardownOrphanedEncodersOnLaunch()
         }
     }

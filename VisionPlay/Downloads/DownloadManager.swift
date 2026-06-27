@@ -543,6 +543,20 @@ public final class DownloadManager {
         refreshRecords()
     }
 
+    /// Auth restore and background URLSession reattachment can complete in different turns.
+    /// Server-prep rows have no URLSession task yet, so if the first resume attempt races a still-
+    /// hydrating inactive backend lane, the UI can truthfully show "Preparing on server…" while no
+    /// poller is attached to publish server progress. Retry a few times after launch/ready edges;
+    /// `resumePendingServerPrepDownloads` is idempotent because it skips rows already in `activeJobs`.
+    public func scheduleServerPrepResumeRetries() {
+        Task { [weak self] in
+            for delay in [1.0, 5.0, 15.0] {
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                await MainActor.run { self?.resumePendingServerPrepDownloads() }
+            }
+        }
+    }
+
     /// Retry a previously `.failed` download (D3/D5). We rebuild the source `MediaItem`
     /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
