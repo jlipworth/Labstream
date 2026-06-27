@@ -73,6 +73,7 @@ struct DownloadOptionsSheet: View {
     @State private var probeState: ProbeState = .checking
     @State private var selectedChoice: DownloadSelection?
     @State private var retryingExistingDownload = false
+    @State private var isStartingDownload = false
 
     private var sheetBackend: DownloadBackendKind {
         backend ?? appModel.activeBackend.downloadBackendKind
@@ -126,7 +127,7 @@ struct DownloadOptionsSheet: View {
                 if existingRecord == nil, probeState != .checking {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Download") { startDownload() }
-                            .disabled(selectedChoice == nil || selectedStorageLimitMessage != nil)
+                            .disabled(isStartingDownload || selectedChoice == nil || selectedStorageLimitMessage != nil)
                     }
                 }
             }
@@ -1027,7 +1028,8 @@ struct DownloadOptionsSheet: View {
     }
 
     private func startDownload() {
-        guard let selectedChoice else { return }
+        guard !isStartingDownload, existingRecord == nil, let selectedChoice else { return }
+        isStartingDownload = true
         let choice = managerChoice(for: selectedChoice)
         // #112: an existing-version pick downloads from THAT version's `Media` index (part 0), not
         // the selected source index. Every other choice resolves to the sheet's media/part index.

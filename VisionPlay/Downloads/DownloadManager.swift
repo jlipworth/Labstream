@@ -462,6 +462,16 @@ public final class DownloadManager {
     /// ignored as "already active" and the item would never appear in Downloads. Treat that
     /// combination as stale bookkeeping and clear it before accepting the new start.
     func acquireInFlightSlotForStart(ratingKey: String, backend: String) -> Bool {
+        if let existing = store.records.first(where: { $0.ratingKey == ratingKey }),
+           existing.status.isActiveWork {
+            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend),
+                "reason": .label("existing_active_row"),
+                "status": .label(existing.status.rawValue),
+            ])
+            return false
+        }
         if activeJobs.contains(ratingKey) {
             if store.records.contains(where: { $0.ratingKey == ratingKey }) {
                 recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
@@ -574,12 +584,13 @@ public final class DownloadManager {
             store.setStatus(ratingKey: ratingKey, .failed)
         }
         if record.status == .paused,
+           record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .serverPrepThenStatic,
            !Self.isJellyfinRecordKey(ratingKey),
            !Self.isEmbyRecordKey(ratingKey),
            let targetName = record.metadata?.optimizeTargetName,
            !targetName.isEmpty,
            !Self.hasIncompleteStaticPartial(record) {
-            retryPausedPlexOptimize(record: record, targetName: targetName)
+            resumePausedPlexServerPrep(record: record, targetName: targetName)
             return
         }
         // #131/#146/#168 live checks: paused static-byte-range rows may have only the durable
@@ -715,6 +726,29 @@ public final class DownloadManager {
         let isPrepared = record.metadata?.isServerPreparedVersion == true
             || (record.metadata?.mediaIndex ?? 0) > 0
         return (isPrepared ? .existingVersion : .original, fallbackMediaIndex, fallbackPartIndex)
+    }
+
+    /// Resume a paused Plex server-prep row by reattaching to its existing optimize queue item.
+    ///
+    /// Do not call `retryPausedPlexOptimize` here: that path creates a fresh optimize request after
+    /// fetching current metadata. A server-prep row already has the queue title/baseline needed by
+    /// `resumePendingServerPrepDownloads`, so recreating risks a duplicate Plex transcode.
+    private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
+        guard appModel.backendSession(for: .plex) != nil else {
+            lastError[record.ratingKey] = .notAuthenticated
+            retryingRows.remove(record.ratingKey)
+            refreshRecords()
+            return
+        }
+        recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
+            "download_id": .identifier(record.ratingKey),
+            "target": .label(targetName),
+            "mode": .label("reattach_server_prep"),
+        ])
+        store.setStatus(ratingKey: record.ratingKey, .queued)
+        optimizeState[record.ratingKey] = "queued"
+        refreshRecords()
+        resumePendingServerPrepDownloads()
     }
 
     private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
@@ -1915,8 +1949,9 @@ public final class DownloadManager {
     /// source that drives the bar.
     private func progressCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
         let isActive = activeJobs.contains(record.ratingKey)
+        let isServerPrep = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
         if record.bytes == 0 {
-            let prepHead = record.status == .preparing ? "Preparing on server…" : "Transcoding"
+            let prepHead = (isServerPrep || record.status == .preparing) ? "Preparing on server…" : "Transcoding"
             if let p = optimizeProgress[record.ratingKey] {
                 var caption = "\(prepHead) \(Int(p * 100))%"
                 if let eta = optimizeETA[record.ratingKey], eta > 0,
@@ -1926,16 +1961,18 @@ public final class DownloadManager {
                 return caption
             }
             if optimizeState[record.ratingKey] == "queued" {
-                return record.status == .preparing ? "Preparing on server…" : "Queued on server"
+                return "Preparing on server…"
             }
-            // #84: a server-prep row whose backend lane is signed out isn't really "preparing" —
-            // say so honestly. It stays queued and resumes automatically once the lane returns.
+            // Server-prep rows have no URLSession task yet and may briefly have no in-memory
+            // active slot while auth restores or a poller reattaches. Keep the user-facing phase
+            // stable instead of flashing "signed out"/"queued" for a still-server-side transcode.
+            if isServerPrep { return "Preparing on server…" }
             if !isActive, !isBackendConfigured(for: record) {
-                return "Paused — \(backend.displayName) signed out"
+                return "Waiting for \(backend.displayName)…"
             }
             if isActive { return "Preparing on server…" }
             if record.metadata?.optimizeQueueTitle?.isEmpty == false {
-                return "Queued on server"
+                return "Preparing on server…"
             }
             return "Queued…"
         }
@@ -2135,7 +2172,7 @@ public final class DownloadManager {
             // Disambiguation probe: distinguish "completed-item clutter" (inert) from a genuinely
             // stalled or idle-paused server conversion queue. Privacy-safe COUNTS + short state
             // tokens only — never a media title/path/URL.
-            await recordServerQueueProbe(ratingKey: ratingKey, server: server,
+            await recordServerQueueProbe(ratingKey: ratingKey, mediaTitle: mediaTitle, server: server,
                                          token: token, identity: identity)
             if let backgroundProcessingKey,
                let queueTitle,
@@ -2385,7 +2422,7 @@ public final class DownloadManager {
     /// stalled or idle-paused background queue, by reading the SEPARATE conversion machinery the
     /// type-42 registry doesn't expose. Each of the three GETs is independent + best-effort: a
     /// failure on one omits only its fields and never fails the download.
-    private func recordServerQueueProbe(ratingKey: String, server: URL, token: String,
+    private func recordServerQueueProbe(ratingKey: String, mediaTitle: String, server: URL, token: String,
                                         identity: ClientIdentity) async {
         var fields: [String: DiagnosticFieldValue] = ["download_id": .identifier(ratingKey)]
 
@@ -2394,6 +2431,7 @@ public final class DownloadManager {
         //    live PMS can run several optimizations concurrently while playQueues/1 exposes only
         //    one selected item. Use /status/sessions/background below for per-job attribution.
         var thisIsQueuedConversion = false
+        var thisIsActiveConversion = false
         if let queue = try? await appModel.client.send(
             BackgroundQueueRequest.conversionQueueRequest(server: server, token: token, identity: identity),
             as: ConversionQueue.self) {
@@ -2402,9 +2440,11 @@ public final class DownloadManager {
             let inQueue = queue.items.contains { $0.ratingKey == ratingKey }
             fields["conversion_contains_rk"] = .bool(inQueue)
             if let selected = queue.activeItem?.ratingKey {
+                let selectedMatches = selected == ratingKey
                 // Historical/diagnostic only: this may be ONE selected conversion, not the full
                 // set of active conversions. Do not use it to decide this row is inactive.
-                fields["selected_rk_match"] = .bool(selected == ratingKey)
+                fields["selected_rk_match"] = .bool(selectedMatches)
+                thisIsActiveConversion = selectedMatches
             }
             thisIsQueuedConversion = inQueue
         }
@@ -2415,13 +2455,25 @@ public final class DownloadManager {
             as: BackgroundTranscodeJobs.self) {
             fields["bg_job_count"] = .int(jobs.jobs.count)
             let matchingJob = jobs.job(ratingKey: ratingKey)
+            let matchingTitleJob = jobs.uniqueJob(title: mediaTitle)
             let attributedJob: BackgroundTranscodeJobs.Job? = matchingJob
-                // Legacy fallback for older PMS shapes without per-job ratingKey: if there is
-                // exactly one background job and exactly one active VisionPlay download, it is
-                // unambiguous. Never use first-job fallback when PMS reports multiple jobs.
+                // PMS shapes that omit per-job ratingKey may still carry a title/subtitle. Use it
+                // only when it uniquely identifies this media among running background jobs; the
+                // title value stays in memory and is never logged.
+                ?? matchingTitleJob
+                // If Plex's conversion queue says THIS item is the active conversion, then a single
+                // background transcode job is attributable even while another backend (e.g. Emby) is
+                // also active in VisionPlay. This is the live Devil Wears Prada shape: the background
+                // job has progress/speed but no per-job ratingKey.
+                ?? ((jobs.jobs.count == 1 && thisIsActiveConversion) ? jobs.jobs.first : nil)
+                // Legacy fallback for older PMS shapes without per-job ratingKey/title/queue active
+                // attribution: if there is exactly one background job and exactly one active
+                // VisionPlay download, it is unambiguous. Never use first-job fallback when PMS
+                // reports multiple jobs.
                 ?? ((jobs.jobs.count == 1 && activeJobs.count == 1) ? jobs.jobs.first : nil)
             let isActiveConversion = attributedJob != nil
             if matchingJob != nil { fields["bg_rk_match"] = .bool(true) }
+            if matchingTitleJob != nil { fields["bg_name_match"] = .bool(true) }
             if let p = attributedJob?.progress { fields["bg_progress"] = .int(p) }
             // `state` is a queued/running/paused-style vocabulary token, not a media title.
             if let s = attributedJob?.state { fields["bg_state"] = .label(s) }
@@ -2445,7 +2497,7 @@ public final class DownloadManager {
                     // Monotonic for display: never let it visibly step backward (prefer the
                     // larger), so a brief disagreement with the activity match can't jitter the bar.
                     optimizeProgress[ratingKey] = max(bgFraction, optimizeProgress[ratingKey] ?? 0)
-                    if optimizeState[ratingKey] == nil { optimizeState[ratingKey] = "transcoding" }
+                    optimizeState[ratingKey] = "transcoding"
                 }
 
                 // PREFERRED transcode-ETA source: remaining_video_seconds / speed (steadier than
