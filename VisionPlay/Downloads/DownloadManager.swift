@@ -1137,6 +1137,19 @@ public final class DownloadManager {
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
             ])
+            // If this stale exit still corresponds to the visible queued server-prep row, drop the
+            // in-memory active slot so the debounced resume retries can attach a fresh poller. This
+            // is safe against newer same-item attempts because Plex queueTitle is the per-attempt
+            // identity; never release when the row has already handed off to bytes or another title.
+            if let current = store.records.first(where: { $0.ratingKey == ratingKey }),
+               current.status == .queued, current.bytes == 0, current.progress == 0,
+               current.metadata?.optimizeTargetName == targetName,
+               current.metadata?.optimizeQueueTitle == metadata.optimizeQueueTitle {
+                clearOptimizeProgress(ratingKey: ratingKey)
+                releaseInFlight(ratingKey: ratingKey)
+                refreshRecords()
+                scheduleServerPrepResumeRetries()
+            }
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1931,7 +1944,7 @@ public final class DownloadManager {
                 showBackendBadge: hasMixedBackends,
                 backendName: backend.displayName,
                 errorMessage: record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil,
-                displayProgress: displayFraction(for: record)?.value,
+                displayProgress: rowDisplayProgress(for: record),
                 statusCaption: statusCaption(for: record, backend: backend)
             )
         }
@@ -1944,6 +1957,16 @@ public final class DownloadManager {
             ),
             isQueuePaused: isQueuePaused
         )
+    }
+
+
+    private func rowDisplayProgress(for record: DownloadRecord) -> Double? {
+        if record.bytes == 0,
+           record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic,
+           let prep = optimizeProgress[record.ratingKey] {
+            return max(0, min(prep, 0.999))
+        }
+        return displayFraction(for: record)?.value
     }
 
     /// Backend that owns this row, via the single migration fallback on the
