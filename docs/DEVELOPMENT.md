@@ -171,7 +171,7 @@ Use root-relative GitHub links for files outside `docs/` because the published s
   restraint alone is insufficient; the fix for (b) is not seeking into far-unproduced
   territory on a session that can't keep up. Guard rails: `FinalTargetRebuildPolicy` +
   `SeekRestartBudget` (PMSKit, unit-tested spam scenarios) debounce noisy seek jumps to the
-  final target, allow only one rebuild pipeline at a time, and enforce a rolling 3-per-60s burst
+  final target, allow only one rebuild pipeline at a time, and enforce a rolling 5-per-60s burst
   limit. Past that, the player stops background recovery and surfaces the failure overlay;
   explicit user intent (Retry / quality/audio reload) resets the budget. Silent auto-retry has
   been removed so a failing PMS stream cannot become a hidden retry loop. Direct Stream (#7)
@@ -240,6 +240,11 @@ Use root-relative GitHub links for files outside `docs/` because the published s
   (the transcode/HLS path — `EmbyPlaybackOpenResult.usesServerEncoding == true`) MUST also be torn down with
   `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=` (`EmbyBrowseService.stopActiveEncoding`). Same
   failure class as the Plex stacked-FFmpeg/OOM problem — do not collapse the two calls.
+- **Jellyfin/Emby video progress is its own reporting lane.** Resolved remote-stream playback is not a
+  Plex timeline session, but it still must emit MediaBrowser `Sessions/Playing`, `Sessions/Playing/Progress`,
+  and `Sessions/Playing/Stopped` requests with the current `PlaySessionId`, `MediaSourceId`, play method, and
+  absolute position ticks. This is separate from the local HLS proxy and from active-encoding cleanup; a stream
+  reopen that mints a new play session must update this progress context too.
 - **Emby tokens leak through URLs, not just headers — redact `api_key`.** The Emby auth token rides three
   ways: the `Authorization: Emby … Token="…"` header, the `X-Emby-Token` header, AND the server-generated
   HLS/direct-stream URL as an `api_key=` query value. That last one is why diagnostics/log output must scrub

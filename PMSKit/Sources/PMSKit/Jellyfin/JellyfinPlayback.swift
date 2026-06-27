@@ -431,6 +431,23 @@ public enum JellyfinPlayback {
                          positionTicks: positionTicks, isPaused: isPaused)
     }
 
+    /// `POST /Sessions/Playing/Stopped`
+    public static func stoppedRequest(server: URL,
+                                      token: String,
+                                      identity: JellyfinClientIdentity,
+                                      userId: String,
+                                      itemId: String,
+                                      mediaSourceId: String,
+                                      playSessionId: String,
+                                      playMethod: JellyfinPlayMethod,
+                                      positionTicks: Int) throws -> URLRequest {
+        try progressBody(server: server, token: token, identity: identity, userId: userId,
+                         path: "/Sessions/Playing/Stopped",
+                         itemId: itemId, mediaSourceId: mediaSourceId,
+                         playSessionId: playSessionId, playMethod: playMethod,
+                         positionTicks: positionTicks, isPaused: false)
+    }
+
     /// `POST /Sessions/Playing/Ping?PlaySessionId=..`
     public static func pingRequest(server: URL,
                                    token: String,

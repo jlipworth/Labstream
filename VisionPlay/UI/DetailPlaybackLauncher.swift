@@ -35,6 +35,7 @@ enum DetailPlaybackLauncher {
             playback: JellyfinRemotePlayback(url: result.url,
                                              headers: result.requiredHTTPHeaders,
                                              playSessionId: result.playSessionId,
+                                             mediaSourceId: result.mediaSourceId,
                                              sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
                                              playMethod: MediaBrowserPlayMethod(result.playMethod)),
             playMethod: result.playMethod.rawValue)
@@ -49,6 +50,7 @@ enum DetailPlaybackLauncher {
             playback: EmbyRemotePlayback(url: result.url,
                                          headers: result.requiredHTTPHeaders,
                                          playSessionId: result.playSessionId,
+                                         mediaSourceId: result.mediaSourceId,
                                          sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
                                          playMethod: MediaBrowserPlayMethod(result.playMethod),
                                          usesServerEncoding: result.usesServerEncoding),
@@ -69,6 +71,13 @@ enum DetailPlaybackLauncher {
                            remotePlaySessionId: remote.playSessionId,
                            sourceMetadata: remote.sourceMetadata,
                            playMethod: remote.playMethod,
+                           mediaBrowserProgressSession: mediaBrowserProgressSession(
+                               backend: .jellyfin,
+                               item: item,
+                               appModel: appModel,
+                               mediaSourceId: remote.mediaSourceId,
+                               playSessionId: remote.playSessionId,
+                               playMethod: remote.playMethod),
                            onStopRemoteSession: {
                                stopJellyfinActiveEncoding(appModel: appModel,
                                                           playSessionId: remote.playSessionId)
@@ -96,6 +105,13 @@ enum DetailPlaybackLauncher {
                            remotePlaySessionId: remote.playSessionId,
                            sourceMetadata: remote.sourceMetadata,
                            playMethod: remote.playMethod,
+                           mediaBrowserProgressSession: mediaBrowserProgressSession(
+                               backend: .emby,
+                               item: item,
+                               appModel: appModel,
+                               mediaSourceId: remote.mediaSourceId,
+                               playSessionId: remote.playSessionId,
+                               playMethod: remote.playMethod),
                            onStopRemoteSession: {
                                stopEmbyActiveEncoding(appModel: appModel,
                                                       playSessionId: remote.playSessionId,
@@ -123,6 +139,7 @@ enum DetailPlaybackLauncher {
             url: result.url,
             headers: result.requiredHTTPHeaders,
             playSessionId: result.playSessionId,
+            mediaSourceId: result.mediaSourceId,
             sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
             playMethod: MediaBrowserPlayMethod(result.playMethod),
             onStop: {
@@ -144,6 +161,7 @@ enum DetailPlaybackLauncher {
             url: result.url,
             headers: result.requiredHTTPHeaders,
             playSessionId: result.playSessionId,
+            mediaSourceId: result.mediaSourceId,
             sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
             playMethod: MediaBrowserPlayMethod(result.playMethod),
             onStop: {
@@ -169,6 +187,38 @@ enum DetailPlaybackLauncher {
                     .stopActiveEncoding(playSessionId: playSessionId)
             }
         }
+    }
+
+    private static func mediaBrowserProgressSession(backend: MediaBrowserPlaybackProgressSession.Backend,
+                                                    item: MediaItem,
+                                                    appModel: AppModel,
+                                                    mediaSourceId: String,
+                                                    playSessionId: String,
+                                                    playMethod: MediaBrowserPlayMethod) -> MediaBrowserPlaybackProgressSession? {
+        let server: URL?
+        let token: String?
+        let userID: String?
+        switch backend {
+        case .jellyfin:
+            server = appModel.jellyfinServerBaseURL
+            token = appModel.jellyfinAccessToken
+            userID = appModel.jellyfinUserID
+        case .emby:
+            server = appModel.embyServerBaseURL
+            token = appModel.embyAccessToken
+            userID = appModel.embyUserID
+        }
+
+        guard let server, let token, let userID else { return nil }
+        return MediaBrowserPlaybackProgressSession(backend: backend,
+                                                   server: server,
+                                                   token: token,
+                                                   userID: userID,
+                                                   identity: appModel.identity,
+                                                   itemID: item.ratingKey,
+                                                   mediaSourceID: mediaSourceId,
+                                                   playSessionID: playSessionId,
+                                                   playMethod: playMethod)
     }
 
     private static func adjustedResumeOffsetMs(_ offset: Int?, resumeRewindSeconds: Int) -> Int? {
@@ -206,6 +256,7 @@ struct JellyfinRemotePlayback: Identifiable, Equatable {
     let url: URL
     let headers: [String: String]
     let playSessionId: String
+    let mediaSourceId: String
     let sourceMetadata: MediaBrowserPlaybackSourceMetadata
     let playMethod: MediaBrowserPlayMethod
 }
@@ -215,6 +266,7 @@ struct EmbyRemotePlayback: Identifiable, Equatable {
     let url: URL
     let headers: [String: String]
     let playSessionId: String
+    let mediaSourceId: String
     let sourceMetadata: MediaBrowserPlaybackSourceMetadata
     let playMethod: MediaBrowserPlayMethod
     let usesServerEncoding: Bool
