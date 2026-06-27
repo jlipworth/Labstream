@@ -408,68 +408,12 @@ struct LoginView: View {
     }
 
     private func embyServerPicker(_ servers: [AuthManager.EmbyConnectServerChoice]) -> some View {
-        VStack(spacing: DS.Space.lg) {
-            VStack(spacing: DS.Space.xs) {
-                Text("Choose a server")
-                    .font(.title3.weight(.semibold))
-                Text("Your Emby Connect account is linked to more than one server.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
-            }
-
-            VStack(spacing: DS.Space.sm) {
-                ForEach(servers) { server in
-                    Button {
-                        Task {
-                            guard selectingEmbyConnectServerID == nil else { return }
-                            selectingEmbyConnectServerID = server.id
-                            working = true
-                            await authManager.selectEmbyConnectServer(id: server.id)
-                            if case .authenticated = authManager.state {
-                                return
-                            }
-                            selectingEmbyConnectServerID = nil
-                            working = false
-                        }
-                    } label: {
-                        HStack(spacing: DS.Space.md) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(server.name)
-                                    .font(.headline)
-                                if !server.addressLabel.isEmpty {
-                                    Text(server.addressLabel)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer(minLength: DS.Space.sm)
-                            if selectingEmbyConnectServerID == server.id {
-                                ProgressView()
-                            } else {
-                                Image(systemName: "chevron.right")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, DS.Space.xs)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(working || selectingEmbyConnectServerID != nil)
-                }
-            }
-            .frame(maxWidth: 420)
-
-            Button("Cancel") {
-                authManager.cancelCurrentAuthorization()
-                embySignInMethod = nil
-                working = false
-                selectingEmbyConnectServerID = nil
-            }
-            .buttonStyle(.bordered)
-            .disabled(working || selectingEmbyConnectServerID != nil)
-        }
+        EmbyConnectServerPicker(
+            servers: servers,
+            isWorking: working,
+            selectingServerID: $selectingEmbyConnectServerID,
+            onSelect: selectEmbyConnectServer,
+            onCancel: cancelEmbyServerSelection)
     }
 
     private var embyCredentialsForm: some View {
@@ -487,6 +431,27 @@ struct LoginView: View {
                 working = false
                 embySignInMethod = nil
             })
+    }
+
+    private func selectEmbyConnectServer(_ server: AuthManager.EmbyConnectServerChoice) {
+        Task {
+            guard selectingEmbyConnectServerID == nil else { return }
+            selectingEmbyConnectServerID = server.id
+            working = true
+            await authManager.selectEmbyConnectServer(id: server.id)
+            if case .authenticated = authManager.state {
+                return
+            }
+            selectingEmbyConnectServerID = nil
+            working = false
+        }
+    }
+
+    private func cancelEmbyServerSelection() {
+        authManager.cancelCurrentAuthorization()
+        embySignInMethod = nil
+        working = false
+        selectingEmbyConnectServerID = nil
     }
 
     private var hasEmbyServerInput: Bool {

@@ -207,3 +207,62 @@ struct BackendCredentialsSignInForm: View {
         }
     }
 }
+
+
+struct EmbyConnectServerPicker: View {
+    let servers: [AuthManager.EmbyConnectServerChoice]
+    let isWorking: Bool
+    @Binding var selectingServerID: String?
+    let onSelect: (AuthManager.EmbyConnectServerChoice) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: DS.Space.lg) {
+            VStack(spacing: DS.Space.xs) {
+                Text("Choose a server")
+                    .font(.title3.weight(.semibold))
+                Text("Your Emby Connect account is linked to more than one server.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+
+            VStack(spacing: DS.Space.sm) {
+                ForEach(servers) { server in
+                    Button {
+                        onSelect(server)
+                    } label: {
+                        HStack(spacing: DS.Space.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name)
+                                    .font(.headline)
+                                if !server.addressLabel.isEmpty {
+                                    Text(server.addressLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: DS.Space.sm)
+                            if selectingServerID == server.id {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, DS.Space.xs)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isWorking || selectingServerID != nil)
+                }
+            }
+            .frame(maxWidth: 420)
+
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.bordered)
+                .disabled(isWorking || selectingServerID != nil)
+        }
+    }
+}
