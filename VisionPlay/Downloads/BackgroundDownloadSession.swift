@@ -29,12 +29,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
     private var retryCounts: [String: Int] = [:]
-    /// Last UI refresh per ratingKey; progress callbacks can arrive many times per second.
-    private var lastProgressNotify: [String: Date] = [:]
+    /// Last UI refresh across the whole downloads screen; progress callbacks can arrive many
+    /// times per second per task, so per-row throttling still scales linearly with concurrent
+    /// downloads and can overwhelm the Offline list. Coalesce globally instead.
+    private var lastProgressNotify: Date?
     /// Progress milestones already mirrored to the diagnostics ring buffer per task.
     private var loggedProgressMilestones: [Int: Set<Int>] = [:]
     private let maxTransientRetries = 3
-    private let progressNotifyInterval: TimeInterval = 0.5
+    /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
+    private let progressNotifyInterval: TimeInterval = 0.25
     private let lock = NSLock()
 
     private struct RangeTransfer {
@@ -276,7 +279,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         task.taskDescription = ratingKey
         lock.lock()
         retryCounts[ratingKey] = 0
-        lastProgressNotify[ratingKey] = nil
+        lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
@@ -330,7 +333,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         if resetsRetryCount {
             retryCounts[ratingKey] = 0
         }
-        lastProgressNotify[ratingKey] = nil
+        lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
         rangeInflight[task.taskIdentifier] = RangeTransfer(
             ratingKey: ratingKey,
@@ -373,7 +376,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         task.taskDescription = ratingKey
         lock.lock()
         retryCounts[ratingKey] = 0
-        lastProgressNotify[ratingKey] = nil
+        lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
@@ -1089,13 +1092,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         onChange?()
     }
 
-    private func notifyProgressChangeIfNeeded(ratingKey: String, progress: Double) {
+    private func notifyProgressChangeIfNeeded(ratingKey _: String, progress: Double) {
         let now = Date()
         lock.lock()
-        let last = lastProgressNotify[ratingKey]
+        let last = lastProgressNotify
         let shouldNotify = (last.map { now.timeIntervalSince($0) >= progressNotifyInterval } ?? true)
             || progress >= 1.0
-        if shouldNotify { lastProgressNotify[ratingKey] = now }
+        if shouldNotify { lastProgressNotify = now }
         lock.unlock()
         if shouldNotify { onChange?() }
     }
@@ -1103,7 +1106,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
     private func clearRetryCount(ratingKey: String) {
         lock.lock()
         retryCounts.removeValue(forKey: ratingKey)
-        lastProgressNotify.removeValue(forKey: ratingKey)
+        lastProgressNotify = nil
         lock.unlock()
     }
 

@@ -316,7 +316,7 @@ struct ChaptersTabView: View {
                 }
                 // contentMargins, not .padding on the lazy content — see the hit-region
                 // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes).
-                .contentMargins(.horizontal, DS.Space.md, for: .scrollContent)
+                .contentMargins(.horizontal, DS.Scroll.compactRailHorizontalMargin, for: .scrollContent)
                 .onAppear {
                     currentIndex = chapters.indexOfChapter(at: currentMs())
                     if let target = currentIndex {

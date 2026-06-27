@@ -66,6 +66,14 @@ enum DS {
         static func height(for width: CGFloat) -> CGFloat { width / aspect }
     }
 
+    /// Canonical scroll rhythm for media rails. Horizontal rails should hide scroll indicators
+    /// unless a screen documents a deliberate exception; the initializer owns that policy while
+    /// this modifier centralizes the shared margins and hover breathing room.
+    enum Scroll {
+        static let railHorizontalMargin = Space.xxl
+        static let compactRailHorizontalMargin = Space.md
+    }
+
     /// Soft, layered shadow used under posters and cards to lift them off the glass
     /// without looking heavy. visionOS already has real depth; this is a gentle hint.
     static func posterShadow<S: Shape>(_ shape: S) -> some View {
@@ -109,6 +117,14 @@ extension View {
         buttonStyle(.plain)
             .contentShape(.hoverEffect,
                           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    /// Shared media-rail scroll content insets. Use with
+    /// `ScrollView(.horizontal, showsIndicators: false)` to keep horizontal rails consistent.
+    func mediaRailScrollStyle(horizontalMargin: CGFloat = DS.Scroll.railHorizontalMargin,
+                              clipDisabled: Bool = true) -> some View {
+        contentMargins(.horizontal, horizontalMargin, for: .scrollContent)
+            .scrollClipDisabled(clipDisabled)
     }
 }
 

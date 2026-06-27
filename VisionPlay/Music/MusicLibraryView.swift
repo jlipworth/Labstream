@@ -361,7 +361,7 @@ struct MusicRail: View {
                 .font(.title2.bold())
                 .padding(.horizontal, DS.Space.xxl)
 
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(items.prefix(20)) { item in
                         NavigationLink(value: item) {
@@ -376,8 +376,7 @@ struct MusicRail: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
-            .scrollClipDisabled() // let hover-lifted art breathe past the rail edge
+            .mediaRailScrollStyle() // let hover-lifted art breathe past the rail edge
         }
     }
 }
@@ -401,7 +400,7 @@ private struct MusicTrackRail: View {
                 .font(.title2.bold())
                 .padding(.horizontal, DS.Space.xxl)
 
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(tracks.prefix(20)) { track in
                         Button {
@@ -419,8 +418,7 @@ private struct MusicTrackRail: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
-            .scrollClipDisabled() // let hover-lifted art breathe past the rail edge
+            .mediaRailScrollStyle() // let hover-lifted art breathe past the rail edge
         }
     }
 

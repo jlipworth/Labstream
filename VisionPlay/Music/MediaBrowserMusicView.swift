@@ -201,7 +201,7 @@ private struct MediaBrowserMusicTrackRail: View {
                 .font(.title2.bold())
                 .padding(.horizontal, DS.Space.xxl)
 
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(Array(tracks.prefix(20).enumerated()), id: \.element.id) { index, track in
                         Button {
@@ -218,8 +218,7 @@ private struct MediaBrowserMusicTrackRail: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
-            .scrollClipDisabled()
+            .mediaRailScrollStyle()
         }
     }
 }

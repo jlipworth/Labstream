@@ -217,7 +217,7 @@ private struct SearchHubSection: View {
                 .font(.title2.bold())
                 .padding(.horizontal, DS.Space.xxl)
 
-            ScrollView(.horizontal) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
@@ -230,8 +230,7 @@ private struct SearchHubSection: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .contentMargins(.horizontal, DS.Space.xxl, for: .scrollContent)
-            .scrollClipDisabled()
+            .mediaRailScrollStyle()
         }
     }
 }
