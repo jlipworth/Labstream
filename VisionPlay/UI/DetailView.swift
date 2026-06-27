@@ -866,28 +866,10 @@ struct DetailView: View {
         watchedOverride = !wasWatched
 
         do {
-            switch actionBackend {
-            case .plex:
-                guard let server = appModel.serverBaseURL,
-                      let token = appModel.serverToken else {
-                    watchedOverride = wasWatched
-                    return
-                }
-                let req = wasWatched
-                    ? TimelineRequest.unscrobble(server: server, token: token,
-                                                 identity: appModel.identity,
-                                                 ratingKey: detailed.ratingKey)
-                    : TimelineRequest.scrobble(server: server, token: token,
-                                               identity: appModel.identity,
-                                               ratingKey: detailed.ratingKey)
-                _ = try await appModel.client.send(req)
-            case .jellyfin:
-                try await JellyfinBrowseService(appModel: appModel)
-                    .setPlayed(itemId: detailed.ratingKey, played: !wasWatched)
-            case .emby:
-                try await EmbyBrowseService(appModel: appModel)
-                    .setPlayed(itemId: detailed.ratingKey, played: !wasWatched)
-            }
+            try await DetailWatchedUpdater.setPlayed(item: detailed,
+                                                     backend: actionBackend,
+                                                     appModel: appModel,
+                                                     played: !wasWatched)
         } catch {
             // Roll back the optimistic flip; the server rejected the change.
             watchedOverride = wasWatched
