@@ -163,8 +163,8 @@ public final class DownloadManager {
     /// Estimated seconds remaining for the FILE-DOWNLOAD phase, per actively-downloading
     /// ratingKey. Derived from the smoothed `downloadSpeed` and the remaining bytes
     /// (`expectedTotal − bytesWritten`, where `expectedTotal` is recovered from the record's
-    /// `bytes / progress`). Suppressed (absent) when the rate is ~0, the total is unknown, or
-    /// the estimate is implausible (>12h) — mirrors the suppression in `updateOptimizeETA`.
+    /// `bytes / progress`, persisted static Part size, or a transcoder size estimate). Suppressed
+    /// (absent) only when the rate is ~0 or the total is unknown; long but real ETAs still render.
     /// Ephemeral (never persisted); drives the "~M min left" readout in the download phase.
     public private(set) var downloadETA: [String: TimeInterval] = [:]
 
@@ -2718,17 +2718,20 @@ public final class DownloadManager {
         return pieces.joined(separator: " • ")
     }
 
-    /// Human estimated-time-remaining string ("under a min" / "N min" / "Nh Mm") for a
-    /// transcode or download ETA, or nil when the estimate is out of the trustworthy band.
+    /// Human estimated-time-remaining string ("under a min" / "N min" / "Nh Mm" / "Nd Nh")
+    /// for a transcode or download ETA.
     private func timeLeftString(_ seconds: TimeInterval) -> String? {
-        guard seconds.isFinite, seconds > 0, seconds < 60 * 60 * 12 else { return nil }
+        guard seconds.isFinite, seconds > 0 else { return nil }
         if seconds < 60 { return "under a min" }
         let totalMinutes = Int((seconds / 60).rounded())
         guard totalMinutes >= 1 else { return nil }
         if totalMinutes < 60 { return "\(totalMinutes) min" }
         let hours = totalMinutes / 60
         let minutes = totalMinutes % 60
-        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+        if hours < 48 { return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m" }
+        let days = hours / 24
+        let remainingHours = hours % 24
+        return remainingHours == 0 ? "\(days)d" : "\(days)d \(remainingHours)h"
     }
 
     /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".

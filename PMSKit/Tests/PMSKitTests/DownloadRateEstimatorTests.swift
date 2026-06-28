@@ -128,14 +128,16 @@ struct DownloadRateEstimatorTests {
         #expect(est.eta(expectedTotal: 10_000_000) == nil)     // remaining ≤ 0
     }
 
-    @Test("eta is suppressed when it exceeds the 12h trust band")
-    func etaSuppressedBeyondTrustBand() {
+    @Test("eta can surface long slow-transfer estimates")
+    func etaAllowsLongSlowTransferEstimates() throws {
         var est = DownloadRateEstimator(firstEmitWindow: 0.5)
         // A trickle: 1 KB over 1s = 1 KB/s.
         _ = est.sample(bytes: 0, at: Self.t(0))
         _ = est.sample(bytes: 1_000, at: Self.t(1))
-        // 1 GB remaining at 1 KB/s ⇒ ~278h ≫ 12h ⇒ suppressed.
-        #expect(est.eta(expectedTotal: 1_000_000_000) == nil)
+        // 1 GB remaining at 1 KB/s ⇒ ~278h. Keep returning it so the UI can choose
+        // how to render long-but-real transfers instead of hiding the ETA entirely.
+        let eta = try #require(est.eta(expectedTotal: 1_000_000_000))
+        #expect(abs(eta - 999_999.0) < 0.001)
     }
 
     @Test("eta is nil before any rate is available")

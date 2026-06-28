@@ -128,8 +128,7 @@ public struct DownloadRateEstimator: Sendable, Equatable {
     }
 
     /// Estimated seconds remaining given the expected final size, using the most recent windowed
-    /// rate. `nil` when there is no rate yet, no expected total, the estimate is non-finite/≤0, or it
-    /// exceeds the 12h trust band (mirrors the optimize-ETA suppression).
+    /// rate. `nil` when there is no rate yet, no expected total, or the estimate is non-finite/≤0.
     ///
     /// - Parameter expectedTotal: the row's expected final byte count — `bytes / progress` when a
     ///   `Content-Length` exists, else the duration×bitrate estimate, else `nil`.
@@ -141,7 +140,7 @@ public struct DownloadRateEstimator: Sendable, Equatable {
         let remaining = Double(expectedTotal) - Double(newest.bytes)
         guard remaining > 0 else { return nil }
         let eta = remaining / rate
-        guard eta.isFinite, eta > 0, eta < 60 * 60 * 12 else { return nil }
+        guard eta.isFinite, eta > 0 else { return nil }
         return eta
     }
 
