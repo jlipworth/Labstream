@@ -118,7 +118,8 @@ public struct OfflineLibraryView: View {
         // completion from `progress >= 1.0` — a stalled job that froze at <100% and a
         // failed-but-100% body are now distinct, observable states.
         let isComplete = record.isComplete
-        let isFailed = record.status == .failed
+        let isRetrying = rowSnapshot.isRetrying
+        let isFailed = record.status == .failed && !isRetrying
         let isUnverified = record.isUnverified
         // #95: a recoverable interruption is resumable, not failed — show a non-red "will resume"
         // affordance and a Resume control that continues from the saved byte offset.
@@ -154,6 +155,13 @@ public struct OfflineLibraryView: View {
                     Text(rowSnapshot.errorMessage ?? rowSnapshot.statusCaption)
                         .font(.caption)
                         .foregroundStyle(.red)
+                } else if isRetrying {
+                    ProgressView()
+                    Text(rowSnapshot.statusCaption)
+                        .font(.caption)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .foregroundStyle(.secondary)
                 } else if isPaused {
                     // #95: paused (recoverably interrupted). Show how far it got and that it
                     // resumes, in secondary (not red) — it's not a failure.
@@ -212,6 +220,10 @@ public struct OfflineLibraryView: View {
                     }
                     .buttonStyle(.plain)
                     .offlineRowActionControl()
+                } else if isRetrying {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Retrying download")
                 } else if isPaused {
                     // #95: Resume continues from the saved byte offset (manager.retry resumes a
                     // `.paused` row from persisted resume data).

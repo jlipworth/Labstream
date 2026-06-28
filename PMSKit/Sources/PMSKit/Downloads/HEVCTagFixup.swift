@@ -20,6 +20,7 @@ public enum HEVCTagFixup {
     private static let hvcC: [UInt8] = Array("hvcC".utf8)
     private static let searchWindow = 256
     private static let fileChunkSize = 1024 * 1024
+    private static let metadataScanWindowSize: UInt64 = 64 * 1024 * 1024
 
     /// Rewrite `hev1` sample entries to `hvc1` in-place within `data`. Returns the number of entries
     /// rewritten (0 when the file has no `hev1` HEVC sample entry — e.g. it is `hvc1` already, or not
@@ -65,22 +66,56 @@ public enum HEVCTagFixup {
         return false
     }
 
-    /// Apply the fixup to a completed download file on disk. Scans and patches the file in bounded
-    /// chunks instead of materializing a multi-GB offline movie in memory (and instead of making an
-    /// atomic full-file copy that can temporarily require another copy of the download on disk).
+    /// Apply the fixup to a completed download file on disk. MP4 sample descriptions live in the
+    /// `moov` metadata, not in the multi-GB `mdat` media payload. To keep headset finalization
+    /// bounded, scan only the normal metadata locations (the first and last 64 MiB windows) in small
+    /// chunks instead of walking every byte of a large movie. This still covers both fast-start MP4s
+    /// (`moov` at the front) and non-fast-start MP4s (`moov` at the end) without materializing the
+    /// full file or burning minutes of CPU while the app appears stuck at “Verifying download…”.
     /// Returns the number of entries rewritten; 0 when nothing matched. Throws only on I/O.
     @discardableResult
     public static func rewriteFile(at url: URL) throws -> Int {
         let handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
 
+        let fileSize = try handle.seekToEnd()
+        guard fileSize > 0 else { return 0 }
+
         var rewritten = 0
         var rewrittenOffsets = Set<UInt64>()
-        var overlap = [UInt8]()
-        var chunkStart: UInt64 = 0
+        for range in metadataScanRanges(fileSize: fileSize) {
+            rewritten += try scanAndRewrite(handle: handle, range: range, rewrittenOffsets: &rewrittenOffsets)
+        }
+        if rewritten > 0 {
+            try handle.synchronize()
+        }
+        return rewritten
+    }
 
-        while true {
-            let chunkData = try handle.read(upToCount: fileChunkSize) ?? Data()
+    private static func metadataScanRanges(fileSize: UInt64) -> [Range<UInt64>] {
+        let window = min(metadataScanWindowSize, fileSize)
+        let front: Range<UInt64> = 0..<window
+        let tailStart = fileSize - window
+        let tail: Range<UInt64> = tailStart..<fileSize
+        if front.overlaps(tail) || front.upperBound == tail.lowerBound {
+            return [0..<fileSize]
+        }
+        return [front, tail]
+    }
+
+    private static func scanAndRewrite(handle: FileHandle,
+                                       range: Range<UInt64>,
+                                       rewrittenOffsets: inout Set<UInt64>) throws -> Int {
+        try handle.seek(toOffset: range.lowerBound)
+
+        var rewritten = 0
+        var overlap = [UInt8]()
+        var chunkStart = range.lowerBound
+
+        while chunkStart < range.upperBound {
+            let remaining = range.upperBound - chunkStart
+            let readSize = min(fileChunkSize, Int(remaining))
+            let chunkData = try handle.read(upToCount: readSize) ?? Data()
             if chunkData.isEmpty { break }
 
             let chunkBytes = [UInt8](chunkData)
@@ -109,9 +144,6 @@ public enum HEVCTagFixup {
             let keep = min(searchWindow + 4, scanBytes.count)
             overlap = Array(scanBytes.suffix(keep))
             chunkStart += UInt64(chunkBytes.count)
-        }
-        if rewritten > 0 {
-            try handle.synchronize()
         }
         return rewritten
     }
