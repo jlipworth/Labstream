@@ -2568,8 +2568,28 @@ public final class DownloadManager {
             return transferFinalizingCaption(for: record)
         }
         let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
-        let isServerPrep = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
+        let resumeMode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
+        let isServerPrep = resumeMode == .serverPrepThenStatic
         if record.bytes == 0 {
+            // Once a prepared/original row has handed off to the static byte-range lane, it may sit
+            // at zero bytes until URLSession/Emby deliver the first progress callback. Do not label
+            // that as server prep; the app already started the file transfer.
+            if isActive, resumeMode == .staticByteRange {
+                var head: String
+                switch record.metadata?.resolvedDownloadLane() ?? .original {
+                case .original where record.metadata?.isServerPreparedVersion == true:
+                    head = "Downloading transcode • 0%"
+                case .original:
+                    head = "Downloading original • 0%"
+                case .compatibleRemux:
+                    head = "Remuxing + downloading • 0%"
+                case .optimize:
+                    head = backend == .plex ? "Downloading transcode • 0%" : "Transcoding + downloading • 0%"
+                }
+                if let r = record.metadata?.resolutionLabel { head += " • \(r)" }
+                return head
+            }
+
             let prepHead = (isServerPrep || record.status == .preparing) ? "Preparing on server…" : "Transcoding"
             if let p = optimizeProgress[record.ratingKey] {
                 var caption = "\(prepHead) \(Int(p * 100))%"
