@@ -8,11 +8,13 @@ import PMSKit
 /// than several `DownloadManager` dictionaries from every row, so progress refreshes do less
 /// observation work and row rendering stays value-driven.
 struct OfflineLibrarySnapshot {
-    static let empty = OfflineLibrarySnapshot(rows: [], queueToolbarAction: nil, isQueuePaused: false)
+    static let empty = OfflineLibrarySnapshot(rows: [], queueToolbarAction: nil, isQueuePaused: false,
+                                               aggregateStats: .empty)
 
     let rows: [OfflineDownloadRowSnapshot]
     let queueToolbarAction: DownloadQueueToolbarPolicy.Action?
     let isQueuePaused: Bool
+    let aggregateStats: OfflineDownloadAggregateStats
 
     var footerText: String {
         isQueuePaused

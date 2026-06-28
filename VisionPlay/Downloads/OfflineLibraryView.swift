@@ -35,6 +35,11 @@ public struct OfflineLibraryView: View {
                         )
                     } else {
                         List {
+                            if snapshot.aggregateStats.hasVisibleMetrics {
+                                SwiftUI.Section {
+                                    aggregateSummary(for: snapshot.aggregateStats)
+                                }
+                            }
                             SwiftUI.Section {
                                 ForEach(snapshot.rows) { rowSnapshot in
                                     row(for: rowSnapshot)
@@ -96,6 +101,47 @@ public struct OfflineLibraryView: View {
     }
 
     fileprivate static let rowActionControlSize: CGFloat = 56
+
+    private func aggregateSummary(for stats: OfflineDownloadAggregateStats) -> some View {
+        HStack(spacing: 12) {
+            if let speed = stats.activeSpeedBytesPerSecond, speed > 0 {
+                aggregateMetric(title: "Active speed",
+                                value: "\(Self.aggregateByteString(Int(speed)))/s",
+                                systemImage: "speedometer")
+            }
+            if stats.downloadedBytes > 0 {
+                aggregateMetric(title: "Downloaded",
+                                value: Self.aggregateByteString(stats.downloadedBytes),
+                                systemImage: "externaldrive.fill")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func aggregateMetric(title: String, value: String, systemImage: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.callout.weight(.semibold))
+                    .monospacedDigit()
+            }
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(.tint)
+        }
+        .labelStyle(.titleAndIcon)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private static func aggregateByteString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
 
     private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
         // Emby has no scrub-preview tile cache; its offline scrubber is fed by the per-chapter image

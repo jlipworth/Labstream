@@ -201,6 +201,14 @@ final class DownloadStore: @unchecked Sendable {
         return Set(rows.keys)
     }
 
+    /// Lightweight status lookup for delegate/IO race decisions that must not pay the full
+    /// `records` hydration cost (poster/chapter/trickplay file stats) just to distinguish a user
+    /// pause from a delete/cancel.
+    func status(for ratingKey: String) -> DownloadStatus? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.status
+    }
+
     /// Absolute destinations for indexed rows, regardless of status. Used when rebinding
     /// background URLSession tasks after relaunch: the persisted row knows the real extension
     /// (`.mp4`, `.mkv`, etc.), while a resumed task URL may not carry enough information.
@@ -325,6 +333,9 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private static func expectedBytesEstimate(row: Row) -> Int? {
+        if let sourcePartSize = row.metadata?.sourcePartSize, sourcePartSize > 0 {
+            return sourcePartSize
+        }
         guard row.bytes > 0, row.progress > 0.0001 else { return nil }
         let expected = Int((Double(row.bytes) / min(row.progress, 1.0)).rounded())
         return expected > 0 ? expected : nil
@@ -701,7 +712,7 @@ final class DownloadStore: @unchecked Sendable {
                     || row.metadata?.embyConvertJobID != nil)
             let hasAppRangeCheckpoint = resumeMode == .staticByteRange
                 && (row.status == .paused || row.status == .queued
-                    || row.status == .downloading)
+                    || row.status == .downloading || row.status == .failed)
                 && partialBytes > 0
             let rangeCheckpointExpectedBytes = Self.expectedBytesEstimate(row: row)
             let rangeCheckpointProgress = Self.progressForDurableBytes(
@@ -745,7 +756,8 @@ final class DownloadStore: @unchecked Sendable {
             let shouldResetMissingRangeProgress = resumeMode == .staticByteRange
                 && !hasLiveTask
                 && !hasAppRangeCheckpoint
-                && (row.status == .paused || row.status == .queued || row.status == .downloading)
+                && (row.status == .paused || row.status == .queued
+                    || row.status == .downloading || row.status == .failed)
                 && (row.bytes != 0 || row.progress != 0)
             guard newStatus != row.status
                     || shouldResetOptimizedProgress

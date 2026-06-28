@@ -29,7 +29,8 @@ extension DownloadManager {
     public func downloadEmby(_ item: MediaItem, choice: DownloadChoice,
                              mediaIndex: Int = 0,
                              partIndex: Int = 0,
-                             mediaSourceIDOverride: String? = nil) async {
+                             mediaSourceIDOverride: String? = nil,
+                             deferStaticStartWhenQueuePaused: Bool = false) async {
         let itemId = item.ratingKey
         let ratingKey = Self.embyRecordKey(itemId)
         // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
@@ -334,6 +335,21 @@ extension DownloadManager {
         cacheEmbyTextSubtitles(ratingKey: ratingKey, itemId: itemId,
                                mediaSourceId: subtitleMediaSourceID, part: part,
                                server: server, token: token, identity: identity, userId: userId)
+
+        if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original {
+            store.setStatus(ratingKey: ratingKey, .paused)
+            lastError[ratingKey] = .interruptedResumable
+            releaseInFlight(ratingKey: ratingKey)
+            recordDownloadDiagnostic("downloads.start_deferred_queue_paused", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "choice": .label("existing_version"),
+                "reason": .label("convert_handoff"),
+                "expected_bytes": .bytes(expectedBytes),
+            ])
+            refreshRecords()
+            return
+        }
 
         beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Emby",
                                 choiceLabel: route == .original ? "original"

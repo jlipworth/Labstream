@@ -132,7 +132,8 @@ extension DownloadManager {
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
+            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
+                               deferStaticStartWhenQueuePaused: true)
             return
         }
 
@@ -160,7 +161,8 @@ extension DownloadManager {
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId)
+            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
+                               deferStaticStartWhenQueuePaused: true)
             return
         }
 
@@ -261,6 +263,39 @@ extension DownloadManager {
                                                server: URL, token: String,
                                                identity: EmbyClientIdentity, userId: String,
                                                attemptID: UUID) async {
+        // Relaunch/resume recovery: the Sync job can be effectively done (or even no longer useful
+        // to poll) while Emby has already exposed the converted MP4 as a File MediaSource. Check for
+        // that reusable server-prepared source before entering the long job-status loop so rows that
+        // were at "Preparing on server… 100%" do not sit there until the user retries manually.
+        let requestedHeight = Self.convertPresetOutputHeight(forLabel: targetName)
+        let primaryMediaSourceId: String?
+        if let id = item.media?.first?.id {
+            primaryMediaSourceId = String(id)
+        } else {
+            primaryMediaSourceId = nil
+        }
+        let resumedReusableSource = await refreshAndPollReusableEmbyConvertedSource(
+            server: server, token: token, identity: identity, userId: userId, itemId: item.ratingKey,
+            ratingKey: ratingKey, requestedHeight: requestedHeight,
+            primaryMediaSourceId: primaryMediaSourceId,
+            initialSourceCount: snapshotIds.count,
+            phase: "resume_pre_poll", attemptID: attemptID)
+        if let reuseId = resumedReusableSource?.id,
+           embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                       targetName: targetName, jobId: jobId) {
+            recordDownloadDiagnostic("downloads.convert_reuse", fields: [
+                "download_id": .identifier(ratingKey),
+                "target": .label(targetName),
+                "phase": .label("resume_pre_poll"),
+            ])
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            store.remove(ratingKey: ratingKey)
+            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
+                               deferStaticStartWhenQueuePaused: true)
+            return
+        }
+
         // 2. Poll (reuse `optimizePollInterval`; no wall-clock timeout — the conversion is
         //    server-side and may legitimately take a long time for large media).
         while true {
@@ -506,7 +541,8 @@ extension DownloadManager {
         // specific converted MediaSource id (the #126 byte-for-byte reuse path) — it negotiates the
         // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
         // `.optimize` reroutes). The KEPT converted file is what reuse serves next time.
-        await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId)
+        await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId,
+                           deferStaticStartWhenQueuePaused: true)
     }
 
     /// Enumerate the current `File` MediaSources for an Emby item (unfiltered PlaybackInfo). Used to
@@ -586,11 +622,13 @@ extension DownloadManager {
                                      itemId: itemId, ratingKey: ratingKey, phase: phase)
 
         let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
+        var lastSourceCount = 0
         for attempt in 0..<maxAttempts {
             guard embyConvertAttemptByRatingKey[ratingKey] == attemptID,
                   activeJobs.contains(ratingKey) else { return nil }
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)
+            lastSourceCount = sources.count
             if let reuse = Self.reusableConvertedSource(sources, requestedHeight: requestedHeight,
                                                         primaryMediaSourceId: primaryMediaSourceId) {
                 recordDownloadDiagnostic("downloads.convert_reuse_refresh", fields: [
@@ -606,6 +644,13 @@ extension DownloadManager {
                 try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
             }
         }
+        recordDownloadDiagnostic("downloads.convert_reuse_refresh_miss", fields: [
+            "download_id": .identifier(ratingKey),
+            "phase": .label(phase),
+            "initial_source_count": .int(initialSourceCount),
+            "source_count": .int(lastSourceCount),
+            "requested_height": .int(requestedHeight ?? -1),
+        ])
         return nil
     }
 
@@ -660,7 +705,13 @@ extension DownloadManager {
         // reports VideoCodec as null at the source level (the codec is in MediaStreams), so an AND
         // would never match a real converted source.
         func looksConverted(_ s: EmbyMediaSourceInfo) -> Bool {
-            (s.container ?? "").lowercased().contains("mp4")
+            if (s.container ?? "").lowercased().contains("mp4") { return true }
+            if s.videoCodec?.caseInsensitiveCompare("h264") == .orderedSame { return true }
+            if let video = s.mediaStreams.first(where: { $0.type == "Video" }),
+               video.codec?.caseInsensitiveCompare("h264") == .orderedSame {
+                return true
+            }
+            return false
         }
         func recency(_ s: EmbyMediaSourceInfo) -> Int { Int(s.id ?? "") ?? -1 }
         let converted = sources.filter { $0.id != primaryMediaSourceId && looksConverted($0) }

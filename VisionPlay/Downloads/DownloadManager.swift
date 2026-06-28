@@ -104,6 +104,9 @@ public final class DownloadManager {
     private var serverPrepResumeRetryTask: Task<Void, Never>?
     @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
     private var serverPrepPollerIDs: [String: UUID] = [:]
+    private var serverPrepRefreshKickScheduled = false
+    private var lastServerPrepRefreshKickAt: Date?
+    private var lastServerPrepQueuePausedLogAt: Date?
     /// Static byte-range rows whose next chunk/restart needs the backend/auth lane to be restored
     /// before an authenticated request can be rebuilt. This is queue policy/backend state, not
     /// URLSession delegate state, so it deliberately lives here rather than in BackgroundDownloadSession.
@@ -556,8 +559,12 @@ public final class DownloadManager {
         isQueuePaused = true
         UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
         for record in records where record.status == .queued || record.status == .preparing || record.status == .downloading {
+            if shouldKeepEmbyServerPrepPollingWhileQueuePaused(record) {
+                continue
+            }
             pause(ratingKey: record.ratingKey)
         }
+        resumePendingEmbyConvertDownloads()
         refreshRecords()
     }
 
@@ -591,7 +598,11 @@ public final class DownloadManager {
             // idempotent and this task is debounced above so multiple UI edges do not stack scans.
             for delay in [1.0, 5.0, 15.0, 30.0, 60.0] {
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                self?.resumePendingServerPrepDownloads()
+                if self?.isQueuePaused == true {
+                    self?.resumePendingEmbyConvertDownloads()
+                } else {
+                    self?.resumePendingServerPrepDownloads()
+                }
                 self?.resumePendingStaticRangeDownloads()
             }
         }
@@ -700,8 +711,27 @@ public final class DownloadManager {
     }
 
     private func resumeStaticRangeWhenReady(ratingKey: String, reason: String) {
-        guard !isQueuePaused else {
-            pendingStaticRangeResumeKeys.insert(ratingKey)
+        if isQueuePaused {
+            guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
+                pendingStaticRangeResumeKeys.remove(ratingKey)
+                return
+            }
+            guard Self.isStaticRangeRecord(record) else {
+                pendingStaticRangeResumeKeys.remove(ratingKey)
+                return
+            }
+            let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
+            if checkpointBytes > 0 {
+                store.setStatus(ratingKey: ratingKey, .paused)
+                lastError[ratingKey] = .interruptedResumable
+            }
+            pendingStaticRangeResumeKeys.remove(ratingKey)
+            recordDownloadDiagnostic("downloads.range_resume_queue_paused", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+                "checkpoint_bytes": .bytes(checkpointBytes),
+            ])
+            refreshRecords()
             return
         }
         guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
@@ -726,6 +756,12 @@ public final class DownloadManager {
             "reason": .label(reason),
             "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)),
         ])
+        // A relaunch-adopted chunk can leave app-level retry/active bookkeeping behind even though
+        // URLSession has no live task and the row is merely a queued continuation intent. Clear that
+        // presentation/handoff state before driving the backend retry, or `retry` can no-op and the
+        // user has to manually Pause→Resume to kick the exact same request.
+        retryingRows.remove(ratingKey)
+        clearRetryHandoff(ratingKey: ratingKey)
         if record.status == .queued || record.status == .downloading {
             // A persisted system-resume intent is not a live task. Drop it to an inactive status for
             // the backend retry handoff so `acquireInFlightSlotForStart` will seed the replacement
@@ -878,17 +914,17 @@ public final class DownloadManager {
             // chase a different optimize job and leave the user tapping repeatedly. Route back to
             // the persisted static target, preserving the partial when present and otherwise
             // redownloading the same existing Part from byte 0.
-            let hasStaticPartial = Self.hasIncompleteStaticPartial(record)
             if Self.isStaticRangeRecord(record),
-               (hasStaticPartial || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
+               (Self.hasIncompleteStaticPartial(record) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
                 let resolved = self.resolveStaticRetryTarget(record: record,
                                                             fallbackMediaIndex: mediaIndex,
                                                             fallbackPartIndex: partIndex,
                                                             in: currentItem)
                 self.releaseInFlight(ratingKey: ratingKey)
-                if !hasStaticPartial {
-                    self.store.remove(ratingKey: ratingKey)
-                }
+                // Keep the row in place even when there is no durable media partial yet. `upsert`
+                // preserves cached poster/chapter/trickplay paths, while `startRangeChunk` resumes
+                // from the durable file size (0 when no checkpoint exists). Removing here made Plex
+                // existing-version retries forget side materials and appear to restart from scratch.
                 await self.download(currentItem, choice: resolved.choice,
                                     mediaIndex: resolved.mediaIndex, partIndex: resolved.partIndex)
                 self.refreshRecords()
@@ -901,7 +937,8 @@ public final class DownloadManager {
                metadata?.resolvedDownloadLane() == .original,
                currentItem.media?.indices.contains(mediaIndex) == true {
                 self.releaseInFlight(ratingKey: ratingKey)
-                self.store.remove(ratingKey: ratingKey)
+                // Preserve side materials for the same static existing-version row; the replacement
+                // upsert updates transfer fields without deleting cached assets.
                 await self.download(currentItem, choice: .existingVersion,
                                     mediaIndex: mediaIndex, partIndex: partIndex)
                 self.refreshRecords()
@@ -986,10 +1023,16 @@ public final class DownloadManager {
             "target": .label(targetName),
             "mode": .label("reattach_server_prep"),
         ])
+        // A paused server-prep row can retain a stale in-memory poller token after headset-off or a
+        // previous cancelled poller. If left in place, the resume scanner filters this queued row out
+        // as "already attached" and the user has to pause/resume again to kick it.
+        clearServerPrepPoller(ratingKey: record.ratingKey, reason: "paused_resume")
+        retryingRows.remove(record.ratingKey)
+        clearRetryHandoff(ratingKey: record.ratingKey)
         store.setStatus(ratingKey: record.ratingKey, .queued)
         optimizeState[record.ratingKey] = "queued"
         refreshRecords()
-        resumePendingServerPrepDownloads()
+        resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
     }
 
     private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
@@ -1180,7 +1223,10 @@ public final class DownloadManager {
     /// polled (`activeJobs`) is skipped. Best-effort — a row whose Emby lane is signed out stays
     /// `.preparing` and resumes automatically on the next call once the lane returns.
     private func resumePendingEmbyConvertDownloads() {
-        let embyPreparing = records.filter { record in
+        // Use the store's current rows, not the published `records` snapshot. Manual Resume paths
+        // mutate the store and then call this immediately; reading stale published rows can skip the
+        // just-promoted `.preparing` record and strand it until another lifecycle edge.
+        let embyPreparing = store.records.filter { record in
             let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
             return record.status == .preparing
@@ -1205,6 +1251,12 @@ public final class DownloadManager {
         }
         guard let session = appModel.backendSession(for: .emby),
               let userId = session.userID else {
+            if !candidates.isEmpty {
+                recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
+                    "candidate_count": .int(candidates.count),
+                    "reason": .label("emby_session_unavailable"),
+                ])
+            }
             refreshRecords()
             return
         }
@@ -1241,6 +1293,16 @@ public final class DownloadManager {
         }
     }
 
+    private func shouldKeepEmbyServerPrepPollingWhileQueuePaused(_ record: DownloadRecord) -> Bool {
+        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+        return record.status == .preparing
+            && backend == .emby
+            && record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
+            && record.metadata?.resolvedDownloadLane() == .optimize
+            && record.metadata?.embyConvertJobID != nil
+    }
+
     /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
     ///
     /// `nsurlsessiond` keeps a background chunk running while the app is merely suspended, but once
@@ -1267,13 +1329,20 @@ public final class DownloadManager {
     /// During "Preparing on server…" there is intentionally no URLSession task yet, so a relaunch
     /// must not reconcile the row as a dead transfer. Once auth is restored, this method resumes
     /// polling Plex for the optimized Part and starts the static file download when it appears.
-    public func resumePendingServerPrepDownloads() {
-        guard !isQueuePaused else { return }
+    public func resumePendingServerPrepDownloads(allowWhileQueuePaused: Bool = false) {
+        guard !isQueuePaused || allowWhileQueuePaused else {
+            // Automatic launch/refresh retries respect the global queue pause. Do not keep emitting
+            // skip diagnostics from the retry timer; `refreshRecords` parks unattached prep rows as
+            // `.paused` and records `downloads.server_prep_queue_paused` once per throttle window.
+            return
+        }
         resumePendingEmbyConvertDownloads()
         // #84/#181: no longer gated on `activeBackend == .plex`. Each candidate is resolved against
         // its OWN persisted backend/server lane, so a Plex optimize-prep row resumes on relaunch even
         // when the app launched into Jellyfin/Emby — but never against a different Plex server.
-        let serverPrepRows = records.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
+        // Same current-store rule as Emby: callers often set the row queued/preparing immediately
+        // before asking the prep scanner to attach a poller.
+        let serverPrepRows = store.records.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
         let candidates = serverPrepRows.filter { serverPrepPollerIDs[$0.ratingKey] == nil }
         let skippedActivePollers = serverPrepRows.count - candidates.count
         if skippedActivePollers > 0 {
@@ -1378,6 +1447,18 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.optimize_poller_detached", fields: [
             "download_id": .identifier(ratingKey),
         ])
+    }
+
+    private func clearServerPrepPoller(ratingKey: String, reason: String) {
+        let hadPoller = serverPrepPollerIDs.removeValue(forKey: ratingKey) != nil
+        let task = serverPrepPollerTasks.removeValue(forKey: ratingKey)
+        task?.cancel()
+        if hadPoller || task != nil {
+            recordDownloadDiagnostic("downloads.optimize_poller_reset", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+            ])
+        }
     }
 
     private func resumePendingOptimizeDownload(record: DownloadRecord,
@@ -1831,17 +1912,114 @@ public final class DownloadManager {
         let now = Date()
         var fresh = store.records
         let staleQueuedStaticPartials = fresh.filter { record in
-            !pendingStaticRangeResumeKeys.contains(record.ratingKey)
-                && DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
-                    record,
-                    isActive: activeJobs.contains(record.ratingKey)
-                )
+            DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+                record,
+                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey)
+            )
         }
         if !staleQueuedStaticPartials.isEmpty {
-            for record in staleQueuedStaticPartials {
+            if isQueuePaused {
+                for record in staleQueuedStaticPartials {
+                    pendingStaticRangeResumeKeys.remove(record.ratingKey)
+                    let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: record.ratingKey)
+                    if checkpointBytes > 0 {
+                        store.setStatus(ratingKey: record.ratingKey, .paused)
+                        lastError[record.ratingKey] = .interruptedResumable
+                    }
+                    recordDownloadDiagnostic("downloads.range_stale_queued_paused", fields: [
+                        "download_id": .identifier(record.ratingKey),
+                        "backend": .label(backendKind(for: record).rawValue),
+                        "checkpoint_bytes": .bytes(checkpointBytes),
+                    ])
+                }
+            } else {
+                for record in staleQueuedStaticPartials where !pendingStaticRangeResumeKeys.contains(record.ratingKey) {
+                    pendingStaticRangeResumeKeys.insert(record.ratingKey)
+                    recordDownloadDiagnostic("downloads.range_stale_queued_resume", fields: [
+                        "download_id": .identifier(record.ratingKey),
+                        "backend": .label(backendKind(for: record).rawValue),
+                        "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey)),
+                    ])
+                }
+                // Do not dispatch this through a detached Task. The evidence for Flight showed the
+                // detector firing (`range_stale_queued_resume`) while the row stayed queued/resumed with
+                // no subsequent `retry`/`range_start`. Normalize synchronously on this MainActor refresh
+                // turn so the queued residue cannot be lost between refresh cycles.
+                for record in staleQueuedStaticPartials {
+                    resumeStaticRangeWhenReady(ratingKey: record.ratingKey,
+                                               reason: "stale_queued_static")
+                }
+            }
+            fresh = store.records
+        }
+        let unattachedServerPrepRows = fresh.filter { record in
+            if DownloadRetryPolicy.isPlexServerPrepResumeCandidate(record) {
+                return serverPrepPollerIDs[record.ratingKey] == nil
+            }
+            let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+                ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+            return record.status == .preparing
+                && backend == .emby
+                && record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
+                && record.metadata?.resolvedDownloadLane() == .optimize
+                && record.metadata?.embyConvertJobID != nil
+                && !activeJobs.contains(record.ratingKey)
+        }
+        let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
+        if !unattachedServerPrepRows.isEmpty, isQueuePaused {
+            let embyRowsToPoll = unattachedServerPrepRows.filter(shouldKeepEmbyServerPrepPollingWhileQueuePaused)
+            let rowsToPark = unattachedServerPrepRows.filter { !shouldKeepEmbyServerPrepPollingWhileQueuePaused($0) }
+            let plexCount = rowsToPark.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate).count
+            let embyCount = rowsToPark.count - plexCount
+            for record in rowsToPark where record.status != .paused {
                 store.setStatus(ratingKey: record.ratingKey, .paused)
             }
             fresh = store.records
+            if !rowsToPark.isEmpty,
+               lastServerPrepQueuePausedLogAt.map({ now.timeIntervalSince($0) >= 5 }) ?? true {
+                lastServerPrepQueuePausedLogAt = now
+                recordDownloadDiagnostic("downloads.server_prep_queue_paused", fields: [
+                    "candidate_count": .int(rowsToPark.count),
+                    "plex_count": .int(plexCount),
+                    "emby_count": .int(embyCount),
+                    "reason": .label("parked_for_manual_resume"),
+                ])
+            }
+            if !embyRowsToPoll.isEmpty, !serverPrepRefreshKickScheduled, !serverPrepKickIsRecent {
+                serverPrepRefreshKickScheduled = true
+                lastServerPrepRefreshKickAt = now
+                recordDownloadDiagnostic("downloads.server_prep_refresh_kick", fields: [
+                    "candidate_count": .int(embyRowsToPoll.count),
+                    "plex_count": .int(0),
+                    "emby_count": .int(embyRowsToPoll.count),
+                    "reason": .label("queue_paused_emby_reconcile"),
+                ])
+                Task { [weak self] in
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.resumePendingEmbyConvertDownloads()
+                        self.serverPrepRefreshKickScheduled = false
+                    }
+                }
+            }
+        } else if !unattachedServerPrepRows.isEmpty, !serverPrepRefreshKickScheduled, !serverPrepKickIsRecent {
+            serverPrepRefreshKickScheduled = true
+            lastServerPrepRefreshKickAt = now
+            let plexCount = unattachedServerPrepRows.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate).count
+            let embyCount = unattachedServerPrepRows.count - plexCount
+            recordDownloadDiagnostic("downloads.server_prep_refresh_kick", fields: [
+                "candidate_count": .int(unattachedServerPrepRows.count),
+                "plex_count": .int(plexCount),
+                "emby_count": .int(embyCount),
+                "reason": .label("refresh_detected_unattached_prep"),
+            ])
+            Task { [weak self] in
+                await MainActor.run {
+                    guard let self else { return }
+                    self.resumePendingServerPrepDownloads()
+                    self.serverPrepRefreshKickScheduled = false
+                }
+            }
         }
         for record in fresh where retryHandoffRows.contains(record.ratingKey) {
             if record.status.isActiveWork || record.status == .complete || record.status == .unverified {
@@ -2317,7 +2495,9 @@ public final class DownloadManager {
                 isQueuePaused: isQueuePaused,
                 statuses: records.map(\.status)
             ),
-            isQueuePaused: isQueuePaused
+            isQueuePaused: isQueuePaused,
+            aggregateStats: OfflineDownloadAggregateStats.make(records: records,
+                                                               speedsByRatingKey: downloadSpeed)
         )
     }
 
