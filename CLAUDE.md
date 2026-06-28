@@ -19,6 +19,16 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # app. Guard every fix build: delete the .app product first, and verify afterwards that
 # the binary mtime is fresh (and matches the installed copy via
 # `xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app`).
+# ⚠️ DETERMINISTIC LC_UUID (don't be fooled): this project emits a content-INDEPENDENT
+# Mach-O UUID — two different builds (even a real source change) produce the IDENTICAL
+# `dwarfdump --uuid`, and even a full clean rebuild reuses it. So a cross-build UUID
+# comparison CANNOT detect a stale binary, and grepping the binary for a changed string
+# is unreliable (Swift literal storage). The only thing that proves the Ld step ran is a
+# FULL clean-DerivedData build (`rm -rf …/DerivedData/VisionPlay-*`) with exit 0 — there
+# is no incremental link to skip — plus a fresh product mtime. The UUID diff below is
+# still valid for ONE thing: confirming the INSTALLED copy == the copy you just built
+# (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
+# the source.
 rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
 xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination "platform=visionOS Simulator,id=$SIMID" \
@@ -86,10 +96,13 @@ SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
-# stale-binary guard (see LINK-SKIP / STALE-PROCESS traps): installed UUID must match the build
-diff <(xcrun dwarfdump --uuid "$APP/VisionPlay") \
-     <(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app)/VisionPlay") \
-  && echo UUID_MATCH || echo UUID_MISMATCH
+# install guard (see STALE-PROCESS trap): installed UUID must match the build you just made.
+# NOTE: LC_UUID is deterministic here (see DETERMINISTIC LC_UUID above), so this proves
+# install==build, NOT that the binary is newer than your source edit — a clean build is what
+# proves the latter. dwarfdump prints full paths (which differ), so compare only the UUID token.
+B=$(xcrun dwarfdump --uuid "$APP/VisionPlay" | awk '{print $2}')
+I=$(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app)/VisionPlay" | awk '{print $2}')
+[ "$B" = "$I" ] && echo UUID_MATCH || echo "UUID_MISMATCH built=$B installed=$I"
 xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
 xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "VisionPlay"' | tail -120

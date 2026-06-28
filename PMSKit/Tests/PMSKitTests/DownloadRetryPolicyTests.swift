@@ -84,7 +84,11 @@ struct DownloadRetryPolicyTests {
                                     status: .paused,
                                     metadata: metadata)
 
-        #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(record, fileExists: { $0 == url }))
+        #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            record,
+            fileExists: { $0 == url },
+            fileSize: { $0 == url ? 15 * 1_024 * 1_024 : nil }
+        ))
     }
 
     @Test("Does not promote live forward-only or missing partial rows")
@@ -102,7 +106,11 @@ struct DownloadRetryPolicyTests {
                                         progress: 0.12,
                                         status: .paused,
                                         metadata: liveMetadata)
-        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(liveRecord, fileExists: { _ in true }))
+        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            liveRecord,
+            fileExists: { _ in true },
+            fileSize: { _ in 15 * 1_024 * 1_024 }
+        ))
 
         let staticRecordWithoutFile = DownloadRecord(ratingKey: "emby:item-3",
                                                      title: "Missing Partial",
@@ -115,7 +123,11 @@ struct DownloadRetryPolicyTests {
                                                                                type: "movie",
                                                                                downloadLane: .original,
                                                                                resumeMode: .staticByteRange))
-        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(staticRecordWithoutFile, fileExists: { _ in false }))
+        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            staticRecordWithoutFile,
+            fileExists: { _ in false },
+            fileSize: { _ in nil }
+        ))
     }
 
     @Test("Complete or unstarted static rows do not promote")
@@ -131,7 +143,7 @@ struct DownloadRetryPolicyTests {
                                       localURL: url,
                                       bytes: 10_000,
                                       progress: 1.0,
-                                      status: .paused,
+                                      status: .complete,
                                       metadata: metadata)
         let unstarted = DownloadRecord(ratingKey: "emby:item-4",
                                        title: "Static",
@@ -141,9 +153,85 @@ struct DownloadRetryPolicyTests {
                                        status: .paused,
                                        metadata: metadata)
 
-        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(complete, fileExists: { _ in true }))
-        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(unstarted, fileExists: { _ in true }))
+        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            complete,
+            fileExists: { _ in true },
+            fileSize: { _ in 10_000 }
+        ))
+        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            unstarted,
+            fileExists: { _ in true },
+            fileSize: { _ in 0 }
+        ))
     }
+
+    @Test("Paused full durable static file promotes so finalization can run")
+    func pausedFullDurableStaticFilePromotesForFinalization() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-full-but-unfinalized.mp4")
+        let metadata = OfflineMetadata(ratingKey: "emby:item-full",
+                                       title: "Full",
+                                       type: "movie",
+                                       downloadLane: .original,
+                                       resumeMode: .staticByteRange)
+        let record = DownloadRecord(ratingKey: "emby:item-full",
+                                    title: "Full",
+                                    localURL: url,
+                                    bytes: 10_000,
+                                    progress: 1.0,
+                                    status: .paused,
+                                    metadata: metadata)
+
+        #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            record,
+            fileExists: { _ in true },
+            fileSize: { _ in 10_000 }
+        ))
+    }
+
+    @Test("Optimistic row bytes without durable partial do not promote")
+    func optimisticRowBytesWithoutDurablePartialDoNotPromote() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-optimistic-temp.mp4")
+        let record = DownloadRecord(ratingKey: "emby:item-optimistic",
+                                    title: "Optimistic",
+                                    localURL: url,
+                                    bytes: 64 * 1_024 * 1_024,
+                                    progress: 0.5,
+                                    status: .paused,
+                                    metadata: OfflineMetadata(ratingKey: "emby:item-optimistic",
+                                                              title: "Optimistic",
+                                                              type: "movie",
+                                                              downloadLane: .original,
+                                                              resumeMode: .staticByteRange))
+
+        #expect(!DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            record,
+            fileExists: { $0 == url },
+            fileSize: { _ in 0 }
+        ))
+    }
+
+    @Test("Durable partial promotes even when persisted row bytes are stale")
+    func durablePartialPromotesWhenRowBytesAreStale() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-stale-row.mp4")
+        let record = DownloadRecord(ratingKey: "emby:item-stale",
+                                    title: "Stale Row",
+                                    localURL: url,
+                                    bytes: 0,
+                                    progress: 0,
+                                    status: .paused,
+                                    metadata: OfflineMetadata(ratingKey: "emby:item-stale",
+                                                              title: "Stale Row",
+                                                              type: "movie",
+                                                              downloadLane: .original,
+                                                              resumeMode: .staticByteRange))
+
+        #expect(DownloadRetryPolicy.shouldPromotePausedStaticPartial(
+            record,
+            fileExists: { $0 == url },
+            fileSize: { _ in 8 * 1_024 * 1_024 }
+        ))
+    }
+
     @Test("Stale queued static partial demotes only when no live task owns it")
     func staleQueuedStaticPartialDemotesOnlyWhenInactive() throws {
         let url = URL(fileURLWithPath: "/tmp/visionplay-queued-partial.mp4")
@@ -162,9 +250,24 @@ struct DownloadRetryPolicyTests {
                                     status: .queued,
                                     metadata: metadata)
 
-        #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { $0 == url }))
-        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: true, fileExists: { $0 == url }))
-        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { _ in false }))
+        #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+            record,
+            isActive: false,
+            fileExists: { $0 == url },
+            fileSize: { _ in 25 * 1_024 * 1_024 }
+        ))
+        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+            record,
+            isActive: true,
+            fileExists: { $0 == url },
+            fileSize: { _ in 25 * 1_024 * 1_024 }
+        ))
+        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+            record,
+            isActive: false,
+            fileExists: { _ in false },
+            fileSize: { _ in nil }
+        ))
     }
 
     @Test("Plex static partial uses same stale queued demotion policy")
@@ -183,7 +286,12 @@ struct DownloadRetryPolicyTests {
                                     status: .queued,
                                     metadata: metadata)
 
-        #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(record, isActive: false, fileExists: { $0 == url }))
+        #expect(DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+            record,
+            isActive: false,
+            fileExists: { $0 == url },
+            fileSize: { _ in 10 * 1_024 * 1_024 }
+        ))
     }
 
 }

@@ -97,6 +97,10 @@ public final class DownloadManager {
     private var serverPrepResumeRetryTask: Task<Void, Never>?
     @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
     private var serverPrepPollerIDs: [String: UUID] = [:]
+    /// Static byte-range rows whose next chunk/restart needs the backend/auth lane to be restored
+    /// before an authenticated request can be rebuilt. This is queue policy/backend state, not
+    /// URLSession delegate state, so it deliberately lives here rather than in BackgroundDownloadSession.
+    private var pendingStaticRangeResumeKeys: Set<String> = []
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -230,6 +234,11 @@ public final class DownloadManager {
                 self.refreshRecords()
             }
         }
+        self.session.onRangeRequestNeeded = { [weak self] ratingKey, reason in
+            Task { @MainActor in
+                self?.resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: reason.rawValue)
+            }
+        }
         // D2: rows with no live task can't be told apart from a stall, so reconcile
         // them to `.failed` (retryable) once we know which tasks survived, except
         // server-prep optimized rows that can resume polling after relaunch. The
@@ -238,12 +247,18 @@ public final class DownloadManager {
         // now-queued optimized jobs. This second kick closes the launch-order race where
         // auth restore called `resumePendingServerPrepDownloads()` before reattach reset
         // a stale `.downloading` optimized row back to `.queued`.
+        // #169: capture which static byte-range rows were actively transferring (not user-paused)
+        // BEFORE `reconcile` parks them `.paused`, so we can auto-resume an interrupted download
+        // after a hard kill without overriding a row the user deliberately paused.
+        let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
         self.session.reattach { [weak self, store] liveKeys in
             store.reconcile(liveRatingKeys: liveKeys)
             Task { @MainActor in
                 self?.refreshRecords()
                 if self?.isQueuePaused != true {
                     self?.resumePendingServerPrepDownloads()
+                    self?.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
+                                                                    liveKeys: liveKeys)
                 }
                 // #84: reclaim any server encoder leaked by a HARD app kill (the in-memory
                 // PlaySessionId maps are empty on a fresh launch; the persisted `playSessionID`
@@ -548,14 +563,14 @@ public final class DownloadManager {
             .map(\.ratingKey)
         for key in retryKeys { retry(ratingKey: key) }
         resumePendingServerPrepDownloads()
+        resumePendingStaticRangeDownloads()
         refreshRecords()
     }
 
     /// Auth restore and background URLSession reattachment can complete in different turns.
-    /// Server-prep rows have no URLSession task yet, so if the first resume attempt races a still-
-    /// hydrating inactive backend lane, the UI can truthfully show "Preparing on server…" while no
-    /// poller is attached to publish server progress. Retry a few times after launch/ready edges;
-    /// `resumePendingServerPrepDownloads` is idempotent because it skips rows already in `activeJobs`.
+    /// Server-prep rows have no URLSession task yet, and relaunch-adopted Range chunks may need the
+    /// backend lane to rehydrate an authenticated request before the next chunk can start. Retry a
+    /// few times after launch/ready edges; both resume helpers are idempotent.
     public func scheduleServerPrepResumeRetries() {
         serverPrepResumeRetryTask?.cancel()
         serverPrepResumeRetryTask = Task { [weak self] in
@@ -564,8 +579,116 @@ public final class DownloadManager {
             // idempotent and this task is debounced above so multiple UI edges do not stack scans.
             for delay in [1.0, 5.0, 15.0, 30.0, 60.0] {
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                await self?.resumePendingServerPrepDownloads()
+                self?.resumePendingServerPrepDownloads()
+                self?.resumePendingStaticRangeDownloads()
             }
+        }
+    }
+
+    private static func isStaticRangeRecord(_ record: DownloadRecord) -> Bool {
+        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+        let lane = record.metadata?.resolvedDownloadLane() ?? .original
+        let mode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
+            ?? DownloadResumeMode.resolved(backend: backend, lane: lane)
+        return mode == .staticByteRange
+    }
+
+    private func staticRangeBackendSession(for record: DownloadRecord) -> BackendSession? {
+        let kind = backendKind(for: record)
+        guard let session = appModel.backendSession(for: kind) else { return nil }
+        if let metadata = record.metadata, !session.matchesPersistedServer(metadata) {
+            return nil
+        }
+        return session
+    }
+
+    @discardableResult
+    private func deferStaticRangeRetryIfBackendUnavailable(record: DownloadRecord, reason: String) -> Bool {
+        guard Self.isStaticRangeRecord(record),
+              staticRangeBackendSession(for: record) == nil else {
+            pendingStaticRangeResumeKeys.remove(record.ratingKey)
+            return false
+        }
+        deferStaticRangeResume(record: record, reason: reason)
+        return true
+    }
+
+    private func deferStaticRangeResume(record: DownloadRecord,
+                                        reason: String,
+                                        preserveActiveIntent: Bool = false) {
+        let ratingKey = record.ratingKey
+        let backend = backendKind(for: record)
+        let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
+        pendingStaticRangeResumeKeys.insert(ratingKey)
+        retryingRows.remove(ratingKey)
+        if preserveActiveIntent {
+            // This was not a user pause: a system/adopted Range continuation needs backend auth before
+            // it can rebuild the next request. Persist an active queued intent so a second app kill
+            // before backend restore is derived by launch auto-resume instead of turning into a manual
+            // `.paused` / `.failed` row with only in-memory pending state.
+            store.setStatus(ratingKey: ratingKey, .queued)
+            lastError[ratingKey] = checkpointBytes > 0 ? .interruptedResumable : .transferFailed(
+                "Download will restart when the \(backend.displayName) session is ready.")
+        } else if checkpointBytes > 0 {
+            store.setStatus(ratingKey: ratingKey, .paused)
+            lastError[ratingKey] = .interruptedResumable
+        } else {
+            // No durable checkpoint remains (for example, an adopted chunk discovered a validator
+            // mismatch and discarded the stale prefix). Keep this restartable as a failed row rather
+            // than a paused row with no partial and no retry path.
+            store.setStatus(ratingKey: ratingKey, .failed)
+            lastError[ratingKey] = .transferFailed(
+                "Download will restart when the \(backend.displayName) session is ready.")
+        }
+        recordDownloadDiagnostic("downloads.range_resume_deferred", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backend.rawValue),
+            "reason": .label(reason),
+            "checkpoint_bytes": .bytes(checkpointBytes),
+        ])
+        refreshRecords()
+    }
+
+    private func resumeStaticRangeWhenReady(ratingKey: String, reason: String) {
+        guard !isQueuePaused else {
+            pendingStaticRangeResumeKeys.insert(ratingKey)
+            return
+        }
+        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
+            pendingStaticRangeResumeKeys.remove(ratingKey)
+            return
+        }
+        guard Self.isStaticRangeRecord(record) else {
+            pendingStaticRangeResumeKeys.remove(ratingKey)
+            return
+        }
+        guard staticRangeBackendSession(for: record) != nil else {
+            deferStaticRangeResume(record: record, reason: reason, preserveActiveIntent: true)
+            return
+        }
+        pendingStaticRangeResumeKeys.remove(ratingKey)
+        recordDownloadDiagnostic("downloads.range_resume_ready", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backendKind(for: record).rawValue),
+            "reason": .label(reason),
+            "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)),
+        ])
+        if record.status == .queued || record.status == .downloading {
+            // A persisted system-resume intent is not a live task. Drop it to an inactive status for
+            // the backend retry handoff so `acquireInFlightSlotForStart` will seed the replacement
+            // Range request instead of treating the row as duplicate active work.
+            store.setStatus(ratingKey: ratingKey, .failed)
+        }
+        refreshRecords()
+        retry(ratingKey: ratingKey)
+    }
+
+    private func resumePendingStaticRangeDownloads() {
+        guard !isQueuePaused else { return }
+        let keys = pendingStaticRangeResumeKeys
+        for key in keys {
+            resumeStaticRangeWhenReady(ratingKey: key, reason: "backend_ready")
         }
     }
 
@@ -576,6 +699,9 @@ public final class DownloadManager {
     public func retry(ratingKey: String) {
         guard !retryingRows.contains(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        if deferStaticRangeRetryIfBackendUnavailable(record: record, reason: "retry_backend_not_ready") {
+            return
+        }
         retryingRows.insert(ratingKey)
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
@@ -619,12 +745,13 @@ public final class DownloadManager {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
             return
         }
-        // #131/#146/#168 live checks: paused static-byte-range rows may have only the durable
-        // partial file as their checkpoint (no URLSession resume blob). Promote them out of
-        // `.paused` before backend-specific retry dispatch, because Jellyfin/Emby retry bodies also
-        // pass through `retryAttemptCanContinue`; if the row is still `.paused`, that async guard
-        // treats the user's Resume tap as cancelled and silently no-ops.
-        if record.status == .paused, Self.hasIncompleteStaticPartial(record) {
+        // #131/#146/#168/#169 live checks: paused static-byte-range rows may have only the durable
+        // partial file as their checkpoint (no URLSession resume blob), or may have no durable bytes
+        // yet (user paused before the first chunk committed / validator restart from zero). Promote
+        // them out of `.paused` before backend-specific retry dispatch, because Jellyfin/Emby retry
+        // bodies also pass through `retryAttemptCanContinue`; if the row is still `.paused`, that
+        // async guard treats the user's Resume tap as cancelled and silently no-ops.
+        if record.status == .paused, Self.isStaticRangeRecord(record) {
             // The backend download entry points reject existing `.queued`/`.downloading` rows as
             // duplicate active work. A partial static retry is not active yet; it is about to
             // re-acquire a URLSession task against the same destination file. Keep the row inactive
@@ -654,6 +781,10 @@ public final class DownloadManager {
             // #84: resolve the Plex session from its own lane (not `activeBackend`); a row whose
             // lane is unconfigured stays `.failed`/retryable with the accurate not-signed-in reason.
             guard let backendSession = self.appModel.backendSession(for: .plex) else {
+                if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
+                                                                  reason: "plex_backend_not_ready") {
+                    return
+                }
                 self.lastError[ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.refreshRecords()
@@ -764,8 +895,19 @@ public final class DownloadManager {
     /// fetching current metadata. A server-prep row already has the queue title/baseline needed by
     /// `resumePendingServerPrepDownloads`, so recreating risks a duplicate Plex transcode.
     private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
-        guard appModel.backendSession(for: .plex) != nil else {
+        guard let backendSession = appModel.backendSession(for: .plex) else {
             lastError[record.ratingKey] = .notAuthenticated
+            retryingRows.remove(record.ratingKey)
+            refreshRecords()
+            return
+        }
+        if let metadata = record.metadata, !backendSession.matchesPersistedServer(metadata) {
+            recordDownloadDiagnostic("downloads.paused_optimize_resume_skip", fields: [
+                "download_id": .identifier(record.ratingKey),
+                "target": .label(targetName),
+                "reason": .label("plex_session_mismatch"),
+            ])
+            lastError[record.ratingKey] = .transferFailed("Waiting for the original Plex server session.")
             retryingRows.remove(record.ratingKey)
             refreshRecords()
             return
@@ -791,6 +933,18 @@ public final class DownloadManager {
             guard let self else { return }
             guard let backendSession = self.appModel.backendSession(for: .plex) else {
                 self.lastError[record.ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: record.ratingKey, .paused)
+                self.refreshRecords()
+                return
+            }
+            if let metadata, !backendSession.matchesPersistedServer(metadata) {
+                self.recordDownloadDiagnostic("downloads.paused_optimize_resume_skip", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "target": .label(targetName),
+                    "reason": .label("plex_session_mismatch"),
+                ])
+                self.lastError[record.ratingKey] = .transferFailed(
+                    "Waiting for the original Plex server session.")
                 self.store.setStatus(ratingKey: record.ratingKey, .paused)
                 self.refreshRecords()
                 return
@@ -855,6 +1009,10 @@ public final class DownloadManager {
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
             // accurate not-signed-in reason.
             guard self.appModel.backendSession(for: .jellyfin) != nil else {
+                if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
+                                                                  reason: "jellyfin_backend_not_ready") {
+                    return
+                }
                 self.lastError[record.ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
@@ -916,6 +1074,10 @@ public final class DownloadManager {
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
             // accurate not-signed-in reason.
             guard self.appModel.backendSession(for: .emby) != nil else {
+                if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
+                                                                  reason: "emby_backend_not_ready") {
+                    return
+                }
                 self.lastError[record.ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
@@ -1008,6 +1170,27 @@ public final class DownloadManager {
         }
     }
 
+    /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
+    ///
+    /// `nsurlsessiond` keeps a background chunk running while the app is merely suspended, but once
+    /// the OS terminates the app under memory pressure (likely on a multi-hour 4K download) the next
+    /// chunk can't auto-start — `reconcile` parks rows with a durable partial `.paused` and rows whose
+    /// first chunk never committed `.failed`. `candidateKeys` (captured BEFORE reconcile) are the rows
+    /// that were ACTIVELY transferring, so resuming them honors a system interruption while leaving a
+    /// user's deliberate pause alone. `retry` rebuilds the request and continues from the durable
+    /// partial (or byte 0). Rows whose background task DID survive are in `liveKeys` (already
+    /// continuing) and skipped.
+    private func resumeInterruptedStaticByteRangeDownloads(candidateKeys: [String], liveKeys: Set<String>) {
+        for ratingKey in candidateKeys where !liveKeys.contains(ratingKey) {
+            guard let status = records.first(where: { $0.ratingKey == ratingKey })?.status,
+                  status == .paused || status == .failed else { continue }
+            recordDownloadDiagnostic("downloads.range_auto_resume", fields: [
+                "download_id": .identifier(ratingKey),
+            ])
+            resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: "launch_interrupted")
+        }
+    }
+
     /// Resume server-side Plex optimize rows that were persisted while Plex was still rendering.
     ///
     /// During "Preparing on server…" there is intentionally no URLSession task yet, so a relaunch
@@ -1016,15 +1199,10 @@ public final class DownloadManager {
     public func resumePendingServerPrepDownloads() {
         guard !isQueuePaused else { return }
         resumePendingEmbyConvertDownloads()
-        // #84: no longer gated on `activeBackend == .plex`. Each candidate is resolved against its
-        // OWN backend lane, so a Plex optimize-prep row resumes on relaunch even when the app
-        // launched into Jellyfin/Emby — as long as the Plex lane is still configured.
-        let serverPrepRows = records.filter { record in
-            record.status == .queued
-                && record.bytes == 0
-                && record.progress == 0
-                && record.metadata?.optimizeTargetName?.isEmpty == false
-        }
+        // #84/#181: no longer gated on `activeBackend == .plex`. Each candidate is resolved against
+        // its OWN persisted backend/server lane, so a Plex optimize-prep row resumes on relaunch even
+        // when the app launched into Jellyfin/Emby — but never against a different Plex server.
+        let serverPrepRows = records.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
         let candidates = serverPrepRows.filter { serverPrepPollerIDs[$0.ratingKey] == nil }
         let skippedActivePollers = serverPrepRows.count - candidates.count
         if skippedActivePollers > 0 {
@@ -1048,6 +1226,14 @@ public final class DownloadManager {
                     "download_id": .identifier(record.ratingKey),
                     "target": .label(targetName),
                     "reason": .label("plex_session_unavailable"),
+                ])
+                continue
+            }
+            guard backendSession.matchesPersistedServer(metadata) else {
+                recordDownloadDiagnostic("downloads.optimize_resume_skip", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "target": .label(targetName),
+                    "reason": .label("plex_session_mismatch"),
                 ])
                 continue
             }
@@ -1389,6 +1575,8 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
+        pendingStaticRangeResumeKeys.remove(ratingKey)
+        retryingRows.remove(ratingKey)
         // Emby convert parity (#126 + Plex): deleting a `.preparing` row must ALSO cancel the
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
@@ -1552,10 +1740,11 @@ public final class DownloadManager {
         let now = Date()
         var fresh = store.records
         let staleQueuedStaticPartials = fresh.filter { record in
-            DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
-                record,
-                isActive: activeJobs.contains(record.ratingKey)
-            )
+            !pendingStaticRangeResumeKeys.contains(record.ratingKey)
+                && DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+                    record,
+                    isActive: activeJobs.contains(record.ratingKey)
+                )
         }
         if !staleQueuedStaticPartials.isEmpty {
             for record in staleQueuedStaticPartials {

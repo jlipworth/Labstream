@@ -340,6 +340,46 @@ Use root-relative GitHub links for files outside `docs/` because the published s
     target because the convert lane only ever runs for sources that CAN'T direct-play, so a universally
     playable codec is the safe pick. (Caveat per #128: 4K→4K H264 files are large and slow to transcode
     server-side — the picker preset IS the explicit user opt-in.)
+- **#169 off-head downloads: the static byte-range lane must be a true background `downloadTask`, and
+  resume-corruption protection on Plex CANNOT rely on `If-Range`.** visionOS suspends the app ~1–2 min
+  after the headset comes off; only `nsurlsessiond`-managed background `URLSessionDownloadTask`/
+  `uploadTask` transfers survive — a `dataTask` (the old in-process byte-append lane) does not, which is
+  the whole of #169. A background task only hands back its temp file on *completion*, so it can't
+  byte-append mid-flight; the lane therefore downloads the file as bounded `Range: bytes=<off>-<off+N-1>`
+  chunks, appending each finished chunk into the durable partial (the checkpoint that survives
+  force-quit/relaunch). In-flight chunk bytes reported by `didWriteData` still live in the OS temp file:
+  they may be shown as live progress, but they are **not durable checkpoint bytes**. Pause/error/reconcile
+  paths must reset row bytes/progress from the actual partial-file size, not from optimistic row counters.
+  Also do not fire the URLSession background completion handler until a finished chunk has been appended,
+  finalized, or safely parked for manager rehydration; otherwise the OS may suspend the app after the temp
+  stash move but before the durable checkpoint/next chunk is scheduled. If a relaunched task is adopted
+  with no in-memory authenticated request (`request == nil`), `BackgroundDownloadSession` only parks the
+  row and calls back for rehydration; `DownloadManager` owns rebuilding Plex/Jellyfin/Emby auth and defers
+  retry until the matching backend session is restored. To stop a resource that *changes* mid-download
+  from being spliced in after a stale prefix, each resume must be pinned to the resource version.
+  #180/#181 follow-on invariants: shared finalization keeps the row `.downloading` at 100% and the UI says
+  "Verifying download…" until `BackgroundDownloadSession.finalizeTransferredFile` writes a terminal status;
+  URLSession background completion is held behind both range append/finalize work and opaque finalization
+  status writes. Plex optimize/server-prep relaunch recovery is a separate lifecycle from the final static
+  rendered-Part transfer: only rows still persisted as `.serverPrepThenStatic` may reattach Plex prep
+  pollers, and those pollers must use the same persisted server identity rather than whichever Plex
+  session is currently active.
+  **Verified live (read-only, headers-only probe of all three real backends):**
+  - **Plex IGNORES `If-Range`.** A `Range` GET with a deliberately non-matching `If-Range` (tried BOTH
+    etag-form and date-form) returns **206 from the same offset**, not a whole-file 200 — deterministic
+    over repeats — even though Plex emits a perfectly good **strong ETag** *and* `Last-Modified`. So
+    sending `If-Range` alone is a no-op on the primary backend. The load-bearing defense is a per-chunk
+    **validator-equality** check (compare the response ETag/Last-Modified against the one pinned on the
+    first chunk; a definite mismatch ⇒ discard the stale partial and restart from offset 0). That restart
+    MUST be bounded — an unstable validator (a PlexOptimize Part still being written; a load-balanced /
+    proxied ETag) would otherwise livelock re-downloading from 0 forever, and `retryCounts` can't bound it
+    (it's zeroed on every chunk's first progress in `didWriteData`).
+  - **Emby HONORS `If-Range`** (strong ETag → 200 on a non-matching validator) and **Jellyfin HONORS the
+    date form** (no ETag; `Last-Modified` only → 200 on a non-matching date). Both are protected by
+    `If-Range` as shipped; the validator-equality check is belt-and-suspenders for them. Caveat:
+    `Last-Modified` is 1-second-resolution, so a change within the same second as the original is
+    undetectable (minor). Plex/Emby ETags are strong and Jellyfin emits none, so the weak-`W/`-ETag guard
+    in `rangeValidator(from:)` is defensive-only — no real backend triggers it today.
 
 ## Conventions
 

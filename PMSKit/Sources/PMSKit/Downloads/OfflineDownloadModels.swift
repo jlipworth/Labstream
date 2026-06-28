@@ -446,6 +446,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Purely cosmetic — it never affects the download/resume/rate mechanics, which stay lane-driven.
     /// `nil`/false for a genuine original (and every pre-existing row).
     public var serverPreparedVersion: Bool?
+    /// #169: HTTP validator (`ETag`, else `Last-Modified`) captured from the first static byte-range
+    /// chunk. Sent as `If-Range` on every subsequent chunk so that if the server-side resource
+    /// changes mid-download the server returns the whole NEW resource (200) — which the chunk lane
+    /// replaces honestly — instead of a 206 that would append new bytes after a stale prefix and
+    /// silently corrupt the file. `nil` until the first chunk completes / for non-byte-range rows.
+    public var rangeValidator: String?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -498,7 +504,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 resumeDataRelativePath: String? = nil,
                 embyConvertJobID: Int? = nil,
                 embyConvertSnapshotIDs: [String]? = nil,
-                serverPreparedVersion: Bool? = nil) {
+                serverPreparedVersion: Bool? = nil,
+                rangeValidator: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -551,6 +558,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.embyConvertJobID = embyConvertJobID
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
+        self.rangeValidator = rangeValidator
     }
 
     public init(from decoder: Decoder) throws {
@@ -607,6 +615,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
+        rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
     }
 
     /// Preserve side assets that may have been cached asynchronously after the caller captured an
