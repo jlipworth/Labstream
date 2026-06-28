@@ -314,13 +314,18 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
+        var metadata = record.metadata ?? existing?.metadata
+        if var incoming = record.metadata, let previous = existing?.metadata {
+            incoming.preserveCachedSideAssets(from: previous)
+            metadata = incoming
+        }
         rows[record.ratingKey] = Row(ratingKey: record.ratingKey,
                                      title: record.title,
                                      relativePath: rel,
                                      bytes: record.bytes,
                                      progress: record.progress,
                                      status: record.status,
-                                     metadata: record.metadata ?? existing?.metadata)
+                                     metadata: metadata)
         lock.unlock()
         persist()
     }
@@ -650,7 +655,55 @@ final class DownloadStore: @unchecked Sendable {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
         }
-        rows = Dictionary(uniqueKeysWithValues: result.rows.map { ($0.ratingKey, $0) })
+        var repairedSubtitleRows = 0
+        rows = Dictionary(uniqueKeysWithValues: result.rows.map { row in
+            var repaired = row
+            if repaired.metadata?.offlineTextSubtitles?.isEmpty ?? true,
+               let tracks = cachedSubtitleTracksFromDisk(ratingKey: row.ratingKey),
+               !tracks.isEmpty {
+                repaired.metadata?.offlineTextSubtitles = tracks
+                repairedSubtitleRows += 1
+                NSLog("DownloadStore: repaired %d cached offline subtitle track(s) for %@",
+                      tracks.count, row.ratingKey)
+            }
+            return (repaired.ratingKey, repaired)
+        })
+        if repairedSubtitleRows > 0 {
+            let snapshot = Array(rows.values)
+            lock.unlock()
+            guard let data = try? DownloadIndexCoding.encode(snapshot) else {
+                lock.lock()
+                return
+            }
+            try? data.write(to: indexURL, options: .atomic)
+            lock.lock()
+        }
+    }
+
+    private func cachedSubtitleTracksFromDisk(ratingKey: String) -> [OfflineTextSubtitleTrack]? {
+        let safePrefix = "\(Self.safeFilenameComponent(ratingKey)).sub-"
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: baseDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let tracks: [OfflineTextSubtitleTrack] = urls.compactMap { url in
+            let name = url.lastPathComponent
+            guard name.hasPrefix(safePrefix),
+                  let ext = name.split(separator: ".").last.map(String.init)?.lowercased(),
+                  ["srt", "vtt"].contains(ext),
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            else { return nil }
+            let idStart = name.index(name.startIndex, offsetBy: safePrefix.count)
+            let idEnd = name.index(name.endIndex, offsetBy: -(".\(ext)".count))
+            guard idStart < idEnd,
+                  let streamID = Int(name[idStart..<idEnd]) else { return nil }
+            return OfflineTextSubtitleTrack(id: streamID,
+                                            displayName: "Subtitle \(streamID)",
+                                            codec: ext,
+                                            relativePath: name)
+        }.sorted { $0.id < $1.id }
+        return tracks.isEmpty ? nil : tracks
     }
 
     private func persist() {
