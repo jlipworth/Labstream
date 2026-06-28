@@ -1768,8 +1768,12 @@ public final class DownloadManager {
         // stall decay→nil, backwards-bytes re-baseline, and the Σdb/Σdt window average that
         // reconciles the displayed rate with Σbytes/elapsed. The actor just feeds `(bytes, now)`
         // and reads back the smoothed rate + ETA; the math is pinned by `DownloadRateEstimatorTests`.
+        // #169: a background Range segment can reset optimistic temp-byte progress back to the
+        // durable partial checkpoint during promotion/pause/retry. Hide rate/ETA for one averaging
+        // window after that backwards rebaseline instead of flashing a bogus high-speed provisional.
         for record in fresh where record.status == .downloading {
-            var estimator = rateEstimators[record.ratingKey] ?? DownloadRateEstimator()
+            var estimator = rateEstimators[record.ratingKey]
+                ?? DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
             let rate = estimator.sample(bytes: record.bytes, at: now)
             // Recover the expected final size for the ETA: the exact Content-Length path
             // (`bytes / progress`) when the server reported a size, else the same

@@ -144,4 +144,16 @@ struct DownloadRateEstimatorTests {
         _ = est.sample(bytes: 0, at: Self.t(0))
         #expect(est.eta(expectedTotal: 100_000_000) == nil)
     }
+
+    @Test("optional backwards rebaseline grace suppresses bogus restart speed and ETA")
+    func backwardsRebaselineGraceSuppressesFlash() {
+        var est = DownloadRateEstimator(firstEmitWindow: 0.5, rebaselineSuppressWindow: 4.0)
+        _ = est.sample(bytes: 0, at: Self.t(0))
+        _ = est.sample(bytes: 64_000_000, at: Self.t(1))
+        #expect(est.sample(bytes: 32_000_000, at: Self.t(2)) == nil)
+        #expect(est.sample(bytes: 48_000_000, at: Self.t(3)) == nil)
+        #expect(est.eta(expectedTotal: 100_000_000) == nil)
+        let rate = est.sample(bytes: 80_000_000, at: Self.t(6.1))
+        #expect((rate ?? 0) > 0)
+    }
 }
