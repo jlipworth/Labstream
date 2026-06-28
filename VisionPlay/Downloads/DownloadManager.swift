@@ -111,6 +111,11 @@ public final class DownloadManager {
     /// before an authenticated request can be rebuilt. This is queue policy/backend state, not
     /// URLSession delegate state, so it deliberately lives here rather than in BackgroundDownloadSession.
     private var pendingStaticRangeResumeKeys: Set<String> = []
+    /// Static byte-range rows whose fully-downloaded checkpoint is already being handed to
+    /// BackgroundDownloadSession finalization. Without this guard, a refresh fired by
+    /// `publishTransferFinalizing` sees the row still at 100%/downloading until the async probe
+    /// writes a terminal status, re-enters recovery, and can recurse until the main stack overflows.
+    private var finalizingStaticRangeRecoveryKeys: Set<String> = []
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -698,23 +703,34 @@ public final class DownloadManager {
 
 
     private func finalizeCompletedStaticRangeIfNeeded(record: DownloadRecord, reason: String) -> Bool {
-        guard Self.isStaticRangeRecord(record),
-              record.progress.isFinite,
-              record.progress >= 1.0,
-              store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey) > 0 else {
+        let ratingKey = record.ratingKey
+        if record.status == .complete || record.status == .unverified || record.status == .failed {
+            finalizingStaticRangeRecoveryKeys.remove(ratingKey)
             return false
         }
-        pendingStaticRangeResumeKeys.remove(record.ratingKey)
+        guard Self.isStaticRangeRecord(record),
+              record.progress.isFinite,
+              record.progress >= 1.0 else {
+            return false
+        }
+        if finalizingStaticRangeRecoveryKeys.contains(ratingKey) {
+            return true
+        }
+        let checkpointBytes = store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)
+        guard checkpointBytes > 0 else { return false }
+        pendingStaticRangeResumeKeys.remove(ratingKey)
+        finalizingStaticRangeRecoveryKeys.insert(ratingKey)
         recordDownloadDiagnostic("downloads.range_finalize_resume", fields: [
-            "download_id": .identifier(record.ratingKey),
+            "download_id": .identifier(ratingKey),
             "reason": .label(reason),
-            "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey)),
+            "checkpoint_bytes": .bytes(checkpointBytes),
         ])
-        let started = session.finalizeCompletedStaticRangeFile(ratingKey: record.ratingKey,
+        let started = session.finalizeCompletedStaticRangeFile(ratingKey: ratingKey,
                                                                validationLabel: "range_checkpoint_recovered")
         if started {
-            lastError[record.ratingKey] = nil
-            refreshRecords()
+            lastError[ratingKey] = nil
+        } else {
+            finalizingStaticRangeRecoveryKeys.remove(ratingKey)
         }
         return started
     }
@@ -749,6 +765,11 @@ public final class DownloadManager {
         }
         guard Self.isStaticRangeRecord(record) else {
             pendingStaticRangeResumeKeys.remove(ratingKey)
+            return
+        }
+        if record.status == .complete || record.status == .unverified {
+            pendingStaticRangeResumeKeys.remove(ratingKey)
+            finalizingStaticRangeRecoveryKeys.remove(ratingKey)
             return
         }
         if finalizeCompletedStaticRangeIfNeeded(record: record, reason: reason) {
@@ -804,6 +825,7 @@ public final class DownloadManager {
     public func retry(ratingKey: String) {
         guard !retryingRows.contains(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        guard record.status != .complete, record.status != .unverified else { return }
         if finalizeCompletedStaticRangeIfNeeded(record: record, reason: "manual_retry") {
             return
         }
@@ -2035,6 +2057,8 @@ public final class DownloadManager {
                 markRetryReplacementSeeded(ratingKey: record.ratingKey)
             }
         }
+        let finalizedRecoveryKeys = Set(fresh.filter { $0.status == .complete || $0.status == .unverified || $0.status == .failed }.map(\.ratingKey))
+        finalizingStaticRangeRecoveryKeys.subtract(finalizedRecoveryKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
         // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
         // cumulative byte count. The estimator owns ALL the speed/ETA math — first-emit window,
