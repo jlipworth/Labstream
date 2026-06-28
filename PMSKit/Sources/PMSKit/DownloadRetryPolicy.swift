@@ -23,9 +23,10 @@ public enum DownloadRetryPolicy {
     /// URLSession resume blob exists. Promote it out of `.paused` before backend-specific async
     /// retry guards run; otherwise those guards can treat the row as user-paused and no-op.
     public static func shouldPromotePausedStaticPartial(_ record: DownloadRecord,
-                                                        fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> Bool {
+                                                        fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
+                                                        fileSize: (URL) -> Int? = Self.defaultFileSize) -> Bool {
         record.status == .paused
-            && hasStaticPartialCheckpoint(record, fileExists: fileExists)
+            && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
     }
 
     /// A queued static-byte-range partial with no live task is not real active work: it is the
@@ -34,17 +35,44 @@ public enum DownloadRetryPolicy {
     /// duplicate-start guard does not permanently strand the row as "queued".
     public static func shouldDemoteStaleQueuedStaticPartial(_ record: DownloadRecord,
                                                            isActive: Bool,
-                                                           fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }) -> Bool {
+                                                           fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
+                                                           fileSize: (URL) -> Int? = Self.defaultFileSize) -> Bool {
         record.status == .queued
             && !isActive
-            && hasStaticPartialCheckpoint(record, fileExists: fileExists)
+            && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
     }
 
     private static func hasStaticPartialCheckpoint(_ record: DownloadRecord,
-                                                   fileExists: (URL) -> Bool) -> Bool {
-        record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange
-            && record.bytes > 0
+                                                   fileExists: (URL) -> Bool,
+                                                   fileSize: (URL) -> Int?) -> Bool {
+        guard record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange else {
+            return false
+        }
+        if let durableBytes = fileSize(record.localURL) {
+            return durableBytes > 0
+        }
+        // Compatibility fallback for tests/callers that can only answer existence. Production callers
+        // use `defaultFileSize`, so optimistic row bytes from an in-flight URLSession temp chunk are
+        // not treated as a durable checkpoint when the partial file is absent or empty.
+        return record.bytes > 0
             && record.progress < 0.999
             && fileExists(record.localURL)
+    }
+
+    @usableFromInline
+    static func defaultFileSize(_ url: URL) -> Int? {
+        guard let raw = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) else {
+            return nil
+        }
+        if let number = raw as? NSNumber {
+            return number.intValue
+        }
+        if let int = raw as? Int {
+            return int
+        }
+        if let int64 = raw as? Int64 {
+            return Int(int64)
+        }
+        return nil
     }
 }

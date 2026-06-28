@@ -4,6 +4,14 @@ Backend-agnostic dedup + robustness + de-godding plan for `VisionPlay/Downloads/
 
 > Produced by a read-first multi-agent audit (9 parallel readers → capability matrix → staged plan → adversarial critique). It is the audit + plan deliverable for #135; the refactor lands as the staged PRs in §4.
 
+> **Post-#169 architecture note:** this document intentionally preserves the #135 audit snapshot and
+> old line anchors. The current static byte-range transfer is no longer a separate foreground
+> `rangeURLSession`/`dataTask` that writes each `didReceive` byte into the final file. Static lanes now
+> use bounded `Range` background `URLSessionDownloadTask` chunks on `BackgroundDownloadSession`; the OS
+> temp bytes are not durable until `didFinishDownloadingTo` appends/finalizes them, and adopted
+> relaunch chunks ask `DownloadManager` to rebuild backend-authenticated requests. See the #169 note in
+> `docs/DEVELOPMENT.md` for the current design.
+
 ## Implementation status
 
 Landed on `refactor/downloads-dedup-135` (each a separate commit, each verified by `swift test`

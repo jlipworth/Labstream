@@ -304,6 +304,37 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    private func fileSize(at url: URL) -> Int? {
+        guard let raw = (try? fileManager.attributesOfItem(atPath: url.path)[.size]) else {
+            return nil
+        }
+        if let number = raw as? NSNumber {
+            return number.intValue
+        }
+        if let int = raw as? Int {
+            return int
+        }
+        if let int64 = raw as? Int64 {
+            return Int(int64)
+        }
+        return nil
+    }
+
+    private func fileSize(relativePath: String) -> Int? {
+        fileSize(at: baseDirectory.appendingPathComponent(relativePath))
+    }
+
+    private static func expectedBytesEstimate(row: Row) -> Int? {
+        guard row.bytes > 0, row.progress > 0.0001 else { return nil }
+        let expected = Int((Double(row.bytes) / min(row.progress, 1.0)).rounded())
+        return expected > 0 ? expected : nil
+    }
+
+    private static func progressForDurableBytes(_ bytes: Int, expectedBytes: Int?) -> Double {
+        guard let expectedBytes, expectedBytes > 0 else { return 0 }
+        return min(1.0, Double(bytes) / Double(expectedBytes))
+    }
+
     /// Insert/replace a record. `localURL` must live under `baseDirectory`.
     ///
     /// D5: preserves an already-stored `metadata` snapshot if the incoming record
@@ -475,6 +506,85 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.resumeDataRelativePath = nil }
     }
 
+    /// #169: the HTTP validator (`ETag`/`Last-Modified`) for a static byte-range download, captured
+    /// from the first chunk and sent as `If-Range` on the rest so a server-side resource change is
+    /// detected (200 full-replace) instead of silently corrupting the partial.
+    func rangeValidator(ratingKey: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.metadata?.rangeValidator
+    }
+
+    func setRangeValidator(ratingKey: String, _ validator: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.rangeValidator = validator }
+    }
+
+    func clearRangeValidator(ratingKey: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.rangeValidator = nil }
+    }
+
+    /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
+    /// the partial file. The current in-flight `URLSessionDownloadTask` chunk lives in an OS temp
+    /// until `didFinishDownloadingTo`; progress callbacks may have published those optimistic bytes
+    /// for UI smoothness, but pause/error/reconcile paths must checkpoint from this file size only.
+    @discardableResult
+    func resetStaticRangeProgressToDurableCheckpoint(ratingKey: String,
+                                                     expectedBytes explicitExpectedBytes: Int? = nil) -> Int {
+        lock.lock()
+        guard var row = rows[ratingKey] else { lock.unlock(); return 0 }
+        let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
+        let mode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
+            ?? DownloadResumeMode.resolved(
+                backend: backend,
+                lane: row.metadata?.resolvedDownloadLane() ?? .original)
+        guard mode == .staticByteRange else {
+            let bytes = row.bytes
+            lock.unlock()
+            return bytes
+        }
+        let durableBytes = fileSize(relativePath: row.relativePath) ?? 0
+        let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
+        let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
+        guard row.bytes != durableBytes || abs(row.progress - progress) > 0.000_001 else {
+            lock.unlock()
+            return durableBytes
+        }
+        row.bytes = durableBytes
+        row.progress = progress
+        rows[ratingKey] = row
+        lock.unlock()
+        persist()
+        return durableBytes
+    }
+
+    func durableStaticRangeCheckpointSize(ratingKey: String) -> Int {
+        lock.lock()
+        let row = rows[ratingKey]
+        lock.unlock()
+        guard let row,
+              row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange else {
+            return 0
+        }
+        return fileSize(relativePath: row.relativePath) ?? 0
+    }
+
+    /// #169: ratingKeys for static byte-range rows that were ACTIVELY transferring (`.downloading`/
+    /// `.queued`) — NOT user-paused — when the app died. A row may have zero durable bytes if the
+    /// first background chunk was still in the OS temp file; it is still a system-interrupted active
+    /// download and should restart from byte 0 rather than waiting for a manual tap.
+    /// Must be read BEFORE `reconcile`, which parks them `.paused` (conflating them with a deliberate
+    /// user pause). The launch auto-resume uses this to continue interrupted downloads after a process
+    /// kill without overriding a row the user actually paused. Durable checkpoint size is still read
+    /// from the file system by reconciliation/resume; optimistic row bytes are never used here.
+    func interruptedStaticByteRangeKeys() -> [String] {
+        lock.lock(); let snapshot = Array(rows.values); lock.unlock()
+        return snapshot.compactMap { row in
+            guard row.status == .downloading || row.status == .queued,
+                  row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange else { return nil }
+            return row.ratingKey
+        }
+    }
+
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
         guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }
@@ -544,8 +654,9 @@ final class DownloadStore: @unchecked Sendable {
         var changed = false
         for (key, var row) in rows {
             let hasLiveTask = liveRatingKeys.contains(key)
-            let fileExists = fileManager.fileExists(
-                atPath: baseDirectory.appendingPathComponent(row.relativePath).path)
+            let fileURL = baseDirectory.appendingPathComponent(row.relativePath)
+            let partialBytes = fileSize(at: fileURL) ?? 0
+            let fileExists = partialBytes > 0 || fileManager.fileExists(atPath: fileURL.path)
             // #95: does a persisted resume blob survive for this row? A `.paused` row stays
             // resumable only while it does (checked WITHOUT reading the blob).
             let resumeRelative = row.metadata?.resumeDataRelativePath
@@ -564,9 +675,12 @@ final class DownloadStore: @unchecked Sendable {
             let hasAppRangeCheckpoint = resumeMode == .staticByteRange
                 && (row.status == .paused || row.status == .queued
                     || row.status == .downloading)
-                && fileExists
-                && row.bytes > 0
-                && row.progress < 0.999
+                && partialBytes > 0
+            let rangeCheckpointExpectedBytes = Self.expectedBytesEstimate(row: row)
+            let rangeCheckpointProgress = Self.progressForDurableBytes(
+                partialBytes,
+                expectedBytes: rangeCheckpointExpectedBytes
+            )
             // Only Plex has a server-side "prepare then static download" optimize queue that can
             // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
             // URLSession task (Emby additionally renders via a server FFmpeg encoder), so a
@@ -574,6 +688,7 @@ final class DownloadStore: @unchecked Sendable {
             // resume as `.queued`. Hence both backend prefixes are excluded here.
             let isPlexServerPrepOptimizedJob = !hasLiveTask
                 && (row.status == .queued || row.status == .downloading)
+                && resumeMode == .serverPrepThenStatic
                 && row.metadata?.optimizeTargetName?.isEmpty == false
                 && !row.ratingKey.hasPrefix("jellyfin:")
                 && !row.ratingKey.hasPrefix("emby:")
@@ -584,7 +699,17 @@ final class DownloadStore: @unchecked Sendable {
                     hasLiveTask: hasLiveTask, hasResumeData: hasResumeData))
             let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
                 && (row.bytes != 0 || row.progress != 0)
-            guard newStatus != row.status || shouldResetOptimizedProgress else { continue }
+            let shouldResetRangeProgress = hasAppRangeCheckpoint
+                && (row.bytes != partialBytes || abs(row.progress - rangeCheckpointProgress) > 0.000_001)
+            let shouldResetMissingRangeProgress = resumeMode == .staticByteRange
+                && !hasLiveTask
+                && !hasAppRangeCheckpoint
+                && (row.status == .paused || row.status == .queued || row.status == .downloading)
+                && (row.bytes != 0 || row.progress != 0)
+            guard newStatus != row.status
+                    || shouldResetOptimizedProgress
+                    || shouldResetRangeProgress
+                    || shouldResetMissingRangeProgress else { continue }
             // A non-live queued/downloading row that we're demoting to `.failed` may have left a
             // partial file behind. Delete it so dead bytes don't sit invisibly on disk — a retry
             // rebuilds the file from scratch regardless. #95: but a row that STAYS resumable
@@ -602,6 +727,12 @@ final class DownloadStore: @unchecked Sendable {
             }
             row.status = newStatus
             if isPlexServerPrepOptimizedJob {
+                row.bytes = 0
+                row.progress = 0
+            } else if hasAppRangeCheckpoint {
+                row.bytes = partialBytes
+                row.progress = rangeCheckpointProgress
+            } else if shouldResetMissingRangeProgress {
                 row.bytes = 0
                 row.progress = 0
             }
