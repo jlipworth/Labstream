@@ -18,15 +18,18 @@ xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
 # Repo hygiene (redaction/signing guardrails)
 ./scripts/ci-hygiene.sh
 
-# Install + launch on a booted sim
+# Install + launch on this worktree's simulator
+scripts/worktree-sim.sh setup
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
 APP="$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-<hash>/Build/Products/Debug-xrsimulator/VisionPlay.app"
-xcrun simctl install booted "$APP" && xcrun simctl launch booted com.jlipworth.VisionPlay
+xcrun simctl install "$SIMID" "$APP" && xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
 
 # After-the-fact logs
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"' --style compact
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"' --style compact
 ```
 
-- App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5).
+- App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5). Use `scripts/worktree-sim.sh id` and target `"$SIMID"`, not `booted`, because multiple worktree simulators can be running.
 - Docs map: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](TESTING-STRATEGY.md). Active-but-not-implemented research lives under [`research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/); historical research lives under [`archive/research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/).
 - Profiling workflow: see [`docs/PROFILING.md`](PROFILING.md) for Instruments baseline targets, simulator/device caveats, and finding templates.
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
@@ -34,7 +37,7 @@ xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay
 
 ## Personal-device signing
 
-Simulator builds stay unsigned. For Apple Vision Pro sideload installs, keep the Apple Developer
+Simulator builds stay unsigned. For Apple Vision Pro sideload installs, prefer `scripts/deploy-to-device.sh` (or `--launch` / `--no-build`) so device signing stays consistent. Keep the Apple Developer
 Team ID local and out of git by creating `Signing.local.xcconfig`. The bundle ID and signing style
 are committed project settings; the local file should contain only:
 
@@ -51,6 +54,16 @@ Do not commit:
 Developer Mode and the first-launch trust prompt on device are Apple's normal security gate for
 personal development builds. App Store/TestFlight distribution signing, entitlement cleanup, store
 metadata, and review-specific release automation can be handled in a later publication pass.
+
+## Docs site
+
+Public docs are built with MkDocs and should stay strict-clean:
+
+```sh
+mkdocs build --strict
+```
+
+Use root-relative GitHub links for files outside `docs/` because the published site only includes the MkDocs document tree.
 
 ## Gotchas we don't want to re-learn
 
@@ -148,7 +161,7 @@ metadata, and review-specific release automation can be handled in a later publi
   final-target deep-seek rebuild) now AWAITS a stop (bounded to 2s) before requesting the new
   start.m3u8. Progressive downloads still just end with the HTTP connection.
 - **A transcode restart is a server-side fork bomb if unthrottled** (#27,
-  docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md). Each start.m3u8 for a non-direct-playable file
+  the archived Plex transcode OOM research notes). Each start.m3u8 for a non-direct-playable file
   forks a full software HEVC→H.264 encode (no HW decode in the pod); during starved
   scrubbing one session stacked 21 transcoder jobs in ~60s (8 within 1.1s) and OOM-killed
   the 8Gi pod — twice. Two independent drivers, both needed taming: (a) client-initiated
@@ -212,9 +225,11 @@ metadata, and review-specific release automation can be handled in a later publi
 - **Wedge recovery requires a brand-new view controller** — an in-place `retry()` (item swap)
   inherits the wedged control layer + dimmed cinema room. Rebuilding via a SwiftUI `.id()` bump is
   the only thing that clears both, resuming at the captured live playhead.
-- **Reinstall wipes the app container** (keychain + Application Support) → **re-login required after
-  every reinstall.** The token persists across plain relaunches via a file fallback in
-  `KeychainStore` (the unsigned-sim keychain fails with `errSecMissingEntitlement -34018`).
+- **Install source matters for app state.** A same-bundle-id simulator/device upgrade install usually
+  preserves the app container. Deleting the app, erasing the simulator, or replacing the App Store
+  build with a development build starts with fresh app state and requires sign-in again. The token
+  persists across plain relaunches via a file fallback in `KeychainStore` (the unsigned-sim keychain
+  fails with `errSecMissingEntitlement -34018`).
 - **Primary-window plus Cinema constraint:** normal browsing/playback uses one main `WindowGroup`
   and the player presents as a `.fullScreenCover`. Cinema is the exception: it uses an
   `ImmersiveSpace` and may reopen the main window on exit. Do not add unrelated secondary windows.

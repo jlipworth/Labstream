@@ -98,7 +98,8 @@ Run one cold and one warm pass for each backend/scenario, then summarize the loc
 
 ```sh
 # Simulator example. Start this right after the scenario, while the relevant log window is fresh.
-xcrun simctl spawn booted log show --style json --last 15m \
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl spawn "$SIMID" log show --style json --last 15m \
   --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --markdown
 
@@ -110,17 +111,20 @@ Useful narrow summaries:
 
 ```sh
 # Home, Libraries, and artwork first-load / warm-load comparison.
-xcrun simctl spawn booted log show --style json --last 15m \
+SIMID=${SIMID:-$(scripts/worktree-sim.sh id)}
+xcrun simctl spawn "$SIMID" log show --style json --last 15m \
   --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --phase home.load --phase libraries.load --phase artwork.load --markdown
 
 # Artwork split by requested backend image size. Useful for finding oversized decorative art.
-xcrun simctl spawn booted log show --style json --last 15m \
+SIMID=${SIMID:-$(scripts/worktree-sim.sh id)}
+xcrun simctl spawn "$SIMID" log show --style json --last 15m \
   --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --phase artwork.load --group-field pixel_width --group-field pixel_height --markdown
 
 # Playback startup comparison across Plex/Jellyfin and original/transcoded quality choices.
-xcrun simctl spawn booted log show --style json --last 15m \
+SIMID=${SIMID:-$(scripts/worktree-sim.sh id)}
+xcrun simctl spawn "$SIMID" log show --style json --last 15m \
   --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
   | uv run scripts/perf-log-summary.py --phase playback.resolve --phase playback.item_load --phase playback.startup --group-field path_mode --markdown
 ```

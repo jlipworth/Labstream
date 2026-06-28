@@ -6,8 +6,7 @@ in the headset/simulator. Work through them in one pass._
 
 **Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlay/issues)).
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in
-[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: **reinstalling wipes the container → re-login
-required**.
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: a same-bundle-id upgrade install usually preserves the container; deleting the app, erasing the sim, or switching install sources starts fresh and requires sign-in again.
 
 > **Automated coverage map (issue #75):** this checklist is the *manual* headset/sim pass. Its
 > automated counterpart — which mocked-unit / live-probe layer covers each screen, menu, playback,
@@ -30,7 +29,7 @@ required**.
       to the chosen server or returns a clear error without leaking Connect tokens/access keys.
 - [ ] **Welcome screen polish (GH #18)** — at the next natural sign-out, before signing back in:
       logo tile shows the real artwork with a blue/amber two-tone glow (no flat circle); title reads
-      "Vision**Plex**" with amber "Plex"; tagline "Your whole Plex library, in your space."; the
+      "Vision**Play**" with the current brand treatment; tagline "Your whole Plex library, in your space."; the
       sign-in state shows a hint line about the code; after tapping Sign in, the 4-char code renders
       as four glass cells with "plex.tv/link" highlighted in amber; an auth failure shows the new
       glass error banner (red icon + hairline, readable text). Flow itself unchanged (#16 semantics).
@@ -57,7 +56,7 @@ required**.
       offline. Both paths now serve a STATIC file with a real Content-Length, so the % is server-
       reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
       unavailable there; device keeps the background session.) Logs:
-      `xcrun simctl spawn booted log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlay"'`
+      `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlay"'`
 - [ ] **Download dual path — DIRECT (offline-download redesign)** — open the download sheet on a
       known-compatible title (the player would direct-play it): the sheet shows a single
       "Download original — <size> · <res>" action (no quality picker). Downloading fetches the
@@ -200,11 +199,11 @@ required**.
       - [ ] EAC3-only audio sources: audio still transcodes to AAC (audio=transcode is fine);
             video must still be copy.
 - [ ] **Transcode session lifecycle / server-OOM guards (GH #27/#33 reset)** — fix shipped after
-      the Plex pod OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md); needs a live pass against real PMS
+      the Plex pod OOM (see archived transcode OOM notes); needs a live pass against real PMS
       while watching the pod (`kubectl -n media exec <pod> -- ps … | grep "Plex Transcoder"`):
       - [ ] **Stop-before-restart** — quality switch, audio switch, in-player Retry, and a
             final-target deep-seek rebuild each log `transcode: stopping previous job before
-            in-place restart` (Playback category — `xcrun simctl spawn booted log show --last 5m
+            in-place restart` (Playback category — `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 5m
             --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Playback"'`) and
             the server never shows more than ONE `Plex Transcoder` for the session.
       - [ ] **Final-target coalescing** — scrub repeatedly into unbuffered territory on a heavy
@@ -226,7 +225,7 @@ required**.
       `start.m3u8` URLs; out-of-buffer seeks debounce for the final target and rebuild one
       `AVPlayerItem` there. **Manual result after `9ed4569`: single drag OK; double-drag still
       shows behavior very similar to the pre-reset failure, so do not mark #33 solved.** Claude
-      self-serves screenshots/logs (`xcrun simctl io booted screenshot`,
+      self-serves screenshots/logs (`SIMID=$(scripts/worktree-sim.sh id); xcrun simctl io "$SIMID" screenshot`,
       `log show --predicate 'process == "VisionPlay"'`).
       - [ ] **Normal playback uses direct PMS URL.** Open any title; no `media proxy open ok` or
             `proxy re-prime` log appears. Playback starts normally and Stats still show the PMS

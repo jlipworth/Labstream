@@ -70,7 +70,7 @@ Keep these as manual Apple Vision Pro checks:
 - Plex raw original download is intentionally offered only for compatible local containers.
 - Plex compatible original-quality copies use the server optimizer/rendered-part route.
 - Jellyfin browse/playback/download request paths are implemented and unit-tested, but Jellyfin downloads still need explicit live validation before being called headset-proven.
-- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are implemented (parallel lane), unit-tested, and the wire shape is live-proven via `LiveEmbyProbe`. Emby Connect PIN request/exchange shape is implemented and live-verified, with in-headset PIN UX still tracked in the manual checklist. Emby downloads/offline are not implemented. In-headset Emby playback/progress/cleanup remains a device-only gate.
+- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, active-encoding cleanup, and download route/request paths are implemented and unit-tested. The core playback wire shape is live-proven via `LiveEmbyProbe`, Emby Connect PIN request/exchange shape is live-verified, and Emby downloads have `LiveEmbyDownloadProbe` coverage. In-headset PIN UX, playback/progress/cleanup, and download/off-head behavior remain device-only gates before calling those flows headset-proven.
 
 The manual checklist remains in [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/VisionPlay/blob/main/TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
 
