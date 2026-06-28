@@ -93,9 +93,18 @@ re-kicks reconnectable transfers on resume).
 
 Current-engine #169 note: static byte-range downloads now use frequent bounded checkpoints while
 the app is active, but switch to one open-ended background-owned remainder when the app becomes
-inactive/background. A failed off-head remainder resumes from the last appended partial-file
+inactive/background. That gives `nsurlsessiond` one authoritative task to keep scheduling while the
+app is suspended/off-head. A failed off-head remainder resumes from the last appended partial-file
 checkpoint; progress bytes still inside URLSession's temp file are intentionally not treated as
 durable.
+
+The static byte-range session has one ownership invariant: for a given rating key, there must be
+exactly one authoritative live range task. Relaunch reattachment, user Resume/Retry, and
+background-promotion paths suppress or cancel duplicates instead of starting a second task at the
+same checkpoint. Late callbacks from stale tasks must not publish backwards progress or append into
+the durable partial after a newer checkpoint has taken over. If a live task reports progress while
+the row is queued/paused/failed from reconciliation churn, the store re-promotes the row to
+`downloading` because the task is still active.
 
 Note this is the **Phase B** (byte-transfer) limit. It is separate from, and milder than, the Plex
 **Phase A** server-prepare poll: that poll runs in-process, so a long server render queued and then

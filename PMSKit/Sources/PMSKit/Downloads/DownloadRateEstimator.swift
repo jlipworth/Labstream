@@ -41,6 +41,12 @@ public struct DownloadRateEstimator: Sendable, Equatable {
     /// was. `nil` until the first forward movement is observed.
     private var lastForwardTime: Date? = nil
 
+    /// After a backwards byte-count rebaseline, optionally suppress speed/ETA for a short grace
+    /// window. Static byte-range downloads can deliberately reset visible bytes from optimistic
+    /// URLSession temp progress back to the durable checkpoint when promoting/cancelling a segment;
+    /// publishing the next tiny post-reset window reads as a bogus high-speed flash.
+    private var rebaselineSuppressUntil: Date? = nil
+
     /// Length of the trailing averaging window. ~4s of memory matches the old EMA's feel while
     /// still being a true time-weighted average rather than a quiet-window-skipping EMA.
     public let windowDuration: TimeInterval
@@ -54,12 +60,19 @@ public struct DownloadRateEstimator: Sendable, Equatable {
     /// hard cutoff that drops the readout entirely.)
     public let stallTimeout: TimeInterval
 
+    /// Optional grace period after a backwards rebaseline during which rate/ETA stay hidden.
+    /// Defaults to zero to preserve the estimator's historical pure behavior for callers that want
+    /// immediate restart rates; the download UI opts into a short grace for #169 checkpoint resets.
+    public let rebaselineSuppressWindow: TimeInterval
+
     public init(windowDuration: TimeInterval = 4.0,
                 firstEmitWindow: TimeInterval = 0.5,
-                stallTimeout: TimeInterval = 6.0) {
+                stallTimeout: TimeInterval = 6.0,
+                rebaselineSuppressWindow: TimeInterval = 0) {
         self.windowDuration = windowDuration
         self.firstEmitWindow = firstEmitWindow
         self.stallTimeout = stallTimeout
+        self.rebaselineSuppressWindow = max(0, rebaselineSuppressWindow)
     }
 
     /// Feed a cumulative `(bytes, now)` sample; returns the smoothed bytes/sec, or `nil` until a
@@ -78,6 +91,9 @@ public struct DownloadRateEstimator: Sendable, Equatable {
         if let last = window.last, bytes < last.bytes {
             window = [Observation(bytes: bytes, time: now)]
             lastForwardTime = now
+            rebaselineSuppressUntil = rebaselineSuppressWindow > 0
+                ? now.addingTimeInterval(rebaselineSuppressWindow)
+                : nil
             return nil
         }
 
@@ -100,6 +116,8 @@ public struct DownloadRateEstimator: Sendable, Equatable {
 
         trimWindow(asOf: now)
 
+        if let rebaselineSuppressUntil, now < rebaselineSuppressUntil { return nil }
+
         guard let oldest = window.first, let newest = window.last else { return nil }
         let dt = newest.time.timeIntervalSince(oldest.time)
         let db = newest.bytes - oldest.bytes
@@ -117,8 +135,9 @@ public struct DownloadRateEstimator: Sendable, Equatable {
     ///   `Content-Length` exists, else the duration×bitrate estimate, else `nil`.
     public func eta(expectedTotal: Int?) -> TimeInterval? {
         guard let expectedTotal,
-              let newest = window.last,
-              let rate = currentRate(), rate > 0 else { return nil }
+              let newest = window.last else { return nil }
+        if let rebaselineSuppressUntil, newest.time < rebaselineSuppressUntil { return nil }
+        guard let rate = currentRate(), rate > 0 else { return nil }
         let remaining = Double(expectedTotal) - Double(newest.bytes)
         guard remaining > 0 else { return nil }
         let eta = remaining / rate

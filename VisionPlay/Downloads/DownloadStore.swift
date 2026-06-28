@@ -595,9 +595,9 @@ final class DownloadStore: @unchecked Sendable {
         persist()
     }
 
-    /// Update transfer progress for an in-flight download. Moving any bytes means
-    /// the transfer is live, so we promote a `.queued` row to `.downloading` here
-    /// (D2: the UI distinguishes "waiting on server" from "actively transferring").
+    /// Update transfer progress for an in-flight download. Moving any bytes from a task still owned by
+    /// the session means the transfer is live, so we promote any non-terminal transfer row to
+    /// `.downloading` here (D2: the UI distinguishes "waiting on server" from "actively transferring").
     ///
     /// Disk writes are throttled: the in-memory row updates on every callback (the
     /// UI reads live progress from `records`), but the JSON index is rewritten at
@@ -613,7 +613,10 @@ final class DownloadStore: @unchecked Sendable {
         row.progress = progress
         let previousStatus = row.status
         var statusChanged = false
-        if row.status == .queued { row.status = .downloading; statusChanged = true }
+        if row.status == .queued || row.status == .paused || row.status == .failed {
+            row.status = .downloading
+            statusChanged = true
+        }
         rows[ratingKey] = row
         let now = Date()
         let shouldPersist = statusChanged
@@ -716,11 +719,25 @@ final class DownloadStore: @unchecked Sendable {
                 && row.metadata?.optimizeTargetName?.isEmpty == false
                 && !row.ratingKey.hasPrefix("jellyfin:")
                 && !row.ratingKey.hasPrefix("emby:")
-            let newStatus = isPlexServerPrepOptimizedJob
-                ? .queued
-                : ((hasServerPrepCheckpoint || hasAppRangeCheckpoint) ? .paused : DownloadStatus.reconciledStatus(
+            let hasLiveStaticRangeTask = hasLiveTask
+                && resumeMode == .staticByteRange
+                && (row.status == .paused || row.status == .queued || row.status == .downloading)
+            let newStatus: DownloadStatus
+            if isPlexServerPrepOptimizedJob {
+                newStatus = .queued
+            } else if hasLiveStaticRangeTask {
+                // A reattached background Range task is authoritative live work. Do not park the row
+                // as `.paused` merely because a durable partial exists: that made the UI offer Resume
+                // while nsurlsessiond was still delivering callbacks, allowing a duplicate Range task
+                // to start at the same checkpoint.
+                newStatus = .downloading
+            } else if hasServerPrepCheckpoint || hasAppRangeCheckpoint {
+                newStatus = .paused
+            } else {
+                newStatus = DownloadStatus.reconciledStatus(
                     current: row.status, fileExists: fileExists,
-                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData))
+                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData)
+            }
             let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
                 && (row.bytes != 0 || row.progress != 0)
             let shouldResetRangeProgress = hasAppRangeCheckpoint
