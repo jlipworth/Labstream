@@ -2498,9 +2498,17 @@ public final class DownloadManager {
     /// The selection is keyed on `record.progress`, not the backend kind, so it survives a
     /// relaunch (the in-memory `transcodeSourcedDownloads` set does not).
     public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
-        DownloadProgressDisplay.fraction(progress: record.progress,
-                                         bytes: record.bytes,
-                                         estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
+        if record.progress <= 0,
+           record.bytes > 0,
+           record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+           let sourcePartSize = record.metadata?.sourcePartSize,
+           sourcePartSize > 0 {
+            return DownloadProgressDisplay.Fraction(value: min(Double(record.bytes) / Double(sourcePartSize), 1.0),
+                                                    isEstimated: false)
+        }
+        return DownloadProgressDisplay.fraction(progress: record.progress,
+                                                bytes: record.bytes,
+                                                estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
     }
 
     private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
