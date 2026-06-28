@@ -2,7 +2,30 @@
 
 Downloads must produce a static local file. The app should not treat a live streaming transcode as a durable offline transfer.
 
-For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](research/offline-playback-compatibility.md).
+For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/offline-playback-compatibility.md).
+
+
+## Route sketch
+
+```mermaid
+flowchart TD
+  Choice[Download choice] --> Probe[Backend route/probe]
+  Probe --> PlexOriginal[Plex direct original
+local-file compatible only]
+  Probe --> PlexOptimize[Plex optimizer/server prepare]
+  Probe --> JellyfinStatic[Jellyfin original/static]
+  Probe --> JellyfinLive[Jellyfin live-forward remux/transcode]
+  Probe --> EmbyStatic[Emby original/existing static]
+  Probe --> EmbyConvert[Emby convert job]
+  PlexOptimize --> StaticTransfer[Static transfer]
+  EmbyConvert --> StaticTransfer
+  PlexOriginal --> StaticTransfer
+  JellyfinStatic --> StaticTransfer
+  EmbyStatic --> StaticTransfer
+  JellyfinLive --> LiveTransfer[Live-forward transfer]
+  StaticTransfer --> Store[DownloadStore + media file + side assets]
+  LiveTransfer --> Store
+```
 
 ## Plex routes
 
@@ -37,6 +60,18 @@ Jellyfin download support mirrors the same offline goal:
 
 As of this docs pass, Jellyfin download behavior has unit/request-path coverage but has not had the same live headset validation as Plex downloads. Do not describe it as fully live-proven until that check happens.
 
+
+## Emby routes
+
+Emby download decisions are made from a download-time `PlaybackInfo` response, not from browse metadata alone:
+
+- original/direct static downloads are used only when the selected media source is locally playable;
+- existing or server-prepared versions can be reused as static/range-capable downloads when the selected `MediaSourceId` is known;
+- compatible remux/transcode outputs are treated as live-forward server encoder streams when they cannot be represented as a completed static file immediately;
+- bitrate presets and unsafe originals can route through an Emby convert job, then hand off to the static existing-version lane once the converted file exists.
+
+Emby download code and live probes exist, but Plex still has the strongest headset/off-head validation history. Keep issue reports explicit about which backend and route were tested.
+
 ## Transfer sessions
 
 - Device builds use background `URLSession` for durable transfers.
@@ -66,7 +101,7 @@ On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-fl
 
 - Static original transfers are network-bound and can reconnect/retry as file downloads.
 - Plex optimizer jobs have two phases: server preparation, then static rendered-part download. Server-prep state is represented separately so the UI can say “Preparing on server…” and poll progress where possible.
-- Jellyfin/Emby compatible downloads are live transcode streams, not durable server-prep jobs. When they are canceled, fail, or complete, VisionPlay sends active-encoding cleanup for the download play session where the backend exposes it.
+- Jellyfin compatible downloads and Emby compatible-remux/transcode paths can be live-forward encoder streams rather than durable server-prep jobs. When those paths are canceled, fail, or complete, VisionPlay sends active-encoding cleanup for the download play session where the backend exposes it. Emby convert-then-download is different: it is server prepare followed by a static existing-version transfer.
 - Failed items keep metadata so retry can re-probe and choose the correct current route.
 - Canceled/deleted downloads should clean up local files and app-owned queue state; Plex optimizer cleanup must avoid deleting protected/current jobs.
 

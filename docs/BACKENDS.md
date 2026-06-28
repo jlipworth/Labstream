@@ -1,6 +1,6 @@
 # Backends
 
-VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but the app has real Jellyfin and Emby login, browse, and playback code. Emby playback (sign-in, browse, playback-info stream resolution, progress, and active-encoding cleanup) was live-validated against a real Emby server; the original planning map lives in [`research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md). Emby downloads/offline are not implemented yet.
+VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but the app has real Jellyfin and Emby login, browse, playback, and download lanes. Emby playback wire shape was live-validated against a real Emby server; Emby download request paths and live probes exist, while headset/offline validation remains more limited than Plex. The original planning map lives in [`research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md).
 
 ## Comparison
 
@@ -13,7 +13,7 @@ VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remain
 | Shared model | PMS metadata mapped to `MediaItem` | Jellyfin DTOs mapped to `MediaItem` | `EmbyBaseItemDto` mapped to `MediaItem` (own decoder lane) |
 | Playback | Universal transcode/direct-stream HLS, `Generic` profile | Resolved stream URL + headers + reopener | `POST /Items/{Id}/PlaybackInfo` → `resolveStream` prefers server-generated `TranscodingUrl`, then `DirectStreamUrl`, then synthesized `stream.{container}`; relative URLs joined onto the server base path |
 | Stream auth | `X-Plex-Token` in URL | Header / proxy as needed | Server-generated HLS URL carries the token as `api_key=` in the query, so AVPlayer's child playlists/segments inherit auth — no per-child `Authorization` injected. Direct-stream falls back to `X-Emby-Token` header when `AddApiKeyToDirectStreamUrl` is false |
-| Downloads | Direct original if locally playable; otherwise Plex optimizer | Direct local-playable original or static transcoded MP4 request | Not implemented — no offline route yet |
+| Downloads | Direct original if locally playable; otherwise Plex optimizer / rendered static part | Direct local-playable original or negotiated static/remux/transcode output | Download-time `PlaybackInfo`; direct static original, existing/prepared static versions, compatible remux where safe, or convert-then-static for non-direct-play items |
 | Progress | PMS timeline/scrobble endpoints | Jellyfin session/progress path where available | `POST /Sessions/Playing`, `/Sessions/Playing/Progress`, `/Sessions/Playing/Stopped`, `/Sessions/Playing/Ping` |
 | Cleanup | Explicit transcode stop endpoint | Stop active encoding/session where available | `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=`, called when the resolved source uses server-side encoding (`usesServerEncoding`) — **separate from `Stopped`** |
 
@@ -33,4 +33,4 @@ Emby uses `EmbyBrowseService` and the `EmbyLibrary`/`EmbyPlayback`/`EmbyAuth` re
 
 Only behavior that is implemented AND live-validated against a real Emby server is documented here as supported. Emby Connect PIN request/exchange shape is implemented and live-verified, but the in-headset PIN UX still needs the checklist smoke pass before calling it user-validated.
 
-Emby downloads/offline and LAN discovery remain unimplemented and must not be presented as supported. Keep [`research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md) as the planning map for detailed wire notes and unbuilt slices.
+Emby downloads/offline are implemented but still have narrower headset/off-head validation than Plex. Do not describe every Emby download lane as headset-proven until the manual/device checklist catches up. LAN discovery remains unimplemented. Keep [`research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md) as historical planning context, not current capability truth.

@@ -58,6 +58,9 @@ nav:
   - Privacy & Diagnostics:
       - Diagnostics: DIAGNOSTICS-PRIVACY.md
   - Contributing:
+      - Contributor Guide: CONTRIBUTING.md
       - Development Setup: DEVELOPMENT.md
       - Testing Strategy: TESTING-STRATEGY.md
+      - Live Test Matrix: TESTING-LIVE-MATRIX.md
+      - Live Test Requirements: TESTING-LIVE-REQUIREMENTS.md
       - Profiling: PROFILING.md

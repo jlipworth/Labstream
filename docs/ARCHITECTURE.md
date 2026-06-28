@@ -16,13 +16,33 @@ VisionPlay is a native visionOS app with a deliberately small app shell, backend
 
 `PMSKit` is intentionally not an app framework. It should stay pure and testable:
 
-- request builders for Plex and Jellyfin; future backends such as Emby should start here as pure request/model work before app integration
+- request builders for Plex, Jellyfin, and Emby
 - response models and MediaItem mapping
 - playback/download decision helpers
 - small policy state machines such as adaptive bitrate and seek restart budgeting
 - diagnostics event/redaction primitives
 
 The app owns all live `URLSession`, `AVPlayer`, SwiftUI state, Keychain, filesystem, and system-integration behavior.
+
+
+## Component sketch
+
+```mermaid
+flowchart LR
+  UI[SwiftUI screens] --> AppModel[AppModel backend selection]
+  UI --> Auth[AuthManager and Keychain]
+  UI --> Downloads[DownloadManager]
+  UI --> Player[PlaybackController]
+  Auth --> Plex[Plex client lane]
+  Auth --> Jellyfin[Jellyfin service lane]
+  Auth --> Emby[Emby service lane]
+  Plex --> PMSKit[PMSKit request builders and policies]
+  Jellyfin --> PMSKit
+  Emby --> PMSKit
+  Downloads --> Store[DownloadStore and app container files]
+  Downloads --> BG[BackgroundDownloadSession]
+  Player --> AV[AVFoundation]
+```
 
 ## Backend boundary
 
@@ -32,11 +52,12 @@ See [`BACKENDS.md`](BACKENDS.md) for the backend comparison.
 
 ## Playback boundary
 
-Playback has three lanes:
+Playback has four lanes:
 
 1. Plex universal-transcode/direct-stream HLS through `PlaybackController.start()`.
 2. Jellyfin resolved stream URLs with headers and a `RemoteStreamReopener`.
-3. Local offline file URLs.
+3. Emby `PlaybackInfo` stream resolution, progress reporting, and explicit active-encoding cleanup.
+4. Local offline file URLs.
 
 The player owns restart semantics and server cleanup. Plex transcode sessions must be stopped before intentional same-session restarts. Local offline files are static and have no server timeline or remote reopen path.
 
@@ -44,7 +65,7 @@ See [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md).
 
 ## Offline boundary
 
-Downloads are not “streaming with a longer timeout.” They must end in a static local file with a valid length and playable container. Plex downloads choose between direct-original and server-rendered compatible copies. Jellyfin downloads use direct original or a static transcoded MP4 request, depending on quality and local compatibility.
+Downloads are not “streaming with a longer timeout.” They must end in a static local file with a valid length and playable container. Plex downloads choose between direct-original and server-rendered compatible copies. Jellyfin downloads use direct original or a static transcoded/remuxed output, depending on quality and local compatibility. Emby downloads use download-time `PlaybackInfo` plus direct static, existing/prepared static, compatible remux, or convert-then-static lanes depending on the server verdict.
 
 See [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md).
 

@@ -38,7 +38,7 @@ that choose between raw originals and compatible server-rendered copies.
 - **SwiftUI** app shell with a custom AVFoundation player surface for streaming, offline playback,
   and app-owned Cinema mode
 - **Swift 6** with strict concurrency
-- **`PMSKit`** — a local Swift package providing tested Plex/Jellyfin request builders, models,
+- **`PMSKit`** — a local Swift package providing tested Plex/Jellyfin/Emby request builders, models,
   playback/download decision helpers, diagnostics primitives, and policy state machines
 - **Xcode 26**, targeting **visionOS 26.5**
 
@@ -48,8 +48,8 @@ that choose between raw originals and compatible server-rendered copies.
 VisionPlay/
 ├── VisionPlay/            # visionOS app (SwiftUI)
 │   ├── App/              # app entry + session state
-│   ├── Auth/             # Plex/Jellyfin auth + Keychain
-│   ├── Backend/          # Jellyfin service lane
+│   ├── Auth/             # Plex/Jellyfin/Emby auth + Keychain
+│   ├── Backend/          # backend service lanes and shared browse helpers
 │   ├── Networking/       # Plex client wiring
 │   ├── Player/           # custom AVPlayer surface + app-owned Cinema mode + recovery
 │   ├── Music/            # Plexamp-style music browse + audio player
@@ -106,16 +106,17 @@ macOS-runner CI job is added. A future App Store/TestFlight pass can add distrib
 entitlements review, screenshots, privacy metadata, and store-specific release automation later; it
 is intentionally not part of this personal sideload setup.
 
-See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
+See [`CONTRIBUTING.md`](https://github.com/jlipworth/VisionPlay/blob/main/CONTRIBUTING.md) for contributor workflow and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
 gotchas worth knowing before changing the player or transcode code. Current architecture docs start at
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), with focused notes for
 [`playback`](docs/PLAYBACK-ARCHITECTURE.md), [`backends`](docs/BACKENDS.md),
 [`downloads/offline`](docs/DOWNLOADS-OFFLINE.md), [`persistence`](docs/PERSISTENCE.md),
 [`diagnostics/privacy`](docs/DIAGNOSTICS-PRIVACY.md), [`system integration`](docs/SYSTEM-INTEGRATION.md),
-and [`testing`](docs/TESTING-STRATEGY.md).
+[`testing`](docs/TESTING-STRATEGY.md), and the [`scripts catalog`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/README.md).
 
-On first launch, choose Plex, Jellyfin, or Emby and sign in to your server. Reinstalling wipes the app
-container, so a re-login is required after a fresh install.
+On first launch, choose Plex, Jellyfin, or Emby and sign in to your server. A plain simulator/device
+upgrade install usually preserves the app container; deleting the app, erasing the simulator, or installing
+over the App Store build starts with fresh app state and requires sign-in again.
 
 ## Docs
 

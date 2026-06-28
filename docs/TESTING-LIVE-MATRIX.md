@@ -10,7 +10,7 @@ questions:
 3. **How** to wire the live tests into CI (see the companion
    [`TESTING-LIVE-REQUIREMENTS.md`](TESTING-LIVE-REQUIREMENTS.md)).
 
-It is the automated counterpart to the manual [`TESTING-CHECKLIST.md`](../TESTING-CHECKLIST.md):
+It is the automated counterpart to the manual [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/VisionPlay/blob/main/TESTING-CHECKLIST.md):
 the checklist is the human headset/sim pass and issue trail; this matrix is the structure the
 automated + live-probe coverage is built against. Where a row is currently a manual-only check,
 that is called out so the gap is explicit rather than silent. The strategy framing
@@ -87,8 +87,8 @@ on-device behavior (does AVPlayer render the burned pixels?) stays device-only.
 
 The **★ row is the representative end-to-end proof for #75**: a real nuance — "does the server
 actually apply a burned subtitle?" — that no mock can catch, asserted at the live-wire layer. See
-[`LiveSubtitleBurnProbeTests.swift`](../PMSKit/Tests/PMSKitTests/LiveSubtitleBurnProbeTests.swift)
-and [`scripts/live-subtitle-burn-probe.sh`](../scripts/live-subtitle-burn-probe.sh).
+[`LiveSubtitleBurnProbeTests.swift`](https://github.com/jlipworth/VisionPlay/blob/main/PMSKit/Tests/PMSKitTests/LiveSubtitleBurnProbeTests.swift)
+and [`scripts/live-subtitle-burn-probe.sh`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/live-subtitle-burn-probe.sh).
 
 ## 5. Profiles (device profile / quality-profile application)
 
