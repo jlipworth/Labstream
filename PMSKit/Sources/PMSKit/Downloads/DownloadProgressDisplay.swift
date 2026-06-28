@@ -36,6 +36,17 @@ public enum DownloadProgressDisplay {
     /// never the bar — so a clamped "almost there" ceiling keeps visual ≠ completion decoupled.
     public static let estimatedCeiling = 0.99
 
+    /// Shared display state for the post-transfer phase: the byte transfer is done (the exact
+    /// progress source reached 100%), but the row has not yet reached a terminal validated status.
+    ///
+    /// This intentionally keys off the backend-agnostic record shape (`.downloading` + exact
+    /// progress at 1.0) rather than Plex/Jellyfin/Emby specifics. It lets the app present an honest
+    /// "verifying/finalizing" caption while the shared transfer-finalization path runs HEVC tag
+    /// fixup, local playback validation, and truncation checks.
+    public static func isTransferFinalizing(status: DownloadStatus, progress: Double) -> Bool {
+        status == .downloading && progress.isFinite && progress >= 1.0
+    }
+
     /// Derive the unified fraction.
     ///
     /// - Parameters:
