@@ -14,6 +14,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
 - `worktree-sim.sh` — provisions one Vision Pro simulator per git worktree. Use `SIMID=$(scripts/worktree-sim.sh id)` and target `"$SIMID"`, not `booted`.
 - `simclick.swift` — local simulator click helper.
 - `deploy-to-device.sh` — signed build/install wrapper for the paired Apple Vision Pro. Mutates the device install and may replace another app with the same bundle id.
+- `headset-evidence.sh` — read-only devicectl evidence collector for a paired Apple Vision Pro after a user-driven repro; writes local bundles under `build/headset-evidence/` and may contain private artifacts that must be redacted before sharing.
 
 ## Live probes
 

@@ -22,6 +22,31 @@ script. The dev build shares the bundle id `com.jlipworth.VisionPlay` with the A
 build, so only one is installed at a time (the dev install clobbers App Store state).
 Full detail + traps: `.claude/skills/deploy-to-device/SKILL.md`.
 
+
+## Headset evidence after a physical repro
+
+When the user has just reproduced a bug while wearing the headset, collect evidence before
+trying ad hoc unified-log/sysdiagnose commands:
+
+```sh
+scripts/headset-evidence.sh
+```
+
+This is read-only: it does not install, launch, delete, or mutate the headset. It writes a
+local bundle under `build/headset-evidence/` with `devicectl` JSON/log artifacts, bounded
+app-container listings, known VisionPlay diagnostic files when present, and
+`VisionPlay/Downloads/index.json` when available. Treat the bundle as private; redact
+device IDs, server details, media names, item IDs, tokens, and playSession IDs before any
+public GitHub text.
+
+Detailed agent instructions are mirrored for both assistants:
+
+- Claude: `.claude/skills/headset-evidence/SKILL.md`
+- Codex: `.codex/skills/headset-evidence/SKILL.md`
+
+If `summary.json` reports `developer_disk_image_mount_unauthorized`, check VPN/network
+filtering first; this can prevent `devicectl` from mounting the xrOS developer disk image.
+
 ## Worktree simulators
 
 Each git worktree gets its own visionOS simulator so parallel worktrees don't clobber
