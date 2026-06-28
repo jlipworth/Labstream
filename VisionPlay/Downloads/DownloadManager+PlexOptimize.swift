@@ -32,6 +32,8 @@ extension DownloadManager {
                                             metadata: OfflineMetadata,
                                             session: BackendSession) async {
         let ratingKey = item.ratingKey
+        guard let pollerID = beginServerPrepPoller(ratingKey: ratingKey, source: "start") else { return }
+        defer { endServerPrepPoller(ratingKey: ratingKey, id: pollerID) }
         // #84: the whole optimize/poll/download chain runs off the captured Plex session — the
         // server/token come from it, not from any `appModel.active*` re-read.
         let server = session.baseURL

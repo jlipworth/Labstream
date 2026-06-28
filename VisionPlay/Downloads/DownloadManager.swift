@@ -95,6 +95,8 @@ public final class DownloadManager {
     public internal(set) var activeJobs: Set<String> = []
     private var retryingRows: Set<String> = []
     private var serverPrepResumeRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
+    private var serverPrepPollerIDs: [String: UUID] = [:]
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -1017,12 +1019,19 @@ public final class DownloadManager {
         // #84: no longer gated on `activeBackend == .plex`. Each candidate is resolved against its
         // OWN backend lane, so a Plex optimize-prep row resumes on relaunch even when the app
         // launched into Jellyfin/Emby — as long as the Plex lane is still configured.
-        let candidates = records.filter { record in
+        let serverPrepRows = records.filter { record in
             record.status == .queued
                 && record.bytes == 0
                 && record.progress == 0
                 && record.metadata?.optimizeTargetName?.isEmpty == false
-                && !activeJobs.contains(record.ratingKey)
+        }
+        let candidates = serverPrepRows.filter { serverPrepPollerIDs[$0.ratingKey] == nil }
+        let skippedActivePollers = serverPrepRows.count - candidates.count
+        if skippedActivePollers > 0 {
+            recordDownloadDiagnostic("downloads.optimize_resume_scan", fields: [
+                "candidates": .int(candidates.count),
+                "active_pollers": .int(skippedActivePollers),
+            ])
         }
         guard !candidates.isEmpty else { return }
 
@@ -1033,10 +1042,28 @@ public final class DownloadManager {
             // transcode stream with no separate queued-prep row, so a JF/Emby row in this state was
             // interrupted mid-transfer and is handled by reconcile (-> .failed -> retryable).
             let kind = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
-            guard kind == .plex, let backendSession = appModel.backendSession(for: .plex) else { continue }
+            guard kind == .plex else { continue }
+            guard let backendSession = appModel.backendSession(for: .plex) else {
+                recordDownloadDiagnostic("downloads.optimize_resume_skip", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "target": .label(targetName),
+                    "reason": .label("plex_session_unavailable"),
+                ])
+                continue
+            }
             let server = backendSession.baseURL
             let token = backendSession.token
             let ratingKey = record.ratingKey
+            if activeJobs.contains(ratingKey) {
+                // A queued server-prep row with no registered poller but an active slot means the
+                // lifecycle Task that should publish Plex background progress was lost or never
+                // reattached. Reuse the slot and attach a fresh poller instead of leaving the UI at
+                // the flat "Preparing on server…" phase forever (#181).
+                recordDownloadDiagnostic("downloads.optimize_resume_stale_slot", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                ])
+            }
             activeJobs.insert(ratingKey)
             if let queueTitle = metadata.optimizeQueueTitle {
                 activeQueueTitles.insert(queueTitle)
@@ -1048,14 +1075,52 @@ public final class DownloadManager {
                 "has_queue_title": .bool(metadata.optimizeQueueTitle != nil),
             ])
 
-            Task { [weak self] in
+            guard let pollerID = beginServerPrepPoller(ratingKey: ratingKey, source: "resume") else {
+                continue
+            }
+            let task = Task { [weak self] in
+                defer {
+                    Task { [weak self] in
+                        await MainActor.run {
+                            self?.endServerPrepPoller(ratingKey: ratingKey, id: pollerID)
+                        }
+                    }
+                }
                 await self?.resumePendingOptimizeDownload(record: record,
                                                           metadata: metadata,
                                                           targetName: targetName,
                                                           server: server,
                                                           token: token)
             }
+            serverPrepPollerTasks[ratingKey] = task
         }
+    }
+
+    func beginServerPrepPoller(ratingKey: String, source: String) -> UUID? {
+        if serverPrepPollerIDs[ratingKey] != nil {
+            recordDownloadDiagnostic("downloads.optimize_poller_skip", fields: [
+                "download_id": .identifier(ratingKey),
+                "source": .label(source),
+                "reason": .label("already_attached"),
+            ])
+            return nil
+        }
+        let id = UUID()
+        serverPrepPollerIDs[ratingKey] = id
+        recordDownloadDiagnostic("downloads.optimize_poller_attached", fields: [
+            "download_id": .identifier(ratingKey),
+            "source": .label(source),
+        ])
+        return id
+    }
+
+    func endServerPrepPoller(ratingKey: String, id: UUID) {
+        guard serverPrepPollerIDs[ratingKey] == id else { return }
+        serverPrepPollerIDs.removeValue(forKey: ratingKey)
+        serverPrepPollerTasks.removeValue(forKey: ratingKey)
+        recordDownloadDiagnostic("downloads.optimize_poller_detached", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
     }
 
     private func resumePendingOptimizeDownload(record: DownloadRecord,
@@ -1654,6 +1719,8 @@ public final class DownloadManager {
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
         embyConvertAttemptByRatingKey.removeValue(forKey: ratingKey)
+        serverPrepPollerIDs.removeValue(forKey: ratingKey)
+        serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
         if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
             activeQueueTitles.remove(title)

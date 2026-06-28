@@ -110,7 +110,7 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
         enum CodingKeys: String, CodingKey {
             case progress; case status = "Status"; case state
             case speed; case transcodeSpeed
-            case ratingKey; case key
+            case ratingKey; case RatingKey; case ratingkey; case metadataID; case MetadataID; case key
             case title; case subtitle; case Title; case Subtitle
         }
         private struct StatusBox: Decodable { let state: String? }
@@ -134,6 +134,10 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
             // Speed: prefer `speed`, fall back to `transcodeSpeed`. Tolerate Double/Int/String.
             self.speed = Self.decodeSpeed(c, .speed) ?? Self.decodeSpeed(c, .transcodeSpeed)
             self.ratingKey = Self.string(c, .ratingKey)
+                ?? Self.string(c, .RatingKey)
+                ?? Self.string(c, .ratingkey)
+                ?? Self.string(c, .metadataID)
+                ?? Self.string(c, .MetadataID)
             self.title = Self.string(c, .title) ?? Self.string(c, .Title)
             self.subtitle = Self.string(c, .subtitle) ?? Self.string(c, .Subtitle)
             self.key = (try? c.decodeIfPresent(String.self, forKey: .key)) ?? nil
@@ -202,7 +206,13 @@ public struct BackgroundTranscodeJobs: Decodable, Sendable, Equatable {
             self.jobs = []
             return
         }
-        self.jobs = (try? container.decodeIfPresent([Job].self, forKey: .transcodeJob)) ?? []
+        if let jobs = (try? container.decodeIfPresent([Job].self, forKey: .transcodeJob)) ?? nil {
+            self.jobs = jobs
+        } else if let job = (try? container.decodeIfPresent(Job.self, forKey: .transcodeJob)) ?? nil {
+            self.jobs = [job]
+        } else {
+            self.jobs = []
+        }
     }
 
     /// The first job's numeric progress, if any.
