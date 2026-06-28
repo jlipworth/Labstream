@@ -32,14 +32,16 @@ struct DownloadQueueToolbarPolicyTests {
                                                   statuses: [.paused, .downloading]) == .pauseQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
                                                   statuses: [.failed, .downloading]) == .pauseQueue)
-        #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
+        #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
                                                   statuses: [.paused, .queued]) == .pauseQueue)
     }
 
-    @Test("queue-paused state with no active work shows Resume Queue")
-    func queuePausedWithoutActiveWorkShowsResumeQueue() {
+    @Test("queue-paused state always shows Resume Queue")
+    func queuePausedAlwaysShowsResumeQueue() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
                                                   statuses: [DownloadStatus.complete, .failed]) == .resumeQueue)
+        #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
+                                                  statuses: [DownloadStatus.queued, .preparing, .downloading]) == .resumeQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
                                                   statuses: []) == .resumeQueue)
     }

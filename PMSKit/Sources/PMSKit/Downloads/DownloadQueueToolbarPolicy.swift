@@ -27,6 +27,12 @@ public enum DownloadQueueToolbarPolicy {
     }
 
     public static func action(isQueuePaused: Bool, statuses: some Sequence<DownloadStatus>) -> Action? {
+        // The persisted global gate is the authoritative state for the toolbar. Some backend
+        // preparation rows intentionally keep polling while the queue is paused, and URLSession
+        // rows can take a refresh turn to settle from active -> paused. In those windows the
+        // visible control must still flip to Resume Queue so the next tap actually clears the gate.
+        if isQueuePaused { return .resumeQueue }
+
         var hasActiveWork = false
         var hasIncompleteIdleWork = false
 
