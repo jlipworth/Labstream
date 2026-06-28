@@ -2073,15 +2073,11 @@ public final class DownloadManager {
                 ?? DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
             let rate = estimator.sample(bytes: record.bytes, at: now)
             // Recover the expected final size for the ETA: the exact Content-Length path
-            // (`bytes / progress`) when the server reported a size, else the same
+            // (`bytes / progress`) when the server reported a size, the persisted static Part size
+            // when a range/static row has bytes but progress is still zero, else the same
             // duration×target-bitrate estimate used for storage preflight (JF/Emby transcoder
             // streams that ship no Content-Length).
-            let expectedTotal: Int?
-            if record.progress > 0 {
-                expectedTotal = Int(Double(record.bytes) / record.progress)
-            } else {
-                expectedTotal = Self.estimatedTranscodeBytes(for: record)
-            }
+            let expectedTotal = expectedDownloadBytes(for: record)
             downloadSpeed[record.ratingKey] = (rate ?? 0) > 0 ? rate : nil
             downloadETA[record.ratingKey] = estimator.eta(expectedTotal: expectedTotal)
             rateEstimators[record.ratingKey] = estimator
@@ -2500,15 +2496,30 @@ public final class DownloadManager {
     public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
         if record.progress <= 0,
            record.bytes > 0,
-           record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
-           let sourcePartSize = record.metadata?.sourcePartSize,
-           sourcePartSize > 0 {
-            return DownloadProgressDisplay.Fraction(value: min(Double(record.bytes) / Double(sourcePartSize), 1.0),
+           let staticExpectedBytes = staticRangeExpectedBytes(for: record) {
+            return DownloadProgressDisplay.Fraction(value: min(Double(record.bytes) / Double(staticExpectedBytes), 1.0),
                                                     isEstimated: false)
         }
         return DownloadProgressDisplay.fraction(progress: record.progress,
                                                 bytes: record.bytes,
                                                 estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
+    }
+
+    private func expectedDownloadBytes(for record: DownloadRecord) -> Int? {
+        if record.progress > 0 {
+            return Int(Double(record.bytes) / record.progress)
+        }
+        if let staticExpectedBytes = staticRangeExpectedBytes(for: record) {
+            return staticExpectedBytes
+        }
+        return Self.estimatedTranscodeBytes(for: record)
+    }
+
+    private func staticRangeExpectedBytes(for record: DownloadRecord) -> Int? {
+        guard record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+              let sourcePartSize = record.metadata?.sourcePartSize,
+              sourcePartSize > 0 else { return nil }
+        return sourcePartSize
     }
 
     private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
