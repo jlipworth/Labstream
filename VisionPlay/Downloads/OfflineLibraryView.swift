@@ -115,7 +115,7 @@ public struct OfflineLibraryView: View {
                                 systemImage: "externaldrive.fill")
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .accessibilityElement(children: .combine)
     }
 
