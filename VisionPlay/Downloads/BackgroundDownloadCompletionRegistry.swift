@@ -24,7 +24,12 @@ final class BackgroundDownloadCompletionRegistry {
     /// Record a live session so the delegate's identifier resolves to it.
     func register(_ session: BackgroundDownloadSession) {
         sessions[BackgroundDownloadSession.identifier] = session
+        AppDiagnostics.record(.downloads, "downloads.background_session_registered", fields: [
+            "session": .label(BackgroundDownloadSession.identifier),
+            "has_pending_handler": .bool(handlers[BackgroundDownloadSession.identifier] != nil),
+        ])
         if handlers[BackgroundDownloadSession.identifier] != nil {
+            session.noteBackgroundCompletionHandlerStored(identifier: BackgroundDownloadSession.identifier)
             session.ensureSessionReady()
             session.reattach()
         }
@@ -34,6 +39,11 @@ final class BackgroundDownloadCompletionRegistry {
     /// so its delegate will eventually fire `urlSessionDidFinishEvents`.
     func store(identifier: String, completion: @escaping () -> Void) {
         handlers[identifier] = completion
+        AppDiagnostics.record(.downloads, "downloads.background_completion_stored", fields: [
+            "session": .label(identifier),
+            "has_session": .bool(sessions[identifier] != nil),
+        ])
+        sessions[identifier]?.noteBackgroundCompletionHandlerStored(identifier: identifier)
         sessions[identifier]?.ensureSessionReady()
         sessions[identifier]?.reattach()
     }
@@ -41,6 +51,9 @@ final class BackgroundDownloadCompletionRegistry {
     /// Invoke and clear the stored completion handler for `identifier`.
     func fireCompletion(for identifier: String) {
         guard let handler = handlers.removeValue(forKey: identifier) else { return }
+        AppDiagnostics.record(.downloads, "downloads.background_completion_fired", fields: [
+            "session": .label(identifier),
+        ])
         handler()
     }
 }

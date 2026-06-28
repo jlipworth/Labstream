@@ -19,6 +19,28 @@ struct RangeChunkPlannerTests {
         #expect(planner.rangeHeaderValue(offset: 500, expectedBytes: nil) == "bytes=500-")
     }
 
+    @Test("Continuous remainder always asks for an open-ended Range, including offset zero")
+    func continuousRemainderRange() {
+        let planner = RangeChunkPlanner(chunkSize: 100)
+        #expect(planner.segmentPlan(offset: 0,
+                                    expectedBytes: 1_000,
+                                    kind: .continuousRemainder).rangeHeaderValue == "bytes=0-")
+        #expect(planner.segmentPlan(offset: 500,
+                                    expectedBytes: 1_000,
+                                    kind: .continuousRemainder).rangeHeaderValue == "bytes=500-")
+    }
+
+    @Test("Continuous remainder reports expected segment bytes only when total size is known")
+    func continuousRemainderExpectedBytes() {
+        let planner = RangeChunkPlanner(chunkSize: 100)
+        #expect(planner.segmentPlan(offset: 400,
+                                    expectedBytes: 1_000,
+                                    kind: .continuousRemainder).expectedSegmentBytes == 600)
+        #expect(planner.segmentPlan(offset: 400,
+                                    expectedBytes: nil,
+                                    kind: .continuousRemainder).expectedSegmentBytes == nil)
+    }
+
     @Test("Chunked planner emits a closed range from offset 0")
     func chunkedFromZero() {
         let planner = RangeChunkPlanner(chunkSize: 100)
@@ -110,6 +132,24 @@ struct RangeChunkPlannerTests {
     func nextUnknownFullContinue() {
         let planner = RangeChunkPlanner(chunkSize: 100)
         #expect(planner.nextStep(partialSize: 200, expectedBytes: nil, chunkBytes: 100) == .continueFrom(offset: 200))
+    }
+
+    @Test("Unknown size, continuous remainder completes instead of app-chaining another chunk")
+    func nextUnknownContinuousRemainderCompletes() {
+        let planner = RangeChunkPlanner(chunkSize: 100)
+        #expect(planner.nextStep(partialSize: 5_000,
+                                 expectedBytes: nil,
+                                 chunkBytes: 5_000,
+                                 kind: .continuousRemainder) == .complete)
+    }
+
+    @Test("Known size, continuous remainder continues only if the response ended short")
+    func nextKnownContinuousRemainderShortReadContinuesSafely() {
+        let planner = RangeChunkPlanner(chunkSize: 100)
+        #expect(planner.nextStep(partialSize: 900,
+                                 expectedBytes: 1_000,
+                                 chunkBytes: 400,
+                                 kind: .continuousRemainder) == .continueFrom(offset: 900))
     }
 
     @Test("Unknown size, chunked: a zero-byte chunk completes rather than spinning")

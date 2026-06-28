@@ -57,6 +57,18 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
       unavailable there; device keeps the background session.) Logs:
       `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlay"'`
+- [ ] **Off-head static Range continuation (GH #169, DEVICE-ONLY)** — start a large
+      static/original/existing-version download while the headset is worn, wait for
+      `downloads.range_start segment_kind=boundedCheckpoint`, then remove the headset while plugged
+      in for 2–5 minutes. Expected diagnostics: `app.scene_phase` → inactive/background,
+      `downloads.range_strategy strategy=continuous_remainder`, then either
+      `downloads.range_remainder_promote` (active bounded task cancelled back to durable checkpoint)
+      or a direct `downloads.range_remainder_start`. While off-head, look for
+      `downloads.range_progress segment_kind=continuousRemainder` / `downloads.range_remainder_finished`
+      followed by `downloads.range_chunk_appended` and finalization. If the remainder fails, the row
+      may pause/retry from `bytes` equal to the durable partial checkpoint, not the optimistic temp
+      bytes; it must not restart from 0 when a durable partial existed, and must not append a
+      misaligned/gapped Range response.
 - [ ] **Download dual path — DIRECT (offline-download redesign)** — open the download sheet on a
       known-compatible title (the player would direct-play it): the sheet shows a single
       "Download original — <size> · <res>" action (no quality picker). Downloading fetches the

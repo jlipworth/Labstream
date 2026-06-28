@@ -527,9 +527,13 @@ public final class DownloadManager {
         retryingRows.remove(ratingKey)
         lastError[ratingKey] = .interruptedResumable
         switch record.status {
-        case .downloading:
+        case .queued, .downloading:
+            // A freshly seeded URLSession task can still be `.queued` until its first progress
+            // callback promotes the row to `.downloading`. Route queued rows through the session too
+            // so Pause/queue-pause actually cancels that live task instead of merely changing UI state
+            // while nsurlsessiond keeps transferring in the background.
             session.pause(ratingKey: ratingKey)
-        case .queued, .preparing:
+        case .preparing:
             store.setStatus(ratingKey: ratingKey, .paused)
         default:
             break
@@ -583,6 +587,12 @@ public final class DownloadManager {
                 self?.resumePendingStaticRangeDownloads()
             }
         }
+    }
+
+    /// App lifecycle hint for #169 transfer scheduling. DownloadManager does not decide byte-range
+    /// mechanics; it just bridges the app-level scene signal to the URLSession owner.
+    func noteAppScenePhase(_ phase: String) {
+        session.noteAppScenePhase(phase)
     }
 
     private static func isStaticRangeRecord(_ record: DownloadRecord) -> Bool {

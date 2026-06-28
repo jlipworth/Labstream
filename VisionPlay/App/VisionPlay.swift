@@ -7,6 +7,7 @@ struct VisionPlay: App {
     /// Bridges background `URLSession` relaunch events into the download pipeline so
     /// offline transfers can finish even when the app was suspended/terminated.
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
 
     // App-lifetime session + services. These used to be created inside `ContentView`, which meant
     // dismissing the main window (entering Cinema) destroyed the whole session and reopening it
@@ -57,6 +58,10 @@ struct VisionPlay: App {
                         bootstrap: bootstrap)
                 .environment(customCinemaSession)
                 .environment(realityTheaterSession)
+                .task { recordScenePhase(scenePhase) }
+                .onChange(of: scenePhase) { _, newPhase in
+                    recordScenePhase(newPhase)
+                }
         }
         .windowStyle(.plain)
 
@@ -66,6 +71,10 @@ struct VisionPlay: App {
             RealityTheaterPrototypeView()
                 .environment(customCinemaSession)
                 .environment(realityTheaterSession)
+                .task { recordScenePhase(scenePhase) }
+                .onChange(of: scenePhase) { _, newPhase in
+                    recordScenePhase(newPhase)
+                }
         }
         .immersionStyle(selection: .constant(.full), in: .full)
         .immersiveEnvironmentBehavior(.replace)
@@ -76,10 +85,28 @@ struct VisionPlay: App {
             CustomCinemaScaffoldView()
                 .environment(customCinemaSession)
                 .environment(realityTheaterSession)
+                .task { recordScenePhase(scenePhase) }
+                .onChange(of: scenePhase) { _, newPhase in
+                    recordScenePhase(newPhase)
+                }
         }
         .immersionStyle(selection: .constant(.full), in: .full)
         .immersiveEnvironmentBehavior(.replace)
         .immersiveContentBrightness(.dark)
         .upperLimbVisibility(.hidden)
+    }
+
+    private func recordScenePhase(_ phase: ScenePhase) {
+        let label: String
+        switch phase {
+        case .active: label = "active"
+        case .inactive: label = "inactive"
+        case .background: label = "background"
+        @unknown default: label = "unknown"
+        }
+        AppDiagnostics.record(.downloads, "app.scene_phase", fields: [
+            "phase": .label(label),
+        ])
+        downloadManager.noteAppScenePhase(label)
     }
 }

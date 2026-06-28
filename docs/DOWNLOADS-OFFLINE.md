@@ -91,6 +91,12 @@ headset down for hours, come back to a finished file" workflow is **not reliable
 downloads, keep the headset on (or pick it up periodically to re-wake the session — reconciliation
 re-kicks reconnectable transfers on resume).
 
+Current-engine #169 note: static byte-range downloads now use frequent bounded checkpoints while
+the app is active, but switch to one open-ended background-owned remainder when the app becomes
+inactive/background. A failed off-head remainder resumes from the last appended partial-file
+checkpoint; progress bytes still inside URLSession's temp file are intentionally not treated as
+durable.
+
 Note this is the **Phase B** (byte-transfer) limit. It is separate from, and milder than, the Plex
 **Phase A** server-prepare poll: that poll runs in-process, so a long server render queued and then
 immediately set down may not even *start* its Phase B transfer until the headset is worn again.

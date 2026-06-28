@@ -16,6 +16,7 @@ enum AppDiagnostics {
         capacity: 300,
         enabled: UserDefaults.standard.bool(forKey: enabledDefaultsKey)
     )
+    private static let fileSink = DiagnosticFileLogSink()
 
     /// Pure read of the in-memory store. `setEnabled` is the single writer that keeps the store
     /// and the persisted flag in sync, so there is no need to re-read UserDefaults here.
@@ -42,6 +43,7 @@ enum AppDiagnostics {
 
     static func clear() {
         store.clear()
+        fileSink.clear()
     }
 
     @discardableResult
@@ -52,6 +54,7 @@ enum AppDiagnostics {
             return nil
         }
         logger(for: category).debug("\(event.summaryLine, privacy: .public)")
+        fileSink.append(event)
         return event
     }
 

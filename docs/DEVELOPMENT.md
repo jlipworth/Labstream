@@ -345,11 +345,18 @@ Use root-relative GitHub links for files outside `docs/` because the published s
   after the headset comes off; only `nsurlsessiond`-managed background `URLSessionDownloadTask`/
   `uploadTask` transfers survive — a `dataTask` (the old in-process byte-append lane) does not, which is
   the whole of #169. A background task only hands back its temp file on *completion*, so it can't
-  byte-append mid-flight; the lane therefore downloads the file as bounded `Range: bytes=<off>-<off+N-1>`
-  chunks, appending each finished chunk into the durable partial (the checkpoint that survives
-  force-quit/relaunch). In-flight chunk bytes reported by `didWriteData` still live in the OS temp file:
-  they may be shown as live progress, but they are **not durable checkpoint bytes**. Pause/error/reconcile
-  paths must reset row bytes/progress from the actual partial-file size, not from optimistic row counters.
+  byte-append mid-flight. While the app is active, the lane therefore downloads bounded
+  `Range: bytes=<off>-<off+N-1>` checkpoint chunks and appends each finished chunk into the durable
+  partial (the checkpoint that survives force-quit/relaunch). When SwiftUI scene phase becomes
+  `.inactive`/`.background`, active bounded chunks are deliberately cancelled back to the durable
+  partial and replaced with one open-ended `Range: bytes=<checkpoint>-` remainder task so
+  `nsurlsessiond` already owns a continuous transfer before off-head suspension; new range starts
+  during background URLSession event drains use the same remainder strategy. If that in-flight
+  remainder later fails, the retry/checkpoint is still the durable partial size from before the
+  remainder, not the optimistic bytes URLSession had only in its temp file. In-flight bytes reported
+  by `didWriteData` may be shown as live progress, but they are **not durable checkpoint bytes**.
+  Pause/error/reconcile paths must reset row bytes/progress from the actual partial-file size, not
+  from optimistic row counters.
   Also do not fire the URLSession background completion handler until a finished chunk has been appended,
   finalized, or safely parked for manager rehydration; otherwise the OS may suspend the app after the temp
   stash move but before the durable checkpoint/next chunk is scheduled. If a relaunched task is adopted
