@@ -4,6 +4,68 @@ import Testing
 
 @Suite("Download retry policy")
 struct DownloadRetryPolicyTests {
+    @Test("Plex server-prep candidate requires queued zero-byte server-prep mode")
+    func plexServerPrepCandidateRequiresServerPrepMode() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-plex-prep.mp4")
+        let prepMetadata = OfflineMetadata(ratingKey: "12345",
+                                           title: "Plex Prep",
+                                           type: "movie",
+                                           optimizeTargetName: "Original",
+                                           downloadLane: .optimize,
+                                           resumeMode: .serverPrepThenStatic)
+        let prepRecord = DownloadRecord(ratingKey: "12345",
+                                        title: "Plex Prep",
+                                        localURL: url,
+                                        status: .queued,
+                                        metadata: prepMetadata)
+
+        #expect(DownloadRetryPolicy.isPlexServerPrepResumeCandidate(prepRecord))
+
+        var handoffMetadata = prepMetadata
+        handoffMetadata.resumeMode = .staticByteRange
+        handoffMetadata.serverPreparedVersion = true
+        let handoffRecord = DownloadRecord(ratingKey: "12345",
+                                           title: "Plex Prep",
+                                           localURL: url,
+                                           status: .queued,
+                                           metadata: handoffMetadata)
+
+        #expect(!DownloadRetryPolicy.isPlexServerPrepResumeCandidate(handoffRecord))
+    }
+
+    @Test("Plex server-prep candidate rejects non-Plex and non-zero rows")
+    func plexServerPrepCandidateRejectsWrongBackendOrProgress() throws {
+        let url = URL(fileURLWithPath: "/tmp/visionplay-plex-prep-nonzero.mp4")
+        let plexMetadata = OfflineMetadata(ratingKey: "12345",
+                                           title: "Plex Prep",
+                                           type: "movie",
+                                           optimizeTargetName: "Original",
+                                           downloadLane: .optimize,
+                                           resumeMode: .serverPrepThenStatic)
+        let downloading = DownloadRecord(ratingKey: "12345",
+                                         title: "Plex Prep",
+                                         localURL: url,
+                                         bytes: 1,
+                                         progress: 0.01,
+                                         status: .queued,
+                                         metadata: plexMetadata)
+        #expect(!DownloadRetryPolicy.isPlexServerPrepResumeCandidate(downloading))
+
+        let jellyfinMetadata = OfflineMetadata(ratingKey: "jellyfin:12345",
+                                               title: "Jellyfin Prep",
+                                               type: "movie",
+                                               optimizeTargetName: "1080p",
+                                               backendKind: .jellyfin,
+                                               downloadLane: .optimize,
+                                               resumeMode: .serverPrepThenStatic)
+        let jellyfin = DownloadRecord(ratingKey: "jellyfin:12345",
+                                      title: "Jellyfin Prep",
+                                      localURL: url,
+                                      status: .queued,
+                                      metadata: jellyfinMetadata)
+        #expect(!DownloadRetryPolicy.isPlexServerPrepResumeCandidate(jellyfin))
+    }
+
     @Test("Paused Emby existing-version static partial promotes before backend retry")
     func pausedEmbyExistingVersionStaticPartialPromotes() throws {
         let url = URL(fileURLWithPath: "/tmp/visionplay-partial.mp4")
