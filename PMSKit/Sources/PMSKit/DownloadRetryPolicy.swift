@@ -29,15 +29,15 @@ public enum DownloadRetryPolicy {
             && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
     }
 
-    /// A queued static-byte-range partial with no live task is not real active work: it is the
-    /// residue left when a resume attempt was interrupted before URLSession was re-acquired.
-    /// Normalize it back to paused/retryable so the UI offers Resume instead of Pause and the
-    /// duplicate-start guard does not permanently strand the row as "queued".
+    /// A queued/downloading static-byte-range partial with no live task is not real active work: it
+    /// is the residue left when a resume attempt was interrupted before URLSession was re-acquired.
+    /// Normalize it back to paused/retryable (or auto-restart it when queue policy allows) so the UI
+    /// does not show Pause/active work for a row with no URLSession task.
     public static func shouldDemoteStaleQueuedStaticPartial(_ record: DownloadRecord,
                                                            isActive: Bool,
                                                            fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
                                                            fileSize: (URL) -> Int? = Self.defaultFileSize) -> Bool {
-        record.status == .queued
+        (record.status == .queued || record.status == .downloading)
             && !isActive
             && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
     }

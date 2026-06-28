@@ -239,6 +239,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// request rehydration.
     var onRangeRequestNeeded: ((_ ratingKey: String, _ reason: BackgroundRangeRequestReason) -> Void)?
 
+    /// True when this process currently owns an opaque or Range URLSession task for the row.
+    /// `DownloadManager.activeJobs` is intentionally broader app-level bookkeeping and can survive
+    /// a relaunch-adopted chunk handoff; stale active slots must not make a queued static partial
+    /// look live forever.
+    func isTrackingTransfer(ratingKey: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return inflight.values.contains { $0.ratingKey == ratingKey }
+            || rangeInflight.values.contains { $0.ratingKey == ratingKey }
+    }
+
     private lazy var urlSession: URLSession = {
         let config: URLSessionConfiguration
         #if targetEnvironment(simulator)
@@ -1562,10 +1572,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let halted = haltedRangeKeys.contains(entry.ratingKey)
         lock.unlock()
 
-        // The row was cancelled or paused while this chunk was finishing. Do NOT append (a cancel is
-        // deleting the partial — appending would re-create/resurrect it) and do NOT start the next
-        // chunk. The status was already set by `cancel`/`pause`; on resume the chunk is re-fetched.
-        if halted {
+        // The row was cancelled or paused while this chunk was finishing. A hard cancel/delete must
+        // still discard the temp (the caller may be deleting the partial), but a user/system PAUSE
+        // should preserve a just-finished chunk: otherwise the delegate can log
+        // `range_chunk_finished`, then the async append sees the pause halt and silently throws away
+        // tens of MB/GB of completed work. That is the restart-from-0-ish race seen after relaunch.
+        if halted, !shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey) {
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
                                            ratingKey: entry.ratingKey,
                                            reason: "halted")
@@ -1661,7 +1673,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                     validator: String?, contentRangeStart: Int?) {
         // A cancel/pause may have landed during the delegate→IO hop.
         lock.lock(); let halted = haltedRangeKeys.contains(entry.ratingKey); lock.unlock()
-        if halted { try? fileManager.removeItem(at: stash); return }
+        let preserveHaltedChunk = halted
+            && shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
+        if halted, !preserveHaltedChunk {
+            let stashBytes = fileSize(at: stash)
+            try? fileManager.removeItem(at: stash)
+            AppDiagnostics.record(.downloads, "downloads.range_halted_chunk_discarded", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "segment_kind": .label(entry.segmentKind.rawValue),
+                "base_offset": .int(entry.baseOffset),
+                "chunk_bytes": .int(stashBytes ?? -1),
+            ])
+            return
+        }
         let durableBytesBeforeWrite = fileSize(at: entry.destination) ?? 0
         if durableBytesBeforeWrite > entry.baseOffset {
             let stashBytes = fileSize(at: stash)
@@ -1691,6 +1715,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
+            if preserveHaltedChunk {
+                let bytes = fileSize(at: entry.destination) ?? 0
+                store.updateProgress(ratingKey: entry.ratingKey,
+                                     bytes: bytes,
+                                     progress: (entry.expectedBytes ?? 0) > 0
+                                        ? min(1, Double(bytes) / Double(entry.expectedBytes!)) : 0)
+                AppDiagnostics.record(.downloads, "downloads.range_halted_chunk_preserved", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "segment_kind": .label(entry.segmentKind.rawValue),
+                    "base_offset": .int(entry.baseOffset),
+                    "partial_bytes": .int(bytes),
+                    "write": .label("replaceWhole"),
+                ])
+                store.setStatus(ratingKey: entry.ratingKey, .paused)
+                onChange?()
+                return
+            }
             finalizeRangeWhole(entry: entry)
 
         case .append:
@@ -1819,6 +1860,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "expected_exact": .int(entry.expectedBytes ?? -1),
             ])
 
+            if preserveHaltedChunk {
+                AppDiagnostics.record(.downloads, "downloads.range_halted_chunk_preserved", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "segment_kind": .label(entry.segmentKind.rawValue),
+                    "base_offset": .int(entry.baseOffset),
+                    "chunk_bytes": .int(chunkBytes),
+                    "partial_bytes": .int(partialSize),
+                    "write": .label("append"),
+                ])
+                // `updateProgress` promotes paused rows to `.downloading` because a normal append is
+                // live work. This append, however, is the tail of a pause race: preserve the bytes but
+                // do not start the next chunk behind the user's/system's pause.
+                store.setStatus(ratingKey: entry.ratingKey, .paused)
+                onChange?()
+                return
+            }
+
             switch rangeChunkPlanner.nextStep(partialSize: partialSize,
                                               expectedBytes: entry.expectedBytes,
                                               chunkBytes: chunkBytes,
@@ -1842,6 +1900,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .failServer, .alreadyComplete:
             break // resolved inline in finishRangeChunk; never offloaded
         }
+    }
+
+    private func shouldPreserveHaltedFinishedRangeChunk(ratingKey: String) -> Bool {
+        store.status(for: ratingKey) == .paused
     }
 
     private func chunkStashURL(taskIdentifier: Int) -> URL {
