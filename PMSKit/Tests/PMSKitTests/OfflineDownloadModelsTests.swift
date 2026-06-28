@@ -217,6 +217,40 @@ struct OfflineDownloadModelsTests {
         #expect(decoded == original)
     }
 
+
+    @Test("preserveCachedSideAssets keeps asynchronously cached subtitle metadata")
+    func preserveCachedSideAssetsKeepsSubtitles() {
+        let previous = OfflineMetadata(
+            ratingKey: "emby:63117",
+            title: "Persona Non Grata",
+            type: "episode",
+            posterRelativePath: "emby_63117.poster.jpg",
+            chapterImageRelativePaths: [0: "emby_63117.chapter-0.jpg"],
+            offlineTextSubtitles: [
+                OfflineTextSubtitleTrack(id: 8,
+                                         displayName: "English",
+                                         language: "eng",
+                                         codec: "srt",
+                                         relativePath: "emby_63117.sub-8.srt")
+            ],
+            mediaSourceID: "mediasource_63117")
+        var incoming = OfflineMetadata(
+            ratingKey: "emby:63117",
+            title: "Persona Non Grata",
+            type: "episode",
+            mediaSourceID: "mediasource_89488",
+            downloadLane: .original,
+            serverPreparedVersion: true)
+
+        incoming.preserveCachedSideAssets(from: previous)
+
+        #expect(incoming.mediaSourceID == "mediasource_89488")
+        #expect(incoming.serverPreparedVersion == true)
+        #expect(incoming.posterRelativePath == "emby_63117.poster.jpg")
+        #expect(incoming.chapterImageRelativePaths == [0: "emby_63117.chapter-0.jpg"])
+        #expect(incoming.offlineTextSubtitles == previous.offlineTextSubtitles)
+    }
+
     @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")
     func chapterImagePathsRoundTrip() throws {
         // [Int: String] is the only non-String-keyed field on the model; pin its JSON round-trip

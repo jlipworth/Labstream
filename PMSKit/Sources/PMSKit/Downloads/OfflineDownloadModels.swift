@@ -609,6 +609,31 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
     }
 
+    /// Preserve side assets that may have been cached asynchronously after the caller captured an
+    /// older metadata snapshot. Download rows are upserted several times during handoff/retry/final
+    /// transfer; without this merge, a later upsert carrying a stale-but-non-nil metadata value can
+    /// erase poster/trickplay/chapter/subtitle paths that a side-cache task just persisted.
+    public mutating func preserveCachedSideAssets(from previous: OfflineMetadata) {
+        if posterRelativePath == nil {
+            posterRelativePath = previous.posterRelativePath
+        }
+        if plexBIFRelativePath == nil {
+            plexBIFRelativePath = previous.plexBIFRelativePath
+        }
+        if jellyfinTrickPlayPlaylistRelativePath == nil {
+            jellyfinTrickPlayPlaylistRelativePath = previous.jellyfinTrickPlayPlaylistRelativePath
+        }
+        if (jellyfinTrickPlayTileRelativePaths?.isEmpty ?? true) {
+            jellyfinTrickPlayTileRelativePaths = previous.jellyfinTrickPlayTileRelativePaths
+        }
+        if (chapterImageRelativePaths?.isEmpty ?? true) {
+            chapterImageRelativePaths = previous.chapterImageRelativePaths
+        }
+        if (offlineTextSubtitles?.isEmpty ?? true) {
+            offlineTextSubtitles = previous.offlineTextSubtitles
+        }
+    }
+
     /// Display helper: true when this row downloads a server-prepared (transcoded) version rather
     /// than the genuine source — see `serverPreparedVersion`. Used by the offline UI to badge it
     /// "Transcode" even though it rides the `.original` static lane.
