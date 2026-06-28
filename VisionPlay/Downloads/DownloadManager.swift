@@ -2021,6 +2021,9 @@ public final class DownloadManager {
     /// `refreshRecords`; the percentage is read from the same unified `displayFraction`
     /// source that drives the bar.
     private func progressCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
+        if DownloadProgressDisplay.isTransferFinalizing(status: record.status, progress: record.progress) {
+            return transferFinalizingCaption(for: record)
+        }
         let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
         let isServerPrep = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
         if record.bytes == 0 {
@@ -2086,6 +2089,16 @@ public final class DownloadManager {
             let rate = "\(byteString(Int(speed)))/s"
             pieces.append(transcodeLimited ? "\(rate) server-paced" : rate)
         }
+        if let r = record.metadata?.resolutionLabel { pieces.append(r) }
+        return pieces.joined(separator: " • ")
+    }
+
+    /// The transfer has reached exact 100%, but the shared finalization/validation path still has
+    /// work to do. Keep the caption explicit so all backends avoid looking stuck on
+    /// "Downloading … 100%" while HEVC fixup / playback verification / truncation checks finish.
+    private func transferFinalizingCaption(for record: DownloadRecord) -> String {
+        var pieces = ["Verifying download…"]
+        if record.bytes > 0 { pieces.append(byteString(record.bytes)) }
         if let r = record.metadata?.resolutionLabel { pieces.append(r) }
         return pieces.joined(separator: " • ")
     }

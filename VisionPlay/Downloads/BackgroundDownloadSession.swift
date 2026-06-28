@@ -769,8 +769,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         // unreliable before properties load); the delegate can't await, so we finalize
         // status in a detached Task. Bytes/progress are recorded now so the in-flight
         // count is correct even while the probe runs.
-        store.updateProgress(ratingKey: entry.ratingKey, bytes: bytes, progress: 1.0)
-        onChange?()
+        publishTransferFinalizing(ratingKey: entry.ratingKey, bytes: bytes)
         let destination = entry.destination
         let ratingKey = entry.ratingKey
 
@@ -786,6 +785,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
         }
     }
 
+    /// Shared handoff from byte transfer to local finalization for both URLSession pipelines.
+    ///
+    /// Keep the persisted progress at exact 100% so the bar reflects that the network/file transfer
+    /// finished, then let the UI derive the explicit "Verifying download…" display state from
+    /// `.downloading + progress == 1.0` until `finalizeTransferredFile` writes the terminal status.
+    private func publishTransferFinalizing(ratingKey: String, bytes: Int) {
+        store.updateProgress(ratingKey: ratingKey, bytes: bytes, progress: 1.0)
+        onChange?()
+    }
+
     /// Shared post-transfer finalize for BOTH download pipelines (the opaque background
     /// `downloadTask` and the app-managed byte-range `dataTask`). Runs the `hev1`→`hvc1` HEVC tag
     /// fixup, the GH #98 retrying playability probe, the duration truncation guard, and records the
@@ -796,6 +805,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                                          destination: URL,
                                          bytes: Int,
                                          validationLabel: String) async {
+        let finalizeStarted = Date()
+        AppDiagnostics.record(.downloads, "downloads.finalize_start", fields: [
+            "download_id": .identifier(ratingKey),
+            "bytes": .bytes(bytes),
+            "validation": .label(validationLabel),
+        ])
+
         // #83/#127: rewrite a stream-copied HEVC MP4 from `hev1` to `hvc1` (AVFoundation black-screens
         // on `hev1`) BEFORE the playability probe. Gated on the CONTAINER, not the lane — any
         // mp4-family download can be `hev1`-tagged. `rewriteFile` no-ops on non-HEVC/non-`hev1` bodies.
@@ -840,6 +856,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
                                                            probeReason: validation.reason,
                                                            expectedDurationMs: expectedDurationMs,
                                                            actualDurationMs: validation.durationMs)
+        let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         switch outcome {
         case .truncated(let actualDurationMs, let expectedMs):
             downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
@@ -853,6 +870,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             clearRetryCount(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, .failed)
             onError?(ratingKey, .invalidDownload("Downloaded file is truncated (\(actualDurationMs / 1000)s of \(expectedMs / 1000)s)."))
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: "failed_truncated",
+                                   validationLabel: validationLabel,
+                                   durationMs: finalizationDurationMs,
+                                   bytes: bytes)
         case .complete:
             // Validated: mark explicitly complete (D2) so a relaunch trusts it.
             downloadLog.info("complete ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
@@ -864,6 +886,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             clearRetryCount(ratingKey: ratingKey)
             store.updateProgress(ratingKey: ratingKey, bytes: bytes, progress: 1)
             store.setStatus(ratingKey: ratingKey, .complete)
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: "complete",
+                                   validationLabel: validationLabel,
+                                   durationMs: finalizationDurationMs,
+                                   bytes: bytes)
         case .unverified(let reason):
             // GH #98: do NOT delete or fail the file on a probe miss — the probe is an intermittent
             // false-negative on COMPLETE downloads; deleting/failing forces a wasteful 0%
@@ -879,8 +906,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
             ])
             clearRetryCount(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, .unverified)
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: "unverified_\(reason)",
+                                   validationLabel: validationLabel,
+                                   durationMs: finalizationDurationMs,
+                                   bytes: bytes)
         }
         onChange?()
+    }
+
+    private func recordFinalizeFinished(ratingKey: String,
+                                        result: String,
+                                        validationLabel: String,
+                                        durationMs: Int,
+                                        bytes: Int) {
+        AppDiagnostics.record(.downloads, "downloads.finalize_finished", fields: [
+            "download_id": .identifier(ratingKey),
+            "result": .label(result),
+            "validation": .label(validationLabel),
+            "duration_ms": .int(durationMs),
+            "duration_bucket": .millisecondsBucket(durationMs),
+            "bytes": .bytes(bytes),
+        ])
     }
 
 
@@ -1013,6 +1060,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, URL
 
             let bytes = (try? fileManager.attributesOfItem(atPath: rangeEntry.destination.path)[.size] as? Int)
                 ?? rangeEntry.totalBytes
+            publishTransferFinalizing(ratingKey: rangeEntry.ratingKey, bytes: bytes)
             // GH #135 (H1–H3): funnel the byte-range completion through the SAME finalize as the
             // opaque pipeline — so a static `hev1` MP4 gets the `hvc1` fixup it used to skip
             // (#127 black-screen), a short body is caught by the truncation guard, and a probe miss

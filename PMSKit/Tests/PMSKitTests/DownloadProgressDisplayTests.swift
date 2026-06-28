@@ -76,4 +76,23 @@ struct DownloadProgressDisplayTests {
         #expect(exact.isEstimated == false)
         #expect(estimated.isEstimated == true)
     }
+
+    // MARK: - Post-transfer finalization display state
+
+    @Test("downloading at exact 100% is a transfer-finalization display state")
+    func downloadingAtOneHundredPercentIsFinalizing() {
+        #expect(DownloadProgressDisplay.isTransferFinalizing(status: .downloading, progress: 1.0))
+        #expect(DownloadProgressDisplay.isTransferFinalizing(status: .downloading, progress: 1.2))
+    }
+
+    @Test("non-terminal partials and terminal rows are not transfer-finalizing")
+    func nonFinalizingRows() {
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .downloading, progress: 0.999))
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .queued, progress: 1.0))
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .preparing, progress: 1.0))
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .complete, progress: 1.0))
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .unverified, progress: 1.0))
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .failed, progress: 1.0))
+        #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .paused, progress: 1.0))
+    }
 }
