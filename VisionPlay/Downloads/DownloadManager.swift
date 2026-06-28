@@ -543,6 +543,15 @@ public final class DownloadManager {
             // callback promotes the row to `.downloading`. Route queued rows through the session too
             // so Pause/queue-pause actually cancels that live task instead of merely changing UI state
             // while nsurlsessiond keeps transferring in the background.
+            if Self.isStaticRangeRecord(record) {
+                // `BackgroundDownloadSession.pause` removes its live range-tracking entry before the
+                // async `getAllTasks` callback sets the row to paused. A synchronous refresh in that
+                // tiny window used to misclassify the row as a stale active partial and immediately
+                // auto-retry it, so an individual Pause looked like "Retrying" and resumed itself.
+                // Park static range rows as paused before cancelling; the session callback still
+                // snapshots the durable checkpoint, but refresh can no longer restart the row.
+                store.setStatus(ratingKey: ratingKey, .paused)
+            }
             session.pause(ratingKey: ratingKey)
         case .preparing:
             store.setStatus(ratingKey: ratingKey, .paused)
