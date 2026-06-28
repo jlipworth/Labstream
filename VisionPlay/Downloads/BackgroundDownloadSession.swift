@@ -2,6 +2,29 @@ import Foundation
 import AVFoundation
 import PMSKit
 
+private actor DownloadPlaybackValidationLimiter {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if !busy {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        if waiters.isEmpty {
+            busy = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 enum BackgroundRangeRequestReason: String, Sendable, Equatable {
     /// A background Range chunk was adopted after relaunch and finished, but the session object no
     /// longer has the authenticated base request needed to schedule the next chunk.
@@ -59,6 +82,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
     private var retryCounts: [String: Int] = [:]
+    /// RatingKeys currently inside post-transfer finalization. A duplicated URLSession/adoption
+    /// callback must not launch a second AVPlayer validation for the same finished file; that can
+    /// leave the UI stuck on repeated "Verifying download…" and increases headset memory/CPU load.
+    private var finalizingRatingKeys: Set<String> = []
+    private let finalizationStateQueue = DispatchQueue(label: "com.visionplay.downloads.finalization-state")
     /// Last UI refresh across the whole downloads screen; progress callbacks can arrive many
     /// times per second per task, so per-row throttling still scales linearly with concurrent
     /// downloads and can overwhelm the Offline list. Coalesce globally instead.
@@ -80,6 +108,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// in-flight chunk (within-chunk drops are absorbed by the background session/`nsurlsessiond`
     /// itself). 64 MB balances checkpoint granularity on flaky links against per-chunk request
     /// overhead on large 4K files.
+    private static let playbackValidationLimiter = DownloadPlaybackValidationLimiter()
     static let rangeChunkSize = 64 * 1_024 * 1_024
     private let rangeChunkPlanner = RangeChunkPlanner(chunkSize: BackgroundDownloadSession.rangeChunkSize)
     /// #169: a finished Range chunk's 64 MB append must not run on the (serial) URLSession delegate
@@ -2071,6 +2100,36 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
+
+    /// Recover a completed static byte-range file that survived a process/resource kill after the
+    /// final chunk was appended but before `finalizeTransferredFile` wrote `.complete`/`.unverified`.
+    /// This is the relaunch/manual-resume counterpart to `finalizeRangeWhole(entry:)`: keep the row
+    /// at 100% + "Verifying download…" and run the normal local fixup/probe/truncation pipeline
+    /// instead of trying to request another Range after EOF.
+    @discardableResult
+    func finalizeCompletedStaticRangeFile(ratingKey: String, validationLabel: String) -> Bool {
+        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else { return false }
+        let bytes = fileSize(at: record.localURL) ?? record.bytes
+        guard bytes > 0 else { return false }
+
+        AppDiagnostics.record(.downloads, "downloads.range_finalize_recovered", fields: [
+            "download_id": .identifier(ratingKey),
+            "bytes": .bytes(bytes),
+            "validation": .label(validationLabel),
+        ])
+        beginPendingBackgroundCompletionOperation()
+        publishTransferFinalizing(ratingKey: ratingKey, bytes: bytes)
+        let destination = record.localURL
+        Task { [self] in
+            defer { endPendingBackgroundCompletionOperation() }
+            await finalizeTransferredFile(ratingKey: ratingKey,
+                                          destination: destination,
+                                          bytes: bytes,
+                                          validationLabel: validationLabel)
+        }
+        return true
+    }
+
     /// The durable partial now holds the whole file: validate it through the SAME finalize pipeline as
     /// the opaque lane (HEVC `hvc1` fixup, #98 retrying probe, truncation guard, complete/unverified).
     private func finalizeRangeWhole(entry: RangeTransfer) {
@@ -2150,6 +2209,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                          destination: URL,
                                          bytes: Int,
                                          validationLabel: String) async {
+        let shouldFinalize = finalizationStateQueue.sync { () -> Bool in
+            guard !finalizingRatingKeys.contains(ratingKey) else { return false }
+            finalizingRatingKeys.insert(ratingKey)
+            return true
+        }
+        guard shouldFinalize else {
+            AppDiagnostics.record(.downloads, "downloads.finalize_duplicate_ignored", fields: [
+                "download_id": .identifier(ratingKey),
+                "bytes": .bytes(bytes),
+                "validation": .label(validationLabel),
+            ])
+            return
+        }
+        defer {
+            finalizationStateQueue.sync {
+                _ = finalizingRatingKeys.remove(ratingKey)
+            }
+        }
+
         let finalizeStarted = Date()
         AppDiagnostics.record(.downloads, "downloads.finalize_start", fields: [
             "download_id": .identifier(ratingKey),
@@ -2182,9 +2260,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // busy right after a heavy transcode+download, AVFoundation can transiently fail to
         // open/advance a COMPLETE file that a later attempt on the same bytes plays fine. Retry with
         // progressively longer timeouts before deciding.
+        await Self.playbackValidationLimiter.wait()
+        defer { Task { await Self.playbackValidationLimiter.signal() } }
         var validation = await Self.validateLocalPlayback(destination)
         if !validation.played {
-            for extraTimeout in [15.0, 25.0] {
+            // #187: keep headset-idle finalization bounded. Multiple long AVPlayer probes in
+            // parallel are a plausible source of the observed idle gray/freeze/crash while MB-sized
+            // files sit at "Verifying download…". Serialize probes and give one longer retry before
+            // preserving the file as `.unverified` for later playback instead of repeatedly burning
+            // foreground resources.
+            for extraTimeout in [15.0] {
                 downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
                 try? await Task.sleep(for: .seconds(2))
                 validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)

@@ -30,6 +30,7 @@ struct OfflineDownloadRowSnapshot: Identifiable {
     let errorMessage: String?
     let displayProgress: Double?
     let statusCaption: String
+    let isRetrying: Bool
 
     var id: String { record.ratingKey }
 }

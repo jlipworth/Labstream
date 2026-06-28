@@ -94,6 +94,13 @@ public final class DownloadManager {
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
     private var retryingRows: Set<String> = []
+    private var retryPresentationRows: Set<String> = []
+    /// Rows intentionally parked as `.failed` only as an internal retry handoff sentinel.
+    /// While present, refresh cleanup must not treat the `.failed` row as terminal; the backend
+    /// retry task still needs `retryingRows` to pass its async continuation guard. Cleared as soon
+    /// as replacement work is seeded or a real failure path releases the retry.
+    private var retryHandoffRows: Set<String> = []
+    @ObservationIgnored private var refreshRecordsTask: Task<Void, Never>?
     private var serverPrepResumeRetryTask: Task<Void, Never>?
     @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
     private var serverPrepPollerIDs: [String: UUID] = [:]
@@ -219,7 +226,7 @@ public final class DownloadManager {
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
         self.session.onChange = { [weak self] in
-            Task { @MainActor in self?.refreshRecords() }
+            Task { @MainActor in self?.scheduleRefreshRecords(reason: "session_change") }
         }
         // D3: surface background-delegate failures instead of silently dropping the
         // row. Hard failures record a `.failed` status in the store and hand us the
@@ -259,6 +266,7 @@ public final class DownloadManager {
                     self?.resumePendingServerPrepDownloads()
                     self?.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
                                                                     liveKeys: liveKeys)
+                    self?.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
                 }
                 // #84: reclaim any server encoder leaked by a HARD app kill (the in-memory
                 // PlaySessionId maps are empty on a fresh launch; the persisted `playSessionID`
@@ -593,6 +601,13 @@ public final class DownloadManager {
     /// mechanics; it just bridges the app-level scene signal to the URLSession owner.
     func noteAppScenePhase(_ phase: String) {
         session.noteAppScenePhase(phase)
+        if phase == "active" {
+            // #187: headset reattach can deliver a burst of background-session progress and scene
+            // activation events while the Offline window is being reconstructed. Coalesce the first
+            // refresh onto the next run-loop turn instead of invalidating the whole downloads list
+            // synchronously during scene activation.
+            scheduleRefreshRecords(reason: "scene_active")
+        }
     }
 
     private static func isStaticRangeRecord(_ record: DownloadRecord) -> Bool {
@@ -631,6 +646,7 @@ public final class DownloadManager {
         let backend = backendKind(for: record)
         let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
         pendingStaticRangeResumeKeys.insert(ratingKey)
+        clearRetryHandoff(ratingKey: ratingKey)
         retryingRows.remove(ratingKey)
         if preserveActiveIntent {
             // This was not a user pause: a system/adopted Range continuation needs backend auth before
@@ -660,6 +676,29 @@ public final class DownloadManager {
         refreshRecords()
     }
 
+
+    private func finalizeCompletedStaticRangeIfNeeded(record: DownloadRecord, reason: String) -> Bool {
+        guard Self.isStaticRangeRecord(record),
+              record.progress.isFinite,
+              record.progress >= 1.0,
+              store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey) > 0 else {
+            return false
+        }
+        pendingStaticRangeResumeKeys.remove(record.ratingKey)
+        recordDownloadDiagnostic("downloads.range_finalize_resume", fields: [
+            "download_id": .identifier(record.ratingKey),
+            "reason": .label(reason),
+            "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey)),
+        ])
+        let started = session.finalizeCompletedStaticRangeFile(ratingKey: record.ratingKey,
+                                                               validationLabel: "range_checkpoint_recovered")
+        if started {
+            lastError[record.ratingKey] = nil
+            refreshRecords()
+        }
+        return started
+    }
+
     private func resumeStaticRangeWhenReady(ratingKey: String, reason: String) {
         guard !isQueuePaused else {
             pendingStaticRangeResumeKeys.insert(ratingKey)
@@ -671,6 +710,9 @@ public final class DownloadManager {
         }
         guard Self.isStaticRangeRecord(record) else {
             pendingStaticRangeResumeKeys.remove(ratingKey)
+            return
+        }
+        if finalizeCompletedStaticRangeIfNeeded(record: record, reason: reason) {
             return
         }
         guard staticRangeBackendSession(for: record) != nil else {
@@ -694,6 +736,14 @@ public final class DownloadManager {
         retry(ratingKey: ratingKey)
     }
 
+
+    private func finalizeCompletedStaticRangeDownloads(reason: String) {
+        for record in store.records {
+            guard record.status != .complete, record.status != .unverified else { continue }
+            _ = finalizeCompletedStaticRangeIfNeeded(record: record, reason: reason)
+        }
+    }
+
     private func resumePendingStaticRangeDownloads() {
         guard !isQueuePaused else { return }
         let keys = pendingStaticRangeResumeKeys
@@ -709,10 +759,15 @@ public final class DownloadManager {
     public func retry(ratingKey: String) {
         guard !retryingRows.contains(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        if finalizeCompletedStaticRangeIfNeeded(record: record, reason: "manual_retry") {
+            return
+        }
         if deferStaticRangeRetryIfBackendUnavailable(record: record, reason: "retry_backend_not_ready") {
             return
         }
         retryingRows.insert(ratingKey)
+        retryPresentationRows.insert(ratingKey)
+        retryHandoffRows.insert(ratingKey)
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -795,6 +850,7 @@ public final class DownloadManager {
                                                                   reason: "plex_backend_not_ready") {
                     return
                 }
+                self.clearRetryHandoff(ratingKey: ratingKey)
                 self.lastError[ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: ratingKey, .failed)
                 self.refreshRecords()
@@ -816,35 +872,36 @@ public final class DownloadManager {
                                                                identity: self.appModel.identity) ?? item
             guard self.retryAttemptCanContinue(ratingKey: ratingKey) else { return }
 
-            // #131: if this row already has an app-managed static partial, never delete/reseed it
-            // before restarting. Route back to the same static object and let
-            // BackgroundDownloadSession add `Range: bytes=<partial-size>-`.
-            if Self.hasIncompleteStaticPartial(record) {
+            // #131/#184: static retries must preserve the exact Part identity whenever possible,
+            // not only when a durable partial exists. Plex optimized/final static rows keep
+            // `sourcePartID`/serverPreparedVersion after restart; re-probing them can create or
+            // chase a different optimize job and leave the user tapping repeatedly. Route back to
+            // the persisted static target, preserving the partial when present and otherwise
+            // redownloading the same existing Part from byte 0.
+            let hasStaticPartial = Self.hasIncompleteStaticPartial(record)
+            if Self.isStaticRangeRecord(record),
+               (hasStaticPartial || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
                 let resolved = self.resolveStaticRetryTarget(record: record,
                                                             fallbackMediaIndex: mediaIndex,
                                                             fallbackPartIndex: partIndex,
                                                             in: currentItem)
                 self.releaseInFlight(ratingKey: ratingKey)
+                if !hasStaticPartial {
+                    self.store.remove(ratingKey: ratingKey)
+                }
                 await self.download(currentItem, choice: resolved.choice,
                                     mediaIndex: resolved.mediaIndex, partIndex: resolved.partIndex)
                 self.refreshRecords()
                 return
             }
 
-            // #112: a row that downloaded an EXISTING server version (a non-source `Media` index on
-            // the `.original` static lane) retries by re-downloading that exact version as-is — NOT
-            // by re-probing into an optimize/render. Honour it only while that version still exists
-            // on the server; otherwise fall through to the normal source-quality retry below.
+            // #112: legacy rows without sourcePartID that downloaded an EXISTING server version
+            // retry by re-downloading that same non-source Media index as-is.
             if mediaIndex > 0,
                metadata?.resolvedDownloadLane() == .original,
                currentItem.media?.indices.contains(mediaIndex) == true {
                 self.releaseInFlight(ratingKey: ratingKey)
-                // #131: a paused static existing-version row may have an app-managed partial file
-                // at `record.localURL`; keep it so the replacement `download` call can resume with
-                // `Range: bytes=<partial-size>-` instead of deleting the checkpoint and restarting.
-                if !Self.hasIncompleteStaticPartial(record) {
-                    self.store.remove(ratingKey: ratingKey)
-                }
+                self.store.remove(ratingKey: ratingKey)
                 await self.download(currentItem, choice: .existingVersion,
                                     mediaIndex: mediaIndex, partIndex: partIndex)
                 self.refreshRecords()
@@ -907,6 +964,7 @@ public final class DownloadManager {
     private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
         guard let backendSession = appModel.backendSession(for: .plex) else {
             lastError[record.ratingKey] = .notAuthenticated
+            clearRetryHandoff(ratingKey: record.ratingKey)
             retryingRows.remove(record.ratingKey)
             refreshRecords()
             return
@@ -918,6 +976,7 @@ public final class DownloadManager {
                 "reason": .label("plex_session_mismatch"),
             ])
             lastError[record.ratingKey] = .transferFailed("Waiting for the original Plex server session.")
+            clearRetryHandoff(ratingKey: record.ratingKey)
             retryingRows.remove(record.ratingKey)
             refreshRecords()
             return
@@ -1023,6 +1082,7 @@ public final class DownloadManager {
                                                                   reason: "jellyfin_backend_not_ready") {
                     return
                 }
+                self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
@@ -1088,6 +1148,7 @@ public final class DownloadManager {
                                                                   reason: "emby_backend_not_ready") {
                     return
                 }
+                self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
@@ -1746,6 +1807,26 @@ public final class DownloadManager {
         refreshRecords()
     }
 
+    private func clearRetryHandoff(ratingKey: String) {
+        retryPresentationRows.remove(ratingKey)
+        retryHandoffRows.remove(ratingKey)
+    }
+
+    private func markRetryReplacementSeeded(ratingKey: String) {
+        retryingRows.remove(ratingKey)
+        clearRetryHandoff(ratingKey: ratingKey)
+    }
+
+    private func scheduleRefreshRecords(reason _: String, delay: Duration = .milliseconds(150)) {
+        guard refreshRecordsTask == nil else { return }
+        refreshRecordsTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self else { return }
+            self.refreshRecordsTask = nil
+            self.refreshRecords()
+        }
+    }
+
     func refreshRecords() {
         let now = Date()
         var fresh = store.records
@@ -1761,6 +1842,11 @@ public final class DownloadManager {
                 store.setStatus(ratingKey: record.ratingKey, .paused)
             }
             fresh = store.records
+        }
+        for record in fresh where retryHandoffRows.contains(record.ratingKey) {
+            if record.status.isActiveWork || record.status == .complete || record.status == .unverified {
+                markRetryReplacementSeeded(ratingKey: record.ratingKey)
+            }
         }
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
         // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
@@ -1808,8 +1894,12 @@ public final class DownloadManager {
         // releases too — its slot is re-acquired by `retry()` on resume, and releasing also fires
         // any encoder teardown should a transcoded row ever land here.
         let terminalKeys = Set(fresh.filter {
-            $0.status == .complete || $0.status == .unverified
-                || $0.status == .failed || $0.status == .paused
+            let isInternalRetryFailedSentinel = $0.status == .failed
+                && retryHandoffRows.contains($0.ratingKey)
+                && retryingRows.contains($0.ratingKey)
+            return !isInternalRetryFailedSentinel
+                && ($0.status == .complete || $0.status == .unverified
+                    || $0.status == .failed || $0.status == .paused)
         }.map(\.ratingKey))
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
     }
@@ -1919,6 +2009,7 @@ public final class DownloadManager {
     /// clean-slate cleanup from ever removing the now-abandoned completed optimize item.
     func releaseInFlight(ratingKey: String) {
         retryingRows.remove(ratingKey)
+        clearRetryHandoff(ratingKey: ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
         embyConvertAttemptByRatingKey.removeValue(forKey: ratingKey)
@@ -2215,7 +2306,8 @@ public final class DownloadManager {
                 backendName: backend.displayName,
                 errorMessage: record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil,
                 displayProgress: rowDisplayProgress(for: record),
-                statusCaption: statusCaption(for: record, backend: backend)
+                statusCaption: statusCaption(for: record, backend: backend),
+                isRetrying: retryPresentationRows.contains(record.ratingKey)
             )
         }
 
@@ -2251,6 +2343,7 @@ public final class DownloadManager {
     private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
         switch record.status {
         case .failed:
+            if retryPresentationRows.contains(record.ratingKey) { return "Retrying…" }
             return lastError[record.ratingKey].map(message(for:)) ?? "Download failed. Tap to retry."
         case .paused:
             return pausedCaption(for: record)
