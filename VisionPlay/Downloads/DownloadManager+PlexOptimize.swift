@@ -277,6 +277,14 @@ extension DownloadManager {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
         let currentMetadata = current.metadata
+        let expectedMode = metadata.resolvedResumeMode(ratingKey: ratingKey)
+        if expectedMode == .serverPrepThenStatic {
+            guard DownloadRetryPolicy.isPlexServerPrepResumeCandidate(current) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
+        } else if currentMetadata?.resolvedResumeMode(ratingKey: ratingKey) != expectedMode {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
         if let queueTitle = metadata.optimizeQueueTitle,
            currentMetadata?.optimizeQueueTitle != queueTitle {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt

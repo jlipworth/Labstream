@@ -2,6 +2,23 @@ import Foundation
 
 /// Pure retry-routing helpers for persisted offline download rows.
 public enum DownloadRetryPolicy {
+    /// A Plex optimize row is resumable as server-prep work only before it has handed off to the
+    /// rendered static Part. Once the row's persisted resume mode becomes `.staticByteRange`, the
+    /// same `optimizeTargetName` is retained for display/retry metadata, but relaunch must continue
+    /// the file transfer rather than reattaching a Plex prep poller.
+    public static func isPlexServerPrepResumeCandidate(_ record: DownloadRecord) -> Bool {
+        guard record.status == .queued,
+              record.bytes == 0,
+              record.progress == 0,
+              let metadata = record.metadata,
+              metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .plex,
+              metadata.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic,
+              metadata.optimizeTargetName?.isEmpty == false else {
+            return false
+        }
+        return true
+    }
+
     /// A paused static-byte-range row can resume from an app-managed partial file even when no
     /// URLSession resume blob exists. Promote it out of `.paused` before backend-specific async
     /// retry guards run; otherwise those guards can treat the row as user-paused and no-op.
