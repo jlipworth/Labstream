@@ -25,15 +25,42 @@ public enum RangeChunkNext: Equatable, Sendable {
     case stalled
 }
 
+/// Shape of the next background-owned static-byte-range transfer.
+public enum RangeTransferSegmentKind: String, Equatable, Sendable {
+    /// Foreground/active app path: bounded slices give frequent durable checkpoints.
+    case boundedCheckpoint
+    /// Off-head/background path: one open-ended remainder task should already be owned by
+    /// `nsurlsessiond` before the app is suspended, avoiding app-chained 64 MB tasks.
+    case continuousRemainder
+}
+
+/// Concrete request/validation plan for one static-byte-range background transfer.
+public struct RangeTransferSegmentPlan: Equatable, Sendable {
+    public let kind: RangeTransferSegmentKind
+    public let rangeHeaderValue: String?
+    /// Expected bytes for THIS transfer segment, when knowable. Used only for safety checks such as
+    /// adopting URLSession's internal resume of a closed Range request; never used as durable bytes.
+    public let expectedSegmentBytes: Int?
+
+    public init(kind: RangeTransferSegmentKind,
+                rangeHeaderValue: String?,
+                expectedSegmentBytes: Int?) {
+        self.kind = kind
+        self.rangeHeaderValue = rangeHeaderValue
+        self.expectedSegmentBytes = expectedSegmentBytes
+    }
+}
+
 /// Pure, IO-free decisions for the chunked Range download lane (#169).
 ///
 /// The static byte-range lane survives the headset coming off only as a true background
 /// `URLSessionDownloadTask`, but a background task hands back its temp file only on completion —
-/// it cannot byte-append into our durable partial mid-flight. So we download the file as a
-/// sequence of bounded `Range` chunks and append each finished chunk into the durable partial.
-/// That keeps the partial a real on-disk checkpoint (`DownloadStore.reconcile`'s
-/// `hasAppRangeCheckpoint`) across force-quit/relaunch — only the in-flight chunk is ever re-fetched
-/// — while each chunk transfer runs under `nsurlsessiond` and continues while the app is suspended.
+/// it cannot byte-append into our durable partial mid-flight. While active, we download bounded
+/// `Range` chunks and append each finished chunk into the durable partial. When the app is likely
+/// going off-head, the next plan is an open-ended remainder (`bytes=<checkpoint>-`) so one
+/// `nsurlsessiond` task owns the transfer across suspension. In both modes the partial remains the
+/// real checkpoint (`DownloadStore.reconcile`'s `hasAppRangeCheckpoint`) across force-quit/relaunch:
+/// if an in-flight segment is lost, only bytes already appended to that partial are durable.
 ///
 /// `chunkSize <= 0` degrades to a single open-ended `bytes=offset-` request (used when the final
 /// size is unknown and bounding is not worth a guess); the same append/finalize path still applies.
@@ -47,6 +74,41 @@ public struct RangeChunkPlanner: Equatable, Sendable {
     /// The `Range` header value for a chunk starting at `offset`, or `nil` to omit the header
     /// entirely (a plain GET — only at offset 0 with no chunk bound).
     public func rangeHeaderValue(offset: Int, expectedBytes: Int?) -> String? {
+        segmentPlan(offset: offset,
+                    expectedBytes: expectedBytes,
+                    kind: .boundedCheckpoint).rangeHeaderValue
+    }
+
+    /// Build the request plan for the next static-byte-range transfer.
+    public func segmentPlan(offset: Int,
+                            expectedBytes: Int?,
+                            kind: RangeTransferSegmentKind) -> RangeTransferSegmentPlan {
+        switch kind {
+        case .boundedCheckpoint:
+            return RangeTransferSegmentPlan(
+                kind: kind,
+                rangeHeaderValue: boundedRangeHeaderValue(offset: offset, expectedBytes: expectedBytes),
+                expectedSegmentBytes: expectedSegmentBytes(
+                    offset: offset,
+                    expectedBytes: expectedBytes,
+                    kind: kind
+                )
+            )
+        case .continuousRemainder:
+            let safeOffset = max(0, offset)
+            return RangeTransferSegmentPlan(
+                kind: kind,
+                rangeHeaderValue: "bytes=\(safeOffset)-",
+                expectedSegmentBytes: expectedSegmentBytes(
+                    offset: safeOffset,
+                    expectedBytes: expectedBytes,
+                    kind: kind
+                )
+            )
+        }
+    }
+
+    private func boundedRangeHeaderValue(offset: Int, expectedBytes: Int?) -> String? {
         guard chunkSize > 0 else {
             return offset > 0 ? "bytes=\(offset)-" : nil
         }
@@ -58,6 +120,28 @@ public struct RangeChunkPlanner: Equatable, Sendable {
         // resolve completion from the durable partial rather than inventing a backwards range.
         guard upper >= offset else { return "bytes=\(offset)-" }
         return "bytes=\(offset)-\(upper)"
+    }
+
+    /// Expected body bytes for this segment, when the total object size is known or the segment is a
+    /// bounded chunk. Nil means "not knowable from the plan" and callers must not use it to accept a
+    /// potentially gapped append.
+    public func expectedSegmentBytes(offset: Int,
+                                     expectedBytes: Int?,
+                                     kind: RangeTransferSegmentKind) -> Int? {
+        switch kind {
+        case .continuousRemainder:
+            guard let expectedBytes else { return nil }
+            return max(0, expectedBytes - max(0, offset))
+        case .boundedCheckpoint:
+            guard chunkSize > 0 else {
+                guard let expectedBytes else { return nil }
+                return max(0, expectedBytes - max(0, offset))
+            }
+            if let expectedBytes {
+                return max(0, min(chunkSize, expectedBytes - max(0, offset)))
+            }
+            return chunkSize
+        }
     }
 
     /// How to incorporate a finished chunk given its HTTP status and the offset it began at.
@@ -73,11 +157,25 @@ public struct RangeChunkPlanner: Equatable, Sendable {
     /// After a 206 chunk has been appended, decide whether the download is finished.
     /// Only meaningful for the `.append` path; 200/416 resolve via `writeDecision` directly.
     public func nextStep(partialSize: Int, expectedBytes: Int?, chunkBytes: Int) -> RangeChunkNext {
+        nextStep(partialSize: partialSize,
+                 expectedBytes: expectedBytes,
+                 chunkBytes: chunkBytes,
+                 kind: .boundedCheckpoint)
+    }
+
+    /// Decide the next transfer after appending a 206 body. Continuous-remainder transfers still
+    /// continue when a known-size response ended short, but an unknown-size open-ended remainder is
+    /// by definition the final segment and must not be followed by a blind 64 MB chunk.
+    public func nextStep(partialSize: Int,
+                         expectedBytes: Int?,
+                         chunkBytes: Int,
+                         kind: RangeTransferSegmentKind) -> RangeChunkNext {
         if let expectedBytes {
             if partialSize >= expectedBytes { return .complete }
             if chunkBytes <= 0 { return .stalled }
             return .continueFrom(offset: partialSize)
         }
+        if kind == .continuousRemainder { return .complete }
         // Unknown final size: an open-ended chunk fetched the rest; a bounded chunk that came back
         // short (or empty) hit EOF; only a full-sized chunk implies more remains.
         if chunkSize <= 0 { return .complete }

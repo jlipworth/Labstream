@@ -611,6 +611,7 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[ratingKey] else { lock.unlock(); return }
         row.bytes = bytes
         row.progress = progress
+        let previousStatus = row.status
         var statusChanged = false
         if row.status == .queued { row.status = .downloading; statusChanged = true }
         rows[ratingKey] = row
@@ -619,6 +620,16 @@ final class DownloadStore: @unchecked Sendable {
             || now.timeIntervalSince(lastProgressPersist) >= Self.progressPersistInterval
         if shouldPersist { lastProgressPersist = now }
         lock.unlock()
+        if statusChanged {
+            AppDiagnostics.record(.downloads, "downloads.status_transition", fields: [
+                "download_id": .identifier(ratingKey),
+                "from": .label(previousStatus.rawValue),
+                "to": .label(DownloadStatus.downloading.rawValue),
+                "bytes_exact": .int(bytes),
+                "progress_percent": .int(Int((progress * 100).rounded(.down))),
+                "source": .label("progress"),
+            ])
+        }
         if shouldPersist { persist() }
     }
 
@@ -626,9 +637,22 @@ final class DownloadStore: @unchecked Sendable {
     func setStatus(ratingKey: String, _ status: DownloadStatus) {
         lock.lock()
         guard var row = rows[ratingKey] else { lock.unlock(); return }
+        let previousStatus = row.status
+        let bytes = row.bytes
+        let progress = row.progress
         row.status = status
         rows[ratingKey] = row
         lock.unlock()
+        if previousStatus != status {
+            AppDiagnostics.record(.downloads, "downloads.status_transition", fields: [
+                "download_id": .identifier(ratingKey),
+                "from": .label(previousStatus.rawValue),
+                "to": .label(status.rawValue),
+                "bytes_exact": .int(bytes),
+                "progress_percent": .int(Int((progress * 100).rounded(.down))),
+                "source": .label("setStatus"),
+            ])
+        }
         persist()
     }
 

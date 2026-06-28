@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
+        AppDiagnostics.record(.downloads, "downloads.background_events_received", fields: [
+            "session": .label(identifier),
+        ])
         // The completion handler must be invoked on the main thread once events drain.
         Task { @MainActor in
             BackgroundDownloadCompletionRegistry.shared.store(identifier: identifier,
