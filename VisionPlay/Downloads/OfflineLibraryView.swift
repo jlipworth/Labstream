@@ -35,11 +35,6 @@ public struct OfflineLibraryView: View {
                         )
                     } else {
                         List {
-                            if snapshot.aggregateStats.hasVisibleMetrics {
-                                SwiftUI.Section {
-                                    aggregateSummary(for: snapshot.aggregateStats)
-                                }
-                            }
                             SwiftUI.Section {
                                 ForEach(snapshot.rows) { rowSnapshot in
                                     row(for: rowSnapshot)
@@ -58,19 +53,9 @@ public struct OfflineLibraryView: View {
                 }
                 .navigationTitle("Offline")
                 .toolbar {
-                    if let queueToolbarAction = snapshot.queueToolbarAction {
+                    if snapshot.aggregateStats.hasVisibleMetrics || snapshot.queueToolbarAction != nil {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                switch queueToolbarAction {
-                                case .pauseQueue:
-                                    manager.pauseQueue()
-                                case .resumeQueue:
-                                    manager.resumeQueue()
-                                }
-                            } label: {
-                                Label(queueToolbarAction.title,
-                                      systemImage: queueToolbarAction.systemImage)
-                            }
+                            offlineToolbarCluster(snapshot: snapshot)
                         }
                     }
                 }
@@ -102,41 +87,76 @@ public struct OfflineLibraryView: View {
 
     fileprivate static let rowActionControlSize: CGFloat = 56
 
-    private func aggregateSummary(for stats: OfflineDownloadAggregateStats) -> some View {
-        HStack(spacing: 12) {
-            if let speed = stats.activeSpeedBytesPerSecond, speed > 0 {
-                aggregateMetric(title: "Active speed",
-                                value: "\(Self.aggregateByteString(Int(speed)))/s",
-                                systemImage: "speedometer")
+    private func offlineToolbarCluster(snapshot: OfflineLibrarySnapshot) -> some View {
+        HStack(spacing: 8) {
+            if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
+                aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
+                                       systemImage: "speedometer",
+                                       accessibilityLabel: "Active download speed")
             }
-            if stats.downloadedBytes > 0 {
-                aggregateMetric(title: "Downloaded",
-                                value: Self.aggregateByteString(stats.downloadedBytes),
-                                systemImage: "externaldrive.fill")
+            if snapshot.aggregateStats.downloadedBytes > 0 {
+                aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
+                                       systemImage: "externaldrive.fill",
+                                       accessibilityLabel: "Downloaded data")
+            }
+            if snapshot.aggregateStats.hasVisibleMetrics, snapshot.queueToolbarAction != nil {
+                Divider()
+                    .frame(height: 18)
+                    .accessibilityHidden(true)
+            }
+            if let queueToolbarAction = snapshot.queueToolbarAction {
+                queueToolbarButton(queueToolbarAction)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .accessibilityElement(children: .combine)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .fixedSize(horizontal: true, vertical: true)
+        .accessibilityElement(children: .contain)
     }
 
-    private func aggregateMetric(title: String, value: String, systemImage: String) -> some View {
+    private func aggregateToolbarMetric(value: String,
+                                        systemImage: String,
+                                        accessibilityLabel: String) -> some View {
         Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.callout.weight(.semibold))
-                    .monospacedDigit()
-            }
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
         } icon: {
             Image(systemName: systemImage)
-                .foregroundStyle(.tint)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
         .labelStyle(.titleAndIcon)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(value)
+    }
+
+    private func queueToolbarButton(_ action: DownloadQueueToolbarPolicy.Action) -> some View {
+        Button {
+            switch action {
+            case .pauseQueue:
+                manager.pauseQueue()
+            case .resumeQueue:
+                manager.resumeQueue()
+            }
+        } label: {
+            Label(action.title, systemImage: action.systemImage)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(action.title)
     }
 
     private static func aggregateByteString(_ bytes: Int) -> String {
