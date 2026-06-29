@@ -928,6 +928,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             throw DownloadManager.DownloadError.storageFull
         }
+        if byteRangeCheckpoint {
+            store.setSourcePartSizeIfMissing(ratingKey: ratingKey, expectedBytes)
+        }
         // A fresh user-initiated start/resume clears any prior cancel/pause halt for this row (a
         // mid-chain chunk continuation calls `startRangeChunk` directly and deliberately does not),
         // and resets the validator-change restart bound so a user-driven retry starts with a clean count.
@@ -1001,6 +1004,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         } else {
             fileManager.createFile(atPath: destination.path, contents: nil)
         }
+        store.setSourcePartSizeIfMissing(ratingKey: ratingKey, expectedBytes)
         if let expectedBytes, offset >= expectedBytes, expectedBytes > 0 {
             finalizeRangeWhole(entry: RangeTransfer(
                 ratingKey: ratingKey,
@@ -1516,14 +1520,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.unlock()
 
             let total = rangeEntry.baseOffset + chunkBytesWritten
+            let responseExpectedBytes = Self.contentRangeTotal(from: downloadTask.response as? HTTPURLResponse)
+            let effectiveExpectedBytes = responseExpectedBytes ?? rangeEntry.expectedBytes
+            store.setSourcePartSizeIfMissing(ratingKey: rangeEntry.ratingKey, effectiveExpectedBytes)
             // A Range chunk's in-flight bytes live in an OS temp file until
             // `didFinishDownloadingTo` lets us append them to the durable partial. Keep the visible
             // row/aggregate "downloaded" total pinned to the last real checkpoint; detailed
             // diagnostics still report optimistic `total_bytes`. This prevents Pause/Pause All from
             // appearing to lose bytes that were never actually resumable.
             let checkpointBytes = durableBytes
-            let progress = (rangeEntry.expectedBytes ?? 0) > 0
-                ? min(1, Double(checkpointBytes) / Double(rangeEntry.expectedBytes!))
+            let progress = (effectiveExpectedBytes ?? 0) > 0
+                ? min(1, Double(checkpointBytes) / Double(effectiveExpectedBytes!))
                 : 0
             lock.lock()
             let gracefulPausePending = gracefulRangePauseKeys.contains(rangeEntry.ratingKey)
@@ -1536,11 +1543,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if !gracefulPausePending {
                 store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: checkpointBytes, progress: progress)
             }
-            onRangeLiveProgress?(rangeEntry.ratingKey, total, rangeEntry.expectedBytes)
+            onRangeLiveProgress?(rangeEntry.ratingKey, total, effectiveExpectedBytes)
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,
                                         entry: rangeEntry,
                                         chunkBytes: Int(totalBytesWritten),
                                         totalBytes: total,
+                                        expectedBytes: effectiveExpectedBytes,
                                         progress: progress,
                                         firstCallback: firstCallback)
             notifyProgressChangeIfNeeded(ratingKey: rangeEntry.ratingKey, progress: progress)
@@ -2126,6 +2134,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
               let spec = value.split(separator: " ").last,          // "<start>-<end>/<total>"
               let start = spec.split(separator: "-").first else { return nil }
         return Int(start)
+    }
+
+    /// Total size from `Content-Range: bytes <start>-<end>/<total>`, or nil for `*`/absent.
+    private static func contentRangeTotal(from response: HTTPURLResponse?) -> Int? {
+        guard let value = response?.value(forHTTPHeaderField: "Content-Range"),
+              let spec = value.split(separator: " ").last,
+              let total = spec.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).last,
+              total != "*" else { return nil }
+        return Int(total)
     }
 
     private static func rangeRequestStart(from request: URLRequest?) -> Int? {
@@ -2809,6 +2826,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                              entry: RangeTransfer,
                                              chunkBytes: Int,
                                              totalBytes: Int,
+                                             expectedBytes: Int?,
                                              progress: Double,
                                              firstCallback: Bool) {
         let now = Date()
@@ -2840,7 +2858,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "base_offset": .int(entry.baseOffset),
             "chunk_bytes": .int(chunkBytes),
             "total_bytes": .int(totalBytes),
-            "expected_exact": .int(entry.expectedBytes ?? -1),
+            "expected_exact": .int(expectedBytes ?? -1),
             "progress_percent": .int(Int((progress * 100).rounded(.down))),
         ])
     }
