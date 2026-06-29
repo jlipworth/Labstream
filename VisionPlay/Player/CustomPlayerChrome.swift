@@ -874,11 +874,18 @@ private struct CinemaScreenAdjustmentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                Button { session.applyReclinedScreenPreset() } label: {
-                    Label("I'm reclined", systemImage: "chair.lounge")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Button { session.applyReclinedScreenPreset() } label: {
+                        Label("I'm reclined", systemImage: "chair.lounge")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button { session.applyLyingDownScreenPreset() } label: {
+                        Label("Lying down", systemImage: "bed.double")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
 
                 Button { session.resetScreenAdjustment() } label: {
                     Label("Reset", systemImage: "arrow.counterclockwise")
@@ -925,7 +932,7 @@ private struct CinemaScreenAdjustmentView: View {
                        step: 0.05)
             }
 
-            Text("Use small nudges like a remote, or drag a slider for larger posture changes. Reclined tilts the top toward you and lifts the screen. Values apply immediately and are remembered for the next Cinema session.")
+            Text("Use small nudges like a remote, or drag a slider for larger posture changes. Reclined and Lying down presets tilt the top toward you and lift the screen for deeper posture changes. Values apply immediately and are remembered for the next Cinema session.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
