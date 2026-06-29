@@ -2344,6 +2344,7 @@ public final class DownloadManager {
             "session_background_handlers": .int(sessionSnapshot.backgroundCompletionHandlerCount),
             "session_handoff_grace_count": .int(sessionSnapshot.rangeBackgroundHandoffGraceTaskCount),
             "session_graceful_pause_count": .int(sessionSnapshot.gracefulRangePauseKeyCount),
+            "session_pending_temp_cleanup_bytes": .int(sessionSnapshot.pendingTempCleanupBytes),
         ])
     }
 
