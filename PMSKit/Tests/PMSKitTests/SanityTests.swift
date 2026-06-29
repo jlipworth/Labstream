@@ -2,5 +2,5 @@ import Testing
 @testable import PMSKit
 
 @Test func versionExists() {
-    #expect(PMSKit.version == "1.3.2")
+    #expect(PMSKit.version == "1.3.5")
 }
