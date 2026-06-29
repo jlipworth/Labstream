@@ -256,6 +256,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// request rehydration.
     var onRangeRequestNeeded: ((_ ratingKey: String, _ reason: BackgroundRangeRequestReason) -> Void)?
 
+    /// Ephemeral live byte observations for static Range chunks. The store remains checkpoint-only
+    /// for durable/resumable accounting; DownloadManager uses these samples for active speed/ETA.
+    var onRangeLiveProgress: ((_ ratingKey: String, _ liveBytes: Int, _ expectedBytes: Int?) -> Void)?
+
     /// True when this process currently owns an opaque or Range URLSession task for the row.
     /// `DownloadManager.activeJobs` is intentionally broader app-level bookkeeping and can survive
     /// a relaunch-adopted chunk handoff; stale active slots must not make a queued static partial
@@ -1450,6 +1454,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if !gracefulPausePending {
                 store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: checkpointBytes, progress: progress)
             }
+            onRangeLiveProgress?(rangeEntry.ratingKey, total, rangeEntry.expectedBytes)
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,
                                         entry: rangeEntry,
                                         chunkBytes: Int(totalBytesWritten),

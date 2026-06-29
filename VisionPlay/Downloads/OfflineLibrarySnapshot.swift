@@ -33,6 +33,7 @@ struct OfflineDownloadRowSnapshot: Identifiable {
     let displayProgress: Double?
     let statusCaption: String
     let isRetrying: Bool
+    let isCheckpointPausing: Bool
 
     var id: String { record.ratingKey }
 }
