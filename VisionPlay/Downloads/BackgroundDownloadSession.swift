@@ -112,7 +112,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var lastRangeProgressDiagnostic: [Int: (time: Date, bytes: Int)] = [:]
     private let maxTransientRetries = 3
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
-    private let progressNotifyInterval: TimeInterval = 0.25
+    private let progressNotifyInterval: TimeInterval = 0.5
     private static let cfNetworkTempPrefix = "CFNetworkDownload_"
     private static let cfNetworkTempSuffix = ".tmp"
     private static let nsurlsessiondRelativeDownloadCache = "Caches/com.apple.nsurlsessiond/Downloads/com.jlipworth.VisionPlay"
