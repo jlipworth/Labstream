@@ -89,7 +89,7 @@ extension DownloadManager {
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                     bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
-        optimizeState[ratingKey] = "queued"
+        optimizeState[ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
 
         // Snapshot the existing File MediaSources. Used both to (a) reuse an already-converted version
@@ -348,10 +348,12 @@ extension DownloadManager {
             if let pct = job.progress, pct > 0 {
                 let p = min(1.0, pct / 100.0)
                 optimizeProgress[ratingKey] = p
-                optimizeState[ratingKey] = "transcoding"
+                optimizeState[ratingKey] = p >= 1.0
+                    ? DownloadOptimizeStateLabel.finalizing
+                    : DownloadOptimizeStateLabel.transcoding
                 updateOptimizeETA(ratingKey: ratingKey, progress: p)
             } else {
-                optimizeState[ratingKey] = "queued"
+                optimizeState[ratingKey] = DownloadOptimizeStateLabel.queued
             }
             refreshRecords()
 
@@ -369,6 +371,8 @@ extension DownloadManager {
                                                       phase: "post_status_completed", jobId: jobId)
                         return
                     }
+                    markServerPrepFinalizing(ratingKey: ratingKey)
+                    refreshRecords()
                     await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
@@ -472,6 +476,13 @@ extension DownloadManager {
         let maxAttempts = 72   // ~6 min at the 5s optimizePollInterval — comfortably past the index lag.
         var fileSources: [EmbyMediaSourceInfo] = []
         var newSource: EmbyMediaSourceInfo?
+        markServerPrepFinalizing(ratingKey: ratingKey)
+        recordDownloadDiagnostic("downloads.convert_finalizing", fields: [
+            "download_id": .identifier(ratingKey),
+            "job_id": .int(jobId),
+            "max_attempts": .int(maxAttempts),
+        ])
+        refreshRecords()
         await requestEmbyItemRefresh(server: server, token: token, identity: identity, userId: userId,
                                      itemId: itemId, ratingKey: ratingKey, phase: "post_completed")
         for attempt in 0..<maxAttempts {

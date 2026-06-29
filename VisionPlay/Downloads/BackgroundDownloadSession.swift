@@ -25,6 +25,17 @@ private actor DownloadPlaybackValidationLimiter {
     }
 }
 
+struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
+    let opaqueInflightCount: Int
+    let rangeInflightCount: Int
+    let haltedRangeKeyCount: Int
+    let pendingBackgroundCompletionOperationCount: Int
+    let deferredBackgroundCompletionIdentifierCount: Int
+    let backgroundCompletionHandlerCount: Int
+    let finalizingRatingKeyCount: Int
+    let rangeBackgroundHandoffGraceTaskCount: Int
+}
+
 enum BackgroundRangeRequestReason: String, Sendable, Equatable {
     /// A background Range chunk was adopted after relaunch and finished, but the session object no
     /// longer has the authenticated base request needed to schedule the next chunk.
@@ -247,6 +258,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock(); defer { lock.unlock() }
         return inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
+    }
+
+    func diagnosticSnapshot() -> BackgroundDownloadSessionDiagnosticSnapshot {
+        lock.lock()
+        let opaqueInflightCount = inflight.count
+        let rangeInflightCount = rangeInflight.count
+        let haltedRangeKeyCount = haltedRangeKeys.count
+        let pendingBackgroundCompletionOperationCount = pendingBackgroundCompletionOperations
+        let deferredBackgroundCompletionIdentifierCount = deferredBackgroundCompletionIdentifiers.count
+        let backgroundCompletionHandlerCount = backgroundCompletionHandlersAwaitingFinish.count
+        let rangeBackgroundHandoffGraceTaskCount = rangeBackgroundHandoffGraceTasks.count
+        lock.unlock()
+        let finalizingRatingKeyCount = finalizationStateQueue.sync { finalizingRatingKeys.count }
+        return BackgroundDownloadSessionDiagnosticSnapshot(
+            opaqueInflightCount: opaqueInflightCount,
+            rangeInflightCount: rangeInflightCount,
+            haltedRangeKeyCount: haltedRangeKeyCount,
+            pendingBackgroundCompletionOperationCount: pendingBackgroundCompletionOperationCount,
+            deferredBackgroundCompletionIdentifierCount: deferredBackgroundCompletionIdentifierCount,
+            backgroundCompletionHandlerCount: backgroundCompletionHandlerCount,
+            finalizingRatingKeyCount: finalizingRatingKeyCount,
+            rangeBackgroundHandoffGraceTaskCount: rangeBackgroundHandoffGraceTaskCount)
     }
 
     private lazy var urlSession: URLSession = {
@@ -2429,18 +2462,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private static func validateLocalPlayback(_ url: URL, timeoutSecondsOverride: Double? = nil)
         async -> (played: Bool, reason: String, durationMs: Int?, detail: String?) {
         let asset = AVURLAsset(url: url)
-        let assetPlayable = (try? await asset.load(.isPlayable)) ?? false
-        guard assetPlayable else { return (false, "asset_not_playable", nil, nil) }
-        let durationMs: Int?
-        if let duration = try? await asset.load(.duration),
-           duration.seconds.isFinite, duration.seconds > 0 {
-            durationMs = Int(duration.seconds * 1000)
-        } else {
-            durationMs = nil
-        }
-        let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs)
-        let timeoutSeconds = timeoutSecondsOverride ?? policy.timeoutSeconds
-
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
         player.isMuted = true
@@ -2452,6 +2473,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             player.replaceCurrentItem(with: nil)
         }
 
+        // Avoid unbounded async asset-key loads here. This method already runs under the serialized
+        // finalization limiter, so a hung `asset.load(.isPlayable/.duration)` can block every later
+        // completed download in "Verifying download…" and was one of the remaining #187 overnight
+        // gray-freeze suspects. Let AVPlayerItem readiness/failure drive the same bounded loop instead.
+        var durationMs: Int?
+        let timeoutSeconds = timeoutSecondsOverride ?? OfflinePlaybackValidationPolicy.make(durationMs: nil).timeoutSeconds
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(timeoutSeconds * 1000)))
         var sawReady = false
         while ContinuousClock.now < deadline {
@@ -2461,11 +2488,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         item.error.map { DiagnosticRedactor.safeErrorSummary($0) })
             case .readyToPlay:
                 sawReady = true
+                if durationMs == nil {
+                    durationMs = Self.durationMilliseconds(from: item.duration)
+                }
             case .unknown:
                 break
             @unknown default:
                 break
             }
+            let policy = OfflinePlaybackValidationPolicy.make(durationMs: durationMs)
             let seconds = player.currentTime().seconds
             if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
                 return (true, "played", durationMs, nil)
@@ -2473,6 +2504,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
         return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs, nil)
+    }
+
+    private static func durationMilliseconds(from time: CMTime) -> Int? {
+        guard time.seconds.isFinite, time.seconds > 0 else { return nil }
+        return Int(time.seconds * 1000)
     }
 
     func urlSession(_ session: URLSession,

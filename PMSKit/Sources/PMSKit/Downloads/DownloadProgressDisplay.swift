@@ -47,6 +47,16 @@ public enum DownloadProgressDisplay {
         status == .downloading && progress.isFinite && progress >= 1.0
     }
 
+    /// Shared display state for server-side preparation handoff (#186): the server reports the
+    /// transcode/convert at 100%, but the app is still waiting for the prepared Part/MediaSource to
+    /// become downloadable/indexed before the real file transfer starts. This must not reuse the local
+    /// transfer-finalization helper above because no bytes have been downloaded yet.
+    public static func isServerPrepFinalizing(state: String?, progress: Double?) -> Bool {
+        if state?.caseInsensitiveCompare("finalizing") == .orderedSame { return true }
+        guard let progress, progress.isFinite else { return false }
+        return progress >= 1.0
+    }
+
     /// Derive the unified fraction.
     ///
     /// - Parameters:
