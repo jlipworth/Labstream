@@ -1998,7 +1998,7 @@ public final class DownloadManager {
         clearRetryHandoff(ratingKey: ratingKey)
     }
 
-    private func scheduleRefreshRecords(reason _: String, delay: Duration = .milliseconds(150)) {
+    private func scheduleRefreshRecords(reason _: String, delay: Duration = .milliseconds(500)) {
         guard refreshRecordsTask == nil else { return }
         refreshRecordsTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
