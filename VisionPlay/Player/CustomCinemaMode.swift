@@ -12,9 +12,12 @@ struct CustomCinemaScreenAdjustment: Equatable, Sendable {
     static let reclinedPreset = CustomCinemaScreenAdjustment(pitchDegrees: 18,
                                                             verticalDeltaMeters: 0.90,
                                                             distanceDeltaMeters: 0)
+    static let lyingDownPreset = CustomCinemaScreenAdjustment(pitchDegrees: 42,
+                                                             verticalDeltaMeters: 2.80,
+                                                             distanceDeltaMeters: -0.35)
 
-    static let pitchDegreesRange: ClosedRange<Float> = (-30)...30
-    static let verticalDeltaRange: ClosedRange<Float> = (-1.20)...1.80
+    static let pitchDegreesRange: ClosedRange<Float> = (-45)...60
+    static let verticalDeltaRange: ClosedRange<Float> = (-1.20)...3.80
     static let distanceDeltaRange: ClosedRange<Float> = (-1.5)...1.0
 
     private enum DefaultsKey {
@@ -100,8 +103,8 @@ struct CustomCinemaGeometry: Equatable, Sendable {
         let computedWidth = defaultHeight * aspect
         self.screenWidthMeters = (screenWidthMeters ?? computedWidth).clamped(to: 4.2...9.8)
         self.screenDistanceMeters = (screenDistanceMeters ?? defaultDistance).clamped(to: 4.8...9.0)
-        self.verticalOffsetMeters = (verticalOffsetMeters ?? defaultVertical).clamped(to: (-1.0)...2.4)
-        self.pitchRadians = (pitchRadians ?? 0).clamped(to: (-Float.pi / 6)...(Float.pi / 6))
+        self.verticalOffsetMeters = (verticalOffsetMeters ?? defaultVertical).clamped(to: (-1.0)...4.6)
+        self.pitchRadians = (pitchRadians ?? 0).clamped(to: (-Float.pi / 4)...(Float.pi / 3))
     }
 
     init(item: MediaItem, mediaIndex: Int) {
@@ -248,6 +251,10 @@ final class CustomCinemaSessionStore {
 
     func applyReclinedScreenPreset() {
         updateScreenAdjustment(.reclinedPreset)
+    }
+
+    func applyLyingDownScreenPreset() {
+        updateScreenAdjustment(.lyingDownPreset)
     }
 
     func resetScreenAdjustment() {
