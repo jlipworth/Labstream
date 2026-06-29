@@ -138,6 +138,19 @@ public final class DownloadManager {
     @ObservationIgnored private var forwardOnlyStallRestartAttempts: [String: Int] = [:]
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
 
+    private struct LiveRangeProgressSample {
+        var bytes: Int
+        var expectedBytes: Int?
+        var updatedAt: Date
+    }
+
+    /// Ephemeral live Range bytes. Persisted records stay pinned to durable checkpoints so storage
+    /// and Pause/Pause All accounting never claim non-resumable OS temp bytes. This overlay drives
+    /// active row progress, speed, and ETA between checkpoints.
+    private var liveRangeProgress: [String: LiveRangeProgressSample] = [:]
+    private var rangeCheckpointPauseRows: Set<String> = []
+    private static let liveRangeProgressStaleInterval: TimeInterval = 15
+
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
     var storageAudit: OfflineDownloadStorageAudit {
@@ -273,6 +286,20 @@ public final class DownloadManager {
         self.session.onRangeRequestNeeded = { [weak self] ratingKey, reason in
             Task { @MainActor in
                 self?.resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: reason.rawValue)
+            }
+        }
+        self.session.onRangeLiveProgress = { [weak self] ratingKey, liveBytes, expectedBytes in
+            Task { @MainActor in
+                guard let self else { return }
+                let previous = self.liveRangeProgress[ratingKey]
+                // Keep the largest live count within a chunk, but allow a new chunk/checkpoint to
+                // re-baseline upward from the durable checkpoint on the first callback.
+                let bytes = max(liveBytes, previous?.bytes ?? 0)
+                self.liveRangeProgress[ratingKey] = LiveRangeProgressSample(
+                    bytes: bytes,
+                    expectedBytes: expectedBytes ?? previous?.expectedBytes,
+                    updatedAt: Date())
+                self.scheduleRefreshRecords(reason: "range_live_progress")
             }
         }
         // D2: rows with no live task can't be told apart from a stall, so reconcile
@@ -569,13 +596,15 @@ public final class DownloadManager {
             // callback promotes the row to `.downloading`. Route queued rows through the session too
             // so Pause/queue-pause actually cancels that live task instead of merely changing UI state
             // while nsurlsessiond keeps transferring in the background.
-            if Self.isStaticRangeRecord(record) {
-                // `BackgroundDownloadSession.pause` removes its live range-tracking entry before the
-                // async `getAllTasks` callback sets the row to paused. A synchronous refresh in that
-                // tiny window used to misclassify the row as a stale active partial and immediately
-                // auto-retry it, so an individual Pause looked like "Retrying" and resumed itself.
-                // Park static range rows as paused before cancelling; the session callback still
-                // snapshots the durable checkpoint, but refresh can no longer restart the row.
+            if Self.isStaticRangeRecord(record), session.isTrackingTransfer(ratingKey: ratingKey) {
+                // Static Range rows pause at a real durable checkpoint. Keep the persisted lifecycle
+                // as active while the current bounded chunk drains so progress/rate remain honest
+                // and the row does not bounce Paused→Downloading from delegate progress. The
+                // session will write `.paused` once the checkpoint is appended (or immediately for
+                // non-drainable cases).
+                rangeCheckpointPauseRows.insert(ratingKey)
+            } else if Self.isStaticRangeRecord(record) {
+                // No live task to drain; this is a queued/gap pause and can park immediately.
                 store.setStatus(ratingKey: ratingKey, .paused)
             }
             session.pause(ratingKey: ratingKey)
@@ -2081,6 +2110,15 @@ public final class DownloadManager {
         let finalizedRecoveryKeys = Set(fresh.filter { $0.status == .complete || $0.status == .unverified || $0.status == .failed }.map(\.ratingKey))
         finalizingStaticRangeRecoveryKeys.subtract(finalizedRecoveryKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
+        let pendingPauseKeys = Set(fresh.filter { rangeCheckpointPauseRows.contains($0.ratingKey) }.map(\.ratingKey))
+        rangeCheckpointPauseRows = rangeCheckpointPauseRows.filter { key in
+            guard let record = fresh.first(where: { $0.ratingKey == key }) else { return false }
+            return record.status == .downloading && session.isTrackingTransfer(ratingKey: key)
+        }
+        liveRangeProgress = liveRangeProgress.filter { key, sample in
+            guard now.timeIntervalSince(sample.updatedAt) <= Self.liveRangeProgressStaleInterval else { return false }
+            return activeKeys.contains(key) || pendingPauseKeys.contains(key)
+        }
         // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
         // cumulative byte count. The estimator owns ALL the speed/ETA math — first-emit window,
         // stall decay→nil, backwards-bytes re-baseline, and the Σdb/Σdt window average that
@@ -2092,13 +2130,15 @@ public final class DownloadManager {
         for record in fresh where record.status == .downloading {
             var estimator = rateEstimators[record.ratingKey]
                 ?? DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
-            let rate = estimator.sample(bytes: record.bytes, at: now)
+            let sampleBytes = liveDisplayBytes(for: record, now: now) ?? record.bytes
+            let rate = estimator.sample(bytes: sampleBytes, at: now)
             // Recover the expected final size for the ETA: the exact Content-Length path
             // (`bytes / progress`) when the server reported a size, the persisted static Part size
             // when a range/static row has bytes but progress is still zero, else the same
             // duration×target-bitrate estimate used for storage preflight (JF/Emby transcoder
-            // streams that ship no Content-Length).
-            let expectedTotal = expectedDownloadBytes(for: record)
+            // streams that ship no Content-Length). Static Range rows use the ephemeral live sample
+            // here so speed/ETA remain continuous even though persisted bytes are checkpoint-only.
+            let expectedTotal = expectedDownloadBytes(for: record, liveBytes: sampleBytes)
             downloadSpeed[record.ratingKey] = (rate ?? 0) > 0 ? rate : nil
             downloadETA[record.ratingKey] = estimator.eta(expectedTotal: expectedTotal)
             rateEstimators[record.ratingKey] = estimator
@@ -2647,25 +2687,38 @@ public final class DownloadManager {
     /// The selection is keyed on `record.progress`, not the backend kind, so it survives a
     /// relaunch (the in-memory `transcodeSourcedDownloads` set does not).
     public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
-        if record.progress <= 0,
-           record.bytes > 0,
-           let staticExpectedBytes = staticRangeExpectedBytes(for: record) {
-            return DownloadProgressDisplay.Fraction(value: min(Double(record.bytes) / Double(staticExpectedBytes), 1.0),
+        let bytes = liveDisplayBytes(for: record) ?? record.bytes
+        if record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+           bytes > 0,
+           let staticExpectedBytes = liveRangeProgress[record.ratingKey]?.expectedBytes ?? staticRangeExpectedBytes(for: record) {
+            return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(staticExpectedBytes), 1.0),
                                                     isEstimated: false)
         }
         return DownloadProgressDisplay.fraction(progress: record.progress,
-                                                bytes: record.bytes,
+                                                bytes: bytes,
                                                 estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
     }
 
-    private func expectedDownloadBytes(for record: DownloadRecord) -> Int? {
-        if record.progress > 0 {
-            return Int(Double(record.bytes) / record.progress)
+    private func expectedDownloadBytes(for record: DownloadRecord, liveBytes: Int? = nil) -> Int? {
+        if let expected = liveRangeProgress[record.ratingKey]?.expectedBytes, expected > 0 {
+            return expected
+        }
+        let bytes = liveBytes ?? record.bytes
+        if record.progress > 0, bytes > 0 {
+            return Int(Double(bytes) / record.progress)
         }
         if let staticExpectedBytes = staticRangeExpectedBytes(for: record) {
             return staticExpectedBytes
         }
         return Self.estimatedTranscodeBytes(for: record)
+    }
+
+    private func liveDisplayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
+        guard record.status == .downloading || rangeCheckpointPauseRows.contains(record.ratingKey),
+              let sample = liveRangeProgress[record.ratingKey],
+              now.timeIntervalSince(sample.updatedAt) <= Self.liveRangeProgressStaleInterval,
+              sample.bytes > record.bytes else { return nil }
+        return sample.bytes
     }
 
     private func staticRangeExpectedBytes(for record: DownloadRecord) -> Int? {
@@ -2690,7 +2743,8 @@ public final class DownloadManager {
                 errorMessage: record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil,
                 displayProgress: rowDisplayProgress(for: record),
                 statusCaption: statusCaption(for: record, backend: backend),
-                isRetrying: retryPresentationRows.contains(record.ratingKey)
+                isRetrying: retryPresentationRows.contains(record.ratingKey),
+                isCheckpointPausing: rangeCheckpointPauseRows.contains(record.ratingKey)
             )
         }
 
@@ -2772,7 +2826,8 @@ public final class DownloadManager {
         if DownloadProgressDisplay.isTransferFinalizing(status: record.status, progress: record.progress) {
             return transferFinalizingCaption(for: record)
         }
-        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
+        let isCheckpointPausing = rangeCheckpointPauseRows.contains(record.ratingKey)
+        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading || isCheckpointPausing
         let resumeMode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
         let isServerPrep = resumeMode == .serverPrepThenStatic
         if record.bytes == 0 {
@@ -2838,7 +2893,10 @@ public final class DownloadManager {
         }
         if isActive {
             var head: String
-            switch record.metadata?.resolvedDownloadLane() ?? .original {
+            if isCheckpointPausing {
+                head = "Pausing at checkpoint"
+            } else {
+                switch record.metadata?.resolvedDownloadLane() ?? .original {
             case .original where record.metadata?.isServerPreparedVersion == true:
                 head = "Downloading transcode"
             case .original:
@@ -2847,6 +2905,7 @@ public final class DownloadManager {
                 head = "Remuxing + downloading"
             case .optimize:
                 head = backend == .plex ? "Downloading transcode" : "Transcoding + downloading"
+                }
             }
             if let percentPiece { head += " • \(percentPiece)" }
             if let eta = downloadETA[record.ratingKey], eta > 0,
@@ -2857,7 +2916,8 @@ public final class DownloadManager {
         } else if let percentPiece {
             pieces.append(percentPiece)
         }
-        pieces.append(byteString(record.bytes))
+        let captionBytes = liveDisplayBytes(for: record) ?? record.bytes
+        pieces.append(byteString(captionBytes))
         if isActive, let speed = downloadSpeed[record.ratingKey], speed > 0 {
             let rate = "\(byteString(Int(speed)))/s"
             pieces.append(transcodeLimited ? "\(rate) server-paced" : rate)
