@@ -10,6 +10,23 @@ import os
 /// URL carries `X-Plex-Token` as a query param), so we log `url.path` only.
 let downloadLog = Logger(subsystem: "com.jlipworth.VisionPlay", category: "Downloads")
 
+enum DownloadOptimizeStateLabel {
+    static let queued = "queued"
+    static let transcoding = "transcoding"
+    static let finalizing = "finalizing"
+}
+
+private struct ForwardOnlyStallObservation {
+    var bytes: Int
+    var lastForwardProgressAt: Date
+}
+
+private struct ForwardOnlyStallRestart {
+    let record: DownloadRecord
+    let stalledFor: TimeInterval
+    let attempt: Int
+}
+
 /// Coordinates the offline-download pipeline:
 ///   1. trigger a server-side capped-bitrate optimize (8 Mbps 1080p preset),
 ///   2. poll the item's metadata until the optimized `Part` appears,
@@ -116,6 +133,10 @@ public final class DownloadManager {
     /// `publishTransferFinalizing` sees the row still at 100%/downloading until the async probe
     /// writes a terminal status, re-enters recovery, and can recurse until the main stack overflows.
     private var finalizingStaticRangeRecoveryKeys: Set<String> = []
+    @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored private var forwardOnlyStallObservations: [String: ForwardOnlyStallObservation] = [:]
+    @ObservationIgnored private var forwardOnlyStallRestartAttempts: [String: Int] = [:]
+    @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -690,7 +711,7 @@ public final class DownloadManager {
             // than a paused row with no partial and no retry path.
             store.setStatus(ratingKey: ratingKey, .failed)
             lastError[ratingKey] = .transferFailed(
-                "Download will restart when the \(backend.displayName) session is ready.")
+                "No completed checkpoint was saved before the interruption; retry will restart this download from 0%.")
         }
         recordDownloadDiagnostic("downloads.range_resume_deferred", fields: [
             "download_id": .identifier(ratingKey),
@@ -1061,7 +1082,7 @@ public final class DownloadManager {
         retryingRows.remove(record.ratingKey)
         clearRetryHandoff(ratingKey: record.ratingKey)
         store.setStatus(ratingKey: record.ratingKey, .queued)
-        optimizeState[record.ratingKey] = "queued"
+        optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
         resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
     }
@@ -2082,13 +2103,21 @@ public final class DownloadManager {
             downloadETA[record.ratingKey] = estimator.eta(expectedTotal: expectedTotal)
             rateEstimators[record.ratingKey] = estimator
         }
+        let forwardOnlyRestarts = detectForwardOnlyStreamStalls(in: fresh, now: now)
         // Drop estimators/derived values for rows no longer downloading (complete / failed / removed).
         rateEstimators = rateEstimators.filter { activeKeys.contains($0.key) }
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
+        updateDownloadWatchdog(for: fresh)
+        recordDownloadHealthSnapshotIfNeeded(records: fresh, now: now)
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
         ensureJellyfinDownloadKeepalives(for: fresh)
+        for restart in forwardOnlyRestarts {
+            Task { @MainActor [weak self] in
+                self?.restartStalledForwardOnlyStream(restart)
+            }
+        }
 
         // Release the in-flight protection for any job whose download has reached a terminal
         // state (complete / failed). The optimize-queue title and `activeJobs` slot must stay
@@ -2109,6 +2138,130 @@ public final class DownloadManager {
                     || $0.status == .failed || $0.status == .paused)
         }.map(\.ratingKey))
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
+    }
+
+    private func detectForwardOnlyStreamStalls(in records: [DownloadRecord],
+                                               now: Date) -> [ForwardOnlyStallRestart] {
+        var candidateKeys: Set<String> = []
+        var restarts: [ForwardOnlyStallRestart] = []
+        for record in records where DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(record) {
+            candidateKeys.insert(record.ratingKey)
+            let active = activeJobs.contains(record.ratingKey)
+                || session.isTrackingTransfer(ratingKey: record.ratingKey)
+            var observation = forwardOnlyStallObservations[record.ratingKey]
+                ?? ForwardOnlyStallObservation(bytes: record.bytes, lastForwardProgressAt: now)
+            if record.bytes > observation.bytes {
+                observation.bytes = record.bytes
+                observation.lastForwardProgressAt = now
+                forwardOnlyStallRestartAttempts[record.ratingKey] = 0
+            }
+            let attempts = forwardOnlyStallRestartAttempts[record.ratingKey] ?? 0
+            if DownloadStallRecoveryPolicy.shouldRestartForwardOnlyStream(
+                record: record,
+                active: active,
+                lastForwardProgressAt: observation.lastForwardProgressAt,
+                now: now,
+                restartAttempts: attempts
+            ) {
+                let nextAttempt = attempts + 1
+                forwardOnlyStallRestartAttempts[record.ratingKey] = nextAttempt
+                restarts.append(ForwardOnlyStallRestart(
+                    record: record,
+                    stalledFor: now.timeIntervalSince(observation.lastForwardProgressAt),
+                    attempt: nextAttempt))
+                observation.lastForwardProgressAt = now
+                observation.bytes = record.bytes
+            }
+            forwardOnlyStallObservations[record.ratingKey] = observation
+        }
+        forwardOnlyStallObservations = forwardOnlyStallObservations.filter { candidateKeys.contains($0.key) }
+        let liveOrRetryableKeys = Set(records.filter { $0.status != .complete && $0.status != .unverified }.map(\.ratingKey))
+        forwardOnlyStallRestartAttempts = forwardOnlyStallRestartAttempts.filter { liveOrRetryableKeys.contains($0.key) }
+        return restarts
+    }
+
+    private func restartStalledForwardOnlyStream(_ restart: ForwardOnlyStallRestart) {
+        let ratingKey = restart.record.ratingKey
+        guard let current = store.records.first(where: { $0.ratingKey == ratingKey }),
+              DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
+        let backend = backendKind(for: current)
+        recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backend.rawValue),
+            "lane": .label(current.metadata?.resolvedDownloadLane().rawValue ?? "unknown"),
+            "bytes": .bytes(current.bytes),
+            "stalled_seconds": .int(Int(restart.stalledFor.rounded())),
+            "attempt": .int(restart.attempt),
+            "max_attempts": .int(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts),
+        ])
+        session.cancel(ratingKey: ratingKey)
+        retryingRows.remove(ratingKey)
+        clearRetryHandoff(ratingKey: ratingKey)
+        lastError[ratingKey] = .transferFailed(
+            "Network stalled; restarting this forward-only stream from the beginning.")
+        store.setStatus(ratingKey: ratingKey, .failed)
+        releaseInFlight(ratingKey: ratingKey)
+        refreshRecords()
+        retry(ratingKey: ratingKey)
+    }
+
+    private func updateDownloadWatchdog(for records: [DownloadRecord]) {
+        let needsWatchdog = records.contains { record in
+            DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(record)
+                || record.status == .preparing
+                || record.status == .queued
+                || record.status == .downloading
+        }
+        if needsWatchdog {
+            guard downloadWatchdogTask == nil else { return }
+            downloadWatchdogTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                    await MainActor.run {
+                        guard let self, self.downloadWatchdogTask != nil else { return }
+                        self.refreshRecords()
+                    }
+                }
+            }
+        } else {
+            downloadWatchdogTask?.cancel()
+            downloadWatchdogTask = nil
+        }
+    }
+
+    private func recordDownloadHealthSnapshotIfNeeded(records: [DownloadRecord], now: Date) {
+        let activeCount = records.filter { $0.status == .queued || $0.status == .preparing || $0.status == .downloading }.count
+        let sessionSnapshot = session.diagnosticSnapshot()
+        let hasSessionWork = sessionSnapshot.opaqueInflightCount > 0
+            || sessionSnapshot.rangeInflightCount > 0
+            || sessionSnapshot.finalizingRatingKeyCount > 0
+            || sessionSnapshot.pendingBackgroundCompletionOperationCount > 0
+        guard activeCount > 0 || hasSessionWork else { return }
+        guard lastDownloadHealthDiagnosticAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true else { return }
+        lastDownloadHealthDiagnosticAt = now
+        recordDownloadDiagnostic("downloads.health_snapshot", fields: [
+            "record_count": .int(records.count),
+            "active_record_count": .int(activeCount),
+            "queued_count": .int(records.filter { $0.status == .queued }.count),
+            "preparing_count": .int(records.filter { $0.status == .preparing }.count),
+            "downloading_count": .int(records.filter { $0.status == .downloading }.count),
+            "active_job_count": .int(activeJobs.count),
+            "retrying_count": .int(retryingRows.count),
+            "retry_handoff_count": .int(retryHandoffRows.count),
+            "pending_static_resume_count": .int(pendingStaticRangeResumeKeys.count),
+            "finalizing_static_recovery_count": .int(finalizingStaticRangeRecoveryKeys.count),
+            "server_prep_poller_count": .int(serverPrepPollerTasks.count),
+            "jellyfin_keepalive_count": .int(jellyfinDownloadKeepaliveTasks.count),
+            "forward_stall_watch_count": .int(forwardOnlyStallObservations.count),
+            "session_inflight_count": .int(sessionSnapshot.opaqueInflightCount),
+            "session_range_inflight_count": .int(sessionSnapshot.rangeInflightCount),
+            "session_halted_range_count": .int(sessionSnapshot.haltedRangeKeyCount),
+            "session_finalizing_count": .int(sessionSnapshot.finalizingRatingKeyCount),
+            "session_pending_background_ops": .int(sessionSnapshot.pendingBackgroundCompletionOperationCount),
+            "session_deferred_background_handlers": .int(sessionSnapshot.deferredBackgroundCompletionIdentifierCount),
+            "session_background_handlers": .int(sessionSnapshot.backgroundCompletionHandlerCount),
+            "session_handoff_grace_count": .int(sessionSnapshot.rangeBackgroundHandoffGraceTaskCount),
+        ])
     }
 
     private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
@@ -2223,6 +2376,7 @@ public final class DownloadManager {
         serverPrepPollerIDs.removeValue(forKey: ratingKey)
         serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
+        forwardOnlyStallObservations.removeValue(forKey: ratingKey)
         if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
             activeQueueTitles.remove(title)
         }
@@ -2643,6 +2797,11 @@ public final class DownloadManager {
             }
 
             let prepHead = (isServerPrep || record.status == .preparing) ? "Preparing on server…" : "Transcoding"
+            let prepState = optimizeState[record.ratingKey]
+            if DownloadProgressDisplay.isServerPrepFinalizing(state: prepState,
+                                                              progress: optimizeProgress[record.ratingKey]) {
+                return serverPrepFinalizingCaption(for: record)
+            }
             if let p = optimizeProgress[record.ratingKey] {
                 var caption = "\(prepHead) \(Int(p * 100))%"
                 if let eta = optimizeETA[record.ratingKey], eta > 0,
@@ -2651,7 +2810,7 @@ public final class DownloadManager {
                 }
                 return caption
             }
-            if optimizeState[record.ratingKey] == "queued" {
+            if prepState == DownloadOptimizeStateLabel.queued {
                 return "Preparing on server…"
             }
             // Server-prep rows have no URLSession task yet and may briefly have no in-memory
@@ -2714,6 +2873,15 @@ public final class DownloadManager {
     private func transferFinalizingCaption(for record: DownloadRecord) -> String {
         var pieces = ["Verifying download…"]
         if record.bytes > 0 { pieces.append(byteString(record.bytes)) }
+        if let r = record.metadata?.resolutionLabel { pieces.append(r) }
+        return pieces.joined(separator: " • ")
+    }
+
+    /// Server-side prep reached 100%, but the produced file/source/Part is not yet listed as
+    /// downloadable. Keep that distinct from local "Verifying download…" because no file bytes have
+    /// landed yet (#186).
+    private func serverPrepFinalizingCaption(for record: DownloadRecord) -> String {
+        var pieces = ["Finalizing server transcode…"]
         if let r = record.metadata?.resolutionLabel { pieces.append(r) }
         return pieces.joined(separator: " • ")
     }
@@ -3043,7 +3211,7 @@ public final class DownloadManager {
         // progress is 0…100, or -1 indeterminate. -1 / missing → "queued" (job seen but no
         // measurable progress yet); a real percent → "transcoding".
         guard let pct = activity.progress, pct >= 0 else {
-            optimizeState[ratingKey] = "queued"
+            optimizeState[ratingKey] = DownloadOptimizeStateLabel.queued
             optimizeProgress[ratingKey] = nil
             optimizeETA[ratingKey] = nil
             refreshRecords()
@@ -3051,7 +3219,10 @@ public final class DownloadManager {
         }
         let p = min(1.0, Double(pct) / 100.0)
         optimizeProgress[ratingKey] = p
-        optimizeState[ratingKey] = "transcoding"
+        optimizeState[ratingKey] = p >= 1.0
+            ? DownloadOptimizeStateLabel.finalizing
+            : DownloadOptimizeStateLabel.transcoding
+        if p >= 1.0 { optimizeETA[ratingKey] = nil }
         updateOptimizeETA(ratingKey: ratingKey, progress: p)
         refreshRecords()
     }
@@ -3118,6 +3289,12 @@ public final class DownloadManager {
         optimizeState[ratingKey] = nil
         optimizeProgressSamples[ratingKey] = nil
         optimizeRate[ratingKey] = nil
+    }
+
+    func markServerPrepFinalizing(ratingKey: String) {
+        optimizeProgress[ratingKey] = 1.0
+        optimizeETA[ratingKey] = nil
+        optimizeState[ratingKey] = DownloadOptimizeStateLabel.finalizing
     }
 
     // MARK: - Server conversion queue probe
@@ -3204,7 +3381,9 @@ public final class DownloadManager {
                     // Monotonic for display: never let it visibly step backward (prefer the
                     // larger), so a brief disagreement with the activity match can't jitter the bar.
                     optimizeProgress[ratingKey] = max(bgFraction, optimizeProgress[ratingKey] ?? 0)
-                    optimizeState[ratingKey] = "transcoding"
+                    optimizeState[ratingKey] = bgFraction >= 1.0
+                        ? DownloadOptimizeStateLabel.finalizing
+                        : DownloadOptimizeStateLabel.transcoding
                     didUpdateProgressState = true
                 }
 
@@ -3227,7 +3406,7 @@ public final class DownloadManager {
                 // but remember the coarse queued state so a real % is never clobbered if the row
                 // briefly drops out of the active slot.
                 if optimizeProgress[ratingKey] == nil {
-                    optimizeState[ratingKey] = "queued"
+                    optimizeState[ratingKey] = DownloadOptimizeStateLabel.queued
                     refreshRecords()
                 }
             }

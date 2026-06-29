@@ -330,27 +330,45 @@ extension DownloadManager {
         guard !requests.isEmpty else { return }
         let store = self.store
         Task { [weak self] in
-            // Fetch concurrently — chapters are independent and a long film has many. A failed/empty
-            // image is dropped; only chapters that landed on disk go into the map.
-            let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
-                for entry in requests {
-                    group.addTask {
-                        guard let (data, response) = try? await URLSession.shared.data(for: entry.request),
-                              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                              !data.isEmpty else { return nil }
-                        return (entry.index, data)
-                    }
+            // Bound side-asset fanout (#187). The old task group launched every chapter thumbnail at
+            // once and accumulated all image Data before writing. A long movie times several overnight
+            // downloads could amplify memory/network pressure independent of the media transfer. Fetch
+            // in small batches and write each batch before requesting the next one.
+            let batchSize = 4
+            if requests.count > batchSize {
+                await MainActor.run {
+                    self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "asset": .label("chapter_images"),
+                        "request_count": .int(requests.count),
+                        "batch_size": .int(batchSize),
+                    ])
                 }
-                var out: [(index: Int, data: Data)] = []
-                for await result in group { if let result { out.append(result) } }
-                return out
             }
-            guard !fetched.isEmpty else { return }
             var relativesByIndex: [Int: String] = [:]
-            for entry in fetched {
-                let destination = store.chapterImageDestinationURL(ratingKey: ratingKey, index: entry.index)
-                guard (try? entry.data.write(to: destination, options: .atomic)) != nil else { continue }
-                relativesByIndex[entry.index] = destination.lastPathComponent
+            var start = 0
+            while start < requests.count {
+                let end = min(start + batchSize, requests.count)
+                let batch = Array(requests[start..<end])
+                let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
+                    for entry in batch {
+                        group.addTask {
+                            guard let (data, response) = try? await URLSession.shared.data(for: entry.request),
+                                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                                  !data.isEmpty else { return nil }
+                            return (entry.index, data)
+                        }
+                    }
+                    var out: [(index: Int, data: Data)] = []
+                    for await result in group { if let result { out.append(result) } }
+                    return out
+                }
+                for entry in fetched {
+                    let destination = store.chapterImageDestinationURL(ratingKey: ratingKey, index: entry.index)
+                    guard (try? entry.data.write(to: destination, options: .atomic)) != nil else { continue }
+                    relativesByIndex[entry.index] = destination.lastPathComponent
+                }
+                start = end
             }
             guard !relativesByIndex.isEmpty else { return }
             await MainActor.run {

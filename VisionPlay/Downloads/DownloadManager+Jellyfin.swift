@@ -304,39 +304,59 @@ extension DownloadManager {
                       (200..<300).contains(playlistHTTP.statusCode),
                       let playlistText = String(data: playlistData, encoding: .utf8) else { return }
                 let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
-                // Fetch the tile sheets CONCURRENTLY — they are independent and a long movie has many
-                // sheets, so serial round-trips dominate the cache time. Disk writes + the URI→filename
-                // map are then built deterministically in tile order. A tile that fails to fetch is
-                // simply dropped (its frame just has no offline thumbnail).
-                let fetched: [(index: Int, uri: String, data: Data)] = await withTaskGroup(of: (Int, String, Data)?.self) { group in
-                    for (index, tile) in playlist.tiles.enumerated() {
-                        guard let tileReq = try? JellyfinLibrary.trickPlayTileRequest(server: server,
-                                                                                      token: token,
-                                                                                      identity: identity,
-                                                                                      itemId: itemId,
-                                                                                      mediaSourceId: mediaSourceId,
-                                                                                      width: width,
-                                                                                      tileURI: tile.uri) else { continue }
-                        let uri = tile.uri
-                        group.addTask {
-                            guard let (tileData, tileResponse) = try? await URLSession.shared.data(for: tileReq),
-                                  let tileHTTP = tileResponse as? HTTPURLResponse,
-                                  (200..<300).contains(tileHTTP.statusCode),
-                                  !tileData.isEmpty else { return nil }
-                            return (index, uri, tileData)
-                        }
-                    }
-                    var out: [(index: Int, uri: String, data: Data)] = []
-                    for await result in group { if let result { out.append(result) } }
-                    return out.sorted { $0.index < $1.index }
-                }
                 var tileRelatives: [String] = []
                 var tileFilenamesByURI: [String: String] = [:]
-                for entry in fetched {
-                    let destination = store.jellyfinTrickPlayTileDestinationURL(ratingKey: ratingKey, index: entry.index)
-                    try entry.data.write(to: destination, options: .atomic)
-                    tileFilenamesByURI[entry.uri] = destination.lastPathComponent
-                    tileRelatives.append(destination.lastPathComponent)
+                // Bound side-asset fanout (#187). A long movie can have many tile sheets; fetching all
+                // at once and then retaining every Data blob until after the group completes can amplify
+                // overnight memory pressure. Fetch in small concurrent batches and write each batch
+                // before moving on.
+                let batchSize = 4
+                if playlist.tiles.count > batchSize {
+                    await MainActor.run {
+                        self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "asset": .label("jellyfin_trickplay_tiles"),
+                            "request_count": .int(playlist.tiles.count),
+                            "batch_size": .int(batchSize),
+                        ])
+                    }
+                }
+                var start = 0
+                while start < playlist.tiles.count {
+                    let end = min(start + batchSize, playlist.tiles.count)
+                    let batch = Array(playlist.tiles[start..<end].enumerated()).map { (offset, tile) in
+                        (index: start + offset, tile: tile)
+                    }
+                    let fetched: [(index: Int, uri: String, data: Data)] = await withTaskGroup(of: (Int, String, Data)?.self) { group in
+                        for entry in batch {
+                            guard let tileReq = try? JellyfinLibrary.trickPlayTileRequest(server: server,
+                                                                                          token: token,
+                                                                                          identity: identity,
+                                                                                          itemId: itemId,
+                                                                                          mediaSourceId: mediaSourceId,
+                                                                                          width: width,
+                                                                                          tileURI: entry.tile.uri) else { continue }
+                            let uri = entry.tile.uri
+                            let index = entry.index
+                            group.addTask {
+                                guard let (tileData, tileResponse) = try? await URLSession.shared.data(for: tileReq),
+                                      let tileHTTP = tileResponse as? HTTPURLResponse,
+                                      (200..<300).contains(tileHTTP.statusCode),
+                                      !tileData.isEmpty else { return nil }
+                                return (index, uri, tileData)
+                            }
+                        }
+                        var out: [(index: Int, uri: String, data: Data)] = []
+                        for await result in group { if let result { out.append(result) } }
+                        return out.sorted { $0.index < $1.index }
+                    }
+                    for entry in fetched {
+                        let destination = store.jellyfinTrickPlayTileDestinationURL(ratingKey: ratingKey, index: entry.index)
+                        try entry.data.write(to: destination, options: .atomic)
+                        tileFilenamesByURI[entry.uri] = destination.lastPathComponent
+                        tileRelatives.append(destination.lastPathComponent)
+                    }
+                    start = end
                 }
                 guard !tileRelatives.isEmpty else { return }
                 let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlistText, tileFilenamesByURI: tileFilenamesByURI)

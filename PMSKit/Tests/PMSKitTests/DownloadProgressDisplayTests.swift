@@ -95,4 +95,20 @@ struct DownloadProgressDisplayTests {
         #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .failed, progress: 1.0))
         #expect(!DownloadProgressDisplay.isTransferFinalizing(status: .paused, progress: 1.0))
     }
+
+    // MARK: - Server-prep finalization display state
+
+    @Test("server prep at 100% is a server-side finalization state")
+    func serverPrepAtOneHundredPercentIsFinalizing() {
+        #expect(DownloadProgressDisplay.isServerPrepFinalizing(state: "transcoding", progress: 1.0))
+        #expect(DownloadProgressDisplay.isServerPrepFinalizing(state: "finalizing", progress: 0.42))
+        #expect(DownloadProgressDisplay.isServerPrepFinalizing(state: "FINALIZING", progress: nil))
+    }
+
+    @Test("queued or partial server prep is not finalizing")
+    func serverPrepPartialsAreNotFinalizing() {
+        #expect(!DownloadProgressDisplay.isServerPrepFinalizing(state: "queued", progress: nil))
+        #expect(!DownloadProgressDisplay.isServerPrepFinalizing(state: "transcoding", progress: 0.999))
+        #expect(!DownloadProgressDisplay.isServerPrepFinalizing(state: nil, progress: nil))
+    }
 }
