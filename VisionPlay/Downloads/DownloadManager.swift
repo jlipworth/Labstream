@@ -2193,14 +2193,6 @@ public final class DownloadManager {
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         updateDownloadWatchdog(for: fresh)
         recordDownloadHealthSnapshotIfNeeded(records: fresh, now: now)
-        records = fresh
-        offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
-        ensureJellyfinDownloadKeepalives(for: fresh)
-        for restart in forwardOnlyRestarts {
-            Task { @MainActor [weak self] in
-                self?.restartStalledForwardOnlyStream(restart)
-            }
-        }
 
         // Release the in-flight protection for any job whose download has reached a terminal
         // state (complete / failed). The optimize-queue title and `activeJobs` slot must stay
@@ -2221,6 +2213,15 @@ public final class DownloadManager {
                     || $0.status == .failed || $0.status == .paused)
         }.map(\.ratingKey))
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
+
+        records = fresh
+        offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
+        ensureJellyfinDownloadKeepalives(for: fresh)
+        for restart in forwardOnlyRestarts {
+            Task { @MainActor [weak self] in
+                self?.restartStalledForwardOnlyStream(restart)
+            }
+        }
     }
 
     private func detectForwardOnlyStreamStalls(in records: [DownloadRecord],
