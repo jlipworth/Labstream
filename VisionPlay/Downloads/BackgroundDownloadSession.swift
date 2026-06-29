@@ -34,6 +34,7 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
     let backgroundCompletionHandlerCount: Int
     let finalizingRatingKeyCount: Int
     let rangeBackgroundHandoffGraceTaskCount: Int
+    let gracefulRangePauseKeyCount: Int
 }
 
 enum BackgroundRangeRequestReason: String, Sendable, Equatable {
@@ -140,6 +141,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// drain, immediately release the handler, and make no progress on chunk N+1 until foreground.
     private var rangeBackgroundHandoffGraceTasks: Set<Int> = []
     private static let rangeBackgroundHandoffGraceSeconds: TimeInterval = 15
+    /// User pause requested while a bounded Range checkpoint is in flight. Rather than canceling a
+    /// partially written OS temp file and visibly snapping the row back to the previous checkpoint,
+    /// let the current bounded chunk finish, append it to the durable partial, then stop before
+    /// starting the next chunk. This keeps Pause/Pause All aligned with "pause at a real checkpoint."
+    private var gracefulRangePauseKeys: Set<String> = []
     /// Nil means future static-byte-range work should use foreground-friendly bounded checkpoints.
     /// A non-nil reason means future starts should hand one open-ended remainder to `nsurlsessiond`.
     /// The active task is NOT automatically reverted when the app becomes active again; avoiding churn
@@ -269,6 +275,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let deferredBackgroundCompletionIdentifierCount = deferredBackgroundCompletionIdentifiers.count
         let backgroundCompletionHandlerCount = backgroundCompletionHandlersAwaitingFinish.count
         let rangeBackgroundHandoffGraceTaskCount = rangeBackgroundHandoffGraceTasks.count
+        let gracefulRangePauseKeyCount = gracefulRangePauseKeys.count
         lock.unlock()
         let finalizingRatingKeyCount = finalizationStateQueue.sync { finalizingRatingKeys.count }
         return BackgroundDownloadSessionDiagnosticSnapshot(
@@ -279,7 +286,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             deferredBackgroundCompletionIdentifierCount: deferredBackgroundCompletionIdentifierCount,
             backgroundCompletionHandlerCount: backgroundCompletionHandlerCount,
             finalizingRatingKeyCount: finalizingRatingKeyCount,
-            rangeBackgroundHandoffGraceTaskCount: rangeBackgroundHandoffGraceTaskCount)
+            rangeBackgroundHandoffGraceTaskCount: rangeBackgroundHandoffGraceTaskCount,
+            gracefulRangePauseKeyCount: gracefulRangePauseKeyCount)
     }
 
     private lazy var urlSession: URLSession = {
@@ -839,6 +847,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // and resets the validator-change restart bound so a user-driven retry starts with a clean count.
         lock.lock()
         haltedRangeKeys.remove(ratingKey)
+        gracefulRangePauseKeys.remove(ratingKey)
         validatorChangeRestarts[ratingKey] = nil
         rangeOffsetMismatchRetries[ratingKey] = nil
         lock.unlock()
@@ -1165,11 +1174,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let ids = Set(inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
         let rangeIds = Set(rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
         inflight = inflight.filter { $0.value.ratingKey != ratingKey }
-        // Halt the chunk chain unconditionally: a chunk finishing on the delegate queue before our
-        // async `getAllTasks` cancel runs — even in the brief gap BETWEEN chunks where no range task
-        // is live to snapshot — must not start the next chunk behind the pause. Harmless for opaque
-        // rows (the range path never consults it) and cleared on the next user start/resume.
-        haltedRangeKeys.insert(ratingKey)
+        if rangeIds.isEmpty {
+            // No live Range task to drain; halt the chunk chain so a between-chunks continuation
+            // cannot start behind the pause.
+            haltedRangeKeys.insert(ratingKey)
+        } else {
+            // A Range task is live. Prefer a graceful checkpoint pause: let a bounded chunk append
+            // and then halt before the next chunk. If it turns out to be a continuous remainder,
+            // `pauseRangeTask` converts this to a hard halt/cancel below.
+            gracefulRangePauseKeys.insert(ratingKey)
+        }
         lock.unlock()
 
         // #169: opaque and range tasks share one session now — enumerate it once and dispatch each
@@ -1211,6 +1225,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // Drop any stale range tracking; the durable partial keeps the row resumable.
                 let removedRangeEntries = self.removeRangeTransfers(taskIdentifiers: rangeIds)
                 let expectedBytes = removedRangeEntries.first?.expectedBytes
+                self.clearGracefulRangePause(ratingKey: ratingKey)
                 self.store.resetStaticRangeProgressToDurableCheckpoint(
                     ratingKey: ratingKey,
                     expectedBytes: expectedBytes
@@ -1230,7 +1245,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func pauseRangeTask(_ task: URLSessionTask, ratingKey: String) {
         lock.lock()
+        if let entry = rangeInflight[task.taskIdentifier],
+           entry.segmentKind == .boundedCheckpoint {
+            gracefulRangePauseKeys.insert(ratingKey)
+            lock.unlock()
+            AppDiagnostics.record(.downloads, "downloads.range_pause_after_checkpoint", fields: [
+                "download_id": .identifier(ratingKey),
+                "task_id": .int(task.taskIdentifier),
+                "base_offset": .int(entry.baseOffset),
+                "chunk_bytes": .int(entry.chunkBytesWritten),
+                "expected_bytes": .bytes(entry.expectedBytes),
+            ])
+            return
+        }
         let entry = rangeInflight.removeValue(forKey: task.taskIdentifier)
+        gracefulRangePauseKeys.remove(ratingKey)
+        haltedRangeKeys.insert(ratingKey)
         lock.unlock()
         endRangeBackgroundHandoffGrace(taskIdentifier: task.taskIdentifier,
                                        ratingKey: ratingKey,
@@ -1251,6 +1281,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "segment_kind": .label(entry?.segmentKind.rawValue ?? "unknown"),
         ])
         markPausedAfterUserPause(ratingKey: ratingKey)
+    }
+
+    private func clearGracefulRangePause(ratingKey: String) {
+        lock.lock()
+        gracefulRangePauseKeys.remove(ratingKey)
+        lock.unlock()
+    }
+
+    private func consumeGracefulRangePause(ratingKey: String) -> Bool {
+        lock.lock()
+        let requested = gracefulRangePauseKeys.remove(ratingKey) != nil
+        if requested {
+            haltedRangeKeys.insert(ratingKey)
+        }
+        lock.unlock()
+        return requested
     }
 
     @discardableResult
@@ -1286,6 +1332,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Halt the chunk chain so a chunk completing after this snapshot can't append/resurrect the
         // file the caller is about to delete, nor start a fresh chunk our cancel won't see.
         haltedRangeKeys.insert(ratingKey)
+        gracefulRangePauseKeys.remove(ratingKey)
         lock.unlock()
         for taskIdentifier in rangeIds {
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
@@ -1383,17 +1430,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.unlock()
 
             let total = rangeEntry.baseOffset + chunkBytesWritten
+            // A Range chunk's in-flight bytes live in an OS temp file until
+            // `didFinishDownloadingTo` lets us append them to the durable partial. Keep the visible
+            // row/aggregate "downloaded" total pinned to the last real checkpoint; detailed
+            // diagnostics still report optimistic `total_bytes`. This prevents Pause/Pause All from
+            // appearing to lose bytes that were never actually resumable.
+            let checkpointBytes = durableBytes
             let progress = (rangeEntry.expectedBytes ?? 0) > 0
-                ? min(1, Double(total) / Double(rangeEntry.expectedBytes!))
+                ? min(1, Double(checkpointBytes) / Double(rangeEntry.expectedBytes!))
                 : 0
             lock.lock()
+            let gracefulPausePending = gracefulRangePauseKeys.contains(rangeEntry.ratingKey)
             if var live = rangeInflight[downloadTask.taskIdentifier] {
                 live.chunkBytesWritten = chunkBytesWritten
                 rangeInflight[downloadTask.taskIdentifier] = live
             }
             retryCounts[rangeEntry.ratingKey] = 0
             lock.unlock()
-            store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: total, progress: progress)
+            if !gracefulPausePending {
+                store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: checkpointBytes, progress: progress)
+            }
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,
                                         entry: rangeEntry,
                                         chunkBytes: Int(totalBytesWritten),
@@ -1708,6 +1764,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock(); let halted = haltedRangeKeys.contains(entry.ratingKey); lock.unlock()
         let preserveHaltedChunk = halted
             && shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
+        let pauseAfterCheckpoint: Bool
+        if entry.segmentKind == .boundedCheckpoint {
+            pauseAfterCheckpoint = consumeGracefulRangePause(ratingKey: entry.ratingKey)
+        } else {
+            // If a continuous remainder happens to finish before the async pause/cancel callback
+            // reaches it, completion is better than parking a full file as paused.
+            clearGracefulRangePause(ratingKey: entry.ratingKey)
+            pauseAfterCheckpoint = false
+        }
         if halted, !preserveHaltedChunk {
             let stashBytes = fileSize(at: stash)
             try? fileManager.removeItem(at: stash)
@@ -1748,7 +1813,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
-            if preserveHaltedChunk {
+            if preserveHaltedChunk || pauseAfterCheckpoint {
                 let bytes = fileSize(at: entry.destination) ?? 0
                 store.updateProgress(ratingKey: entry.ratingKey,
                                      bytes: bytes,
@@ -1760,6 +1825,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "base_offset": .int(entry.baseOffset),
                     "partial_bytes": .int(bytes),
                     "write": .label("replaceWhole"),
+                    "pause_after_checkpoint": .bool(pauseAfterCheckpoint),
                 ])
                 store.setStatus(ratingKey: entry.ratingKey, .paused)
                 onChange?()
@@ -1893,7 +1959,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "expected_exact": .int(entry.expectedBytes ?? -1),
             ])
 
-            if preserveHaltedChunk {
+            if preserveHaltedChunk || pauseAfterCheckpoint {
                 AppDiagnostics.record(.downloads, "downloads.range_halted_chunk_preserved", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "segment_kind": .label(entry.segmentKind.rawValue),
@@ -1901,6 +1967,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "chunk_bytes": .int(chunkBytes),
                     "partial_bytes": .int(partialSize),
                     "write": .label("append"),
+                    "pause_after_checkpoint": .bool(pauseAfterCheckpoint),
                 ])
                 // `updateProgress` promotes paused rows to `.downloading` because a normal append is
                 // live work. This append, however, is the tail of a pause race: preserve the bytes but
@@ -2536,6 +2603,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
         if let rangeEntry {
             guard let error else { return } // success already handled in finishRangeChunk
+            clearGracefulRangePause(ratingKey: rangeEntry.ratingKey)
             endRangeBackgroundHandoffGrace(taskIdentifier: task.taskIdentifier,
                                            ratingKey: rangeEntry.ratingKey,
                                            reason: "error")

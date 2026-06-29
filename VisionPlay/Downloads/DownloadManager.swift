@@ -2209,8 +2209,6 @@ public final class DownloadManager {
         let needsWatchdog = records.contains { record in
             DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(record)
                 || record.status == .preparing
-                || record.status == .queued
-                || record.status == .downloading
         }
         if needsWatchdog {
             guard downloadWatchdogTask == nil else { return }
@@ -2261,6 +2259,7 @@ public final class DownloadManager {
             "session_deferred_background_handlers": .int(sessionSnapshot.deferredBackgroundCompletionIdentifierCount),
             "session_background_handlers": .int(sessionSnapshot.backgroundCompletionHandlerCount),
             "session_handoff_grace_count": .int(sessionSnapshot.rangeBackgroundHandoffGraceTaskCount),
+            "session_graceful_pause_count": .int(sessionSnapshot.gracefulRangePauseKeyCount),
         ])
     }
 
