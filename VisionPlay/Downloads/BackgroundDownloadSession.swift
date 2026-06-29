@@ -35,6 +35,7 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
     let finalizingRatingKeyCount: Int
     let rangeBackgroundHandoffGraceTaskCount: Int
     let gracefulRangePauseKeyCount: Int
+    let pendingTempCleanupBytes: Int
 }
 
 enum BackgroundRangeRequestReason: String, Sendable, Equatable {
@@ -112,6 +113,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private let maxTransientRetries = 3
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.25
+    private static let cfNetworkTempPrefix = "CFNetworkDownload_"
+    private static let cfNetworkTempSuffix = ".tmp"
+    private static let nsurlsessiondRelativeDownloadCache = "Caches/com.apple.nsurlsessiond/Downloads/com.jlipworth.VisionPlay"
     private let lock = NSLock()
 
     /// #169: the static byte-range lane downloads in bounded Range chunks via the background
@@ -270,6 +274,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
     }
 
+    func cleanupOrphanedNetworkTemps() {
+        urlSession.getAllTasks { [weak self] tasks in
+            self?.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, reason: "manual_scan")
+        }
+    }
+
     func diagnosticSnapshot() -> BackgroundDownloadSessionDiagnosticSnapshot {
         lock.lock()
         let opaqueInflightCount = inflight.count
@@ -291,7 +301,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             backgroundCompletionHandlerCount: backgroundCompletionHandlerCount,
             finalizingRatingKeyCount: finalizingRatingKeyCount,
             rangeBackgroundHandoffGraceTaskCount: rangeBackgroundHandoffGraceTaskCount,
-            gracefulRangePauseKeyCount: gracefulRangePauseKeyCount)
+            gracefulRangePauseKeyCount: gracefulRangePauseKeyCount,
+            pendingTempCleanupBytes: pendingCFNetworkTempBytes())
     }
 
     private lazy var urlSession: URLSession = {
@@ -737,6 +748,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // chunk was never appended, so the durable partial re-fetches it on resume. visionOS only
             // clears `tmp/` under pressure, so reclaim them here (cheap, alongside reattach).
             self.sweepOrphanedChunkStashes(liveTaskIdentifiers: Set(tasks.map(\.taskIdentifier)))
+            self.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, reason: "reattach")
             onReattached?(liveKeys)
             self.onChange?()
         }
@@ -751,6 +763,76 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let idString = url.lastPathComponent.dropFirst("vp-range-chunk-".count)
             if let id = Int(idString), liveTaskIdentifiers.contains(id) { continue }
             try? fileManager.removeItem(at: url)
+        }
+    }
+
+    private func sweepOrphanedNetworkTemps(liveTaskCount: Int, reason: String) {
+        let candidates = cfNetworkTempDirectories()
+            .flatMap { directory in cfNetworkTempFiles(in: directory).map { (directory, $0) } }
+        let candidateBytes = candidates.reduce(0) { $0 + (fileSize(at: $1.1) ?? 0) }
+        guard !candidates.isEmpty else { return }
+        guard liveTaskCount == 0 else {
+            AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
+                "reason": .label(reason),
+                "live_task_count": .int(liveTaskCount),
+                "candidate_count": .int(candidates.count),
+                "candidate_bytes": .int(candidateBytes),
+            ])
+            return
+        }
+
+        var deletedCount = 0
+        var deletedBytes = 0
+        var failedCount = 0
+        for (_, url) in candidates {
+            let bytes = fileSize(at: url) ?? 0
+            do {
+                try fileManager.removeItem(at: url)
+                deletedCount += 1
+                deletedBytes += bytes
+            } catch {
+                failedCount += 1
+            }
+        }
+        AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup", fields: [
+            "reason": .label(reason),
+            "candidate_count": .int(candidates.count),
+            "deleted_count": .int(deletedCount),
+            "failed_count": .int(failedCount),
+            "deleted_bytes": .int(deletedBytes),
+        ])
+    }
+
+    private func pendingCFNetworkTempBytes() -> Int {
+        cfNetworkTempDirectories()
+            .flatMap(cfNetworkTempFiles(in:))
+            .reduce(0) { $0 + (fileSize(at: $1) ?? 0) }
+    }
+
+    private func cfNetworkTempDirectories() -> [URL] {
+        var directories = [fileManager.temporaryDirectory]
+        if let appSupport = try? fileManager.url(for: .applicationSupportDirectory,
+                                                 in: .userDomainMask,
+                                                 appropriateFor: nil,
+                                                 create: false) {
+            let library = appSupport.deletingLastPathComponent()
+            directories.append(library.appendingPathComponent(Self.nsurlsessiondRelativeDownloadCache, isDirectory: true))
+        }
+        return directories
+    }
+
+    private func cfNetworkTempFiles(in directory: URL) -> [URL] {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries.filter { url in
+            let name = url.lastPathComponent
+            guard name.hasPrefix(Self.cfNetworkTempPrefix), name.hasSuffix(Self.cfNetworkTempSuffix) else {
+                return false
+            }
+            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
         }
     }
 
