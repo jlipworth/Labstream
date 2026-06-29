@@ -2877,22 +2877,39 @@ public final class DownloadManager {
         let isServerPrep = resumeMode == .serverPrepThenStatic
         if record.bytes == 0 {
             // Once a prepared/original row has handed off to the static byte-range lane, it may sit
-            // at zero bytes until URLSession/Emby deliver the first progress callback. Do not label
-            // that as server prep; the app already started the file transfer.
+            // at zero durable/checkpointed bytes while a promoted background remainder is still
+            // writing into URLSession's temp file. Do not label that as server prep; the app already
+            // started the file transfer. Also do not hard-code the caption to 0%: the progress bar,
+            // speed, and ETA are driven by the ephemeral live Range overlay for exactly this window.
             if isActive, resumeMode == .staticByteRange {
+                var pieces: [String] = []
                 var head: String
                 switch record.metadata?.resolvedDownloadLane() ?? .original {
                 case .original where record.metadata?.isServerPreparedVersion == true:
-                    head = "Downloading transcode • 0%"
+                    head = "Downloading transcode"
                 case .original:
-                    head = "Downloading original • 0%"
+                    head = "Downloading original"
                 case .compatibleRemux:
-                    head = "Remuxing + downloading • 0%"
+                    head = "Remuxing + downloading"
                 case .optimize:
-                    head = backend == .plex ? "Downloading transcode • 0%" : "Transcoding + downloading • 0%"
+                    head = backend == .plex ? "Downloading transcode" : "Transcoding + downloading"
                 }
-                if let r = record.metadata?.resolutionLabel { head += " • \(r)" }
-                return head
+                if let fraction = displayFraction(for: record) {
+                    let pct = "\(Int(fraction.value * 100))%"
+                    head += " • \(fraction.isEstimated ? "~\(pct)" : pct)"
+                } else {
+                    head += " • 0%"
+                }
+                if let eta = downloadETA[record.ratingKey], eta > 0,
+                   let left = timeLeftString(eta) {
+                    head += " • ~\(left) left"
+                }
+                pieces.append(head)
+                if let speed = downloadSpeed[record.ratingKey], speed > 0 {
+                    pieces.append("\(byteString(Int(speed)))/s")
+                }
+                if let r = record.metadata?.resolutionLabel { pieces.append(r) }
+                return pieces.joined(separator: " • ")
             }
 
             let prepHead = (isServerPrep || record.status == .preparing) ? "Preparing on server…" : "Transcoding"
