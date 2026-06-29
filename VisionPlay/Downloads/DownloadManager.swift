@@ -2734,10 +2734,16 @@ public final class DownloadManager {
     public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
         let bytes = liveDisplayBytes(for: record) ?? record.bytes
         if record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
-           bytes > 0,
-           let staticExpectedBytes = liveRangeProgress[record.ratingKey]?.expectedBytes ?? staticRangeExpectedBytes(for: record) {
-            return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(staticExpectedBytes), 1.0),
-                                                    isEstimated: false)
+           bytes > 0 {
+            if let staticExpectedBytes = liveRangeProgress[record.ratingKey]?.expectedBytes ?? staticRangeExpectedBytes(for: record) {
+                return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(staticExpectedBytes), 1.0),
+                                                        isEstimated: false)
+            }
+            if let estimatedBytes = Self.estimatedTranscodeBytes(for: record), estimatedBytes > 0 {
+                return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(estimatedBytes),
+                                                                  DownloadProgressDisplay.estimatedCeiling),
+                                                        isEstimated: true)
+            }
         }
         return DownloadProgressDisplay.fraction(progress: record.progress,
                                                 bytes: bytes,

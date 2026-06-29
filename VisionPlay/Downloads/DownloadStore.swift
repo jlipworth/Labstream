@@ -439,6 +439,19 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.mediaSourceID = mediaSourceID }
     }
 
+    /// Persist the exact static resource size once a byte-range transfer discovers it. Rows may
+    /// relaunch/reattach while the active bytes are still in URLSession's temp file; keeping this
+    /// denominator durable lets the Offline UI continue to show percent/ETA from live Range bytes
+    /// instead of falling back to a spinner + 0% caption.
+    func setSourcePartSizeIfMissing(ratingKey: String, _ size: Int?) {
+        guard let size, size > 0 else { return }
+        updateMetadata(ratingKey: ratingKey) { meta in
+            if (meta.sourcePartSize ?? 0) <= 0 {
+                meta.sourcePartSize = size
+            }
+        }
+    }
+
     /// #95: persist a URLSession resume blob for a recoverably-interrupted download and record
     /// its relative path on the row's metadata, so a manual Resume (even after relaunch) can
     /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
