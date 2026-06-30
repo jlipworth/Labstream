@@ -60,6 +60,13 @@ public enum DownloadPresetPolicy {
         [compatibleOriginalQualityName] + customDownloadProfiles.map(\.name)
     }
 
+    /// Bitrate-only presets shared by Jellyfin/Emby transcode pickers. These backends do not have
+    /// Plex's server-side "Original video quality" optimize queue; source-quality preservation is
+    /// represented by the separate compatible-remux lane instead.
+    public static var bitratePresetNames: [String] {
+        customDownloadProfiles.map(\.name)
+    }
+
     public static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
         customDownloadProfiles.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
     }
@@ -82,6 +89,37 @@ public enum DownloadPresetPolicy {
         ].contains { hidden in
             name.localizedCaseInsensitiveCompare(hidden) == .orderedSame
         }
+    }
+
+    /// The visible source-quality Plex optimize preset, if the current preset list contains one.
+    public static func plexOriginalQualityPreset(in presets: [String]) -> String? {
+        presets.first { isPlexOriginalQualityTarget($0) }
+    }
+
+    /// Remove the source-quality Plex optimize helper from the normal bitrate section. The sheet
+    /// renders it as its own "Original quality" row so it is not visually mixed with bitrate caps.
+    public static func presetsExcludingPlexOriginalQuality(_ presets: [String]) -> [String] {
+        guard plexOriginalQualityPreset(in: presets) != nil else { return presets }
+        return presets.filter { !isPlexOriginalQualityTarget($0) }
+    }
+
+    /// Preferred initial picker choice for the download sheet. Existing server versions are never
+    /// defaulted: they are explicit alternates below the normal quality choices.
+    public static func preferredPickerChoice(originalAvailable: Bool,
+                                             compatibleRemuxAvailable: Bool,
+                                             presets: [String],
+                                             backend: DownloadBackendKind,
+                                             defaultDownloadQuality: String) -> DownloadIntentChoice? {
+        if originalAvailable { return .original }
+        if backend == .plex, let plexOriginal = plexOriginalQualityPreset(in: presets) {
+            return .optimize(targetName: plexOriginal)
+        }
+        if compatibleRemuxAvailable { return .optimizeCompatible }
+        if presets.contains(defaultDownloadQuality) { return .optimize(targetName: defaultDownloadQuality) }
+        if let match = presets.first(where: { $0.localizedCaseInsensitiveContains(defaultDownloadQuality) }) {
+            return .optimize(targetName: match)
+        }
+        return presets.first.map { .optimize(targetName: $0) }
     }
 
     /// Merge live Plex target names with the app's explicit quality ladder, preserving first-seen

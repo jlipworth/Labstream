@@ -146,8 +146,7 @@ extension DownloadManager {
         //   .compatibleRemux   ⇔ user chose it AND source video copyable (#83)
         //   .transcode         ⇔ otherwise (forced h264/aac re-encode)
         // The user's `.optimize` choice always forces the transcode lane.
-        let containerGate = Self.isLocallyPlayableOriginal(part: part)
-            || ["mp4", "m4v", "mov"].contains((decision.container ?? "").lowercased())
+        let containerGate = EmbyDownloadRouter.containerGate(part: part, negotiatedContainer: decision.container)
         let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
             videoCodec: decision.videoCodec, audioCodec: decision.audioCodec,
             sourceContainer: decision.container)

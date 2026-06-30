@@ -7,6 +7,8 @@ struct DownloadPresetPolicyTests {
     @Test("Preset catalog preserves picker names and visibility filtering")
     func presetCatalog() throws {
         #expect(DownloadPresetPolicy.customDownloadProfileNames.first == "Original video quality")
+        #expect(DownloadPresetPolicy.bitratePresetNames.first == "4K 40 Mbps")
+        #expect(!DownloadPresetPolicy.bitratePresetNames.contains("Original video quality"))
         #expect(DownloadPresetPolicy.customDownloadProfile(named: "720P 4 MBPS")?.settings.maxVideoBitrateKbps == 4_000)
         #expect(DownloadPresetPolicy.isPlexOriginalQualityTarget(" Original video quality "))
         #expect(DownloadPresetPolicy.isPlexOriginalQualityTarget("Original Quality"))
@@ -25,6 +27,33 @@ struct DownloadPresetPolicyTests {
         #expect(visibleNames.contains("Optimized for TV") == false)
         #expect(visibleNames.contains("") == false)
         #expect(visibleNames.contains("Server custom"))
+    }
+
+    @Test("Picker helpers keep source-quality rows separate and preserve default choice order")
+    func pickerHelpers() {
+        let presets = ["720p 4 Mbps", "Original video quality", "1080p 8 Mbps"]
+        #expect(DownloadPresetPolicy.plexOriginalQualityPreset(in: presets) == "Original video quality")
+        #expect(DownloadPresetPolicy.presetsExcludingPlexOriginalQuality(presets) == ["720p 4 Mbps", "1080p 8 Mbps"])
+        #expect(DownloadPresetPolicy.preferredPickerChoice(originalAvailable: true,
+                                                          compatibleRemuxAvailable: true,
+                                                          presets: presets,
+                                                          backend: .plex,
+                                                          defaultDownloadQuality: "1080p 8 Mbps") == .original)
+        #expect(DownloadPresetPolicy.preferredPickerChoice(originalAvailable: false,
+                                                          compatibleRemuxAvailable: true,
+                                                          presets: presets,
+                                                          backend: .plex,
+                                                          defaultDownloadQuality: "1080p 8 Mbps") == .optimize(targetName: "Original video quality"))
+        #expect(DownloadPresetPolicy.preferredPickerChoice(originalAvailable: false,
+                                                          compatibleRemuxAvailable: true,
+                                                          presets: DownloadPresetPolicy.bitratePresetNames,
+                                                          backend: .jellyfin,
+                                                          defaultDownloadQuality: "1080p 8 Mbps") == .optimizeCompatible)
+        #expect(DownloadPresetPolicy.preferredPickerChoice(originalAvailable: false,
+                                                          compatibleRemuxAvailable: false,
+                                                          presets: DownloadPresetPolicy.bitratePresetNames,
+                                                          backend: .emby,
+                                                          defaultDownloadQuality: "1080p 8 Mbps") == .optimize(targetName: "1080p 8 Mbps"))
     }
 
     @Test("Display resolution uses target label only for downscaling optimize choices")

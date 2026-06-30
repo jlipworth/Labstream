@@ -150,7 +150,7 @@ struct DownloadOptionsSheet: View {
         }
         guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
             let presets = defaultPresets
-            selectedChoice = .optimize(presets[0])
+            selectedChoice = presets.first.map { .optimize($0) }
             probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
                                 originalStreamableButOfflineUnsupported: false,
                                 existingVersions: plexExistingVersions())
@@ -163,7 +163,7 @@ struct DownloadOptionsSheet: View {
         async let presetsTask = downloadManager.optimizePresetNames(server: server, token: token)
 
         let probe = await probeTask
-        let fetchedPresets = filteredOptimizePresets(await presetsTask)
+        let fetchedPresets = await presetsTask
         let presets = fetchedPresets.isEmpty ? defaultPresets : fetchedPresets
         let media = item.media?[safe: mediaIndex]
         let part = probe.part ?? media?.part[safe: partIndex]
@@ -345,8 +345,7 @@ struct DownloadOptionsSheet: View {
             // Leave existingVersions empty; the sheet still offers the normal lanes.
         }
 
-        let containerPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
-            || ["mp4", "m4v", "mov"].contains((negotiatedContainer ?? "").lowercased())
+        let containerPlayable = EmbyDownloadRouter.containerGate(part: part, negotiatedContainer: negotiatedContainer)
         let original = (negotiatedDirectPlay && containerPlayable)
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
@@ -489,62 +488,28 @@ struct DownloadOptionsSheet: View {
     }
 
     private var defaultPresets: [String] {
-        filteredOptimizePresets([
-            "Original video quality",
-            "4K 40 Mbps",
-            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
-            "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
-            "720p 2 Mbps", "480p 1.5 Mbps"
-        ])
-    }
-
-    private func filteredOptimizePresets(_ presets: [String]) -> [String] {
-        presets.filter { preset in
-            ![
-                "Original Quality",
-                "Optimized for TV",
-                "Optimized for Mobile",
-            ].contains { hidden in
-                preset.localizedCaseInsensitiveCompare(hidden) == .orderedSame
-            }
-        }
+        DownloadPresetPolicy.visiblePresetNames(serverTargets: [])
     }
 
     private var jellyfinPresets: [String] {
-        [
-            "4K 40 Mbps",
-            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
-            "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
-            "720p 2 Mbps", "480p 1.5 Mbps"
-        ]
+        DownloadPresetPolicy.bitratePresetNames
     }
 
     // Emby has no server-side optimize-target list (Plex-only), so the picker uses the same
-    // hard-coded bitrate ladder as Jellyfin; the manager maps each preset to a transcode profile.
+    // bitrate ladder as Jellyfin; the manager maps each preset to a transcode profile.
     private var embyPresets: [String] {
-        [
-            "4K 40 Mbps",
-            "1080p 20 Mbps", "1080p 12 Mbps", "1080p 10 Mbps",
-            "1080p 8 Mbps", "720p 4 Mbps", "720p 3 Mbps",
-            "720p 2 Mbps", "480p 1.5 Mbps"
-        ]
+        DownloadPresetPolicy.bitratePresetNames
     }
 
 
     private func plexOriginalOptimizePreset(in presets: [String]) -> String? {
         guard sheetBackend == .plex else { return nil }
-        return presets.first {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                .localizedCaseInsensitiveCompare("Original video quality") == .orderedSame
-        }
+        return DownloadPresetPolicy.plexOriginalQualityPreset(in: presets)
     }
 
     private func optimizePresetsExcludingPlexOriginal(_ presets: [String]) -> [String] {
-        guard plexOriginalOptimizePreset(in: presets) != nil else { return presets }
-        return presets.filter {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                .localizedCaseInsensitiveCompare("Original video quality") != .orderedSame
-        }
+        guard sheetBackend == .plex else { return presets }
+        return DownloadPresetPolicy.presetsExcludingPlexOriginalQuality(presets)
     }
 
     // MARK: - Existing server versions (#112)
@@ -882,21 +847,28 @@ struct DownloadOptionsSheet: View {
     private func preferredSelection(originalAvailable: Bool,
                                     compatibleRemuxAvailable: Bool,
                                     presets: [String]) -> DownloadSelection? {
-        if originalAvailable { return .original }
-        // If the source cannot be stored raw, default to the highest source-quality-preserving
-        // option before bitrate caps. Plex's version is an optimized/prepared copy; Jellyfin/Emby
-        // use the compatible remux lane.
-        if sheetBackend == .plex, let plexOriginal = plexOriginalOptimizePreset(in: presets) {
-            return .plexOriginalQuality(plexOriginal)
+        DownloadPresetPolicy.preferredPickerChoice(originalAvailable: originalAvailable,
+                                                   compatibleRemuxAvailable: compatibleRemuxAvailable,
+                                                   presets: presets,
+                                                   backend: sheetBackend,
+                                                   defaultDownloadQuality: defaultDownloadQuality)
+            .map(selection(for:))
+    }
+
+    private func selection(for intent: DownloadIntentChoice) -> DownloadSelection {
+        switch intent {
+        case .original:
+            return .original
+        case .optimizeCompatible:
+            return .optimizeCompatible
+        case .existingVersion:
+            return .existingVersion(mediaIndex)
+        case .optimize(let targetName):
+            if sheetBackend == .plex, DownloadPresetPolicy.isPlexOriginalQualityTarget(targetName) {
+                return .plexOriginalQuality(targetName)
+            }
+            return .optimize(targetName)
         }
-        if compatibleRemuxAvailable { return .optimizeCompatible }
-        if presets.contains(defaultDownloadQuality) { return .optimize(defaultDownloadQuality) }
-        if let match = presets.first(where: { $0.localizedCaseInsensitiveContains(defaultDownloadQuality) }) {
-            return .optimize(match)
-        }
-        // When nothing else matched, prefer the quality-preserving remux over a downscale preset.
-        if compatibleRemuxAvailable, !originalAvailable { return .optimizeCompatible }
-        return presets.first.map { .optimize($0) }
     }
 
     private func managerChoice(for selection: DownloadSelection) -> DownloadManager.DownloadChoice {

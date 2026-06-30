@@ -284,6 +284,12 @@ snapshot derivation.
   transfer, reroute live transcodes into persistent Convert jobs, fail static-only rows closed when
   they negotiate a forward-only stream, choose server-session/range-checkpoint semantics, and keep
   route-specific diagnostic choice labels stable.
+- **Done: Slice 7f download-sheet preset/default policy wiring.**
+  `DownloadPresetPolicy` now owns the picker preset catalogs and default-choice ordering used by
+  `DownloadOptionsSheet`: Plex keeps its source-quality optimize helper in a separate row, Jellyfin
+  and Emby share the bitrate-only ladder, compatible-remux beats bitrate caps when available, and
+  existing server versions remain explicit non-default alternates. The sheet and Emby manager also
+  reuse `EmbyDownloadRouter.containerGate` instead of hand-rolling the MP4-family container test.
 
 ## Target module boundaries
 
@@ -294,7 +300,8 @@ snapshot derivation.
   diagnostic mapping for choices.
 - `DownloadOfflineMetadataBuilder`: pure durable row-metadata snapshot builder for enqueue paths.
 - `DownloadPresetPolicy`: shared preset/profile catalog and pure mapping for picker labels,
-  backend transcode caps, storage estimates, display labels, and Plex fallback settings.
+  backend transcode caps, storage estimates, display labels, Plex fallback settings, sheet default
+  selection, Plex source-quality row separation, and MediaBrowser bitrate-only ladders.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
