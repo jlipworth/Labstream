@@ -45,6 +45,11 @@ snapshot derivation.
   gating, retry-handoff demotion, and preservation of validator/adopted-failure restart
   counters. `DownloadManager` still performs store/session side effects, but delegates the
   tested decisions to PMSKit.
+- **Done: Slice 4 first backend route-planner extraction.** `JellyfinDownloadRouter` now
+  pins the Jellyfin-specific distinction between static original downloads, compatible-remux
+  live-forward streams, and transcode live-forward streams. The app backend still owns
+  PlaybackInfo calls, request construction, PlaySession keepalive, metadata mutation, and
+  side-cache work; only the pure route decision moved.
 
 ## Target module boundaries
 
