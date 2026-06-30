@@ -296,6 +296,10 @@ snapshot derivation.
   Emby Convert-Media alternates target a PlaybackInfo MediaSource id, both share label/detail
   formatting, and incompatible alternates remain visible but disabled instead of disappearing. The
   sheet now only maps those pure targets to app download actions.
+- **Done: Slice 7h compact sheet status caption reuse.**
+  `DownloadRowStatusCaptionPolicy` now also owns the modal sheet's compact active-row phase labels,
+  preserving the sheet's concise original-download wording while pinning the server-prepared,
+  compatible-remux, and backend-specific transcode labels in the same tested policy family.
 
 ## Target module boundaries
 
