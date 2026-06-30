@@ -98,11 +98,9 @@ extension DownloadManager {
                                                               itemId: itemId,
                                                               mediaSourceId: jellyfinMediaSourceID,
                                                               container: ext)
-                expectedBytes = part?.size
-                transferRoute = JellyfinDownloadRouter.route(intent: Self.jellyfinDownloadIntent(for: choice),
-                                                             videoCodec: part?.videoStreams.first?.codec ?? media?.videoCodec,
-                                                             audioCodec: part?.audioStreams.first?.codec,
-                                                             container: part?.container ?? media?.container)
+                let sourcePlan = JellyfinDownloadSourcePlan.staticOriginal(sourcePartBytes: part?.size)
+                expectedBytes = sourcePlan.expectedBytes
+                transferRoute = sourcePlan.route
 
             case .optimize(let targetName):
                 // Ask Jellyfin for a real PlaybackInfo session before starting the progressive
@@ -129,24 +127,25 @@ extension DownloadManager {
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
                                                                      preferredMediaSourceId: jellyfinMediaSourceID)
-                resolvedJellyfinMediaSourceID = decision.mediaSourceId
+                let sourcePlan = JellyfinDownloadSourcePlan.transcode(decision: decision,
+                                                                      durationMs: item.duration,
+                                                                      profile: profile)
+                resolvedJellyfinMediaSourceID = sourcePlan.mediaSourceID
                 let transcodedRequest = try JellyfinLibrary.transcodedDownloadRequest(
                     server: server,
                     token: token,
                     identity: identity,
                     itemId: itemId,
-                    mediaSourceId: decision.mediaSourceId,
+                    mediaSourceId: sourcePlan.mediaSourceID,
                     playSessionId: decision.playSessionId,
                     maxVideoBitrate: profile.videoBitrateBps,
                     maxWidth: profile.maxWidth,
                     maxHeight: profile.maxHeight)
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                mintedPlaySessionId = decision.playSessionId
-                transferRoute = JellyfinDownloadRouter.route(intent: Self.jellyfinDownloadIntent(for: choice),
-                                                             videoCodec: decision.videoCodec,
-                                                             audioCodec: decision.audioCodec,
-                                                             container: decision.container)
+                mintedPlaySessionId = sourcePlan.playSessionID
+                expectedBytes = sourcePlan.expectedBytes
+                transferRoute = sourcePlan.route
                 recordDownloadDiagnostic("downloads.jellyfin_transcode_decision", fields: [
                     "download_id": .identifier(ratingKey),
                     "route": .label(transferRoute.diagnosticLabel),
@@ -177,13 +176,15 @@ extension DownloadManager {
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
                                                                      preferredMediaSourceId: jellyfinMediaSourceID)
-                resolvedJellyfinMediaSourceID = decision.mediaSourceId
-                let routeDecision = JellyfinDownloadRouter.compatibleDecision(videoCodec: decision.videoCodec,
-                                                                               audioCodec: decision.audioCodec,
-                                                                               container: decision.container)
-                let eligibility = routeDecision.eligibility
-                transferRoute = routeDecision.route
-                let routeIsRemux = routeDecision.isRemux
+                let fallbackProfile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
+                let sourcePlan = JellyfinDownloadSourcePlan.compatible(
+                    decision: decision,
+                    sourcePartBytes: part?.size,
+                    durationMs: item.duration,
+                    fallbackProfile: fallbackProfile)
+                resolvedJellyfinMediaSourceID = sourcePlan.mediaSourceID
+                transferRoute = sourcePlan.route
+                expectedBytes = sourcePlan.expectedBytes
                 recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
                     "download_id": .identifier(ratingKey),
                     "negotiated_direct_play": .bool(decision.supportsDirectPlay),
@@ -192,9 +193,9 @@ extension DownloadManager {
                     "route": .label(transferRoute.diagnosticLabel),
                     "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
                 ])
-                if routeIsRemux, let videoCodec = eligibility.videoCodec {
-                    // Output keeps original video bytes → expected size ≈ original source size.
-                    expectedBytes = decision.size ?? part?.size
+                if sourcePlan.isCompatibleRemux,
+                   let eligibility = sourcePlan.compatibleEligibility,
+                   let videoCodec = eligibility.videoCodec {
                     request = try JellyfinLibrary.compatibleRemuxDownloadRequest(
                         server: server, token: token, identity: identity, itemId: itemId,
                         mediaSourceId: decision.mediaSourceId,
@@ -205,11 +206,8 @@ extension DownloadManager {
                     // source video cannot be copied into the compatible MP4 lane. Persist the
                     // ACTUAL transfer route as `.optimize` so the offline UI says Transcode (not
                     // Remux) and retry follows the same non-resumable transcode lane.
-                    metadata.downloadLane = .optimize
-                    metadata.optimizeTargetName = Self.jellyfinDefaultDownloadPreset
-                    let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
-                    expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
-                                                                 videoBitrateBps: profile.videoBitrateBps)
+                    metadata.downloadLane = sourcePlan.metadataLaneOverride
+                    metadata.optimizeTargetName = sourcePlan.metadataOptimizeTargetNameOverride
                     request = try JellyfinLibrary.transcodedDownloadRequest(
                         server: server,
                         token: token,
@@ -217,12 +215,12 @@ extension DownloadManager {
                         itemId: itemId,
                         mediaSourceId: decision.mediaSourceId,
                         playSessionId: decision.playSessionId,
-                        maxVideoBitrate: profile.videoBitrateBps,
-                        maxWidth: profile.maxWidth,
-                        maxHeight: profile.maxHeight)
+                        maxVideoBitrate: fallbackProfile.videoBitrateBps,
+                        maxWidth: fallbackProfile.maxWidth,
+                        maxHeight: fallbackProfile.maxHeight)
                 }
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                mintedPlaySessionId = decision.playSessionId
+                mintedPlaySessionId = sourcePlan.playSessionID
             }
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
