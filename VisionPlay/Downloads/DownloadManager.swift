@@ -2307,15 +2307,13 @@ public final class DownloadManager {
     }
 
     private func updateDownloadWatchdog(for records: [DownloadRecord]) {
-        let needsWatchdog = records.contains { record in
-            DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(record)
-                || record.status == .preparing
-        }
-        if needsWatchdog {
+        if DownloadWatchdogPolicy.requiresWatchdog(records: records) {
             guard downloadWatchdogTask == nil else { return }
             downloadWatchdogTask = Task { [weak self] in
                 while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                    do {
+                        try await Task.sleep(for: .seconds(DownloadWatchdogPolicy.refreshIntervalSeconds))
+                    } catch { return }
                     await MainActor.run {
                         guard let self, self.downloadWatchdogTask != nil else { return }
                         self.refreshRecords()
