@@ -641,14 +641,14 @@ public final class DownloadManager {
     public func scheduleServerPrepResumeRetries() {
         serverPrepResumeRetryTask?.cancel()
         serverPrepResumeRetryTask = Task { [weak self] in
-            // Plex inactive-lane hydration can be slower than the selected backend restore on a cold
-            // launch, so keep retrying long enough to catch the lane becoming available. Calls are
-            // idempotent and this task is debounced above so multiple UI edges do not stack scans.
-            for delay in [1.0, 5.0, 15.0, 30.0, 60.0] {
+            // Calls are idempotent and this task is debounced above so multiple UI edges do not
+            // stack scans while backend lanes hydrate after cold launch.
+            for delay in DownloadResumeRetrySchedulePolicy.retryDelaysSeconds {
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                if self?.isQueuePaused == true {
+                switch DownloadResumeRetrySchedulePolicy.serverPrepAction(isQueuePaused: self?.isQueuePaused == true) {
+                case .resumePendingEmbyConvertOnly:
                     self?.resumePendingEmbyConvertDownloads()
-                } else {
+                case .resumePendingServerPrep:
                     self?.resumePendingServerPrepDownloads()
                 }
                 self?.resumePendingStaticRangeDownloads()
