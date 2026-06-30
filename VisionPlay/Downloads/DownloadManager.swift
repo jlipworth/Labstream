@@ -2342,28 +2342,24 @@ public final class DownloadManager {
     }
 
     private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
-        for record in records where record.status == .queued || record.status == .downloading {
-            guard jellyfinDownloadKeepaliveTasks[record.ratingKey] == nil,
+        for record in records {
+            guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
+                    for: record,
+                    hasExistingTask: jellyfinDownloadKeepaliveTasks[record.ratingKey] != nil),
                   let metadata = record.metadata,
-                  metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .jellyfin,
-                  metadata.resolvedDownloadLane() != .original,
-                  let playSessionId = metadata.playSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !playSessionId.isEmpty,
-                  let mediaSourceId = metadata.mediaSourceID?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !mediaSourceId.isEmpty,
                   let session = appModel.backendSession(for: .jellyfin),
                   let userId = session.userID,
                   session.matchesPersistedServer(metadata)
             else { continue }
 
             startJellyfinDownloadKeepalive(
-                ratingKey: record.ratingKey,
-                itemId: Self.jellyfinItemID(fromRecordKey: record.ratingKey),
-                mediaSourceId: mediaSourceId,
-                playSessionId: playSessionId,
+                ratingKey: candidate.ratingKey,
+                itemId: candidate.itemID,
+                mediaSourceId: candidate.mediaSourceID,
+                playSessionId: candidate.playSessionID,
                 session: session,
                 userId: userId,
-                durationMs: metadata.duration)
+                durationMs: candidate.durationMs)
         }
     }
 
@@ -2383,7 +2379,8 @@ public final class DownloadManager {
                 guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
                       record.status == .queued || record.status == .downloading else { return }
                 let progress = max(0, min(record.progress, 1))
-                let positionTicks = Self.downloadPositionTicks(progress: progress, durationMs: durationMs)
+                let positionTicks = JellyfinDownloadKeepalivePolicy.positionTicks(progress: progress,
+                                                                                  durationMs: durationMs)
                 do {
                     if !sentPlaying {
                         let playing = try JellyfinPlayback.playingRequest(
@@ -2423,7 +2420,7 @@ public final class DownloadManager {
                     ])
                 }
                 do {
-                    try await Task.sleep(for: .seconds(20))
+                    try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds))
                 } catch {
                     return
                 }
@@ -2432,12 +2429,6 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
             "download_id": .identifier(ratingKey),
         ])
-    }
-
-    private static func downloadPositionTicks(progress: Double, durationMs: Int?) -> Int {
-        guard let durationMs, durationMs > 0, progress.isFinite else { return 0 }
-        let ticks = Double(durationMs) * 10_000 * max(0, min(progress, 1))
-        return ticks.isFinite ? max(0, Int(ticks.rounded())) : 0
     }
 
     /// Drop the in-flight protection (`activeJobs` slot + protected optimize-queue title) for a
