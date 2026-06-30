@@ -182,6 +182,10 @@ snapshot derivation.
   `StaticRangeRefreshCleanupPolicy` now owns the pure refresh-time cleanup predicates for static
   range recovery overlays: terminal finalization keys, manual queue-resume markers that must survive
   retry handoff failed rows, checkpoint-pause liveness, and stale live range-progress overlays.
+- **Done: Slice 5d download delete policy extraction.**
+  `DownloadDeletePolicy` now owns the delete-time Emby convert cancellation decision: preparing rows
+  with a persistent convert job cancel that server job when the persisted Emby lane matches, log a
+  skip when the lane is unavailable/mismatched, and otherwise delete purely locally.
 
 ## Target module boundaries
 
@@ -191,6 +195,7 @@ snapshot derivation.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
+- `DownloadDeletePolicy`: pure delete-time backend cleanup decision table for Emby convert jobs.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
