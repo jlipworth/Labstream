@@ -169,12 +169,17 @@ snapshot derivation.
   prep rows: unattached Plex optimize rows require no active poller, persistent Emby convert jobs
   can keep polling while the global queue is paused, and refresh kicks are debounced/countable
   without embedding backend filters directly in `DownloadManager.refreshRecords`.
+- **Done: Slice 5b download start slot policy extraction.**
+  `DownloadStartSlotPolicy` now owns the admission table for the app-level in-flight slot:
+  duplicate active rows are rejected, duplicate active slots with visible rows stay rejected, and
+  stale active slots with no store row are recovered before accepting a replacement start.
 
 ## Target module boundaries
 
 ### PMSKit pure download core
 
 - `DownloadRecordIdentity`: backend-aware record keys and item-id extraction.
+- `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
