@@ -75,6 +75,10 @@ snapshot derivation.
   queue titles, Plex poller ownership, and Emby convert attempt UUID replacement. The app
   still owns URLSession/tasks and backend requests, but releases server-prep identities
   through one tested model.
+- **Done: Slice 7a row display policy extraction.** `DownloadRowDisplayPolicy` now owns
+  tested offline-row wording for active lane captions, estimated-vs-exact percentages,
+  paused/complete captions, byte strings, and ETA buckets. The app snapshot still supplies
+  live state, but repeated UI wording is no longer embedded directly in `DownloadManager`.
 
 ## Target module boundaries
 

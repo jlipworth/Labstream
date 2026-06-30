@@ -2886,13 +2886,8 @@ public final class DownloadManager {
 
     /// #95: caption for a paused (recoverably-interrupted) row: how far it got + that it resumes.
     private func pausedCaption(for record: DownloadRecord) -> String {
-        var pieces = ["Paused — tap to resume"]
-        if let f = displayFraction(for: record) {
-            let pct = "\(Int(f.value * 100))%"
-            pieces.append(f.isEstimated ? "~\(pct)" : pct)
-        }
-        if record.bytes > 0 { pieces.append(byteString(record.bytes)) }
-        return pieces.joined(separator: " • ")
+        DownloadRowDisplayPolicy.pausedCaption(fraction: displayFraction(for: record),
+                                               bytes: record.bytes)
     }
 
     /// Caption under the in-progress bar, e.g. "23% • 106.5 MB • 12 MB/s • 1080p".
@@ -2915,20 +2910,14 @@ public final class DownloadManager {
             // speed, and ETA are driven by the ephemeral live Range overlay for exactly this window.
             if isActive, resumeMode == .staticByteRange {
                 var pieces: [String] = []
-                var head: String
-                switch record.metadata?.resolvedDownloadLane() ?? .original {
-                case .original where record.metadata?.isServerPreparedVersion == true:
-                    head = "Downloading transcode"
-                case .original:
-                    head = "Downloading original"
-                case .compatibleRemux:
-                    head = "Remuxing + downloading"
-                case .optimize:
-                    head = backend == .plex ? "Downloading transcode" : "Transcoding + downloading"
-                }
+                var head = DownloadRowDisplayPolicy.activeHead(
+                    lane: record.metadata?.resolvedDownloadLane() ?? .original,
+                    backend: backend,
+                    isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true,
+                    isCheckpointPausing: false
+                )
                 if let fraction = displayFraction(for: record) {
-                    let pct = "\(Int(fraction.value * 100))%"
-                    head += " • \(fraction.isEstimated ? "~\(pct)" : pct)"
+                    head += " • \(DownloadRowDisplayPolicy.percentText(fraction))"
                 } else {
                     head += " • 0%"
                 }
@@ -2981,26 +2970,14 @@ public final class DownloadManager {
         let transcodeLimited = Self.isDownloadTranscodeLimited(record)
         var pieces: [String] = []
         let fraction = displayFraction(for: record)
-        let percentPiece = fraction.map { f -> String in
-            let pct = "\(Int(f.value * 100))%"
-            return f.isEstimated ? "~\(pct)" : pct
-        }
+        let percentPiece = fraction.map(DownloadRowDisplayPolicy.percentText)
         if isActive {
-            var head: String
-            if isCheckpointPausing {
-                head = "Pausing at checkpoint"
-            } else {
-                switch record.metadata?.resolvedDownloadLane() ?? .original {
-            case .original where record.metadata?.isServerPreparedVersion == true:
-                head = "Downloading transcode"
-            case .original:
-                head = "Downloading original"
-            case .compatibleRemux:
-                head = "Remuxing + downloading"
-            case .optimize:
-                head = backend == .plex ? "Downloading transcode" : "Transcoding + downloading"
-                }
-            }
+            var head = DownloadRowDisplayPolicy.activeHead(
+                lane: record.metadata?.resolvedDownloadLane() ?? .original,
+                backend: backend,
+                isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true,
+                isCheckpointPausing: isCheckpointPausing
+            )
             if let percentPiece { head += " • \(percentPiece)" }
             if let eta = downloadETA[record.ratingKey], eta > 0,
                let left = timeLeftString(eta) {
@@ -3043,30 +3020,18 @@ public final class DownloadManager {
     /// Human estimated-time-remaining string ("under a min" / "N min" / "Nh Mm" / "Nd Nh")
     /// for a transcode or download ETA.
     private func timeLeftString(_ seconds: TimeInterval) -> String? {
-        guard seconds.isFinite, seconds > 0 else { return nil }
-        if seconds < 60 { return "under a min" }
-        let totalMinutes = Int((seconds / 60).rounded())
-        guard totalMinutes >= 1 else { return nil }
-        if totalMinutes < 60 { return "\(totalMinutes) min" }
-        let hours = totalMinutes / 60
-        let minutes = totalMinutes % 60
-        if hours < 48 { return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m" }
-        let days = hours / 24
-        let remainingHours = hours % 24
-        return remainingHours == 0 ? "\(days)d" : "\(days)d \(remainingHours)h"
+        DownloadRowDisplayPolicy.timeLeftString(seconds)
     }
 
     /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
     private func completeCaption(for record: DownloadRecord) -> String {
-        var parts = record.isUnverified
-            ? ["Downloaded — playback not verified", byteString(record.bytes)]
-            : [byteString(record.bytes)]
-        if let r = record.metadata?.resolutionLabel { parts.append(r) }
-        return parts.joined(separator: " • ")
+        DownloadRowDisplayPolicy.completeCaption(isUnverified: record.isUnverified,
+                                                 bytes: record.bytes,
+                                                 resolutionLabel: record.metadata?.resolutionLabel)
     }
 
     private func byteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        DownloadRowDisplayPolicy.byteString(bytes)
     }
 
     static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
