@@ -38,18 +38,6 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
     let pendingTempCleanupBytes: Int
 }
 
-enum BackgroundRangeRequestReason: String, Sendable, Equatable {
-    /// A background Range chunk was adopted after relaunch and finished, but the session object no
-    /// longer has the authenticated base request needed to schedule the next chunk.
-    case adoptedChunkFinished
-    /// The pinned HTTP validator changed under an adopted chunk. The stale partial was discarded and
-    /// the manager/backend layer must rebuild an authenticated request to restart from byte 0.
-    case validatorChanged
-    /// A Range chunk failed after relaunch before it could be appended. The durable partial remains
-    /// the checkpoint and the manager/backend layer must rebuild the authenticated request.
-    case adoptedChunkFailed
-}
-
 /// Wraps a background `URLSession` so transfers survive app suspension and
 /// relaunch. On visionOS the OS pauses background transfers while the headset is
 /// OFF and resumes them when worn again — surface that reality in the UI
@@ -2665,13 +2653,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
 
         if let rangeEntry {
+            let rangeDisposition = BackgroundRangeCompletionPolicy.disposition(
+                hasError: error != nil,
+                errorCode: error.map { ($0 as NSError).code },
+                hasRequest: rangeEntry.request != nil
+            )
             guard let error else { return } // success already handled in finishRangeChunk
             clearGracefulRangePause(ratingKey: rangeEntry.ratingKey)
             endRangeBackgroundHandoffGrace(taskIdentifier: task.taskIdentifier,
                                            ratingKey: rangeEntry.ratingKey,
                                            reason: "error")
             let nsError = error as NSError
-            if nsError.code == NSURLErrorCancelled {
+            if case .cancelled = rangeDisposition {
                 downloadLog.info("range-cancelled ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.range_cancelled", fields: [
                     "download_id": .identifier(rangeEntry.ratingKey),
@@ -2702,11 +2695,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "optimistic_temp_bytes": .bytes(rangeEntry.chunkBytesWritten),
                 "bytes": .bytes(durableBytes),
             ])
-            if rangeEntry.request == nil {
+            if case .requestNeeded(let reason) = rangeDisposition {
                 // Adopted failed chunks were active system work, not user pauses. Persist queued
                 // intent before the callback so backend restore can be missed/terminated safely.
                 store.setStatus(ratingKey: rangeEntry.ratingKey, .queued)
-                onRangeRequestNeeded?(rangeEntry.ratingKey, .adoptedChunkFailed)
+                onRangeRequestNeeded?(rangeEntry.ratingKey, reason)
                 return
             }
             store.setStatus(ratingKey: rangeEntry.ratingKey, .paused)
