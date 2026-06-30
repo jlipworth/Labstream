@@ -221,6 +221,9 @@ snapshot derivation.
   `JellyfinDownloadKeepalivePolicy` now owns the active-row predicate, required persisted
   PlaySession/MediaSource inputs, keepalive cadence, and progress-to-ticks calculation for Jellyfin
   transcoding downloads. The app layer still owns live session matching and request side effects.
+- **Done: Slice 5n static retry target policy extraction.**
+  `DownloadStaticRetryTargetPolicy` now owns source-part matching for static byte-range retries
+  after metadata refresh, preserving true-original versus server-prepared/existing-version routing.
 
 ## Target module boundaries
 
@@ -245,6 +248,8 @@ snapshot derivation.
 - `DownloadExpectedBytesPolicy`: pure expected-total byte selection for range progress and ETA.
 - `JellyfinDownloadKeepalivePolicy`: pure Jellyfin transcoding keepalive candidate/cadence/tick
   decisions.
+- `DownloadStaticRetryTargetPolicy`: pure static retry source-part and original/existing-version
+  target selection.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
