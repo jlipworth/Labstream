@@ -96,6 +96,10 @@ derived_data=${VISIONPLAY_PROBE_DERIVED_DATA:-build/DerivedData/PlexRangeDropPro
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 out_dir=${VISIONPLAY_PROBE_OUTPUT_DIR:-build/probes/plex-range-drop/$timestamp}
 mkdir -p "$out_dir"
+# `simctl launch --stdout/--stderr` is fragile with relative host paths on visionOS
+# simulators (it can report a misleading SFBSystemService NotFound launch error).
+# Keep the user-facing path under the repo by default, but pass absolute file paths to simctl.
+out_dir=$(cd "$out_dir" && pwd -P)
 
 log_file="$out_dir/unified.log"
 stdout_file="$out_dir/stdout.log"
