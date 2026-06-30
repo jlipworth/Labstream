@@ -76,6 +76,7 @@ extension DownloadManager {
         var request: URLRequest
         var destination: URL
         var expectedBytes: Int?
+        var transferRoute: JellyfinDownloadRouter.Route = .staticOriginal
         // #84: captured here so the minted PlaySessionId can be PERSISTED after the row is seeded
         // (below), enabling encoder teardown after a hard app kill — not just in-memory teardown.
         var mintedPlaySessionId: String?
@@ -95,6 +96,7 @@ extension DownloadManager {
                                                               mediaSourceId: jellyfinMediaSourceID,
                                                               container: ext)
                 expectedBytes = part?.size
+                transferRoute = .staticOriginal
 
             case .optimize(let targetName):
                 // Ask Jellyfin for a real PlaybackInfo session before starting the progressive
@@ -127,6 +129,7 @@ extension DownloadManager {
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = decision.playSessionId
+                transferRoute = .transcode
                 recordDownloadDiagnostic("downloads.jellyfin_transcode_decision", fields: [
                     "download_id": .identifier(ratingKey),
                     "route": .label("transcode"),
@@ -162,7 +165,11 @@ extension DownloadManager {
                     videoCodec: decision.videoCodec,
                     audioCodec: decision.audioCodec,
                     sourceContainer: decision.container)
-                let routeIsRemux = eligibility.isEligible
+                transferRoute = JellyfinDownloadRouter.route(intent: .compatible,
+                                                             videoCodec: decision.videoCodec,
+                                                             audioCodec: decision.audioCodec,
+                                                             container: decision.container)
+                let routeIsRemux = transferRoute == .compatibleRemux
                 recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
                     "download_id": .identifier(ratingKey),
                     "negotiated_direct_play": .bool(decision.supportsDirectPlay),
@@ -257,20 +264,14 @@ extension DownloadManager {
             // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
             // Mark it so the rate isn't misread as a network problem. `.original` is a static file
             // stream → network-bound, range-resumable, not marked.
-            switch choice {
-            case .optimize, .optimizeCompatible: transcodeSourcedDownloads.insert(ratingKey)
-            case .original, .existingVersion: break
+            if transferRoute.isLiveForwardOnly {
+                transcodeSourcedDownloads.insert(ratingKey)
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
                               to: destination,
                               expectedBytes: expectedBytes,
-                              byteRangeCheckpoint: {
-                                  switch choice {
-                                  case .original, .existingVersion: return true
-                                  case .optimize, .optimizeCompatible: return false
-                                  }
-                              }(),
+                              byteRangeCheckpoint: transferRoute.usesByteRangeCheckpoint,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }
     }
