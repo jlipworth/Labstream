@@ -92,6 +92,12 @@ snapshot derivation.
   now owns the app-layer aggregation from records plus live coordinator facts into rows, mixed
   backend badges, queue toolbar action, and aggregate metrics. `DownloadManager` still owns
   the facts, but the hot UI publication shape has its own seam.
+- **Done: Slice 6a range HTTP policy extraction.** `RangeTransferHTTPPolicy` now owns
+  tested pure HTTP-header decisions for static byte-range transfer reattachment and validation:
+  Range segment classification, durable-checkpoint detection, closed-range length, strong
+  `If-Range` validator selection, `Content-Range` start/total parsing, and request offset parsing.
+  `BackgroundDownloadSession` still owns URLSession/temp-file side effects, but its parsing
+  semantics are pinned in PMSKit.
 
 ## Target module boundaries
 
@@ -104,8 +110,9 @@ snapshot derivation.
   - Emby route planner (already partly `EmbyDownloadRouter`).
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
-- Existing pure units remain here: `RangeChunkPlanner`, `DownloadCompletionValidation`,
-  `DownloadRateEstimator`, aggregate stats, file inventory, text subtitle parsing.
+- Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
+  `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
+  text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 
@@ -192,6 +199,7 @@ Split `BackgroundDownloadSession` internally after the above contracts are stabl
 
 - opaque URLSession task registry;
 - static-range task registry/adoption;
+- range HTTP parsing/policy (started with `RangeTransferHTTPPolicy`);
 - range checkpoint append/finalize worker;
 - background completion handler gate;
 - final-file validation bridge.
