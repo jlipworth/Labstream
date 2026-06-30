@@ -354,11 +354,7 @@ public final class DownloadManager {
               record.status == .downloading else { return false }
         // #123 / #135 Stage 1c: the lane × backend × progress classification lives in the pure,
         // tested `DownloadDisplayClassifier`.
-        return Self.isDownloadTranscodeLimited(record)
-    }
-
-    private static func isDownloadTranscodeLimited(_ record: DownloadRecord) -> Bool {
-        record.status == .downloading && DownloadDisplayClassifier.isLiveTranscoderSourced(record)
+        return DownloadDisplayClassifier.isLiveTranscoderSourced(record)
     }
 
     /// #84: whether the backend lane a row needs is currently configured/authenticated. The
@@ -2321,7 +2317,8 @@ public final class DownloadManager {
             isActive: isActive,
             isCheckpointPausing: isCheckpointPausing,
             isBackendConfigured: isBackendConfigured(for: record),
-            isTranscodeLimited: Self.isDownloadTranscodeLimited(record),
+            isTranscodeLimited: record.status == .downloading
+                && DownloadDisplayClassifier.isLiveTranscoderSourced(record),
             serverPrepState: optimizeState[record.ratingKey],
             serverPrepProgress: optimizeProgress[record.ratingKey],
             serverPrepETA: optimizeETA[record.ratingKey],

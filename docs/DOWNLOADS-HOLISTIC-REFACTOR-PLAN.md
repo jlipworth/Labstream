@@ -386,6 +386,10 @@ snapshot derivation.
   Chapter-image side caching now calls the shared `PlexPhotoTranscode` URL builder and
   `DownloadSideAssetPolicy` synthetic-key parser directly. The side-cache file still owns request
   authentication and IO, but no longer carries duplicate pure URL/parser wrappers for chapter images.
+- **Done: Slice 7m transcode-limited classifier wrapper cleanup.**
+  Download UI captions now call `DownloadDisplayClassifier.isLiveTranscoderSourced` directly for
+  live-transcoder rate suppression. The public row lookup still gates on active downloads, but the
+  manager no longer carries a private classifier mirror for snapshot captions.
 
 ## Target module boundaries
 
