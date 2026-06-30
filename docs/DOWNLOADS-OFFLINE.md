@@ -4,6 +4,18 @@ Downloads must produce a static local file. The app should not treat a live stre
 
 For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/offline-playback-compatibility.md).
 
+## Module boundaries after the holistic refactor
+
+The downloads module is now split by responsibility rather than by one giant manager file:
+
+- **Coordinator:** `VisionPlay/Downloads/DownloadManager.swift` owns the main-actor queue, runtime state dictionaries, retry/resume scanners, and the published offline-library snapshot. It should adapt live facts, not re-implement pure route/caption/storage decisions.
+- **Backend lanes:** `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`, and `+EmbyConvert.swift` keep backend-specific request construction, server-prep polling, active-encoding cleanup, and handoff behavior explicit. Do not collapse these into a wide backend protocol unless a future change proves the concrete steps are actually identical.
+- **Transfer engine:** `BackgroundDownloadSession` owns URLSession task registries, static byte-range task adoption, checkpoint appends, final-file validation, transient retries, and background completion callbacks. The transfer layer delegates pure HTTP/range/retry/finalization decisions to PMSKit policies.
+- **Persistence:** `DownloadStore` owns the versioned `index.json` envelope, row-by-row resilient decode, file reconciliation, side-asset byte accounting, and app-container deletes.
+- **Side assets:** `DownloadManager+SideCache.swift` owns authenticated request setup for posters, trickplay/chapter images, and external text subtitles; shared atomic write/persist tails keep backend differences out of disk IO.
+- **Pure policy core:** `PMSKit/Sources/PMSKit/Downloads` owns row identity, user choices, backend route planners, retry/pause/delete policy, static-range recovery policy, server-prep refresh/attempt tracking, storage estimates/caps, side-asset selection, row display/captions, and offline-library snapshot aggregation.
+
+This is the intended final architecture for the current refactor: the app layer still owns side effects and credentials, while PMSKit owns deterministic decisions that can be unit-tested without a simulator or server.
 
 ## Route sketch
 
@@ -63,7 +75,7 @@ Jellyfin download support mirrors the same offline goal:
 - otherwise a compatible static MP4/transcoded request for the selected quality
 - required Jellyfin headers preserved on requests
 
-As of this docs pass, Jellyfin download behavior has unit/request-path coverage but has not had the same live headset validation as Plex downloads. Do not describe it as fully live-proven until that check happens.
+The app-driven simulator probe now covers Jellyfin static/original byte-range recovery on a signed-in simulator: an injected `NSURLErrorNetworkConnectionLost` is retried, durable 64 MiB checkpoints are appended, and the probe row is deleted after observation. This proves the simulator app glue and live server route for that lane; headset/off-head durability is still a device-only claim.
 
 
 ## Emby routes
@@ -76,6 +88,8 @@ Emby download decisions are made from a download-time `PlaybackInfo` response, n
 - bitrate presets and unsafe originals can route through an Emby convert job, then hand off to the static existing-version lane once the converted file exists.
 
 Emby download code and live probes exist, but Plex still has the strongest headset/off-head validation history. Keep issue reports explicit about which backend and route were tested.
+
+The app-driven simulator probe now covers the Emby optimized/reuse path against an API-visible converted MP4: the optimizer choice reuses the existing converted source, hands off to the static range path, survives injected network drops/transient connection failures, appends durable checkpoints, and deletes the probe row after observation. This proves the simulator app glue and live server route for that lane; headset/off-head durability is still a device-only claim.
 
 ## Transfer sessions
 
@@ -125,6 +139,29 @@ On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-fl
 - Jellyfin compatible downloads and Emby compatible-remux/transcode paths can be live-forward encoder streams rather than durable server-prep jobs. When those paths are canceled, fail, or complete, VisionPlay sends active-encoding cleanup for the download play session where the backend exposes it. Emby convert-then-download is different: it is server prepare followed by a static existing-version transfer.
 - Failed items keep metadata so retry can re-probe and choose the correct current route.
 - Canceled/deleted downloads should clean up local files and app-owned queue state; Plex optimizer cleanup must avoid deleting protected/current jobs.
+
+## Download-agent / probe harnesses
+
+The DEBUG download-agent probes run inside the signed-in app process on the worktree simulator. They intentionally exercise app glue, persisted backend sessions, `DownloadManager`, and `BackgroundDownloadSession` without printing tokens:
+
+- `scripts/probe-plex-range-drop.sh` — Plex static range lane. Use `--existing-version --media-index N` when a pre-optimized Plex version is available and a quick static/range probe is preferred.
+- `scripts/probe-jellyfin-download.sh` — Jellyfin route and static/range download probe.
+- `scripts/probe-emby-download.sh` — Emby route, existing converted-source refresh, optimize/convert reuse, and static/range download probe.
+
+Operational rules:
+
+1. Target the worktree simulator explicitly: `SIMID=$(scripts/worktree-sim.sh id)`.
+2. Use `--keep-app-running` during iterative validation so the simulator stays open and signed-in state is preserved.
+3. Use `--drop-after-bytes 1048576` to inject a deterministic connection loss on static byte-range lanes.
+4. Use `--delete-after`/default cleanup unless intentionally preserving a row for a resume observation.
+5. Treat `build/probes/**` as private local evidence; do not paste server URLs, tokens, item IDs, or media paths into public issues.
+
+Current refactor evidence on 2026-06-30:
+
+- Plex existing-version static range: `build/probes/plex-range-drop/20260630T124843Z/` retried after an injected `-1005` drop and appended multiple 64 MiB checkpoints before cleanup.
+- Jellyfin static original: `build/probes/jellyfin-download/20260630T125201Z/` retried after an injected `-1005` drop and appended checkpoints through 268 MiB before cleanup.
+- Emby existing converted-source discovery: `build/probes/emby-download/20260630T125913Z/` refreshed the item, saw API-visible converted file sources, and did not start a transfer.
+- Emby optimize/reuse static range: `build/probes/emby-download/20260630T130201Z/` reused the existing converted source, recovered from injected/transient failures, appended checkpoints through 402 MiB, and cleaned up the row.
 
 ## Offline playback metadata
 

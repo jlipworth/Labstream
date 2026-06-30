@@ -77,12 +77,19 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [ ] **Download dual path — OPTIMIZER (offline-download redesign, Phase-0-gated)** — open the sheet
       on a known-incompatible title (forces a transcode): the sheet lists the server's real optimize
       presets (for example Original video quality or numeric bitrate/resolution choices). Choosing one triggers a server-side render/optimize, polls for the
-      rendered Part, then downloads it. ⚠️ The optimizer POST contract is NOT live-verified — run
-      `./scripts/live-optimize-probe.sh` (Phase 0) FIRST and reconcile `OptimizeRequest` to the real
-      shape before trusting this path. Optimizer logs persist at os.log `.error`:
+      rendered Part, then downloads it. The Plex optimizer POST/rendered-part contract is covered by
+      `./scripts/live-optimize-probe.sh`; the Emby convert/reuse lane is covered by
+      `scripts/probe-emby-download.sh --refresh-existing` and `--start-optimize`. Optimizer logs persist at os.log `.error`:
       `log show --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Downloads"'`
 - [ ] **Download sheet probe-failure fallback** — with the server briefly unreachable when the sheet
       opens, it still offers the optimize presets (it must never dead-end on a probe failure).
+- [x] **Static byte-range recovery probes (downloads holistic refactor)** ✅ sim-verified
+      (2026-06-30) — on the signed-in worktree simulator, Plex existing-version, Jellyfin static
+      original, and Emby optimized/reused converted-source downloads all survived injected
+      `NSURLErrorNetworkConnectionLost`/transient retry paths, appended durable 64 MiB checkpoints,
+      and cleaned up probe rows. Evidence: `build/probes/plex-range-drop/20260630T124843Z/`,
+      `build/probes/jellyfin-download/20260630T125201Z/`, and
+      `build/probes/emby-download/20260630T130201Z/`.
 - [x] **Simultaneous cross-backend downloads (GH #84)** ✅ verified live — a Plex optimized download
       and a Jellyfin optimized download running at the same time each progress through their own
       phases and complete independently; neither orphans or false-fails the other. Offline rows show

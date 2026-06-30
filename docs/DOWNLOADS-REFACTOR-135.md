@@ -4,6 +4,15 @@ Backend-agnostic dedup + robustness + de-godding plan for `VisionPlay/Downloads/
 
 > Produced by a read-first multi-agent audit (9 parallel readers → capability matrix → staged plan → adversarial critique). It is the audit + plan deliverable for #135; the refactor lands as the staged PRs in §4.
 
+> **Post-holistic-refactor status (2026-06-30):** this file is a historical #135 audit and
+> staged-refactor record, not the current downloads architecture source of truth. The final
+> architecture and operating guidance now live in `docs/DOWNLOADS-HOLISTIC-REFACTOR-PLAN.md`,
+> `docs/DOWNLOADS-OFFLINE.md`, `docs/ARCHITECTURE.md`, and `docs/TESTING-STRATEGY.md`. Current
+> app-layer shape: `DownloadManager.swift` is a coordinator (~2.8k lines), backend lanes live in
+> `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`,
+> `+EmbyConvert.swift`, and `+SideCache.swift`, and pure route/retry/range/display/snapshot
+> decisions live in `PMSKit/Sources/PMSKit/Downloads`.
+>
 > **Post-#169 architecture note:** this document intentionally preserves the #135 audit snapshot and
 > old line anchors. The current static byte-range transfer is no longer a separate foreground
 > `rangeURLSession`/`dataTask` that writes each `didReceive` byte into the final file. Static lanes now

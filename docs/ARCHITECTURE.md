@@ -8,7 +8,7 @@ VisionPlay is a native visionOS app with a deliberately small app shell, backend
 - `ContentView` is the main-window root that switches between restore, login, and browse UI using those app-owned objects.
 - `AppModel` owns backend/session selection and browse-ready state. It does not own the player, downloads, or auth controller.
 - `AuthManager` owns sign-in, restore, sign-out, selected server credentials, and Keychain persistence.
-- `DownloadManager` owns offline queue state, background transfer coordination, optimizer polling, and `DownloadStore` persistence.
+- `DownloadManager` owns offline queue orchestration and the published offline-library snapshot, while narrower download services own persistence, transfer, backend lanes, side assets, and tested policy decisions.
 - `PlaybackController` owns an active playback session: AVPlayer, restart/reopen behavior, player diagnostics, heartbeat/progress, and teardown.
 - `SystemEntryRouter` is registered at launch so App Intents, Spotlight, deep links, user activities, and Cinema exit routes land in the main browse window.
 
@@ -19,6 +19,7 @@ VisionPlay is a native visionOS app with a deliberately small app shell, backend
 - request builders for Plex, Jellyfin, and Emby
 - response models and MediaItem mapping
 - playback/download decision helpers
+- download policy state machines for row identity, backend routing, retry/pause/delete, static-range recovery, server-prep refresh, storage estimates, side-asset inventory, row display, and offline-library snapshot aggregation
 - small policy state machines such as adaptive bitrate and seek restart budgeting
 - diagnostics event/redaction primitives
 
@@ -65,7 +66,15 @@ See [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md).
 
 ## Offline boundary
 
-Downloads are not “streaming with a longer timeout.” They must end in a static local file with a valid length and playable container. Plex downloads choose between direct-original and server-rendered compatible copies. Jellyfin downloads use direct original or a static transcoded/remuxed output, depending on quality and local compatibility. Emby downloads use download-time `PlaybackInfo` plus direct static, existing/prepared static, compatible remux, or convert-then-static lanes depending on the server verdict.
+Downloads are not “streaming with a longer timeout.” They must end in a local file with a valid length and playable container. Plex downloads choose between direct-original, existing server versions, and server-rendered compatible copies. Jellyfin downloads choose between static original/range transfers and live-forward remux/transcode outputs. Emby downloads use download-time `PlaybackInfo` plus direct static, existing/prepared static, compatible remux, or convert-then-static lanes depending on the server verdict.
+
+The holistic downloads refactor split the app layer around these boundaries:
+
+- `DownloadManager.swift` remains the main-actor coordinator for queue state, runtime dictionaries, retry/resume scans, and publishing snapshots.
+- `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`, `+EmbyConvert.swift`, and `+SideCache.swift` keep backend-specific request/poller/side-asset behavior explicit instead of forcing a broad backend protocol.
+- `DownloadStore` owns the versioned offline index and file-side effects.
+- `BackgroundDownloadSession` owns URLSession tasks, static byte-range checkpointing, finalization, and transfer callbacks; pure parsing/routing decisions live in PMSKit.
+- `PMSKit/Sources/PMSKit/Downloads` owns the pure, unit-tested download policies used by the app layer.
 
 See [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md).
 
