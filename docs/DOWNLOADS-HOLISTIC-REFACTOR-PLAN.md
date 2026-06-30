@@ -228,6 +228,9 @@ snapshot derivation.
   `DownloadStorageEstimatePolicy` now owns source-sized vs bitrate-derived media estimates,
   backend sidecar estimates, per-chapter image estimates, and total-byte combination for storage
   preflight.
+- **Done: Slice 7d side-asset selection policy extraction.**
+  `DownloadSideAssetPolicy` now owns offline poster preference, Plex BIF source-part selection,
+  synthetic Jellyfin/Emby chapter-image key parsing, and chapter-image fanout throttling decisions.
 
 ## Target module boundaries
 
@@ -262,6 +265,7 @@ snapshot derivation.
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
+  `DownloadSideAssetPolicy`,
   `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
   `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`,
   `StaticRangeSegmentStrategyPolicy`, `StaticRangeReattachPolicy`,
