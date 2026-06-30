@@ -155,13 +155,7 @@ extension DownloadManager {
         // `EmbyDownloadRouter`. `.original`/`.existingVersion` negotiate identically (a directly
         // playable local-container file downloads byte-for-byte, else transcode); `.optimizeCompatible`
         // stays a remux only while the source video is stream-copy eligible; `.optimize` always transcodes.
-        let intent: EmbyDownloadRouter.Intent
-        switch choice {
-        case .original: intent = .original
-        case .existingVersion: intent = .existingVersion
-        case .optimizeCompatible: intent = .compatible
-        case .optimize: intent = .transcode
-        }
+        let intent = EmbyDownloadRouter.intent(for: choice)
         let route = EmbyDownloadRouter.route(intent: intent,
                                              supportsDirectPlay: decision.supportsDirectPlay,
                                              container: decision.container,

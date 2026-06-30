@@ -3,6 +3,13 @@ import Testing
 
 @Suite("Jellyfin download router")
 struct JellyfinDownloadRouterTests {
+    @Test("Download choices map to Jellyfin intents")
+    func choiceIntentMapping() {
+        #expect(JellyfinDownloadRouter.intent(for: .original) == .original)
+        #expect(JellyfinDownloadRouter.intent(for: .existingVersion) == .original)
+        #expect(JellyfinDownloadRouter.intent(for: .optimize(targetName: "720p 4 Mbps")) == .transcode)
+        #expect(JellyfinDownloadRouter.intent(for: .optimizeCompatible) == .compatible)
+    }
 
     @Test("Original and existing-version intents stay static/range-resumable")
     func originalIntentIsStatic() {

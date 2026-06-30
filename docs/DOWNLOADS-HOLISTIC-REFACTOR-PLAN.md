@@ -322,6 +322,10 @@ snapshot derivation.
   enqueue paths and relaunch retry paths. It preserves the compatibility order for old rows:
   persisted source part first, selected media/part second, legacy baseline ids third, then
   non-optimized current parts while skipping existing Plex Versions.
+- **Done: Slice 4j backend intent mapping cleanup.**
+  Plex, Jellyfin, and Emby route planners now each own the pure mapping from shared
+  `DownloadIntentChoice` to their backend-specific router intent. The app adapters no longer carry
+  separate switch copies for Plex/Emby, and the unused Jellyfin app-side mapper was removed.
 
 ## Target module boundaries
 
@@ -505,6 +509,13 @@ reliability behavior.
 Move remaining pure caption/progress/sort/snapshot derivation out of `DownloadManager` into
 tested PMSKit/app-layer builders so `OfflineLibraryView` observes a stable value without the
 coordinator owning every formatting decision.
+
+### Final step: update all documentation
+
+After the code refactor and validation are complete, update all documentation that describes
+downloads, backend routing, download-agent behavior, live/headless probes, diagnostics, and
+operator workflows so the docs represent the final architecture rather than the transitional
+slices. Treat this as part of done for the holistic refactor, not a follow-up task.
 
 ## Non-goals
 

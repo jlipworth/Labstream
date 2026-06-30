@@ -301,19 +301,6 @@ extension DownloadManager {
         await downloadJellyfin(item, choice: .original, mediaIndex: mediaIndex, partIndex: partIndex)
     }
 
-    private static func jellyfinDownloadIntent(for choice: DownloadChoice) -> JellyfinDownloadRouter.Intent {
-        switch choice {
-        case .original, .existingVersion:
-            // `.existingVersion` is a Plex-only UI lane; retry code can still map it safely to
-            // Jellyfin's static-original route if it reaches this backend.
-            return .original
-        case .optimize:
-            return .transcode
-        case .optimizeCompatible:
-            return .compatible
-        }
-    }
-
     /// Best-effort cache of Jellyfin trickplay assets for offline scrubbing (#79). Fetches the
     /// playlist, downloads each referenced tile through header auth (stripping ApiKey from tile
     /// URLs in the request builder), then writes a sanitized local playlist whose tile lines are

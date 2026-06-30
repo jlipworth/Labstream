@@ -58,6 +58,19 @@ public enum JellyfinDownloadRouter {
         public var isRemux: Bool { route == .compatibleRemux }
     }
 
+    public static func intent(for choice: DownloadIntentChoice) -> Intent {
+        switch choice {
+        case .original, .existingVersion:
+            // `.existingVersion` is a Plex-only UI lane; retry code can still map it safely to
+            // Jellyfin's static-original route if it reaches this backend.
+            return .original
+        case .optimize:
+            return .transcode
+        case .optimizeCompatible:
+            return .compatible
+        }
+    }
+
     public static func route(intent: Intent,
                              videoCodec: String?,
                              audioCodec: String?,

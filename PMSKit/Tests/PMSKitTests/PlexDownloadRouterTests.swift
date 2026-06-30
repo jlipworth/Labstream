@@ -3,6 +3,15 @@ import Testing
 
 @Suite("Plex download router")
 struct PlexDownloadRouterTests {
+    @Test("Download choices map to Plex intents")
+    func choiceIntentMapping() {
+        #expect(PlexDownloadRouter.intent(for: .original) == .original)
+        #expect(PlexDownloadRouter.intent(for: .existingVersion) == .existingVersion)
+        #expect(PlexDownloadRouter.intent(for: .optimize(targetName: "720p 4 Mbps")) ==
+            .optimize(targetName: "720p 4 Mbps"))
+        #expect(PlexDownloadRouter.intent(for: .optimizeCompatible) == .optimizeCompatible)
+    }
+
     @Test("Original requires a concrete part and an AV preflight before static transfer")
     func originalRequiresPartAndPreflight() {
         #expect(PlexDownloadRouter.initialRoute(intent: .original,

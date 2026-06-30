@@ -34,6 +34,19 @@ public enum PlexDownloadRouter {
         case optimizeFallback(targetName: String)
     }
 
+    public static func intent(for choice: DownloadIntentChoice) -> Intent {
+        switch choice {
+        case .original:
+            return .original
+        case .existingVersion:
+            return .existingVersion
+        case .optimize(let targetName):
+            return .optimize(targetName: targetName)
+        case .optimizeCompatible:
+            return .optimizeCompatible
+        }
+    }
+
     public static func initialRoute(intent: Intent,
                                     hasPart: Bool,
                                     compatibleFallbackTarget: String) -> InitialRoute {

@@ -43,6 +43,19 @@ public enum EmbyDownloadRouter {
         case transcode
     }
 
+    public static func intent(for choice: DownloadIntentChoice) -> Intent {
+        switch choice {
+        case .original:
+            return .original
+        case .existingVersion:
+            return .existingVersion
+        case .optimizeCompatible:
+            return .compatible
+        case .optimize:
+            return .transcode
+        }
+    }
+
     /// The negotiated-container gate: AVFoundation can open the downloaded result as a standalone
     /// local file when the raw source part is already locally playable OR the server negotiated an
     /// mp4-family container.
