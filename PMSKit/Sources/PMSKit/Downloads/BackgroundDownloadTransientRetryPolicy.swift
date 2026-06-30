@@ -2,8 +2,10 @@ import Foundation
 
 public enum BackgroundDownloadTransientRetryRejection: Sendable, Equatable {
     case nonTransientError
+    case nonTransientHTTPStatus
     case missingResumeData
     case unsupportedResumeData
+    case unsupportedRangeSegment
     case missingRangeRequest
     case retryBudgetExhausted(nextAttempt: Int, maxRetries: Int)
 }
@@ -21,6 +23,24 @@ public enum BackgroundDownloadTransientRetryDecision: Sendable, Equatable {
 /// authenticated request still to be in memory.
 public enum BackgroundDownloadTransientRetryPolicy {
     public static let defaultMaxRetries = 3
+
+    /// Server-side / edge-proxy HTTP responses that are usually transient for a static file chunk.
+    ///
+    /// Keep this intentionally narrower than "all 5xx": permanent origin application failures
+    /// should still surface quickly, while proxy overload/network-transition cases get the same
+    /// bounded self-healing behavior as URLSession transport drops.
+    public static let transientHTTPStatusCodes: Set<Int> = [
+        502,
+        503,
+        504,
+        520,
+        521,
+        522,
+        523,
+        524,
+        525,
+        526,
+    ]
 
     public static let transientErrorCodes: Set<Int> = [
         NSURLErrorNetworkConnectionLost,
@@ -55,6 +75,23 @@ public enum BackgroundDownloadTransientRetryPolicy {
                                      maxRetries: Int = defaultMaxRetries) -> BackgroundDownloadTransientRetryDecision {
         guard isTransientURLError(domain: errorDomain, code: errorCode) else {
             return .reject(.nonTransientError)
+        }
+        guard hasRequest else {
+            return .reject(.missingRangeRequest)
+        }
+        return retryBudgetDecision(currentRetryCount: currentRetryCount, maxRetries: maxRetries)
+    }
+
+    public static func rangeHTTPDecision(statusCode: Int,
+                                         hasRequest: Bool,
+                                         supportsDurableCheckpoint: Bool,
+                                         currentRetryCount: Int,
+                                         maxRetries: Int = defaultMaxRetries) -> BackgroundDownloadTransientRetryDecision {
+        guard transientHTTPStatusCodes.contains(statusCode) else {
+            return .reject(.nonTransientHTTPStatus)
+        }
+        guard supportsDurableCheckpoint else {
+            return .reject(.unsupportedRangeSegment)
         }
         guard hasRequest else {
             return .reject(.missingRangeRequest)

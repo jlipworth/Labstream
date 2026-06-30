@@ -89,4 +89,72 @@ struct BackgroundDownloadTransientRetryPolicyTests {
             NSURLErrorDNSLookupFailed,
         ])
     }
+
+    @Test("Range HTTP retries are limited to transient proxy/server statuses and durable checkpoints")
+    func rangeHTTPRetryGate() {
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 521,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .retry(nextAttempt: 1))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 526,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 2
+        ) == .retry(nextAttempt: 3))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 404,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .reject(.nonTransientHTTPStatus))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 500,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .reject(.nonTransientHTTPStatus))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 521,
+            hasRequest: false,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .reject(.missingRangeRequest))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 521,
+            hasRequest: true,
+            supportsDurableCheckpoint: false,
+            currentRetryCount: 0
+        ) == .reject(.unsupportedRangeSegment))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: 521,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 3
+        ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
+    }
+
+    @Test("Transient HTTP status set covers the proxy and origin-unavailable statuses used by downloads")
+    func transientHTTPStatusCodes() {
+        #expect(BackgroundDownloadTransientRetryPolicy.transientHTTPStatusCodes == [
+            502,
+            503,
+            504,
+            520,
+            521,
+            522,
+            523,
+            524,
+            525,
+            526,
+        ])
+    }
 }

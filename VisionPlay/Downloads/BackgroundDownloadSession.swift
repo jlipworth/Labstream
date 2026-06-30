@@ -109,6 +109,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// duration. The delegate hop only does an O(1) rename of the OS temp into a stash; the heavy
     /// append + chunk decision run here.
     private let rangeIOQueue = DispatchQueue(label: "com.visionplay.downloads.range-io")
+    /// HTTP edge/origin failures often arrive as a burst during a network transition. Delay the
+    /// bounded retry attempts slightly instead of immediately hammering the same unavailable edge.
+    private let rangeRetryQueue = DispatchQueue(label: "com.visionplay.downloads.range-retry")
     /// Number of finished background transfers whose durable-file/finalization work has not yet
     /// reached a safe state. `urlSessionDidFinishEvents` must not release the app delegate
     /// background completion handler until these reach zero, or visionOS can suspend us between a
@@ -1779,6 +1782,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ratingKey: entry.ratingKey,
                 expectedBytes: entry.expectedBytes
             )
+            if retryTransientRangeHTTPFailure(statusCode: code,
+                                              entry: entry,
+                                              durableBytes: durableBytes) {
+                return
+            }
             AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "segment_kind": .label(entry.segmentKind.rawValue),
@@ -2991,6 +2999,85 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "error": .error(error),
             ])
             return false
+        }
+    }
+
+    /// HTTP 52x/503-style responses are real server replies, so URLSession reports a successful
+    /// transfer and hands us an error-page temp file. For durable checkpoint range chunks, treat
+    /// those edge/origin statuses like transient transport drops: keep the partial file checkpoint
+    /// intact and reissue the same authenticated Range request a few times before surfacing failure.
+    private func retryTransientRangeHTTPFailure(statusCode: Int,
+                                                entry: RangeTransfer,
+                                                durableBytes: Int) -> Bool {
+        lock.lock()
+        let decision = BackgroundDownloadTransientRetryPolicy.rangeHTTPDecision(
+            statusCode: statusCode,
+            hasRequest: entry.request != nil,
+            supportsDurableCheckpoint: RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind),
+            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+        )
+        guard case .retry(let nextAttempt) = decision,
+              let request = entry.request else {
+            lock.unlock()
+            return false
+        }
+        retryCounts[entry.ratingKey] = nextAttempt
+        lock.unlock()
+
+        let delay = Self.rangeHTTPRetryDelay(nextAttempt: nextAttempt)
+        downloadLog.error("range-http-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) status=\(statusCode, privacy: .public) bytes=\(durableBytes, privacy: .public) delay=\(delay, privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.range_http_retry", fields: [
+            "download_id": .identifier(entry.ratingKey),
+            "segment_kind": .label(entry.segmentKind.rawValue),
+            "attempt": .int(nextAttempt),
+            "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRetries),
+            "status_code": .int(statusCode),
+            "bytes": .bytes(durableBytes),
+            "delay_ms": .int(Int(delay * 1000)),
+        ])
+
+        rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            do {
+                let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
+                try startRangeChunk(ratingKey: entry.ratingKey,
+                                    with: request,
+                                    to: entry.destination,
+                                    expectedBytes: entry.expectedBytes,
+                                    resetsRetryCount: false,
+                                    holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion,
+                                    segmentKindOverride: entry.segmentKind,
+                                    segmentReasonOverride: "http_retry_\(statusCode)")
+                onChange?()
+            } catch {
+                if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
+                                                   error: error,
+                                                   context: "http_retry") {
+                    onChange?()
+                    return
+                }
+                AppDiagnostics.record(.downloads, "downloads.range_http_retry_failed", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "attempt": .int(nextAttempt),
+                    "status_code": .int(statusCode),
+                    "error": .error(error),
+                ])
+                store.setStatus(ratingKey: entry.ratingKey, .failed)
+                onError?(entry.ratingKey, .transferFailed("Retry after HTTP \(statusCode) failed."))
+                onChange?()
+            }
+        }
+        onChange?()
+        return true
+    }
+
+    private static func rangeHTTPRetryDelay(nextAttempt: Int) -> TimeInterval {
+        switch nextAttempt {
+        case ..<2:
+            return 1
+        case 2:
+            return 2
+        default:
+            return 4
         }
     }
 
