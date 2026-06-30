@@ -180,7 +180,8 @@ extension DownloadManager {
                                 urlShape: url, expectedBytes: part.size,
                                 releaseInFlightOnFailure: false) {
             try session.start(ratingKey: ratingKey, from: url, to: destination,
-                              expectedBytes: part.size, byteRangeCheckpoint: true)
+                              expectedBytes: part.size, byteRangeCheckpoint: true,
+                              resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }
     }
 

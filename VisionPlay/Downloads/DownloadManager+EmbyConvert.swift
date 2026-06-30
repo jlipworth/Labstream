@@ -145,6 +145,7 @@ extension DownloadManager {
             server: server, token: token, identity: identity, userId: userId, itemId: itemId,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
             primaryMediaSourceId: metadata.mediaSourceID,
+            excludedSourceIds: [],
             initialSourceCount: fileSources.count,
             phase: "pre_create", attemptID: attemptID),
            let reuseId = refreshedReuse.id {
@@ -278,6 +279,7 @@ extension DownloadManager {
             server: server, token: token, identity: identity, userId: userId, itemId: item.ratingKey,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
             primaryMediaSourceId: primaryMediaSourceId,
+            excludedSourceIds: snapshotIds,
             initialSourceCount: snapshotIds.count,
             phase: "resume_pre_poll", attemptID: attemptID)
         if let reuseId = resumedReusableSource?.id,
@@ -626,6 +628,7 @@ extension DownloadManager {
                                                            ratingKey: String,
                                                            requestedHeight: Int?,
                                                            primaryMediaSourceId: String?,
+                                                           excludedSourceIds: Set<String>,
                                                            initialSourceCount: Int,
                                                            phase: String,
                                                            attemptID: UUID) async -> EmbyMediaSourceInfo? {
@@ -640,7 +643,12 @@ extension DownloadManager {
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)
             lastSourceCount = sources.count
-            if let reuse = Self.reusableConvertedSource(sources, requestedHeight: requestedHeight,
+            let eligibleSources = sources.filter { source in
+                guard !excludedSourceIds.isEmpty else { return true }
+                guard let id = source.id, !id.isEmpty else { return true }
+                return !excludedSourceIds.contains(id)
+            }
+            if let reuse = Self.reusableConvertedSource(eligibleSources, requestedHeight: requestedHeight,
                                                         primaryMediaSourceId: primaryMediaSourceId) {
                 recordDownloadDiagnostic("downloads.convert_reuse_refresh", fields: [
                     "download_id": .identifier(ratingKey),

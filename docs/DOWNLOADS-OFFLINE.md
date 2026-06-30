@@ -91,12 +91,13 @@ headset down for hours, come back to a finished file" workflow is **not reliable
 downloads, keep the headset on (or pick it up periodically to re-wake the session — reconciliation
 re-kicks reconnectable transfers on resume).
 
-Current-engine #169 note: static byte-range downloads now use frequent bounded checkpoints while
-the app is active, but switch to one open-ended background-owned remainder when the app becomes
-inactive/background. That gives `nsurlsessiond` one authoritative task to keep scheduling while the
-app is suspended/off-head. A failed off-head remainder resumes from the last appended partial-file
-checkpoint; progress bytes still inside URLSession's temp file are intentionally not treated as
-durable.
+Current-engine #169/#190 note: static byte-range downloads now use frequent bounded checkpoints
+both while the app is active and when future chunks are started from inactive/background event
+drains. Each segment is still a background `URLSessionDownloadTask` owned by `nsurlsessiond`, but
+finished chunks are appended into the durable partial file periodically instead of parking all
+remaining bytes in one long-lived temp file. A failed off-head/background segment resumes from the
+last appended partial-file checkpoint; progress bytes still inside URLSession's temp file are
+intentionally not treated as durable.
 
 The static byte-range session has one ownership invariant: for a given rating key, there must be
 exactly one authoritative live range task. Relaunch reattachment, user Resume/Retry, and

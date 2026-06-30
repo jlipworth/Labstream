@@ -618,10 +618,11 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
     }
 
-    /// Preserve side assets that may have been cached asynchronously after the caller captured an
-    /// older metadata snapshot. Download rows are upserted several times during handoff/retry/final
-    /// transfer; without this merge, a later upsert carrying a stale-but-non-nil metadata value can
-    /// erase poster/trickplay/chapter/subtitle paths that a side-cache task just persisted.
+    /// Preserve local side/durable assets that may have been cached or checkpointed asynchronously
+    /// after the caller captured an older metadata snapshot. Download rows are upserted several
+    /// times during handoff/retry/final transfer; without this merge, a later upsert carrying a
+    /// stale-but-non-nil metadata value can erase poster/trickplay/chapter/subtitle paths or
+    /// resumability/checkpoint facts that another task just persisted.
     public mutating func preserveCachedSideAssets(from previous: OfflineMetadata) {
         if posterRelativePath == nil {
             posterRelativePath = previous.posterRelativePath
@@ -640,6 +641,15 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         if (offlineTextSubtitles?.isEmpty ?? true) {
             offlineTextSubtitles = previous.offlineTextSubtitles
+        }
+        if resumeDataRelativePath == nil {
+            resumeDataRelativePath = previous.resumeDataRelativePath
+        }
+        if rangeValidator == nil {
+            rangeValidator = previous.rangeValidator
+        }
+        if sourcePartSize == nil {
+            sourcePartSize = previous.sourcePartSize
         }
     }
 

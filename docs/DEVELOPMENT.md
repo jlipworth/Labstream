@@ -353,13 +353,13 @@ Use root-relative GitHub links for files outside `docs/` because the published s
   byte-append mid-flight. While the app is active, the lane therefore downloads bounded
   `Range: bytes=<off>-<off+N-1>` checkpoint chunks and appends each finished chunk into the durable
   partial (the checkpoint that survives force-quit/relaunch). When SwiftUI scene phase becomes
-  `.inactive`/`.background`, active bounded chunks are deliberately cancelled back to the durable
-  partial and replaced with one open-ended `Range: bytes=<checkpoint>-` remainder task so
-  `nsurlsessiond` already owns a continuous transfer before off-head suspension; new range starts
-  during background URLSession event drains use the same remainder strategy. If that in-flight
-  remainder later fails, the retry/checkpoint is still the durable partial size from before the
-  remainder, not the optimistic bytes URLSession had only in its temp file. In-flight bytes reported
-  by `didWriteData` may be shown as live progress, but they are **not durable checkpoint bytes**.
+  `.inactive`/`.background`, future range starts switch to background-owned bounded checkpoint
+  chunks: `nsurlsessiond` owns each transfer segment, and finished segments are appended into the
+  durable partial periodically instead of leaving all remaining bytes in one long-lived temp file.
+  If an in-flight background segment later fails, the retry/checkpoint is still the durable partial
+  size from before that segment, not the optimistic bytes URLSession had only in its temp file.
+  In-flight bytes reported by `didWriteData` may be shown as live progress, but they are **not
+  durable checkpoint bytes**.
   Pause/error/reconcile paths must reset row bytes/progress from the actual partial-file size, not
   from optimistic row counters.
   Also do not fire the URLSession background completion handler until a finished chunk has been appended,

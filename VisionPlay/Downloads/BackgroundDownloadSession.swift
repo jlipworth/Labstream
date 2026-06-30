@@ -153,9 +153,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// starting the next chunk. This keeps Pause/Pause All aligned with "pause at a real checkpoint."
     private var gracefulRangePauseKeys: Set<String> = []
     /// Nil means future static-byte-range work should use foreground-friendly bounded checkpoints.
-    /// A non-nil reason means future starts should hand one open-ended remainder to `nsurlsessiond`.
-    /// The active task is NOT automatically reverted when the app becomes active again; avoiding churn
-    /// is more important than regaining checkpoints mid-remainder.
+    /// A non-nil reason means future starts should use background-owned checkpoint chunks. The
+    /// active task is NOT automatically reverted when the app becomes active again; avoiding churn
+    /// is more important than changing segment policy mid-transfer.
     private var continuousRangeRemainderReason: String?
     private var lastAppScenePhase: String?
     /// Task identifiers intentionally abandoned while replacing a bounded chunk with a continuous
@@ -180,6 +180,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let segmentReason: String?
 
         var totalBytes: Int { baseOffset + chunkBytesWritten }
+
+        func replacingExpectedBytes(_ expectedBytes: Int?) -> RangeTransfer {
+            RangeTransfer(ratingKey: ratingKey,
+                          request: request,
+                          destination: destination,
+                          expectedBytes: expectedBytes,
+                          baseOffset: baseOffset,
+                          responseStatus: responseStatus,
+                          chunkBytesWritten: chunkBytesWritten,
+                          segmentKind: segmentKind,
+                          segmentReason: segmentReason)
+        }
     }
 
     private struct DuplicateRangeTaskDecision {
@@ -917,12 +929,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// one (the optimized part's reported size, or the quality×runtime estimate).
     /// `nil` falls back to the bare 500 MB floor.
     func start(ratingKey: String, from url: URL, to destination: URL,
-               expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false) throws {
+               expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false,
+               resetRangeRestartCounters: Bool = true) throws {
         try start(ratingKey: ratingKey,
                   with: URLRequest(url: url),
                   to: destination,
                   expectedBytes: expectedBytes,
-                  byteRangeCheckpoint: byteRangeCheckpoint)
+                  byteRangeCheckpoint: byteRangeCheckpoint,
+                  resetRangeRestartCounters: resetRangeRestartCounters)
     }
 
     /// Begin (or resume) a background download with an explicit request.
@@ -930,7 +944,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Jellyfin downloads need auth headers; keep this overload so callers do not
     /// smuggle tokens into query strings just to satisfy `downloadTask(with: URL)`.
     func start(ratingKey: String, with request: URLRequest, to destination: URL,
-               expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false) throws {
+               expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false,
+               resetRangeRestartCounters: Bool = true) throws {
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
         // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
@@ -957,8 +972,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         haltedRangeKeys.remove(ratingKey)
         gracefulRangePauseKeys.remove(ratingKey)
-        validatorChangeRestarts[ratingKey] = nil
-        rangeOffsetMismatchRetries[ratingKey] = nil
+        if resetRangeRestartCounters {
+            validatorChangeRestarts[ratingKey] = nil
+            rangeOffsetMismatchRetries[ratingKey] = nil
+        }
         lock.unlock()
         if byteRangeCheckpoint {
             try startRangeChunk(ratingKey: ratingKey, with: request, to: destination,
@@ -990,10 +1007,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Start one static byte-range background `downloadTask` (#169).
     ///
     /// The destination IS the durable partial file; its current size is the checkpoint. While active
-    /// we use bounded checkpoint chunks. When the app is likely going off-head/background, the plan is
-    /// an open-ended `bytes=<offset>-` remainder so one `nsurlsessiond` task owns the transfer across
-    /// suspension. `didFinishDownloadingTo` appends the finished segment into the partial and either
-    /// finalizes or starts the next segment. A server that ignores Range (HTTP 200) sends the whole
+    /// we use bounded checkpoint chunks. When the app is likely going off-head/background, future
+    /// starts use background-owned bounded checkpoint chunks so `nsurlsessiond` owns each transfer
+    /// segment without parking all remaining bytes in one non-durable temp file.
+    /// `didFinishDownloadingTo` appends the finished segment into the partial and either finalizes
+    /// or starts the next segment. A server that ignores Range (HTTP 200) sends the whole
     /// resource and is handled at finalize by replacing the partial honestly; if it honors Range with
     /// 206, progress never jumps backwards.
     @discardableResult
@@ -1553,7 +1571,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let total = rangeEntry.baseOffset + chunkBytesWritten
             let responseExpectedBytes = Self.contentRangeTotal(from: downloadTask.response as? HTTPURLResponse)
             let effectiveExpectedBytes = responseExpectedBytes ?? rangeEntry.expectedBytes
-            store.setSourcePartSizeIfMissing(ratingKey: rangeEntry.ratingKey, effectiveExpectedBytes)
+            if responseExpectedBytes != nil {
+                store.setSourcePartSize(ratingKey: rangeEntry.ratingKey, effectiveExpectedBytes)
+            } else {
+                store.setSourcePartSizeIfMissing(ratingKey: rangeEntry.ratingKey, effectiveExpectedBytes)
+            }
             // A Range chunk's in-flight bytes live in an OS temp file until
             // `didFinishDownloadingTo` lets us append them to the durable partial. Keep the visible
             // row/aggregate "downloaded" total pinned to the last real checkpoint; detailed
@@ -1845,8 +1867,33 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onChange?()
 
         case .alreadyComplete:
-            // HTTP 416: the durable partial already covers the file. Finalize what's on disk.
-            finalizeRangeWhole(entry: entry)
+            // HTTP 416: only "already complete" if the durable partial matches the server's
+            // reported total. If the server says more bytes exist, keep requesting from the real
+            // checkpoint instead of validating a truncated partial.
+            let durableBytes = fileSize(at: entry.destination) ?? entry.baseOffset
+            let contentRangeTotal = Self.contentRangeTotal(from: http)
+            if let contentRangeTotal {
+                store.setSourcePartSize(ratingKey: entry.ratingKey, contentRangeTotal)
+            }
+            let effectiveEntry = entry.replacingExpectedBytes(contentRangeTotal ?? entry.expectedBytes)
+            if let contentRangeTotal, durableBytes != contentRangeTotal {
+                AppDiagnostics.record(.downloads, "downloads.range_416_mismatch", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "segment_kind": .label(entry.segmentKind.rawValue),
+                    "durable_bytes": .bytes(durableBytes),
+                    "server_total_bytes": .bytes(contentRangeTotal),
+                ])
+                if durableBytes < contentRangeTotal {
+                    continueRangeAfterChunk(entry: effectiveEntry, partialSize: durableBytes)
+                } else {
+                    restartRangeFromChangedResource(entry: effectiveEntry)
+                }
+                endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
+                                               ratingKey: entry.ratingKey,
+                                               reason: "already_complete_mismatch")
+                return
+            }
+            finalizeRangeWhole(entry: effectiveEntry)
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
                                            ratingKey: entry.ratingKey,
                                            reason: "already_complete")
@@ -1869,6 +1916,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let validator = Self.rangeValidator(from: http)
             let contentRangeStart = Self.contentRangeStart(from: http)
+            let contentRangeTotal = Self.contentRangeTotal(from: http)
             beginPendingBackgroundCompletionOperation()
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
                                            ratingKey: entry.ratingKey,
@@ -1876,7 +1924,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             rangeIOQueue.async { [self] in
                 defer { endPendingBackgroundCompletionOperation() }
                 applyFinishedChunk(entry: entry, write: write, stash: stash,
-                                   validator: validator, contentRangeStart: contentRangeStart)
+                                   validator: validator, contentRangeStart: contentRangeStart,
+                                   contentRangeTotal: contentRangeTotal)
             }
         }
     }
@@ -1885,7 +1934,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// durable partial and either finalize or start the next chunk. Validates the resource hasn't
     /// shifted under us before appending (#169 HIGH 1).
     private func applyFinishedChunk(entry: RangeTransfer, write: RangeChunkWrite, stash: URL,
-                                    validator: String?, contentRangeStart: Int?) {
+                                    validator: String?, contentRangeStart: Int?,
+                                    contentRangeTotal: Int?) {
+        if let contentRangeTotal {
+            store.setSourcePartSize(ratingKey: entry.ratingKey, contentRangeTotal)
+        }
+        let effectiveExpectedBytes = contentRangeTotal ?? entry.expectedBytes
+        let entry = entry.replacingExpectedBytes(effectiveExpectedBytes)
         // A cancel/pause may have landed during the delegate→IO hop.
         lock.lock(); let halted = haltedRangeKeys.contains(entry.ratingKey); lock.unlock()
         let preserveHaltedChunk = halted

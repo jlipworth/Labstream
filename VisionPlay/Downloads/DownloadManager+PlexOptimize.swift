@@ -248,7 +248,8 @@ extension DownloadManager {
         transcodeSourcedDownloads.insert(ratingKey)
         try session.start(ratingKey: ratingKey, from: url, to: destination,
                           expectedBytes: part.size,
-                          byteRangeCheckpoint: true)
+                          byteRangeCheckpoint: true,
+                          resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         refreshRecords()
     }
 
