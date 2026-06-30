@@ -372,7 +372,9 @@ snapshot derivation.
   `DownloadProbe`/`Downloads` logs under `build/probes/plex-range-drop/`, and refuses to
   run without an explicit media selector. Add `--pause-resume` when specifically checking
   manual pause/resume on the same static lane. Add `--existing-version --media-index N`
-  to use a known playable/pre-optimized Plex version for quick static-range validation.
+  to use a known playable/pre-optimized Plex version for quick static-range validation. Add
+  `--keep-app-running` when validating during an iterative refactor session so the probe captures
+  the bounded observation window without shutting down the simulator app afterward.
 - Current signed-in simulator evidence (2026-06-30, worktree sim only):
   - Plex `Flight` existing-version media index 1 (`mp4`) started a static range transfer,
     injected `NSURLErrorNetworkConnectionLost` at ~1 MB, retried once from durable checkpoint
