@@ -47,4 +47,23 @@ struct JellyfinDownloadRouterTests {
         #expect(route.isLiveForwardOnly)
         #expect(!route.usesByteRangeCheckpoint)
     }
+
+    @Test("Routes expose stable diagnostic labels")
+    func diagnosticLabels() {
+        #expect(JellyfinDownloadRouter.Route.staticOriginal.diagnosticLabel == "static_original")
+        #expect(JellyfinDownloadRouter.Route.compatibleRemux.diagnosticLabel == "compatible_remux")
+        #expect(JellyfinDownloadRouter.Route.transcode.diagnosticLabel == "transcode")
+    }
+
+    @Test("Compatible decision carries stream-copy eligibility for request building")
+    func compatibleDecisionCarriesEligibility() {
+        let decision = JellyfinDownloadRouter.compatibleDecision(videoCodec: "h265",
+                                                                 audioCodec: "truehd",
+                                                                 container: "mkv")
+        #expect(decision.route == .compatibleRemux)
+        #expect(decision.isRemux)
+        #expect(decision.eligibility.videoCodec == "hevc")
+        #expect(decision.eligibility.copiesVideo)
+        #expect(!decision.eligibility.copiesAudio)
+    }
 }
