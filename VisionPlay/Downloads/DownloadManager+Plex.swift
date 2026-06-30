@@ -82,15 +82,30 @@ extension DownloadManager {
         cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
                      server: server, token: token)
 
-        switch choice {
-        case .original:
-            guard let part = chosenMedia?.part[safe: partIndex] else {
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "reason": .label("no_media_part"),
-                ])
+        let staticPart = chosenMedia?.part[safe: partIndex]
+        let initialRoute = PlexDownloadRouter.initialRoute(
+            intent: Self.plexDownloadIntent(for: choice),
+            hasPart: staticPart != nil,
+            compatibleFallbackTarget: Self.originalFallbackOptimizeTarget()
+        )
+        switch initialRoute {
+        case .missingPart(let reason):
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "reason": .label(reason.rawValue),
+            ])
+            switch reason {
+            case .noMediaPart:
                 lastError[ratingKey] = .transferFailed("No media part to download.")
+            case .noExistingVersionPart:
+                lastError[ratingKey] = .transferFailed("No server version part to download.")
+            }
+            releaseInFlight(ratingKey: ratingKey)
+            return
+
+        case .preflightOriginal:
+            guard let part = staticPart else {
                 releaseInFlight(ratingKey: ratingKey)
                 return
             }
@@ -99,34 +114,30 @@ extension DownloadManager {
             let preflight = await preflightOriginalPlayback(ratingKey: ratingKey, url: url,
                                                             token: token, expectedBytes: part.size,
                                                             durationMs: part.duration ?? item.duration)
-            guard preflight else {
-                let fallback = Self.originalFallbackOptimizeTarget()
+            switch PlexDownloadRouter.routeAfterOriginalPreflight(
+                passed: preflight,
+                fallbackOptimizeTarget: Self.originalFallbackOptimizeTarget()
+            ) {
+            case .staticOriginal:
+                startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
+                                            metadata: metadata, choiceLabel: "original",
+                                            choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
+                                            server: server, token: token)
+            case .optimizeFallback(let fallback):
                 recordDownloadDiagnostic("downloads.original_preflight_fallback", fields: [
                     "download_id": .identifier(ratingKey),
                     "target": .label(fallback),
                 ])
                 await triggerOptimizeAndDownload(item: item, targetName: fallback,
                                                  metadata: metadata, session: backendSession)
-                return
             }
 
-            startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
-                                        metadata: metadata, choiceLabel: "original",
-                                        choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
-                                        server: server, token: token)
-
-        case .existingVersion:
+        case .staticExistingVersion:
             // #112: download an EXISTING server-generated Plex Version exactly as-is. Same static
             // byte-for-byte transfer as `.original`, but the user explicitly picked a pre-rendered
             // server version, so we DELIBERATELY skip the original direct-play preflight (the
             // version is already a server-prepared file) and NEVER touch the optimize queue.
-            guard let part = chosenMedia?.part[safe: partIndex] else {
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Plex"),
-                    "reason": .label("no_existing_version_part"),
-                ])
-                lastError[ratingKey] = .transferFailed("No server version part to download.")
+            guard let part = staticPart else {
                 releaseInFlight(ratingKey: ratingKey)
                 return
             }
@@ -139,13 +150,19 @@ extension DownloadManager {
         case .optimize(let targetName):
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
                                              metadata: metadata, session: backendSession)
+        }
+    }
 
+    private static func plexDownloadIntent(for choice: DownloadChoice) -> PlexDownloadRouter.Intent {
+        switch choice {
+        case .original:
+            return .original
+        case .existingVersion:
+            return .existingVersion
+        case .optimize(let targetName):
+            return .optimize(targetName: targetName)
         case .optimizeCompatible:
-            // #83 is a Jellyfin/Emby-only lane. Plex's optimized-version model already produces a
-            // compatible file at original video quality via its "Original video quality" target, so
-            // map the choice onto that target rather than introducing a no-op Plex path.
-            await triggerOptimizeAndDownload(item: item, targetName: Self.originalFallbackOptimizeTarget(),
-                                             metadata: metadata, session: backendSession)
+            return .optimizeCompatible
         }
     }
 

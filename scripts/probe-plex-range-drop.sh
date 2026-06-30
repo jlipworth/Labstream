@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Simulator-only Plex download recoverability probe.
+#
+# Launches the DEBUG app in this worktree's simulator with the in-process
+# range-drop URLProtocol enabled. It uses the simulator's signed-in app state;
+# it does not read or print Plex tokens.
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/probe-plex-range-drop.sh (--query TEXT | --rating-key KEY) [options]
+
+Required selector (or env):
+  --query TEXT                      Resolve a Plex item by title or "Show S01E02" syntax.
+  --rating-key KEY                  Resolve a Plex item by Plex ratingKey.
+  VISIONPLAY_PROBE_QUERY            Env alternative for --query.
+  VISIONPLAY_PROBE_RATING_KEY       Env alternative for --rating-key.
+
+Options:
+  --drop-after-bytes N              Simulated network-loss threshold (default: env or 2097152).
+  --observe-seconds N               Probe post-start observation window (default: env or 90).
+  --pause-after-seconds N           Delay before pause in --pause-resume mode (default: env or 8).
+  --pause-resume                    Also exercise pause -> retry/resume after starting.
+  --preset NAME                     Plex optimize preset if original is not eligible.
+  --delete-after                    Delete the probe record after observation.
+  --skip-build                      Reuse the existing DerivedData app.
+  --no-install                      Reuse the already installed app.
+  -h, --help                        Show this help.
+
+The target simulator defaults to scripts/worktree-sim.sh id (or SIMID if set).
+Output logs are written under build/probes/plex-range-drop/<timestamp>/.
+USAGE
+}
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+cd "$repo_root"
+
+query=${VISIONPLAY_PROBE_QUERY:-}
+rating_key=${VISIONPLAY_PROBE_RATING_KEY:-}
+drop_after=${VISIONPLAY_PROBE_DROP_AFTER_BYTES:-2097152}
+observe_seconds=${VISIONPLAY_PROBE_OBSERVE_SECONDS:-90}
+pause_after_seconds=${VISIONPLAY_PROBE_PAUSE_AFTER_SECONDS:-8}
+preset=${VISIONPLAY_PROBE_PRESET:-}
+pause_resume=0
+delete_after=${VISIONPLAY_PROBE_DELETE_AFTER:-0}
+skip_build=0
+no_install=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --query)
+      [[ $# -ge 2 ]] || { echo "ERROR: --query needs a value" >&2; exit 2; }
+      query=$2; shift 2 ;;
+    --rating-key)
+      [[ $# -ge 2 ]] || { echo "ERROR: --rating-key needs a value" >&2; exit 2; }
+      rating_key=$2; shift 2 ;;
+    --drop-after-bytes)
+      [[ $# -ge 2 ]] || { echo "ERROR: --drop-after-bytes needs a value" >&2; exit 2; }
+      drop_after=$2; shift 2 ;;
+    --observe-seconds)
+      [[ $# -ge 2 ]] || { echo "ERROR: --observe-seconds needs a value" >&2; exit 2; }
+      observe_seconds=$2; shift 2 ;;
+    --pause-after-seconds)
+      [[ $# -ge 2 ]] || { echo "ERROR: --pause-after-seconds needs a value" >&2; exit 2; }
+      pause_after_seconds=$2; shift 2 ;;
+    --preset)
+      [[ $# -ge 2 ]] || { echo "ERROR: --preset needs a value" >&2; exit 2; }
+      preset=$2; shift 2 ;;
+    --pause-resume) pause_resume=1; shift ;;
+    --delete-after) delete_after=1; shift ;;
+    --skip-build) skip_build=1; shift ;;
+    --no-install) no_install=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+is_positive_int() { [[ ${1:-} =~ ^[1-9][0-9]*$ ]]; }
+
+if [[ -z "$query" && -z "$rating_key" ]]; then
+  echo "ERROR: provide --query/--rating-key or VISIONPLAY_PROBE_QUERY/VISIONPLAY_PROBE_RATING_KEY." >&2
+  echo "       The script intentionally has no built-in media id." >&2
+  exit 2
+fi
+if ! is_positive_int "$drop_after"; then
+  echo "ERROR: drop-after-bytes must be a positive integer (got '$drop_after')." >&2
+  exit 2
+fi
+if ! is_positive_int "$observe_seconds" || ! is_positive_int "$pause_after_seconds"; then
+  echo "ERROR: observe-seconds and pause-after-seconds must be positive integers." >&2
+  exit 2
+fi
+
+simid=${SIMID:-$(scripts/worktree-sim.sh id)}
+derived_data=${VISIONPLAY_PROBE_DERIVED_DATA:-build/DerivedData/PlexRangeDropProbe}
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+out_dir=${VISIONPLAY_PROBE_OUTPUT_DIR:-build/probes/plex-range-drop/$timestamp}
+mkdir -p "$out_dir"
+
+log_file="$out_dir/unified.log"
+stdout_file="$out_dir/stdout.log"
+stderr_file="$out_dir/stderr.log"
+build_log="$out_dir/xcodebuild.log"
+summary_file="$out_dir/summary.txt"
+
+cat > "$summary_file" <<SUMMARY
+simulator: $simid
+query_set: $([[ -n "$query" ]] && echo yes || echo no)
+rating_key_set: $([[ -n "$rating_key" ]] && echo yes || echo no)
+drop_after_bytes: $drop_after
+observe_seconds: $observe_seconds
+pause_resume: $pause_resume
+pause_after_seconds: $pause_after_seconds
+preset_set: $([[ -n "$preset" ]] && echo yes || echo no)
+delete_after: $delete_after
+SUMMARY
+
+printf '==> Using simulator %s\n' "$simid"
+xcrun simctl boot "$simid" >/dev/null 2>&1 || true
+xcrun simctl bootstatus "$simid" -b >/dev/null
+
+if [[ $skip_build -eq 0 ]]; then
+  printf '==> Building VisionPlay (log: %s)\n' "$build_log"
+  scripts/xcodebuild-versioned.sh \
+    -project VisionPlay.xcodeproj \
+    -scheme VisionPlay \
+    -configuration Debug \
+    -destination "platform=visionOS Simulator,id=$simid" \
+    -derivedDataPath "$derived_data" \
+    CODE_SIGNING_ALLOWED=NO \
+    build >"$build_log" 2>&1
+fi
+
+app_path="$derived_data/Build/Products/Debug-xrsimulator/VisionPlay.app"
+if [[ ! -d "$app_path" ]]; then
+  app_path=$(find "$derived_data/Build/Products" -path '*/VisionPlay.app' -type d -print -quit 2>/dev/null || true)
+fi
+if [[ -z "$app_path" || ! -d "$app_path" ]]; then
+  echo "ERROR: could not find built VisionPlay.app under $derived_data" >&2
+  exit 1
+fi
+
+if [[ $no_install -eq 0 ]]; then
+  printf '==> Installing %s\n' "$app_path"
+  xcrun simctl install "$simid" "$app_path"
+fi
+
+probe_args=(
+  --vp-probe-plex-download
+  --vp-probe-start-download
+  --vp-probe-range-check
+  --vp-probe-range-drop-after-bytes "$drop_after"
+  --vp-probe-observe-seconds "$observe_seconds"
+)
+[[ -n "$rating_key" ]] && probe_args+=(--vp-probe-rating-key "$rating_key")
+[[ -n "$query" ]] && probe_args+=(--vp-probe-query "$query")
+[[ -n "$preset" ]] && probe_args+=(--vp-probe-download-preset "$preset")
+if [[ $pause_resume -eq 1 ]]; then
+  probe_args+=(--vp-probe-pause-resume --vp-probe-pause-after-seconds "$pause_after_seconds")
+fi
+if [[ $delete_after == "1" || $delete_after == "true" || $delete_after == "yes" ]]; then
+  probe_args+=(--vp-probe-delete-after-observe)
+fi
+
+timeout_seconds=${VISIONPLAY_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + pause_after_seconds + 70))}
+printf '==> Capturing app logs for ~%ss (unified: %s)\n' "$timeout_seconds" "$log_file"
+
+predicate='subsystem == "com.jlipworth.VisionPlay" AND (category == "DownloadProbe" OR category == "Downloads")'
+xcrun simctl spawn "$simid" log stream --style compact --level debug --predicate "$predicate" >"$log_file" 2>&1 &
+log_pid=$!
+cleanup() {
+  if kill -0 "$log_pid" >/dev/null 2>&1; then
+    kill "$log_pid" >/dev/null 2>&1 || true
+    wait "$log_pid" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+printf '==> Launching probe (stdout: %s, stderr: %s)\n' "$stdout_file" "$stderr_file"
+xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr="$stderr_file" \
+  "$simid" com.jlipworth.VisionPlay "${probe_args[@]}"
+
+sleep "$timeout_seconds"
+xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
+cleanup
+trap - EXIT
+
+printf '==> Probe complete. Key outputs:\n'
+printf '    %s\n' "$summary_file" "$build_log" "$log_file" "$stdout_file" "$stderr_file"
+printf '\n==> Recent probe lines:\n'
+grep -E 'probe\.|range-drop|Range|retry|failed|complete' "$log_file" | tail -80 || true

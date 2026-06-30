@@ -56,6 +56,16 @@ snapshot derivation.
   checkpoint-draining pauses, queue-paused per-row manual resumes, and one-shot restart
   counter preservation. This keeps URLSession mechanics separate while preparing the later
   app-layer recovery coordinator.
+- **Done: Probe harness for static range recovery.** `scripts/probe-plex-range-drop.sh`
+  wraps the existing DEBUG launch-argument probe so a signed-in worktree simulator can
+  exercise static byte-range recovery after an injected `NSURLErrorNetworkConnectionLost`
+  without committing Plex tokens or hard-coded media ids. This is intentionally a behavior
+  probe, not a replacement for PMSKit unit tests or device/background validation.
+- **Done: Slice 4b Plex route-planner extraction.** `PlexDownloadRouter` now pins the
+  pure Plex route choices: true originals require an AV preflight, existing Plex versions
+  are static downloads that skip optimizer/preflight, explicit optimizer targets pass
+  through unchanged, and Jellyfin/Emby-style compatible intent maps onto Plex's optimizer
+  fallback target.
 
 ## Target module boundaries
 
@@ -85,6 +95,19 @@ snapshot derivation.
   signaling should be split into smaller collaborators once their contracts are pinned.
 - Side-cache code remains a service with backend-specific request builders and a shared
   atomic write/persist tail.
+
+## Behavior probes
+
+- Static Plex byte-range recovery in the simulator: sign in to Plex in the worktree
+  simulator, then run `VISIONPLAY_PROBE_QUERY='<title or Show S01E02>'
+  scripts/probe-plex-range-drop.sh` (or set `VISIONPLAY_PROBE_RATING_KEY`). The script
+  builds and launches the DEBUG app with `--vp-probe-range-drop-after-bytes`, captures
+  `DownloadProbe`/`Downloads` logs under `build/probes/plex-range-drop/`, and refuses to
+  run without an explicit media selector. Add `--pause-resume` when specifically checking
+  manual pause/resume on the same static lane.
+- Live request-shape probes remain in `scripts/live-*.sh` and require gitignored
+  `scripts/*-live.env` files. They validate server API behavior but do not prove
+  headset/off-head background transfer behavior.
 
 ## Migration slices
 
