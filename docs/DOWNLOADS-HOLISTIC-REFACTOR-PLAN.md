@@ -235,6 +235,10 @@ snapshot derivation.
   `DownloadIntentChoice` now lives in PMSKit with `DownloadChoicePolicy` owning diagnostic labels,
   persisted lane mapping, and server-prepared-version flagging. `DownloadManager.DownloadChoice`
   remains as a compatibility alias for app call sites.
+- **Done: Slice 5q offline metadata builder extraction.**
+  `DownloadOfflineMetadataBuilder` now owns the pure durable metadata snapshot for new download
+  rows: copied item fields, source part id/size, per-job backend session identity, lane fallback,
+  resume mode, and server-prepared display flag.
 
 ## Target module boundaries
 
@@ -243,6 +247,7 @@ snapshot derivation.
 - `DownloadRecordIdentity`: backend-aware record keys and item-id extraction.
 - `DownloadIntentChoice` / `DownloadChoicePolicy`: shared user-intent model plus pure persistence and
   diagnostic mapping for choices.
+- `DownloadOfflineMetadataBuilder`: pure durable row-metadata snapshot builder for enqueue paths.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
