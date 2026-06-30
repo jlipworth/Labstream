@@ -164,6 +164,11 @@ snapshot derivation.
   byte-range task completions: successful chunks are handled by the finish callback, cancellations
   are ignored as user/system intent, adopted failed chunks request backend-auth rebuild, and
   in-memory failed chunks become resumable pauses from the durable checkpoint.
+- **Done: Slice 6p server-prep refresh policy extraction.**
+  `ServerPrepRefreshPolicy` now owns the pure refresh-time reattachment decisions for server-side
+  prep rows: unattached Plex optimize rows require no active poller, persistent Emby convert jobs
+  can keep polling while the global queue is paused, and refresh kicks are debounced/countable
+  without embedding backend filters directly in `DownloadManager.refreshRecords`.
 
 ## Target module boundaries
 
@@ -188,6 +193,7 @@ snapshot derivation.
   `BackgroundFinalizationResultPolicy`,
   `BackgroundOpaqueCompletionPolicy`,
   `BackgroundRangeCompletionPolicy`,
+  `ServerPrepRefreshPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
