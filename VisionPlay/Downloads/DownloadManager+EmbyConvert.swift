@@ -16,15 +16,13 @@ extension DownloadManager {
     // MARK: - Emby convert-then-download (server-side prepare → resumable download)
 
     func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
-        let attemptID = UUID()
-        embyConvertAttemptByRatingKey[ratingKey] = attemptID
-        return attemptID
+        serverPrepAttempts.beginEmbyConvertAttempt(forRecordKey: ratingKey)
     }
 
     func embyConvertAttemptIsCurrent(ratingKey: String, attemptID: UUID,
                                      targetName: String? = nil, jobId: Int? = nil) -> Bool {
         guard activeJobs.contains(ratingKey),
-              embyConvertAttemptByRatingKey[ratingKey] == attemptID,
+              serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
               let row = store.records.first(where: { $0.ratingKey == ratingKey }),
               row.status == .preparing else { return false }
         if let targetName, row.metadata?.optimizeTargetName != targetName { return false }
@@ -638,7 +636,7 @@ extension DownloadManager {
         let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
         var lastSourceCount = 0
         for attempt in 0..<maxAttempts {
-            guard embyConvertAttemptByRatingKey[ratingKey] == attemptID,
+            guard serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
                   activeJobs.contains(ratingKey) else { return nil }
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)

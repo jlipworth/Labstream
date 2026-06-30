@@ -64,8 +64,7 @@ extension DownloadManager {
             // downloaded. Protection is instead released terminally (on `.complete`/`.failed`)
             // via `releaseInFlight`, driven from `refreshRecords`, plus the explicit
             // error-path release below.
-            activeQueueTitles.insert(queueTitle)
-            queueTitleByRatingKey[ratingKey] = queueTitle
+            serverPrepAttempts.protectQueueTitle(queueTitle, forRecordKey: ratingKey)
             let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                          token: token, identity: identity) ?? item
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
@@ -270,7 +269,7 @@ extension DownloadManager {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
         if let queueTitle = metadata.optimizeQueueTitle {
-            guard queueTitleByRatingKey[ratingKey] == queueTitle else {
+            guard serverPrepAttempts.queueTitle(forRecordKey: ratingKey) == queueTitle else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
         }
@@ -456,7 +455,7 @@ extension DownloadManager {
     /// background-processing queue. Completed optimize items are server-side artifacts that may
     /// contain the rendered file a relaunched app still needs to discover/download; deleting the
     /// queue item deletes that optimized version in Plex. Scoped hard: only items carrying our
-    /// `[VisionPlay …]` title marker, not currently in-flight (`activeQueueTitles`), and not in a
+    /// `[VisionPlay …]` title marker, not currently in-flight (`serverPrepAttempts`), and not in a
     /// completed state are removed — never another client's jobs or completed server renders.
     private func cleanStaleOptimizeJobs(backgroundProcessingKey: String, server: URL,
                                         token: String, identity: ClientIdentity) async {
@@ -477,12 +476,12 @@ extension DownloadManager {
             guard record.status != .complete else { return nil }
             return record.metadata?.optimizeQueueTitle
         })
-        let protectedTitles = activeQueueTitles.union(persistedProtectedTitles)
+        let protectedTitles = serverPrepAttempts.allProtectedQueueTitles.union(persistedProtectedTitles)
         // Server-truth policy: remove only our marked pending/failed clutter. NEVER delete a
         // completed optimized item here — Plex removes the rendered server-side version when the
         // type-42 item is deleted, and a completed item may be the exact Part a relaunched app
         // still needs to discover and download. Also protect persisted queue titles so relaunches
-        // do not briefly expose still-valid server work before activeQueueTitles is rebuilt.
+        // do not briefly expose still-valid server work before serverPrepAttempts is rebuilt.
         let stale = queue.staleItemIDs(marker: marker, protectedTitles: protectedTitles)
         var removed = 0
         for id in stale {
