@@ -2290,12 +2290,9 @@ public final class DownloadManager {
 
 
     private func rowDisplayProgress(for record: DownloadRecord) -> Double? {
-        if record.bytes == 0,
-           record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic,
-           let prep = optimizeProgress[record.ratingKey] {
-            return max(0, min(prep, 0.999))
-        }
-        return displayFraction(for: record)?.value
+        DownloadRowDisplayPolicy.displayProgress(for: record,
+                                                 fraction: displayFraction(for: record),
+                                                 serverPrepProgress: optimizeProgress[record.ratingKey])
     }
 
     /// Backend that owns this row, via the single migration fallback on the

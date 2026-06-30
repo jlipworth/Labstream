@@ -38,6 +38,40 @@ struct DownloadRowDisplayPolicyTests {
         #expect(DownloadRowDisplayPolicy.percentText(.init(value: 0.42, isEstimated: true)) == "~42%")
     }
 
+    @Test("Display progress shows server prep for static handoff rows before bytes")
+    func displayProgressUsesServerPrepForPreByteHandoffRows() {
+        let preparing = record(bytes: 0,
+                               progress: 0,
+                               metadata: metadata(resumeMode: .serverPrepThenStatic))
+        #expect(DownloadRowDisplayPolicy.displayProgress(for: preparing,
+                                                         fraction: nil,
+                                                         serverPrepProgress: 0.5) == 0.5)
+        #expect(DownloadRowDisplayPolicy.displayProgress(for: preparing,
+                                                         fraction: nil,
+                                                         serverPrepProgress: 1.2) == 0.999)
+        #expect(DownloadRowDisplayPolicy.displayProgress(for: preparing,
+                                                         fraction: nil,
+                                                         serverPrepProgress: -0.2) == 0)
+    }
+
+    @Test("Display progress falls back to transfer fraction once bytes exist or lane is not server prep")
+    func displayProgressFallsBackToTransferFraction() {
+        let serverPrepWithBytes = record(bytes: 10,
+                                         progress: 0,
+                                         metadata: metadata(resumeMode: .serverPrepThenStatic))
+        let liveForward = record(bytes: 0,
+                                 progress: 0,
+                                 metadata: metadata(resumeMode: .liveForwardOnly))
+        let fraction = DownloadProgressDisplay.Fraction(value: 0.25, isEstimated: false)
+
+        #expect(DownloadRowDisplayPolicy.displayProgress(for: serverPrepWithBytes,
+                                                         fraction: fraction,
+                                                         serverPrepProgress: 0.75) == 0.25)
+        #expect(DownloadRowDisplayPolicy.displayProgress(for: liveForward,
+                                                         fraction: fraction,
+                                                         serverPrepProgress: 0.75) == 0.25)
+    }
+
     @Test("ETA text preserves short, minute, hour, and day buckets")
     func timeLeftBuckets() {
         #expect(DownloadRowDisplayPolicy.timeLeftString(10) == "under a min")
@@ -65,5 +99,24 @@ struct DownloadRowDisplayPolicyTests {
         #expect(caption.hasPrefix("Downloaded — playback not verified • "))
         #expect(caption.contains("MB"))
         #expect(caption.hasSuffix(" • 1080p"))
+    }
+
+    private func record(bytes: Int,
+                        progress: Double,
+                        metadata: OfflineMetadata?) -> DownloadRecord {
+        DownloadRecord(ratingKey: "rk",
+                       title: "Title",
+                       localURL: URL(fileURLWithPath: "/tmp/title.mp4"),
+                       bytes: bytes,
+                       progress: progress,
+                       status: .downloading,
+                       metadata: metadata)
+    }
+
+    private func metadata(resumeMode: DownloadResumeMode) -> OfflineMetadata {
+        OfflineMetadata(ratingKey: "rk",
+                        title: "Title",
+                        type: "movie",
+                        resumeMode: resumeMode)
     }
 }
