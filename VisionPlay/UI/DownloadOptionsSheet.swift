@@ -882,19 +882,11 @@ struct DownloadOptionsSheet: View {
     // MARK: - Action
 
     private func existingDownloadPhaseLabel(for record: DownloadRecord) -> String {
-        let lane = record.metadata?.resolvedDownloadLane() ?? .original
-        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-        switch lane {
-        case .original where record.metadata?.isServerPreparedVersion == true:
-            return "Downloading transcode…"
-        case .original:
-            return "Downloading…"
-        case .compatibleRemux:
-            return "Remuxing + downloading…"
-        case .optimize:
-            return backend == .plex ? "Downloading transcode…" : "Transcoding + downloading…"
-        }
+        DownloadRowStatusCaptionPolicy.compactActiveCaption(
+            lane: record.metadata?.resolvedDownloadLane() ?? .original,
+            backend: record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+                ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey),
+            isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true)
     }
 
     private func retryDownload() {

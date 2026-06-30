@@ -79,6 +79,22 @@ struct DownloadRowStatusCaptionPolicyTests {
             isActive: true)) == .activeTransfer)
     }
 
+    @Test("Compact sheet captions preserve modal phase wording")
+    func compactActiveCaptions() {
+        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .original,
+                                                                   backend: .plex,
+                                                                   isServerPreparedVersion: false) == "Downloading…")
+        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .original,
+                                                                   backend: .plex,
+                                                                   isServerPreparedVersion: true) == "Downloading transcode…")
+        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .compatibleRemux,
+                                                                   backend: .emby,
+                                                                   isServerPreparedVersion: false) == "Remuxing + downloading…")
+        #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .optimize,
+                                                                   backend: .jellyfin,
+                                                                   isServerPreparedVersion: false) == "Transcoding + downloading…")
+    }
+
     @Test("Transfer finalizing caption uses local verification wording")
     func transferFinalizingCaption() {
         let caption = DownloadRowStatusCaptionPolicy.caption(context(

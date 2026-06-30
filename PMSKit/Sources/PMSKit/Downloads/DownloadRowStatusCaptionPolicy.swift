@@ -119,6 +119,24 @@ public enum DownloadRowStatusCaptionPolicy {
         return context.isActive ? .activeTransfer : .inactiveTransfer
     }
 
+    /// Compact in-sheet label for an already-started/in-flight download row. The full offline list
+    /// caption includes percentages, bytes, ETA, and speed; the modal sheet already renders progress
+    /// separately, so it only needs the phase verb.
+    public static func compactActiveCaption(lane: DownloadLane,
+                                            backend: DownloadBackendKind,
+                                            isServerPreparedVersion: Bool) -> String {
+        switch lane {
+        case .original where isServerPreparedVersion:
+            return "Downloading transcode…"
+        case .original:
+            return "Downloading…"
+        case .compatibleRemux:
+            return "Remuxing + downloading…"
+        case .optimize:
+            return backend == .plex ? "Downloading transcode…" : "Transcoding + downloading…"
+        }
+    }
+
     public static func caption(_ context: Context) -> String {
         switch phase(context) {
         case .failed(let isRetrying):
