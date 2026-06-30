@@ -305,6 +305,13 @@ snapshot derivation.
   MediaSource-id hint parsing used by the download sheet, Jellyfin downloads, Emby downloads, and
   existing-version option rows. PlaybackInfo decisions remain authoritative, but the repeated
   synthesized-part-key parsing no longer lives separately in each adapter.
+- **Done: Slice 5v Emby converted-source policy extraction.**
+  `EmbyConvertedSourcePolicy` now owns the pure source filtering and selection rules for persistent
+  Emby Convert outputs: on-disk File-source eligibility, preset output-height tiers, strict fresh
+  converted-source detection after a completed job, final bounded fallbacks, and #126/#133 reuse
+  selection that permits lower non-ladder tv-profile outputs while refusing 4K/Original downgrades.
+  The app-side convert coordinator still performs refresh/polling, diagnostics, cancellation guards,
+  and the final `.existingVersion` handoff.
 
 ## Target module boundaries
 
@@ -330,6 +337,8 @@ snapshot derivation.
 - `DownloadRetryStateTracker`: IO-free retry guard, presentation, and handoff sentinel lifecycle.
 - `DownloadBackendRetryIntentPolicy`: pure backend metadata-to-choice retry rehydration for
   Jellyfin and Emby rows.
+- `EmbyConvertedSourcePolicy`: pure Emby Convert File-source filtering, completed-output selection,
+  preset output-height tiers, and reusable converted-source matching.
 - `DownloadEncoderTeardownPolicy`: pure terminal encoder teardown/skip decision table for
   Jellyfin and Emby play sessions.
 - `DownloadResumeRetrySchedulePolicy`: pure cold-launch retry cadence and queue-paused resume
