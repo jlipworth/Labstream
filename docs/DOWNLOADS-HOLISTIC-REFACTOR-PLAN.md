@@ -150,6 +150,10 @@ snapshot derivation.
   `BackgroundTempFileCleanupPolicy` now owns the pure cleanup boundaries for background transfer
   temps: range chunk stash ownership, CFNetwork temp filename eligibility, nsurlsessiond cache path
   derivation, and the "never delete while URLSession reports live tasks" gate.
+- **Done: Slice 6m finalization result policy extraction.**
+  `BackgroundFinalizationResultPolicy` now owns the pure mapping from completion-validation outcomes
+  to row status/result labels/file-deletion intent: complete rows become `.complete`, truncated files
+  fail and are deleted, and probe misses remain `.unverified` while preserving bytes.
 
 ## Target module boundaries
 
@@ -171,6 +175,7 @@ snapshot derivation.
   `BackgroundDownloadTransientRetryPolicy`,
   `BackgroundDownloadPauseCancellationPolicy`,
   `BackgroundTempFileCleanupPolicy`,
+  `BackgroundFinalizationResultPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 

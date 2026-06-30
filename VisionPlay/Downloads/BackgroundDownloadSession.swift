@@ -2508,22 +2508,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                            probeReason: validation.reason,
                                                            expectedDurationMs: expectedDurationMs,
                                                            actualDurationMs: validation.durationMs)
+        let finalizationResult = BackgroundFinalizationResultPolicy.result(for: outcome)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         switch outcome {
         case .truncated(let actualDurationMs, let expectedMs):
             downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
             AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
                 "download_id": .identifier(ratingKey),
-                "reason": .label("truncated_duration"),
+                "reason": .label(finalizationResult.validationFailureReason ?? "truncated_duration"),
                 "expected_duration_ms": .int(expectedMs),
                 "actual_duration_ms": .int(actualDurationMs),
             ])
-            try? fileManager.removeItem(at: destination)
+            if finalizationResult.shouldDeleteFile {
+                try? fileManager.removeItem(at: destination)
+            }
             clearRetryCount(ratingKey: ratingKey)
-            store.setStatus(ratingKey: ratingKey, .failed)
-            onError?(ratingKey, .invalidDownload("Downloaded file is truncated (\(actualDurationMs / 1000)s of \(expectedMs / 1000)s)."))
+            store.setStatus(ratingKey: ratingKey, finalizationResult.status)
+            onError?(ratingKey, .invalidDownload(finalizationResult.userFacingErrorMessage ?? "Downloaded file is truncated."))
             recordFinalizeFinished(ratingKey: ratingKey,
-                                   result: "failed_truncated",
+                                   result: finalizationResult.resultLabel,
                                    validationLabel: validationLabel,
                                    durationMs: finalizationDurationMs,
                                    bytes: bytes)
@@ -2537,9 +2540,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             clearRetryCount(ratingKey: ratingKey)
             store.updateProgress(ratingKey: ratingKey, bytes: bytes, progress: 1)
-            store.setStatus(ratingKey: ratingKey, .complete)
+            store.setStatus(ratingKey: ratingKey, finalizationResult.status)
             recordFinalizeFinished(ratingKey: ratingKey,
-                                   result: "complete",
+                                   result: finalizationResult.resultLabel,
                                    validationLabel: validationLabel,
                                    durationMs: finalizationDurationMs,
                                    bytes: bytes)
@@ -2557,9 +2560,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "preserved": .bool(true),
             ])
             clearRetryCount(ratingKey: ratingKey)
-            store.setStatus(ratingKey: ratingKey, .unverified)
+            store.setStatus(ratingKey: ratingKey, finalizationResult.status)
             recordFinalizeFinished(ratingKey: ratingKey,
-                                   result: "unverified_\(reason)",
+                                   result: finalizationResult.resultLabel,
                                    validationLabel: validationLabel,
                                    durationMs: finalizationDurationMs,
                                    bytes: bytes)
