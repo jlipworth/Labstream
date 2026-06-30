@@ -1,23 +1,21 @@
 import Foundation
-import PMSKit
 
-/// App-layer builder for the coarse value consumed by `OfflineLibraryView`.
+/// Pure builder for the coarse value consumed by the offline downloads UI.
 ///
-/// `DownloadManager` remains the owner of live coordinator state and backend availability, but this
-/// builder centralizes row aggregation: mixed-backend badge detection, row assembly, queue toolbar
-/// policy, and aggregate metrics. Keeping this separate from the coordinator narrows the hot UI
-/// publication seam without moving app-only state into PMSKit.
-@MainActor
-struct OfflineLibrarySnapshotBuilder {
-    static func make(records: [DownloadRecord],
-                     isQueuePaused: Bool,
-                     downloadSpeed: [String: Double],
-                     backendKind: (DownloadRecord) -> DownloadBackendKind,
-                     errorMessage: (DownloadRecord) -> String?,
-                     displayProgress: (DownloadRecord) -> Double?,
-                     statusCaption: (DownloadRecord, DownloadBackendKind) -> String,
-                     isRetrying: (String) -> Bool,
-                     isCheckpointPausing: (String) -> Bool) -> OfflineLibrarySnapshot {
+/// The app coordinator remains the owner of live state and backend availability, but this builder
+/// centralizes row aggregation: mixed-backend badge detection, row assembly, queue toolbar policy,
+/// and aggregate metrics. Keeping this in PMSKit narrows the UI publication seam and pins the
+/// backend/lane semantics with ordinary package tests.
+public enum OfflineLibrarySnapshotBuilder {
+    public static func make(records: [DownloadRecord],
+                            isQueuePaused: Bool,
+                            downloadSpeed: [String: Double],
+                            backendKind: (DownloadRecord) -> DownloadBackendKind,
+                            errorMessage: (DownloadRecord) -> String?,
+                            displayProgress: (DownloadRecord) -> Double?,
+                            statusCaption: (DownloadRecord, DownloadBackendKind) -> String,
+                            isRetrying: (String) -> Bool,
+                            isCheckpointPausing: (String) -> Bool) -> OfflineLibrarySnapshot {
         let backendsByKey = Dictionary(uniqueKeysWithValues: records.map { record in
             (record.ratingKey, backendKind(record))
         })
