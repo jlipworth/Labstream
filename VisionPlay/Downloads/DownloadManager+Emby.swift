@@ -32,7 +32,7 @@ extension DownloadManager {
                              mediaSourceIDOverride: String? = nil,
                              deferStaticStartWhenQueuePaused: Bool = false) async {
         let itemId = item.ratingKey
-        let ratingKey = Self.embyRecordKey(itemId)
+        let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
         // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
         // `activeBackend` for the rest of this job.
         // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)

@@ -377,34 +377,6 @@ public final class DownloadManager {
     /// explicitly (rather than read from `appModel.activeBackend`) so keying never depends on the
     /// globally-active lane — at the UI call site the active backend IS the correct backend (the
     /// user downloads what they're browsing), but the key is then stable regardless of switches.
-    public func recordKey(for item: MediaItem, backend: DownloadBackendKind) -> String {
-        DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: backend)
-    }
-
-    static func jellyfinRecordKey(_ itemId: String) -> String {
-        DownloadRecordIdentity.recordKey(for: itemId, backend: .jellyfin)
-    }
-
-    private static func isJellyfinRecordKey(_ ratingKey: String) -> Bool {
-        DownloadRecordIdentity.isJellyfinRecordKey(ratingKey)
-    }
-
-    private static func jellyfinItemID(fromRecordKey ratingKey: String) -> String {
-        DownloadRecordIdentity.jellyfinItemID(fromRecordKey: ratingKey)
-    }
-
-    static func embyRecordKey(_ itemId: String) -> String {
-        DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
-    }
-
-    private static func isEmbyRecordKey(_ ratingKey: String) -> Bool {
-        DownloadRecordIdentity.isEmbyRecordKey(ratingKey)
-    }
-
-    private static func embyItemID(fromRecordKey ratingKey: String) -> String {
-        DownloadRecordIdentity.embyItemID(fromRecordKey: ratingKey)
-    }
-
     /// Run the download-time direct-play probe for `item` at the given media/part. Advertises
     /// the `.original` 200_000 kbps ceiling so a high-bitrate-but-compatible file still
     /// qualifies for a direct download — a cap must NEVER force a transcode verdict for
@@ -447,7 +419,7 @@ public final class DownloadManager {
                 "download_id": .identifier(item.ratingKey),
                 "probe": .label("failed"),
                 "container": .label(OfflineDownloadDecision.containerLabel(part: part)),
-                "local_playable": .bool(Self.isLocallyPlayableOriginal(part: part)),
+                "local_playable": .bool(OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)),
             ])
             return (false, part)
         }
@@ -850,7 +822,7 @@ public final class DownloadManager {
         if DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
             status: record.status,
             resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey),
-            isEmbyRecord: Self.isEmbyRecordKey(ratingKey),
+            isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(ratingKey),
             hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil
         ) {
             store.setStatus(ratingKey: ratingKey, .preparing)
@@ -877,8 +849,8 @@ public final class DownloadManager {
         if DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(
             status: record.status,
             resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey),
-            isJellyfinRecord: Self.isJellyfinRecordKey(ratingKey),
-            isEmbyRecord: Self.isEmbyRecordKey(ratingKey),
+            isJellyfinRecord: DownloadRecordIdentity.isJellyfinRecordKey(ratingKey),
+            isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(ratingKey),
             optimizeTargetName: record.metadata?.optimizeTargetName,
             hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(record)
         ), let targetName = record.metadata?.optimizeTargetName {
@@ -899,11 +871,11 @@ public final class DownloadManager {
             // instead of no-oping and stranding the row as queued.
             store.setStatus(ratingKey: ratingKey, .failed)
         }
-        if Self.isJellyfinRecordKey(ratingKey) {
+        if DownloadRecordIdentity.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record)
             return
         }
-        if Self.isEmbyRecordKey(ratingKey) {
+        if DownloadRecordIdentity.isEmbyRecordKey(ratingKey) {
             retryEmby(record: record)
             return
         }
@@ -987,7 +959,7 @@ public final class DownloadManager {
                                                    mediaIndex: mediaIndex, partIndex: partIndex)
             let media = currentItem.media?.indices.contains(mediaIndex) == true ? currentItem.media?[mediaIndex] : currentItem.media?.first
             let part = probe.part ?? (media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first)
-            let choice: DownloadChoice = (probe.direct && Self.isLocallyPlayableOriginal(part: part))
+            let choice: DownloadChoice = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
                 ? .original
                 : .optimize(targetName: Self.originalFallbackOptimizeTarget())
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
@@ -1118,7 +1090,7 @@ public final class DownloadManager {
     private func retryJellyfin(record: DownloadRecord) {
         let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: record,
-            fallbackItemID: Self.jellyfinItemID(fromRecordKey: record.ratingKey),
+            fallbackItemID: DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey),
             fallbackOriginalIsLocallyPlayable: false)
 
         Task { [weak self] in
@@ -1160,7 +1132,7 @@ public final class DownloadManager {
     private func retryEmby(record: DownloadRecord) {
         let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
             for: record,
-            fallbackItemID: Self.embyItemID(fromRecordKey: record.ratingKey))
+            fallbackItemID: DownloadRecordIdentity.embyItemID(fromRecordKey: record.ratingKey))
 
         Task { [weak self] in
             guard let self else { return }
@@ -1758,7 +1730,7 @@ public final class DownloadManager {
         }
         let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first
         var fields: [String: DiagnosticFieldValue] = [
-            "download_id": .identifier(recordKey(for: item, backend: backendKind)),
+            "download_id": .identifier(DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: backendKind)),
             "backend": .label(backend),
             "choice": .label(DownloadChoicePolicy.diagnosticChoiceLabel(choice)),
             "item_type": .label(item.type),
@@ -2309,14 +2281,6 @@ public final class DownloadManager {
                                                 downloadLane: downloadLane,
                                                 serverPreparedVersion: serverPreparedVersion)
     }
-    /// Whether the original source part is a good local-file download target. PMS may be able
-    /// to stream/copy an MKV through HLS, but AVFoundation often cannot open that same MKV as a
-    /// downloaded local file. Keep direct-original conservative and route other containers
-    /// through the optimizer presets.
-    static func isLocallyPlayableOriginal(part: Part?) -> Bool {
-        OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
-    }
-
     static func filePath(_ file: String, isUnder directory: String) -> Bool {
         let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
         return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")

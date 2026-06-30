@@ -20,7 +20,7 @@ extension DownloadManager {
                                  partIndex: Int = 0,
                                  mediaSourceIDOverride: String? = nil) async {
         let itemId = item.ratingKey
-        let ratingKey = Self.jellyfinRecordKey(itemId)
+        let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .jellyfin)
         // #84: capture the Jellyfin session from its own lane; never re-read `appModel.jellyfin*`
         // or `activeBackend` for the rest of this job.
         // (Named `backendSession` to avoid shadowing the instance `session` URLSession wrapper.)
