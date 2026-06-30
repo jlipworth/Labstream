@@ -1171,7 +1171,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                  error: Error,
                                                  context: String) -> Bool {
         let halted = isRangeHalted(ratingKey: ratingKey)
-        guard halted || error is CancellationError else { return false }
+        guard BackgroundDownloadPauseCancellationPolicy.shouldSuppressRangeStartFailure(
+            isHalted: halted,
+            isCancellation: error is CancellationError
+        ) else { return false }
         AppDiagnostics.record(.downloads, "downloads.range_start_cancelled", fields: [
             "download_id": .identifier(ratingKey),
             "context": .label(context),
@@ -1209,15 +1212,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func pauseStillApplies(ratingKey: String) -> Bool {
-        guard let status = store.records.first(where: { $0.ratingKey == ratingKey })?.status,
-              status == .queued || status == .downloading else { return false }
+        let status = store.records.first(where: { $0.ratingKey == ratingKey })?.status
         lock.lock()
         let hasReplacement = inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
         lock.unlock()
         // If the user already resumed/retried and a replacement task is tracked, a delayed cancel
         // callback from the old task must not flip the new active row back to Paused.
-        return !hasReplacement
+        return BackgroundDownloadPauseCancellationPolicy.pauseStillApplies(
+            status: status,
+            hasReplacementTask: hasReplacement
+        )
     }
 
     /// Pause any in-flight transfer for a ratingKey. Prefer URLSession resume data for static

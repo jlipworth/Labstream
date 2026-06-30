@@ -142,6 +142,10 @@ snapshot derivation.
   `BackgroundDownloadTransientRetryPolicy` now owns the retry gates for transient URLSession errors:
   opaque download retries require OS resume data plus a persisted-resume-safe lane, while static
   Range retries require an in-memory authenticated request and use the same bounded retry budget.
+- **Done: Slice 6k pause/cancellation race policy extraction.**
+  `BackgroundDownloadPauseCancellationPolicy` now owns the pure pause/cancel race decisions used by
+  delayed URLSession callbacks: old cancel callbacks may mark a row paused only when no replacement
+  task owns it, and range-start cancellation is suppressed when pause/delete already owns the row.
 
 ## Target module boundaries
 
@@ -161,6 +165,7 @@ snapshot derivation.
   `BackgroundDownloadTaskIdentity`,
   `BackgroundDownloadProgressPolicy`,
   `BackgroundDownloadTransientRetryPolicy`,
+  `BackgroundDownloadPauseCancellationPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
