@@ -179,66 +179,36 @@ extension DownloadManager {
             "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
         ])
 
-        // Emby convert-then-download (default for non-direct downloads): ANY choice that negotiated
-        // `.transcode` would otherwise be a LIVE streaming transcode — ephemeral, no stable byte
-        // range, so a dropped connection restarts from scratch (multi-GB never finishes). Instead,
-        // redirect to the server-side "Convert Media" job: render a persistent file, then download it
-        // via the resumable `.original` static lane (and KEEP it, so #126's reuse serves the next
-        // download for free). This covers BOTH `.optimize` AND `.optimizeCompatible`: the compatible
-        // lane only stays a remux when the source video is stream-copy eligible (route == .original/
-        // .compatibleRemux); when it falls through to `route == .transcode` (video not copyable) it
-        // is exactly the non-resumable live transcode this feature removes. Direct-play (.original),
-        // compatible-remux (route == .compatibleRemux), and #126 reuse (the `.existingVersion`/
-        // override handoff, which negotiates `.original`) are untouched — `.existingVersion` is
-        // intentionally excluded here so the convert handoff never re-triggers this reroute (no
-        // recursion). A would-be transcode of an `.existingVersion` source is failed, not rerouted,
-        // by the eligibility guard below.
-        if route == .transcode {
-            switch choice {
-            case .optimize(let targetName):
-                await triggerConvertAndDownload(item: item, targetName: targetName,
-                                                metadata: metadata, session: backendSession)
-                return
-            case .optimizeCompatible:
-                // No explicit preset for the compatible lane — derive one from the user's stored
-                // default download quality so the converted bitrate matches their intent.
-                let targetName = Self.jellyfinDefaultDownloadPreset
-                await triggerConvertAndDownload(item: item, targetName: targetName,
-                                                metadata: metadata, session: backendSession)
-                return
-            case .existingVersion:
-                // The convert handoff (.existingVersion + override) must land on the resumable
-                // `.original` lane; if the converted source still negotiates a transcode (e.g. an
-                // audio codec the device profile re-encodes), silently streaming it would be a
-                // non-resumable live transcode of the just-converted file. Fail loudly instead.
-                recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "phase": .label("converted_not_directly_downloadable"),
-                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-                ])
-                lastError[ratingKey] = .transferFailed("Converted source not directly downloadable.")
-                store.setStatus(ratingKey: ratingKey, .failed)
-                releaseInFlight(ratingKey: ratingKey)
-                refreshRecords()
-                return
-            case .original:
-                // A user/source `.original` row is only range-resumable when PlaybackInfo still
-                // negotiates a static direct download. Do not silently fall into the live encoder
-                // path while leaving the row stamped `.original`, or URLSession resume blobs can
-                // later be accepted for a forward-only stream. The user can delete/re-download via
-                // an optimize/convert choice if the server no longer exposes a direct file route.
-                recordDownloadDiagnostic("downloads.start_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label("Emby"),
-                    "phase": .label("original_not_directly_downloadable"),
-                    "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
-                ])
-                lastError[ratingKey] = .transferFailed("Original source no longer directly downloadable.")
-                store.setStatus(ratingKey: ratingKey, .failed)
-                releaseInFlight(ratingKey: ratingKey)
-                refreshRecords()
-                return
+        // Emby convert-then-download (default for non-direct downloads): live transcodes are
+        // ephemeral/non-resumable, so optimizer choices reroute to a persistent server Convert job,
+        // while static-only choices fail closed instead of silently accepting a forward-only stream.
+        switch EmbyDownloadRoutePlan.action(route: route, choice: choice) {
+        case .startTransfer:
+            break
+        case .rerouteConvert(let targetName):
+            await triggerConvertAndDownload(item: item, targetName: targetName,
+                                            metadata: metadata, session: backendSession)
+            return
+        case .fail(let reason):
+            var fields: [String: DiagnosticFieldValue] = [
+                "download_id": .identifier(ratingKey),
+                "phase": .label(reason.rawValue),
+                "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
+            ]
+            let event: String
+            switch reason {
+            case .convertedNotDirectlyDownloadable:
+                event = "downloads.convert_failed"
+            case .originalNotDirectlyDownloadable:
+                event = "downloads.start_failed"
+                fields["backend"] = .label("Emby")
             }
+            recordDownloadDiagnostic(event, fields: fields)
+            lastError[ratingKey] = .transferFailed(reason.userMessage)
+            store.setStatus(ratingKey: ratingKey, .failed)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
         }
 
         var request: URLRequest
@@ -246,7 +216,7 @@ extension DownloadManager {
         var expectedBytes: Int?
         // Both the transcode and compatible-remux lanes are encoder-served, forward-only, and mint a
         // server-side session that MUST be torn down on a terminal transition.
-        let useServerSession = (route != .original)
+        let useServerSession = EmbyDownloadRoutePlan.useServerSession(for: route)
         do {
             switch route {
             case .original:
@@ -354,9 +324,10 @@ extension DownloadManager {
         beginBackgroundTransfer(DownloadTransferStartPlan(
             ratingKey: ratingKey,
             backendLabel: "Emby",
-            choiceLabel: route == .original ? "original"
-                : route == .compatibleRemux ? "optimize_compatible"
-                : Self.diagnosticChoiceLabel(choice),
+            choiceLabel: EmbyDownloadRoutePlan.diagnosticChoiceLabel(
+                route: route,
+                choice: choice,
+                choiceLabel: Self.diagnosticChoiceLabel(choice)),
             urlShape: request.url,
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true
@@ -374,7 +345,7 @@ extension DownloadManager {
                               with: request,
                               to: destination,
                               expectedBytes: expectedBytes,
-                              byteRangeCheckpoint: route == .original,
+                              byteRangeCheckpoint: EmbyDownloadRoutePlan.usesByteRangeCheckpoint(for: route),
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }
     }
