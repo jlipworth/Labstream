@@ -44,4 +44,33 @@ public enum DownloadStorageEstimatePolicy {
         guard sideAssetBytes > 0 else { return mediaBytes }
         return (mediaBytes ?? 0) + sideAssetBytes
     }
+
+    /// Full preflight estimate for a selected download source.
+    ///
+    /// This composes the media-byte estimate (source part size vs. duration×bitrate transcode
+    /// estimate) with the side assets that the offline download pipeline also caches. Text-subtitle
+    /// sidecars are intentionally not estimated here: they are small, backend-variable, and accounted
+    /// from disk after caching through `DownloadRecord.sideAssetBytes`.
+    public static func estimatedTotalBytes(for item: MediaItem,
+                                           choice: DownloadIntentChoice,
+                                           backend: DownloadBackendKind,
+                                           mediaIndex: Int = 0,
+                                           partIndex: Int = 0) -> Int? {
+        let media = item.media.flatMap { media in
+            media.indices.contains(mediaIndex) ? media[mediaIndex] : nil
+        }
+        let part = media.flatMap { media in
+            media.part.indices.contains(partIndex) ? media.part[partIndex] : nil
+        }
+        let mediaBytes = estimatedMediaBytes(
+            source: DownloadPresetPolicy.storageEstimateMediaSource(for: choice),
+            sourcePartBytes: part?.size,
+            durationMs: item.duration)
+        let chapterImageCount = item.chapters?.filter { $0.thumb?.isEmpty == false }.count ?? 0
+        let sideAssetBytes = estimatedSideAssetBytes(
+            durationMs: item.duration,
+            backend: backend,
+            chapterImageCount: chapterImageCount)
+        return totalBytes(mediaBytes: mediaBytes, sideAssetBytes: sideAssetBytes)
+    }
 }

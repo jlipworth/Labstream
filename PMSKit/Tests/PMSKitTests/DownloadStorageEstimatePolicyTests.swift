@@ -42,4 +42,40 @@ struct DownloadStorageEstimatePolicyTests {
         #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: nil, sideAssetBytes: 25) == 25)
         #expect(DownloadStorageEstimatePolicy.totalBytes(mediaBytes: nil, sideAssetBytes: 0) == nil)
     }
+
+    @Test("Item estimate composes selected media choice and backend side assets")
+    func itemEstimateComposesMediaAndSideAssets() throws {
+        let item = MediaItem(ratingKey: "m1",
+                             title: "Movie",
+                             type: "movie",
+                             duration: 60_000,
+                             media: [
+                                Media(id: 1,
+                                      part: [Part(id: 10, key: "/p/10", size: 1_000_000)])
+                             ],
+                             chapters: [
+                                Chapter(tag: "A", startTimeOffset: 0, endTimeOffset: 10_000, thumb: "/chapter/1"),
+                                Chapter(tag: "B", startTimeOffset: 10_000, endTimeOffset: 20_000, thumb: nil),
+                                Chapter(tag: "C", startTimeOffset: 20_000, endTimeOffset: 30_000, thumb: "/chapter/3"),
+                             ])
+
+        let embyOriginal = try #require(DownloadStorageEstimatePolicy.estimatedTotalBytes(
+            for: item,
+            choice: .original,
+            backend: .emby))
+        #expect(embyOriginal == 1_060_000)
+
+        let plexOriginal = try #require(DownloadStorageEstimatePolicy.estimatedTotalBytes(
+            for: item,
+            choice: .original,
+            backend: .plex))
+        #expect(plexOriginal > embyOriginal)
+
+        let transcode = try #require(DownloadStorageEstimatePolicy.estimatedTotalBytes(
+            for: item,
+            choice: .optimize(targetName: "720p 4 Mbps"),
+            backend: .emby))
+        #expect(transcode == TranscodeSizeEstimator.bytes(durationMs: 60_000,
+                                                         videoBitrateBps: 4_000_000)! + 60_000)
+    }
 }

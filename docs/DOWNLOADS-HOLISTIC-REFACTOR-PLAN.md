@@ -359,6 +359,11 @@ snapshot derivation.
   download sheet, backend adapters, retry routing, and diagnostics now call `DownloadRecordIdentity`
   and `OfflineDownloadDecision` directly, keeping backend namespacing and original-file eligibility
   in PMSKit instead of hidden behind coordinator methods.
+- **Done: Slice 5ab storage preflight composition extraction.**
+  `DownloadStorageEstimatePolicy` now owns the full item/choice/backend storage preflight
+  composition: selected media/part source bytes, transcode byte estimates, backend side-asset
+  estimates, and chapter-image counting. `DownloadManager` only resolves the active-backend default
+  before delegating, so the coordinator no longer reassembles PMSKit estimate leaves itself.
 
 ## Target module boundaries
 
@@ -558,12 +563,13 @@ Move remaining pure caption/progress/sort/snapshot derivation out of `DownloadMa
 tested PMSKit/app-layer builders so `OfflineLibraryView` observes a stable value without the
 coordinator owning every formatting decision.
 
-### Final step: update all documentation
+### Final step: update all documentation to represent this refactor
 
 After the code refactor and validation are complete, update all documentation that describes
 downloads, backend routing, download-agent behavior, live/headless probes, diagnostics, and
 operator workflows so the docs represent the final architecture rather than the transitional
-slices. Treat this as part of done for the holistic refactor, not a follow-up task.
+slices. Treat this as part of done for the holistic refactor, not a follow-up task. The refactor
+is not ready to close until those docs have been refreshed and checked against the final code.
 
 ## Non-goals
 
