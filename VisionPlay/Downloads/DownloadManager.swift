@@ -691,12 +691,7 @@ public final class DownloadManager {
     }
 
     private static func isStaticRangeRecord(_ record: DownloadRecord) -> Bool {
-        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-        let lane = record.metadata?.resolvedDownloadLane() ?? .original
-        let mode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
-            ?? DownloadResumeMode.resolved(backend: backend, lane: lane)
-        return mode == .staticByteRange
+        StaticRangeRecoveryPolicy.isStaticRangeRecord(record)
     }
 
     private func staticRangeBackendSession(for record: DownloadRecord) -> BackendSession? {
@@ -728,7 +723,11 @@ public final class DownloadManager {
         pendingStaticRangeResumeKeys.insert(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         retryingRows.remove(ratingKey)
-        if preserveActiveIntent {
+        switch StaticRangeRecoveryPolicy.deferredResumeDisposition(
+            checkpointBytes: checkpointBytes,
+            preserveActiveIntent: preserveActiveIntent
+        ) {
+        case .queuedActiveIntent:
             // This was not a user pause: a system/adopted Range continuation needs backend auth before
             // it can rebuild the next request. Persist an active queued intent so a second app kill
             // before backend restore is derived by launch auto-resume instead of turning into a manual
@@ -736,10 +735,10 @@ public final class DownloadManager {
             store.setStatus(ratingKey: ratingKey, .queued)
             lastError[ratingKey] = checkpointBytes > 0 ? .interruptedResumable : .transferFailed(
                 "Download will restart when the \(backend.displayName) session is ready.")
-        } else if checkpointBytes > 0 {
+        case .pausedAtCheckpoint:
             store.setStatus(ratingKey: ratingKey, .paused)
             lastError[ratingKey] = .interruptedResumable
-        } else {
+        case .failedNoCheckpoint:
             // No durable checkpoint remains (for example, an adopted chunk discovered a validator
             // mismatch and discarded the stale prefix). Keep this restartable as a failed row rather
             // than a paused row with no partial and no retry path.
@@ -759,20 +758,22 @@ public final class DownloadManager {
 
     private func finalizeCompletedStaticRangeIfNeeded(record: DownloadRecord, reason: String) -> Bool {
         let ratingKey = record.ratingKey
-        if record.status == .complete || record.status == .unverified || record.status == .failed {
-            finalizingStaticRangeRecoveryKeys.remove(ratingKey)
-            return false
-        }
-        guard Self.isStaticRangeRecord(record),
-              record.progress.isFinite,
-              record.progress >= 1.0 else {
-            return false
-        }
-        if finalizingStaticRangeRecoveryKeys.contains(ratingKey) {
-            return true
-        }
         let checkpointBytes = store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)
-        guard checkpointBytes > 0 else { return false }
+        switch StaticRangeRecoveryPolicy.finalizeDecision(
+            for: record,
+            checkpointBytes: checkpointBytes,
+            isAlreadyFinalizing: finalizingStaticRangeRecoveryKeys.contains(ratingKey)
+        ) {
+        case .ignore:
+            if record.status == .complete || record.status == .unverified || record.status == .failed {
+                finalizingStaticRangeRecoveryKeys.remove(ratingKey)
+            }
+            return false
+        case .alreadyFinalizing:
+            return true
+        case .start:
+            break
+        }
         pendingStaticRangeResumeKeys.remove(ratingKey)
         finalizingStaticRangeRecoveryKeys.insert(ratingKey)
         recordDownloadDiagnostic("downloads.range_finalize_resume", fields: [
@@ -791,7 +792,10 @@ public final class DownloadManager {
     }
 
     private func resumeStaticRangeWhenReady(ratingKey: String, reason: String) {
-        if isQueuePaused, !queuePausedManualResumeKeys.contains(ratingKey) {
+        if StaticRangeRecoveryPolicy.shouldWaitForManualResume(
+            isQueuePaused: isQueuePaused,
+            wasManuallyResumedWhileQueuePaused: queuePausedManualResumeKeys.contains(ratingKey)
+        ) {
             guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
                 pendingStaticRangeResumeKeys.remove(ratingKey)
                 return
@@ -847,11 +851,10 @@ public final class DownloadManager {
         // user has to manually Pause→Resume to kick the exact same request.
         retryingRows.remove(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
-        if reason == BackgroundRangeRequestReason.validatorChanged.rawValue
-            || reason == BackgroundRangeRequestReason.adoptedChunkFailed.rawValue {
+        if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
             preserveRangeRestartCounterRows.insert(ratingKey)
         }
-        if record.status == .queued || record.status == .downloading {
+        if StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record) {
             // A persisted system-resume intent is not a live task. Drop it to an inactive status for
             // the backend retry handoff so `acquireInFlightSlotForStart` will seed the replacement
             // Range request instead of treating the row as duplicate active work.
@@ -957,7 +960,7 @@ public final class DownloadManager {
         // them out of `.paused` before backend-specific retry dispatch, because Jellyfin/Emby retry
         // bodies also pass through `retryAttemptCanContinue`; if the row is still `.paused`, that
         // async guard treats the user's Resume tap as cancelled and silently no-ops.
-        if record.status == .paused, Self.isStaticRangeRecord(record) {
+        if StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record) {
             // The backend download entry points reject existing `.queued`/`.downloading` rows as
             // duplicate active work. A partial static retry is not active yet; it is about to
             // re-acquire a URLSession task against the same destination file. Keep the row inactive
