@@ -154,6 +154,11 @@ snapshot derivation.
   `BackgroundFinalizationResultPolicy` now owns the pure mapping from completion-validation outcomes
   to row status/result labels/file-deletion intent: complete rows become `.complete`, truncated files
   fail and are deleted, and probe misses remain `.unverified` while preserving bytes.
+- **Done: Slice 6n opaque completion error policy extraction.**
+  `BackgroundOpaqueCompletionPolicy` now owns the pure post-retry terminal mapping for opaque
+  URLSession download errors: cancellation is non-failure, persisted-resume-safe static lanes pause
+  with resume data, forward-only streams fail even if URLSession offers a byte-offset blob, and all
+  other non-cancelled errors fail normally.
 
 ## Target module boundaries
 
@@ -176,6 +181,7 @@ snapshot derivation.
   `BackgroundDownloadPauseCancellationPolicy`,
   `BackgroundTempFileCleanupPolicy`,
   `BackgroundFinalizationResultPolicy`,
+  `BackgroundOpaqueCompletionPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 

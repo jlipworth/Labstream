@@ -2717,9 +2717,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
         guard let entry, let error else { return }
         let nsError = error as NSError
+        let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+        let hasResumeData = resumeData?.isEmpty == false
+        let supportsResumeData = hasResumeData && store.supportsPersistedResumeData(ratingKey: entry.ratingKey)
+        let opaqueDisposition = BackgroundOpaqueCompletionPolicy.disposition(
+            errorCode: nsError.code,
+            hasResumeData: hasResumeData,
+            supportsPersistedResumeData: supportsResumeData
+        )
         // A cancel is not a failure. Any other error keeps a `.failed` row (D3) with a
         // surfaced reason, rather than silently erasing it so the UI can offer retry.
-        if nsError.code != NSURLErrorCancelled {
+        switch opaqueDisposition {
+        case .cancelled:
+            clearRetryCount(ratingKey: entry.ratingKey)
+            downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.cancelled", fields: [
+                "download_id": .identifier(entry.ratingKey),
+            ])
+        case .pauseWithResumeData, .failNonResumableStream, .fail:
             if retryTransientFailure(nsError, task: task, entry: entry) {
                 return
             }
@@ -2729,23 +2744,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // rather than the error code, persist the blob so a manual Resume — even after a
             // relaunch — continues from the offset, and surface a non-red "will resume" state.
             // The partial bytes are retained (reconcile keeps a `.paused` row's file).
-            if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
-               !resumeData.isEmpty {
-                guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else {
-                    let summary = DiagnosticRedactor.safeErrorSummary(error)
-                    downloadLog.error("transfer-nonresumable ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public) resumeData=true")
-                    AppDiagnostics.record(.downloads, "downloads.transfer_nonresumable", fields: [
-                        "download_id": .identifier(entry.ratingKey),
-                        "error": .error(error),
-                        "bytes_received": .bytes(Int(task.countOfBytesReceived)),
-                        "resume_data_present": .bool(true),
-                    ])
-                    clearRetryCount(ratingKey: entry.ratingKey)
-                    store.setStatus(ratingKey: entry.ratingKey, .failed)
-                    onError?(entry.ratingKey, .transferFailed("Download interrupted; this transcoded stream can’t resume from its byte offset. Retry will restart from the beginning."))
-                    onChange?()
-                    return
-                }
+            if case .failNonResumableStream = opaqueDisposition {
+                let summary = DiagnosticRedactor.safeErrorSummary(error)
+                downloadLog.error("transfer-nonresumable ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public) resumeData=true")
+                AppDiagnostics.record(.downloads, "downloads.transfer_nonresumable", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "error": .error(error),
+                    "bytes_received": .bytes(Int(task.countOfBytesReceived)),
+                    "resume_data_present": .bool(true),
+                ])
+                clearRetryCount(ratingKey: entry.ratingKey)
+                store.setStatus(ratingKey: entry.ratingKey, .failed)
+                onError?(entry.ratingKey, .transferFailed("Download interrupted; this transcoded stream can’t resume from its byte offset. Retry will restart from the beginning."))
+                onChange?()
+                return
+            }
+            if case .pauseWithResumeData = opaqueDisposition, let resumeData {
                 let summary = DiagnosticRedactor.safeErrorSummary(error)
                 downloadLog.error("transfer-paused ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.transfer_paused", fields: [
@@ -2771,12 +2785,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
-        } else {
-            clearRetryCount(ratingKey: entry.ratingKey)
-            downloadLog.info("cancelled ratingKey=\(entry.ratingKey, privacy: .public)")
-            AppDiagnostics.record(.downloads, "downloads.cancelled", fields: [
-                "download_id": .identifier(entry.ratingKey),
-            ])
         }
         onChange?()
     }
