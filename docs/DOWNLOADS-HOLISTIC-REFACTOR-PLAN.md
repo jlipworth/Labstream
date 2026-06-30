@@ -194,6 +194,10 @@ snapshot derivation.
   `DownloadEncoderTeardownPolicy` now owns the terminal cleanup decision for Emby/Jellyfin live
   encoders: transient play sessions stop only against an available matching backend lane, and
   persisted playSession cleanup logs a mismatch instead of firing against the wrong server.
+- **Done: Slice 5g resume retry schedule policy extraction.**
+  `DownloadResumeRetrySchedulePolicy` now owns the cold-launch/auth-edge retry cadence for server
+  prep and static-range resume scanners, including the queue-paused rule that only persistent Emby
+  convert polling should resume while the global queue gate remains paused.
 
 ## Target module boundaries
 
@@ -207,6 +211,8 @@ snapshot derivation.
 - `DownloadRetryPreparationPolicy`: pure retry-entry gates before backend-specific retry dispatch.
 - `DownloadEncoderTeardownPolicy`: pure terminal encoder teardown/skip decision table for
   Jellyfin and Emby play sessions.
+- `DownloadResumeRetrySchedulePolicy`: pure cold-launch retry cadence and queue-paused resume
+  scanner routing.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
