@@ -90,6 +90,24 @@ public enum RangeTransferHTTPPolicy {
         contentRangeTotal(response?.value(forHTTPHeaderField: "Content-Range"))
     }
 
+    /// Whether a completed temp file can be accepted when URLSession internally resumed a closed
+    /// Range request while the app was suspended. The response may report a later server offset even
+    /// though URLSession assembled the full originally requested chunk in the temp file. Accept only
+    /// when that resumed offset sits inside the planned segment and the temp byte count exactly
+    /// matches the requested segment size; otherwise appending would risk a gap or overlap.
+    public static func isCompleteInternallyResumedRangeChunk(baseOffset: Int,
+                                                            contentRangeStart: Int?,
+                                                            stashBytes: Int?,
+                                                            expectedSegmentBytes: Int?) -> Bool {
+        guard let contentRangeStart,
+              let stashBytes,
+              let expectedSegmentBytes,
+              contentRangeStart > baseOffset,
+              contentRangeStart < baseOffset + expectedSegmentBytes,
+              stashBytes == expectedSegmentBytes else { return false }
+        return true
+    }
+
     public static func rangeRequestStart(_ rangeHeader: String?) -> Int? {
         guard let value = rangeHeader?.trimmingCharacters(in: .whitespaces),
               value.lowercased().hasPrefix("bytes=") else { return nil }

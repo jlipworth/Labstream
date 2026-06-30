@@ -2023,10 +2023,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let misaligned = entry.baseOffset > 0
                 ? contentRangeStart != entry.baseOffset            // nil (absent) or wrong → reject
                 : (contentRangeStart.map { $0 != 0 } ?? false)     // offset 0: reject only a stated non-zero start
-            if misaligned, isCompleteInternallyResumedRangeChunk(
-                entry: entry,
+            if misaligned, RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeChunk(
+                baseOffset: entry.baseOffset,
                 contentRangeStart: contentRangeStart,
-                stashBytes: stashBytesBeforeAppend
+                stashBytes: stashBytesBeforeAppend,
+                expectedSegmentBytes: expectedRangeSegmentBytes(entry: entry)
             ) {
                 AppDiagnostics.record(.downloads, "downloads.range_internal_resume_adopted", fields: [
                     "download_id": .identifier(entry.ratingKey),
@@ -2161,24 +2162,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         rangeChunkPlanner.expectedSegmentBytes(offset: entry.baseOffset,
                                                expectedBytes: entry.expectedBytes,
                                                kind: entry.segmentKind)
-    }
-
-    /// A background `URLSessionDownloadTask` can internally resume a closed Range request while the
-    /// app is suspended. In that case the final HTTP response's `Content-Range` may describe only the
-    /// resumed sub-range (start > our requested base), while the temp file still contains the entire
-    /// requested chunk assembled by URLSession. Accept that only when the completed temp has exactly
-    /// the byte count we asked for and the resumed server offset falls inside that chunk; otherwise a
-    /// gap could be appended and corrupt the durable partial.
-    private func isCompleteInternallyResumedRangeChunk(entry: RangeTransfer,
-                                                       contentRangeStart: Int?,
-                                                       stashBytes: Int?) -> Bool {
-        guard let contentRangeStart,
-              let stashBytes,
-              let expectedChunkBytes = expectedRangeSegmentBytes(entry: entry),
-              contentRangeStart > entry.baseOffset,
-              contentRangeStart < entry.baseOffset + expectedChunkBytes,
-              stashBytes == expectedChunkBytes else { return false }
-        return true
     }
 
     /// Start the next Range chunk if we still hold the request (same launch); otherwise persist a

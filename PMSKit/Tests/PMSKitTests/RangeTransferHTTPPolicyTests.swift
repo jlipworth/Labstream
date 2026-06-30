@@ -41,6 +41,30 @@ struct RangeTransferHTTPPolicyTests {
         #expect(RangeTransferHTTPPolicy.contentRangeStart("not-a-range") == nil)
     }
 
+    @Test("Internally resumed closed range chunks are accepted only for exact assembled temps")
+    func internallyResumedChunkAcceptance() {
+        #expect(RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeChunk(
+            baseOffset: 1_000,
+            contentRangeStart: 1_020,
+            stashBytes: 64,
+            expectedSegmentBytes: 64))
+        #expect(!RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeChunk(
+            baseOffset: 1_000,
+            contentRangeStart: 1_000,
+            stashBytes: 64,
+            expectedSegmentBytes: 64))
+        #expect(!RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeChunk(
+            baseOffset: 1_000,
+            contentRangeStart: 2_000,
+            stashBytes: 64,
+            expectedSegmentBytes: 64))
+        #expect(!RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeChunk(
+            baseOffset: 1_000,
+            contentRangeStart: 1_020,
+            stashBytes: 63,
+            expectedSegmentBytes: 64))
+    }
+
     @Test("Range request start parses normal and open-ended byte ranges")
     func rangeRequestStart() {
         #expect(RangeTransferHTTPPolicy.rangeRequestStart("bytes=0-67108863") == 0)
