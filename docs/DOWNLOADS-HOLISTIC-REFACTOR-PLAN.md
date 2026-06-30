@@ -253,6 +253,10 @@ snapshot derivation.
   Jellyfin and Emby failed/paused rows: compatible-remux intent preservation, Jellyfin default
   preset fallback for Original-quality labels, Emby server-prepared existing-version retries,
   source override propagation, and media/part index rehydration.
+- **Done: Slice 4e Plex original-validation fallback policy.**
+  `PlexOriginalFallbackPolicy` now owns the pure guard for retrying a failed true-original Plex
+  validation as a compatible server-prepared copy, including backend ownership, transcode-loop
+  suppression, server-prep ownership, Plex session availability, and fallback target selection.
 
 ## Target module boundaries
 
@@ -289,6 +293,7 @@ snapshot derivation.
 - `DownloadStorageEstimatePolicy`: pure storage preflight estimates for media bytes and sidecars.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
+  - Plex original-validation fallback guards.
   - Jellyfin original/live-forward intent helpers and tested stream request builders.
   - Emby route planner (already partly `EmbyDownloadRouter`).
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
