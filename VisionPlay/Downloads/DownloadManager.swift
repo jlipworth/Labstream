@@ -86,13 +86,10 @@ public final class DownloadManager {
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
-    private var retryingRows: Set<String> = []
-    private var retryPresentationRows: Set<String> = []
-    /// Rows intentionally parked as `.failed` only as an internal retry handoff sentinel.
-    /// While present, refresh cleanup must not treat the `.failed` row as terminal; the backend
-    /// retry task still needs `retryingRows` to pass its async continuation guard. Cleared as soon
-    /// as replacement work is seeded or a real failure path releases the retry.
-    private var retryHandoffRows: Set<String> = []
+    /// App-level retry guard/presentation/handoff markers. The handoff sentinel prevents refresh
+    /// cleanup from treating a transient `.failed` retry row as terminal before replacement work is
+    /// seeded, while `retrying` still guards async retry continuations.
+    private var retryState = DownloadRetryStateTracker()
     @ObservationIgnored private var refreshRecordsTask: Task<Void, Never>?
     private var serverPrepResumeRetryTask: Task<Void, Never>?
     @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
@@ -529,7 +526,7 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.pause", fields: [
             "download_id": .identifier(ratingKey),
         ])
-        retryingRows.remove(ratingKey)
+        retryState.removeRetrying(ratingKey)
         staticRangeRecovery.removeManualQueueResume(ratingKey)
         lastError[ratingKey] = .interruptedResumable
 
@@ -656,7 +653,7 @@ public final class DownloadManager {
         let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
         staticRangeRecovery.addPendingResume(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
-        retryingRows.remove(ratingKey)
+        retryState.removeRetrying(ratingKey)
         switch StaticRangeRecoveryPolicy.deferredResumeDisposition(
             checkpointBytes: checkpointBytes,
             preserveActiveIntent: preserveActiveIntent
@@ -783,7 +780,7 @@ public final class DownloadManager {
         // URLSession has no live task and the row is merely a queued continuation intent. Clear that
         // presentation/handoff state before driving the backend retry, or `retry` can no-op and the
         // user has to manually Pause→Resume to kick the exact same request.
-        retryingRows.remove(ratingKey)
+        retryState.removeRetrying(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
             staticRangeRecovery.preserveRestartCountersForNextStart(ratingKey)
@@ -823,7 +820,7 @@ public final class DownloadManager {
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
     public func retry(ratingKey: String) {
-        guard !retryingRows.contains(ratingKey),
+        guard !retryState.isRetrying(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         guard record.status != .complete, record.status != .unverified else { return }
         let isManualStaticResumeWhileQueuePaused = DownloadRetryPreparationPolicy.isManualStaticResumeWhileQueuePaused(
@@ -843,9 +840,7 @@ public final class DownloadManager {
         if deferStaticRangeRetryIfBackendUnavailable(record: record, reason: "retry_backend_not_ready") {
             return
         }
-        retryingRows.insert(ratingKey)
-        retryPresentationRows.insert(ratingKey)
-        retryHandoffRows.insert(ratingKey)
+        retryState.begin(ratingKey)
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -1022,7 +1017,7 @@ public final class DownloadManager {
     private func retryAttemptCanContinue(ratingKey: String) -> Bool {
         let row = store.records.first { $0.ratingKey == ratingKey }
         return DownloadRetryPreparationPolicy.attemptCanContinue(
-            isRetrying: retryingRows.contains(ratingKey),
+            isRetrying: retryState.isRetrying(ratingKey),
             rowIsPresent: row != nil,
             rowStatus: row?.status
         )
@@ -1050,7 +1045,7 @@ public final class DownloadManager {
         guard let backendSession = appModel.backendSession(for: .plex) else {
             lastError[record.ratingKey] = .notAuthenticated
             clearRetryHandoff(ratingKey: record.ratingKey)
-            retryingRows.remove(record.ratingKey)
+            retryState.removeRetrying(record.ratingKey)
             refreshRecords()
             return
         }
@@ -1062,7 +1057,7 @@ public final class DownloadManager {
             ])
             lastError[record.ratingKey] = .transferFailed("Waiting for the original Plex server session.")
             clearRetryHandoff(ratingKey: record.ratingKey)
-            retryingRows.remove(record.ratingKey)
+            retryState.removeRetrying(record.ratingKey)
             refreshRecords()
             return
         }
@@ -1075,7 +1070,7 @@ public final class DownloadManager {
         // previous cancelled poller. If left in place, the resume scanner filters this queued row out
         // as "already attached" and the user has to pause/resume again to kick it.
         clearServerPrepPoller(ratingKey: record.ratingKey, reason: "paused_resume")
-        retryingRows.remove(record.ratingKey)
+        retryState.removeRetrying(record.ratingKey)
         clearRetryHandoff(ratingKey: record.ratingKey)
         store.setStatus(ratingKey: record.ratingKey, .queued)
         optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
@@ -1683,7 +1678,7 @@ public final class DownloadManager {
         ])
         staticRangeRecovery.removePendingResume(ratingKey)
         staticRangeRecovery.removeManualQueueResume(ratingKey)
-        retryingRows.remove(ratingKey)
+        retryState.removeRetrying(ratingKey)
         // Emby convert parity (#126 + Plex): deleting a `.preparing` row must ALSO cancel the
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
@@ -1846,13 +1841,11 @@ public final class DownloadManager {
     }
 
     private func clearRetryHandoff(ratingKey: String) {
-        retryPresentationRows.remove(ratingKey)
-        retryHandoffRows.remove(ratingKey)
+        retryState.clearHandoff(ratingKey)
     }
 
     private func markRetryReplacementSeeded(ratingKey: String) {
-        retryingRows.remove(ratingKey)
-        clearRetryHandoff(ratingKey: ratingKey)
+        retryState.markReplacementSeeded(ratingKey)
     }
 
     private func scheduleRefreshRecords(reason _: String, delay: Duration = .milliseconds(500)) {
@@ -1991,7 +1984,7 @@ public final class DownloadManager {
                 }
             }
         }
-        for record in fresh where retryHandoffRows.contains(record.ratingKey) {
+        for record in fresh where retryState.isRetryHandoff(record.ratingKey) {
             if record.status.isActiveWork || record.status == .complete || record.status == .unverified {
                 markRetryReplacementSeeded(ratingKey: record.ratingKey)
             }
@@ -2000,8 +1993,8 @@ public final class DownloadManager {
         staticRangeRecovery.subtractFinalizing(finalizedRecoveryKeys)
         let manualResumeTerminalKeys = StaticRangeRefreshCleanupPolicy.manualQueueResumeTerminalKeys(
             records: fresh,
-            retryHandoffKeys: retryHandoffRows,
-            retryingKeys: retryingRows
+            retryHandoffKeys: retryState.handoffKeys,
+            retryingKeys: retryState.retryingKeys
         )
         staticRangeRecovery.subtractManualQueueResumes(manualResumeTerminalKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
@@ -2064,8 +2057,8 @@ public final class DownloadManager {
         // any encoder teardown should a transcoded row ever land here.
         let terminalKeys = DownloadTerminalReleasePolicy.terminalReleaseKeys(
             records: fresh,
-            retryHandoffKeys: retryHandoffRows,
-            retryingKeys: retryingRows)
+            retryHandoffKeys: retryState.handoffKeys,
+            retryingKeys: retryState.retryingKeys)
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
 
         records = fresh
@@ -2100,7 +2093,7 @@ public final class DownloadManager {
             "max_attempts": .int(DownloadStallRecoveryPolicy.defaultMaxAutomaticRestarts),
         ])
         session.cancel(ratingKey: ratingKey)
-        retryingRows.remove(ratingKey)
+        retryState.removeRetrying(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         lastError[ratingKey] = .transferFailed(
             "Network stalled; restarting this forward-only stream from the beginning.")
@@ -2135,8 +2128,8 @@ public final class DownloadManager {
         let snapshot = DownloadHealthSnapshotPolicy.makeSnapshot(
             records: records,
             activeJobCount: activeJobs.count,
-            retryingCount: retryingRows.count,
-            retryHandoffCount: retryHandoffRows.count,
+            retryingCount: retryState.retryingCount,
+            retryHandoffCount: retryState.handoffCount,
             pendingStaticResumeCount: staticRangeRecovery.pendingResumeCount,
             finalizingStaticRecoveryCount: staticRangeRecovery.finalizingCount,
             serverPrepPollerCount: serverPrepPollerTasks.count,
@@ -2262,7 +2255,7 @@ public final class DownloadManager {
     /// deleted). Idempotent. Keeping the queue title protected past this point would block the
     /// clean-slate cleanup from ever removing the now-abandoned completed optimize item.
     func releaseInFlight(ratingKey: String) {
-        retryingRows.remove(ratingKey)
+        retryState.removeRetrying(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
@@ -2517,7 +2510,7 @@ public final class DownloadManager {
             },
             displayProgress: { record in rowDisplayProgress(for: record) },
             statusCaption: { record, backend in statusCaption(for: record, backend: backend) },
-            isRetrying: { ratingKey in retryPresentationRows.contains(ratingKey) },
+            isRetrying: { ratingKey in retryState.isPresentingRetry(ratingKey) },
             isCheckpointPausing: { ratingKey in staticRangeRecovery.isCheckpointPausing(ratingKey) }
         )
     }
@@ -2565,7 +2558,7 @@ public final class DownloadManager {
             downloadETA: downloadETA[record.ratingKey],
             downloadSpeedBytesPerSecond: downloadSpeed[record.ratingKey],
             hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
-            isRetrying: retryPresentationRows.contains(record.ratingKey),
+            isRetrying: retryState.isPresentingRetry(record.ratingKey),
             failureCaption: failureCaption
         ))
     }
