@@ -351,12 +351,16 @@ extension DownloadManager {
             return
         }
 
-        beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Emby",
-                                choiceLabel: route == .original ? "original"
-                                    : route == .compatibleRemux ? "optimize_compatible"
-                                    : Self.diagnosticChoiceLabel(choice),
-                                urlShape: request.url, expectedBytes: expectedBytes,
-                                releaseInFlightOnFailure: true) {
+        beginBackgroundTransfer(DownloadTransferStartPlan(
+            ratingKey: ratingKey,
+            backendLabel: "Emby",
+            choiceLabel: route == .original ? "original"
+                : route == .compatibleRemux ? "optimize_compatible"
+                : Self.diagnosticChoiceLabel(choice),
+            urlShape: request.url,
+            expectedBytes: expectedBytes,
+            releaseInFlightOnFailure: true
+        )) {
             if useServerSession {
                 // Transcode/remux download: rate is encoder-gated (served as it renders), forward-only
                 // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal

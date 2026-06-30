@@ -448,42 +448,31 @@ public final class DownloadManager {
     /// globally-active lane — at the UI call site the active backend IS the correct backend (the
     /// user downloads what they're browsing), but the key is then stable regardless of switches.
     public func recordKey(for item: MediaItem, backend: DownloadBackendKind) -> String {
-        switch backend {
-        case .plex:
-            return item.ratingKey
-        case .jellyfin:
-            return Self.jellyfinRecordKey(item.ratingKey)
-        case .emby:
-            return Self.embyRecordKey(item.ratingKey)
-        }
+        DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: backend)
     }
 
     static func jellyfinRecordKey(_ itemId: String) -> String {
-        "jellyfin:\(itemId)"
+        DownloadRecordIdentity.recordKey(for: itemId, backend: .jellyfin)
     }
 
     private static func isJellyfinRecordKey(_ ratingKey: String) -> Bool {
-        ratingKey.hasPrefix("jellyfin:")
+        DownloadRecordIdentity.isJellyfinRecordKey(ratingKey)
     }
 
     private static func jellyfinItemID(fromRecordKey ratingKey: String) -> String {
-        isJellyfinRecordKey(ratingKey)
-            ? String(ratingKey.dropFirst("jellyfin:".count))
-            : ratingKey
+        DownloadRecordIdentity.jellyfinItemID(fromRecordKey: ratingKey)
     }
 
     static func embyRecordKey(_ itemId: String) -> String {
-        "emby:\(itemId)"
+        DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
     }
 
     private static func isEmbyRecordKey(_ ratingKey: String) -> Bool {
-        ratingKey.hasPrefix("emby:")
+        DownloadRecordIdentity.isEmbyRecordKey(ratingKey)
     }
 
     private static func embyItemID(fromRecordKey ratingKey: String) -> String {
-        isEmbyRecordKey(ratingKey)
-            ? String(ratingKey.dropFirst("emby:".count))
-            : ratingKey
+        DownloadRecordIdentity.embyItemID(fromRecordKey: ratingKey)
     }
 
     /// Run the download-time direct-play probe for `item` at the given media/part. Advertises
@@ -1902,49 +1891,54 @@ public final class DownloadManager {
         AppDiagnostics.record(.downloads, name, fields: fields)
     }
 
-    /// Shared terminal step for every download lane (#135 Stage 5b): record `downloads.start`, kick
-    /// off the background transfer via `start`, and on failure record `downloads.start_failed`,
-    /// surface the error, fail the row, and refresh. `start` performs the lane's own
-    /// `session.start(...)` call plus any pre-start side effects (transcode-sourced marking,
-    /// PlaySessionId persistence) so the two `session.start` overloads stay at their call sites.
+    /// Shared terminal step for every download lane: record `downloads.start`, kick off the
+    /// background transfer via `start`, and record `downloads.start_failed` before rethrowing any
+    /// immediate URLSession/start-time failure. `start` performs the lane's own `session.start(...)`
+    /// call plus any pre-start side effects (transcode-sourced marking, PlaySessionId persistence)
+    /// so the two `session.start` overloads stay at their call sites.
+    func startBackgroundTransfer(_ plan: DownloadTransferStartPlan,
+                                 start: () throws -> Void) throws {
+        var fields: [String: DiagnosticFieldValue] = [
+            "download_id": .identifier(plan.ratingKey),
+            "backend": .label(plan.backendLabel),
+            "choice": .label(plan.choiceLabel),
+            "url_shape": .urlShape(plan.urlShape),
+            "expected_bytes": .bytes(plan.expectedBytes),
+        ]
+        fields.merge(plan.extraDiagnosticFields) { current, _ in current }
+        recordDownloadDiagnostic("downloads.start", fields: fields)
+        do {
+            try start()
+            refreshRecords()
+        } catch {
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(plan.ratingKey),
+                "backend": .label(plan.backendLabel),
+                "error": .error(error),
+            ])
+            throw error
+        }
+    }
+
+    /// Start a background transfer and surface immediate start failures on the visible row.
     ///
     /// `releaseInFlightOnFailure` preserves a real per-lane difference: the JF/Emby encoder lanes
     /// release the in-flight slot explicitly on a start failure, while the Plex static lane lets the
     /// terminal `.failed`/`refreshRecords` release it (its caller never released here).
-    func beginBackgroundTransfer(ratingKey: String, backendLabel: String, choiceLabel: String,
-                                         urlShape: URL?, expectedBytes: Int?,
-                                         releaseInFlightOnFailure: Bool,
-                                         start: () throws -> Void) {
-        recordDownloadDiagnostic("downloads.start", fields: [
-            "download_id": .identifier(ratingKey),
-            "backend": .label(backendLabel),
-            "choice": .label(choiceLabel),
-            "url_shape": .urlShape(urlShape),
-            "expected_bytes": .bytes(expectedBytes),
-        ])
+    func beginBackgroundTransfer(_ plan: DownloadTransferStartPlan,
+                                 start: () throws -> Void) {
         do {
-            try start()
-            refreshRecords()
+            try startBackgroundTransfer(plan, start: start)
         } catch let error as DownloadError {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label(backendLabel),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
-            if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
+            lastError[plan.ratingKey] = error
+            store.setStatus(ratingKey: plan.ratingKey, .failed)
+            if plan.releaseInFlightOnFailure { releaseInFlight(ratingKey: plan.ratingKey) }
             refreshRecords()
         } catch {
-            recordDownloadDiagnostic("downloads.start_failed", fields: [
-                "download_id": .identifier(ratingKey),
-                "backend": .label(backendLabel),
-                "error": .error(error),
-            ])
-            lastError[ratingKey] = .transferFailed(
+            lastError[plan.ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
-            if releaseInFlightOnFailure { releaseInFlight(ratingKey: ratingKey) }
+            store.setStatus(ratingKey: plan.ratingKey, .failed)
+            if plan.releaseInFlightOnFailure { releaseInFlight(ratingKey: plan.ratingKey) }
             refreshRecords()
         }
     }

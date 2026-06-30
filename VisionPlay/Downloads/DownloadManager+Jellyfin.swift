@@ -244,10 +244,14 @@ extension DownloadManager {
         cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                    part: part, server: server, token: token, identity: identity)
 
-        beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Jellyfin",
-                                choiceLabel: Self.diagnosticChoiceLabel(choice),
-                                urlShape: request.url, expectedBytes: expectedBytes,
-                                releaseInFlightOnFailure: true) {
+        beginBackgroundTransfer(DownloadTransferStartPlan(
+            ratingKey: ratingKey,
+            backendLabel: "Jellyfin",
+            choiceLabel: Self.diagnosticChoiceLabel(choice),
+            urlShape: request.url,
+            expectedBytes: expectedBytes,
+            releaseInFlightOnFailure: true
+        )) {
             // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
             // the transcoder/remuxer — there is no separate "render then static download" phase, so
             // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).

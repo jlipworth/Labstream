@@ -1,0 +1,138 @@
+# Holistic downloads refactor plan
+
+This branch treats Downloads as one subsystem, not as a narrow `DownloadManager.swift`
+cleanup. The current module already has useful seams (`PMSKit/Downloads` pure policy,
+`DownloadStore`, backend-specific manager extensions, side caches, and
+`BackgroundDownloadSession`), but the remaining coupling is still spread across identity,
+job state, backend source resolution, transfer/recovery, persistence, diagnostics, and UI
+snapshot derivation.
+
+## Goals
+
+1. **Make the state machine explicit.** A download should move through named phases:
+   enqueue, optional server preparation, transfer, validation, complete/unverified,
+   paused, failed, delete/cancel. Today those phases are inferred from a mix of
+   `DownloadStatus`, metadata flags, active-job sets, server-poller tasks, and URLSession
+   callbacks.
+2. **Keep backend quirks modeled, not flattened.** Plex optimize, Jellyfin live-forward
+   remux/transcode, Emby PlaybackInfo routing, and Emby convert jobs are different. The
+   refactor should isolate those differences behind small planners/adapters rather than
+   force one protocol that hides load-bearing behavior.
+3. **Move pure decisions to PMSKit.** Identity, routing, retry eligibility, side-asset
+   inventory, progress display, completion validation, and range planning should be
+   deterministic and unit-tested outside the app target.
+4. **Make transfer/recovery the center of gravity.** Static byte-range checkpointing,
+   URLSession reattachment, queue pause/resume, retry preservation, validator changes,
+   and final-file validation are the highest-risk code paths and should have the clearest
+   ownership boundaries.
+5. **Preserve durable behavior during migration.** Every slice should build and either be
+   behavior-preserving or add tests that pin the intended behavior before changing it.
+
+
+## Branch implementation status
+
+- **Done: Slice 1 record identity leaf extraction.** `DownloadRecordIdentity` now owns
+  backend row-key construction, prefix fallback, and backend-local item-id extraction.
+  `DownloadBackendKind`, `OfflinePlaybackDecision`, and the app coordinator delegate to it,
+  with PMSKit tests pinning the legacy Plex bare-key and MediaBrowser prefix semantics.
+- **Done: Slice 2 first transfer-start seam.** `DownloadTransferStartPlan` now carries the
+  shared diagnostic/start-failure contract for all backend transfer handoffs. Backend files
+  still resolve sources and preserve their quirks; the common handoff surface is typed for
+  the next coordinator extraction.
+
+## Target module boundaries
+
+### PMSKit pure download core
+
+- `DownloadRecordIdentity`: backend-aware record keys and item-id extraction.
+- Backend route planners:
+  - Plex original/existing/optimize intent helpers where decisions are pure.
+  - Jellyfin original/live-forward intent helpers.
+  - Emby route planner (already partly `EmbyDownloadRouter`).
+- `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
+- Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
+- Existing pure units remain here: `RangeChunkPlanner`, `DownloadCompletionValidation`,
+  `DownloadRateEstimator`, aggregate stats, file inventory, text subtitle parsing.
+
+### VisionPlay Downloads app layer
+
+- `DownloadManager` becomes the coordinator: owns the user-facing observable snapshot,
+  queue pause state, and delegates to narrower services.
+- Backend files remain separate, but each moves toward returning a concrete
+  `DownloadSourcePlan` / `ServerPrepPlan` instead of directly mutating every cross-cutting
+  structure.
+- `DownloadStore` owns durable index/file-side effects only; it should not encode backend
+  routing policy.
+- `BackgroundDownloadSession` becomes the transfer engine. It can still hide URLSession
+  details, but range task adoption, checkpoint append, completion validation, and retry
+  signaling should be split into smaller collaborators once their contracts are pinned.
+- Side-cache code remains a service with backend-specific request builders and a shared
+  atomic write/persist tail.
+
+## Migration slices
+
+### Slice 1: record identity leaf extraction
+
+Move backend record-key construction and prefix parsing into PMSKit. This removes one of
+`DownloadManager`'s lingering pure responsibilities and makes UI routing, retry routing,
+offline playback, probes, and future planners share the same identity rules. This is the
+first implemented slice on this branch.
+
+### Slice 2: transfer-start plan object
+
+Introduce an app-layer `DownloadTransferStartPlan` so Plex static, Plex optimize handoff,
+Jellyfin, and Emby all enter `BackgroundDownloadSession` through the same diagnostic,
+start-failure, transcode-sourced, play-session, and range-checkpoint contract. Keep the
+backend files responsible for source resolution; only the cross-cutting transfer tail moves.
+
+### Slice 3: explicit resume/recovery coordinator
+
+Extract static-range recovery state from `DownloadManager` into a `DownloadRecoveryCoordinator`:
+`pendingStaticRangeResumeKeys`, restart-counter preservation, finalization guards, manual
+queue-paused resumes, and live-range overlays. Start with pure policy tests for “what should
+resume/finalize/defer” before moving URLSession calls.
+
+### Slice 4: backend source planners
+
+For each backend, separate “resolve what to download” from “start the transfer”:
+
+- Plex: original preflight / existing version / optimize handoff source plan.
+- Jellyfin: static original vs live-forward transcode/remux source plan and keepalive needs.
+- Emby: PlaybackInfo route plan, convert handoff, reusable converted source plan.
+
+These planners can share typed outputs but should not collapse backend-specific polling,
+cleanup, or server-prep semantics into one mega-engine.
+
+### Slice 5: server-prep attempt model
+
+Unify the attempt-identity surface for Plex optimize and Emby convert without forcing their
+pollers together. The common part is attempt ownership, durable row phase, relaunch resume,
+queue-pause behavior, and stale async suppression. The backend-specific part is job creation,
+progress interpretation, cancellation, reuse, and handoff.
+
+### Slice 6: transfer engine decomposition
+
+Split `BackgroundDownloadSession` internally after the above contracts are stable:
+
+- opaque URLSession task registry;
+- static-range task registry/adoption;
+- range checkpoint append/finalize worker;
+- background completion handler gate;
+- final-file validation bridge.
+
+This should be done only with focused tests/probes because this layer carries the off-head
+reliability behavior.
+
+### Slice 7: UI snapshot builder
+
+Move remaining pure caption/progress/sort/snapshot derivation out of `DownloadManager` into
+tested PMSKit/app-layer builders so `OfflineLibraryView` observes a stable value without the
+coordinator owning every formatting decision.
+
+## Non-goals
+
+- Do not merge Plex/Jellyfin/Emby server-prep into one abstract class that hides real route
+  differences.
+- Do not change the persisted index format casually; add compatibility tests before schema
+  changes.
+- Do not make simulator behavior the source of truth for off-head/background behavior.

@@ -10,17 +10,10 @@ public enum OfflinePlaybackDecision {
         case remoteStream
     }
 
-    /// Store identity for a specific backend. Mirrors `DownloadManager.recordKey(for:backend:)`
-    /// so PMSKit probes/tests can verify the routing invariant without importing the app target.
+    /// Store identity for a specific backend. Delegates to `DownloadRecordIdentity` so PMSKit
+    /// probes/tests and the app coordinator share one row-key rule.
     public static func recordKey(for ratingKey: String, backend: DownloadBackendKind) -> String {
-        switch backend {
-        case .plex:
-            return ratingKey
-        case .jellyfin:
-            return "jellyfin:\(ratingKey)"
-        case .emby:
-            return "emby:\(ratingKey)"
-        }
+        DownloadRecordIdentity.recordKey(for: ratingKey, backend: backend)
     }
 
     /// Return the completed local download row for this item/backend when the indexed file still

@@ -229,28 +229,31 @@ extension DownloadManager {
                                          metadata: downloadMetadata,
                                          targetName: targetName)
         let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
-        recordDownloadDiagnostic("downloads.start", fields: [
-            "download_id": .identifier(ratingKey),
-            "backend": .label("Plex"),
-            "choice": .label("optimize"),
-            "target": .label(targetName),
-            "url_shape": .urlShape(url),
-            "expected_bytes": .bytes(part.size),
-        ])
-        // Plex often exposes downloadable text subtitle streams only on the rendered optimized
-        // Part, not on the original source Part (where subtitle `key` can be nil). Cache from the
-        // exact Part we are downloading so optimized offline playback has the same sidecars.
-        cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
-        // The rendered Part is a static file by this point (the poll waited for it to
-        // appear), so a Plex optimize download is usually network-bound — but the server
-        // can still be finalizing/serving it as it writes, so mark it transcode-sourced and
-        // let `isDownloadTranscodeLimited` decide from the live rate.
-        transcodeSourcedDownloads.insert(ratingKey)
-        try session.start(ratingKey: ratingKey, from: url, to: destination,
-                          expectedBytes: part.size,
-                          byteRangeCheckpoint: true,
-                          resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
-        refreshRecords()
+        try startBackgroundTransfer(DownloadTransferStartPlan(
+            ratingKey: ratingKey,
+            backendLabel: "Plex",
+            choiceLabel: "optimize",
+            urlShape: url,
+            expectedBytes: part.size,
+            releaseInFlightOnFailure: false,
+            extraDiagnosticFields: [
+                "target": .label(targetName),
+            ]
+        )) {
+            // Plex often exposes downloadable text subtitle streams only on the rendered optimized
+            // Part, not on the original source Part (where subtitle `key` can be nil). Cache from the
+            // exact Part we are downloading so optimized offline playback has the same sidecars.
+            cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
+            // The rendered Part is a static file by this point (the poll waited for it to
+            // appear), so a Plex optimize download is usually network-bound — but the server
+            // can still be finalizing/serving it as it writes, so mark it transcode-sourced and
+            // let `isDownloadTranscodeLimited` decide from the live rate.
+            transcodeSourcedDownloads.insert(ratingKey)
+            try session.start(ratingKey: ratingKey, from: url, to: destination,
+                              expectedBytes: part.size,
+                              byteRangeCheckpoint: true,
+                              resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
+        }
     }
 
     /// Ensure an async Plex optimize poller still owns the visible row before it mutates the store
