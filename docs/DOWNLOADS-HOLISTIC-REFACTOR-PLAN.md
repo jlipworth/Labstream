@@ -369,6 +369,10 @@ snapshot derivation.
   optimizer-location selection, preserving the boundary-safe path matching that avoids treating
   sibling roots as source locations. Plex optimize setup now asks PMSKit for the writable alternate
   location instead of keeping the path policy in `DownloadManager`.
+- **Done: Slice 5ad offline metadata wrapper cleanup.**
+  Plex, Jellyfin, Emby, and Plex optimize enqueue paths now call `DownloadOfflineMetadataBuilder`
+  directly when creating durable row snapshots. `DownloadManager` no longer exposes an app-side
+  metadata-builder shim, keeping row snapshot composition in PMSKit.
 
 ## Target module boundaries
 

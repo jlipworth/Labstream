@@ -60,7 +60,7 @@ extension DownloadManager {
         } else {
             optimizeTargetName = nil
         }
-        let metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
+        let metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: optimizeTargetName,
                                             session: backendSession,

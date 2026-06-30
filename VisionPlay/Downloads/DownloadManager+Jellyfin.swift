@@ -55,7 +55,7 @@ extension DownloadManager {
         let resolutionLabel = DownloadPresetPolicy.displayResolutionLabel(choice: choice, chosenMedia: media)
         let jellyfinMediaSourceID = mediaSourceIDOverride ?? selection.mediaSourceID
         var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
-        var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
+        var metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }

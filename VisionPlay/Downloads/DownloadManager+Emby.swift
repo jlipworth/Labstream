@@ -69,7 +69,7 @@ extension DownloadManager {
         // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
         // onto the row after the decision is known (see below).
         let embyMediaSourceHint = mediaSourceIDOverride ?? selection.mediaSourceID
-        var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
+        var metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }

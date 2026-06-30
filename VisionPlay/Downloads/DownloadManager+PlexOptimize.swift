@@ -76,7 +76,7 @@ extension DownloadManager {
                 choice: .optimize(targetName: targetName),
                 chosenMedia: sourceItem.media?[safe: sourceMediaIndex])
             let existingMetadata = records.first { $0.ratingKey == ratingKey }?.metadata
-            optimizeMetadata = Self.offlineMetadata(from: sourceItem,
+            optimizeMetadata = DownloadOfflineMetadataBuilder.metadata(from: sourceItem,
                                                     resolutionLabel: refreshedResolutionLabel,
                                                     mediaIndex: sourceMediaIndex,
                                                     partIndex: sourcePartIndex,
