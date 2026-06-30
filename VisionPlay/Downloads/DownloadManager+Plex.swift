@@ -216,13 +216,16 @@ extension DownloadManager {
         // and resolve the Plex session from its lane — so the original→optimize fallback fires
         // even if the user has since switched to Jellyfin/Emby, as long as the Plex lane is still
         // configured (lanes persist independently).
-        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }),
-              let metadata = record.metadata,
-              metadata.resolvedBackendKind(ratingKey: ratingKey) == .plex,
-              !transcodeSourcedDownloads.contains(ratingKey),
-              serverPrepAttempts.queueTitle(forRecordKey: ratingKey) == nil,
-              metadata.optimizeTargetName?.isEmpty != false,
-              let backendSession = appModel.backendSession(for: .plex) else { return }
+        let record = store.records.first(where: { $0.ratingKey == ratingKey })
+        let backendSession = appModel.backendSession(for: .plex)
+        guard PlexOriginalFallbackPolicy.shouldFallback(
+            record: record,
+            ratingKey: ratingKey,
+            isTranscodeSourced: transcodeSourcedDownloads.contains(ratingKey),
+            hasServerPrepQueueTitle: serverPrepAttempts.queueTitle(forRecordKey: ratingKey) != nil,
+            hasPlexSession: backendSession != nil),
+            let metadata = record?.metadata,
+            let backendSession else { return }
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
@@ -238,16 +241,9 @@ extension DownloadManager {
     static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {
         let stored = defaults.string(forKey: PlaybackPreferences.Keys.defaultDownloadQuality)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let stored, isExplicitDownloadPresetName(stored) { return stored }
-        return PlaybackPreferences.defaultDownloadQuality
-    }
-
-    private static func isExplicitDownloadPresetName(_ name: String) -> Bool {
-        DownloadPresetPolicy.isExplicitDownloadPresetName(name)
-    }
-
-    static func isVisibleDownloadPresetName(_ name: String) -> Bool {
-        DownloadPresetPolicy.isVisibleDownloadPresetName(name)
+        return PlexOriginalFallbackPolicy.fallbackTarget(
+            storedPreference: stored,
+            defaultPreference: PlaybackPreferences.defaultDownloadQuality)
     }
 
     /// Second-stage safety gate for user-selected Plex original downloads. The decision endpoint
