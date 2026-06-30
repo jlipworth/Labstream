@@ -69,23 +69,10 @@ public final class DownloadManager {
         case interruptedResumable
     }
 
-    /// What the user chose in the download sheet, resolved from the direct-play probe.
-    public enum DownloadChoice: Sendable, Equatable {
-        /// Direct-download the original file (probe said whole-file direct play).
-        case original
-        /// Server-side optimize to a named preset (the server's real target name).
-        case optimize(targetName: String)
-        /// #83: original-quality compatible remux (Jellyfin/Emby only) — copy the video stream into
-        /// an offline-playable MP4, transcoding only audio/container as needed. Forward-only (a
-        /// remux stream is not range-resumable). Plex falls back to `.optimize` for this choice.
-        case optimizeCompatible
-        /// #112: download an EXISTING server-generated Plex Version exactly as-is. This is a static
-        /// byte-for-byte transfer of the chosen `Media`/`Part` (range-resumable, like `.original`),
-        /// but deliberately bypasses the original direct-play preflight/locally-playable gates —
-        /// the user explicitly picked a pre-rendered server version — and never touches the Plex
-        /// optimize queue (no render/re-render). The chosen version is addressed by `mediaIndex`.
-        case existingVersion
-    }
+    /// Compatibility alias for older app call sites (`DownloadManager.DownloadChoice`). The actual
+    /// user intent model lives in PMSKit so route planners, storage estimates, diagnostics, and
+    /// tests share one definition.
+    public typealias DownloadChoice = DownloadIntentChoice
 
     /// Internal control-flow error for async server-prep work that outlived the row it belonged to.
     ///
@@ -1917,31 +1904,14 @@ public final class DownloadManager {
     }
 
     static func diagnosticChoiceLabel(_ choice: DownloadChoice) -> String {
-        switch choice {
-        case .original:
-            return "original"
-        case .existingVersion:
-            return "existing_version"
-        case .optimize(let targetName):
-            return "optimize:\(targetName)"
-        case .optimizeCompatible:
-            return "optimize_compatible"
-        }
+        DownloadChoicePolicy.diagnosticChoiceLabel(choice)
     }
 
     /// #83: the persisted lane discriminator for a choice. Stored on the row so a retry/resume after
     /// an app kill preserves the user's intent — original and compatible-remux both lack an
     /// `optimizeTargetName`, so the legacy inference can't tell them apart.
     static func downloadLane(for choice: DownloadChoice) -> DownloadLane {
-        switch choice {
-        case .original: return .original
-        // #112: an existing server version downloads as a static, range-resumable part — the same
-        // transfer characteristics as `.original`, so it persists/resumes on the `.original` lane.
-        // (The version is addressed by the row's persisted `mediaIndex`.)
-        case .existingVersion: return .original
-        case .optimize: return .optimize
-        case .optimizeCompatible: return .compatibleRemux
-        }
+        DownloadChoicePolicy.downloadLane(for: choice)
     }
 
     /// Display-only discriminator persisted alongside the lane: true when the chosen download is a
@@ -1951,8 +1921,7 @@ public final class DownloadManager {
     /// static lane (resumable), so this flag — not the lane — is what lets the UI badge them
     /// "Transcode" instead of "Original". See `OfflineMetadata.serverPreparedVersion`.
     static func isServerPreparedVersion(for choice: DownloadChoice) -> Bool {
-        if case .existingVersion = choice { return true }
-        return false
+        DownloadChoicePolicy.isServerPreparedVersion(for: choice)
     }
 
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
