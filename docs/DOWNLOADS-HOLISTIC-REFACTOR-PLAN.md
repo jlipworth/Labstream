@@ -206,6 +206,10 @@ snapshot derivation.
   `DownloadHealthSnapshotPolicy` now owns low-frequency health diagnostic counting, work detection,
   throttle cadence, and field names. `DownloadManager` only adapts live runtime/session counts and
   records the already-derived `downloads.health_snapshot` payload.
+- **Done: Slice 5j live range progress policy extraction.**
+  `DownloadLiveRangeProgressPolicy` now owns ephemeral static-range progress sample merging,
+  freshness, and display-byte selection, keeping durable checkpoint accounting separate from
+  optimistic URLSession temp-byte UI overlays.
 
 ## Target module boundaries
 
@@ -224,6 +228,8 @@ snapshot derivation.
 - `DownloadWatchdogPolicy`: pure refresh-watchdog predicate and cadence for server-prep/forward-only
   rows.
 - `DownloadHealthSnapshotPolicy`: pure health diagnostic counts, throttling, and field derivation.
+- `DownloadLiveRangeProgressPolicy`: pure merge/freshness/display policy for ephemeral static-range
+  progress overlays.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
