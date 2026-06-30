@@ -239,6 +239,11 @@ snapshot derivation.
   `DownloadOfflineMetadataBuilder` now owns the pure durable metadata snapshot for new download
   rows: copied item fields, source part id/size, per-job backend session identity, lane fallback,
   resume mode, and server-prepared display flag.
+- **Done: Slice 5r preset/profile policy extraction.**
+  `DownloadPresetPolicy` now owns the shared download quality catalog and pure mapping semantics:
+  Original-quality aliases, custom bitrate ladder settings, visible picker filtering, offline row
+  resolution labels, storage-estimate source sizing, Jellyfin transcode caps, compatible-remux size
+  estimates, and Plex fallback tag/settings.
 
 ## Target module boundaries
 
@@ -248,6 +253,8 @@ snapshot derivation.
 - `DownloadIntentChoice` / `DownloadChoicePolicy`: shared user-intent model plus pure persistence and
   diagnostic mapping for choices.
 - `DownloadOfflineMetadataBuilder`: pure durable row-metadata snapshot builder for enqueue paths.
+- `DownloadPresetPolicy`: shared preset/profile catalog and pure mapping for picker labels,
+  backend transcode caps, storage estimates, display labels, and Plex fallback settings.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
