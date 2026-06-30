@@ -51,7 +51,7 @@ Authorization: Emby UserId="...", Client="VisionPlay", Device="Apple Vision Pro"
 
 Some docs and endpoints also mention `X-Emby-Authorization` and `X-Emby-Token`. Implementation must live-probe which combination is accepted by current Emby Server versions. For planning, keep this as an Emby-specific auth seam rather than reusing Jellyfin's `MediaBrowser` header builder.
 
-**RESOLVED (live):** The implemented `EmbyAuth` sends `Authorization: Emby UserId="…", Client, Device, DeviceId, Version, Token="…"` AND, on authenticated calls, the `X-Emby-Token: <token>` header. That combination was accepted live. Notably the live server also accepted the Jellyfin-style `MediaBrowser ` scheme (Jellyfin being an upstream fork of Emby), but the lane keeps its own canonical `Emby ` builder. This overlap motivates the future shared "emby-family" seam proposed in [`../proposals/emby-jellyfin-code-sharing.md`](../proposals/emby-jellyfin-code-sharing.md) — not implemented here.
+**RESOLVED (live):** The implemented `EmbyAuth` sends `Authorization: Emby UserId="…", Client, Device, DeviceId, Version, Token="…"` AND, on authenticated calls, the `X-Emby-Token: <token>` header. That combination was accepted live. Notably the live server also accepted the Jellyfin-style `MediaBrowser ` scheme (Jellyfin being an upstream fork of Emby), but the lane keeps its own canonical `Emby ` builder. That historical overlap was later captured in an archived refactor note, but it is not an active plan; verify current shared MediaBrowser helpers against source before reusing old proposal details.
 
 Successful auth returns at least:
 

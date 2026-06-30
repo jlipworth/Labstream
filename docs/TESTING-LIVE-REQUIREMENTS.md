@@ -11,8 +11,10 @@ default. This is the companion to the coverage map in
 Every live probe follows the same established contract (do not deviate when adding one):
 
 - It reads its server/token/item from **environment variables** and **no-ops** (prints a skip line,
-  returns) when they are absent. So plain `swift test` and the existing `.woodpecker/pmskit.yml` CI
-  stay 100% hermetic — they execute the probe *bodies* but exercise no network.
+  returns) when they are absent. So plain macOS `swift test` and the existing `.woodpecker/pmskit.yml`
+  Linux CI split (`swift test --no-parallel --disable-swift-testing` plus
+  `swift test --no-parallel --disable-xctest`) stay 100% hermetic — they execute the probe
+  *bodies* but exercise no network.
 - **No secret is ever committed.** Credentials live only in gitignored env files
   (`scripts/plex-live.env`, `scripts/emby-live.env`); `.gitignore` carries `scripts/*-live.env`,
   and each `scripts/live-*.sh` refuses to run if its env file is somehow tracked by git.
@@ -171,11 +173,11 @@ Guidance:
    for unrelated reasons — assert the specific wire-shape invariant (the *flip* a change causes,
    a round-tripped value, an id that chains coherently).
 
-### Follow-up: shared-config dedup
+### Shared live-probe config
 
-`LiveProbeConfig` (in `PMSKit/Tests/PMSKitTests/`) centralizes the env/identity/redaction
-boilerplate for the three #75 Plex probes (`LiveSubtitleBurnProbe`, `LivePlexBrowseProbe`,
-`LivePlexTimelineProbe`). The five older Plex/Emby `Live*Probe` files predate it and still inline
-their own `Config`/`redact`; they were intentionally left untouched to keep this change focused.
-Migrating them onto `LiveProbeConfig` (Emby needs an `EmbyClientIdentity` variant) is a clean
-follow-up.
+`LiveProbeConfig` (in `PMSKit/Tests/PMSKitTests/`) is the shared Plex live-probe base for
+server/token parsing, `ClientIdentity`, transport, and redaction. The older Plex probes now compose
+it as well as the #75 probes (`LiveSubtitleBurnProbe`, `LivePlexBrowseProbe`,
+`LivePlexTimelineProbe`). Emby probes still keep their own `EmbyClientIdentity` parsing, but route
+log scrubbing through the shared `LiveProbeConfig.redact` helper so tightening the redaction key set
+protects both Plex and Emby probe logs.

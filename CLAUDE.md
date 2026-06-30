@@ -30,7 +30,7 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
 # the source.
 rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 
@@ -55,19 +55,18 @@ hardware. A real headset needs a code-signed **device** build (product lands in
 `Debug-xros`, NOT `Debug-xrsimulator`):
 
 ```sh
-# Headset must show "available (paired)" — "unavailable" means it's asleep/off-network.
-# Wake it, put it on the SAME Wi-Fi as this Mac, Developer Mode on
-# (Settings > Privacy & Security > Developer Mode), and this Mac trusted.
-xcrun devicectl list devices         # grab the Vision Pro's identifier (UDID)
-
-DEVID=<device-udid>
-rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xros/VisionPlay.app
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination "platform=visionOS,id=$DEVID" -configuration Debug \
-  -allowProvisioningUpdates DEVELOPMENT_TEAM=<your-team-id> build
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xros/VisionPlay.app | head -1)
-xcrun devicectl device install app --device "$DEVID" "$APP"
+scripts/deploy-to-device.sh            # build (signed, version-stamped) + install
+scripts/deploy-to-device.sh --launch   # also launch (headset must be awake/worn)
+scripts/deploy-to-device.sh --no-build # reinstall last device build without rebuilding
+scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
 ```
+
+Headset must show available/paired — "unavailable" usually means asleep/off-network.
+Wake it, put it on the SAME Wi-Fi as this Mac, enable Developer Mode
+(Settings > Privacy & Security > Developer Mode), and trust this Mac. The script derives
+the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
+deletes the stale `Debug-xros/VisionPlay.app` product before building, and stamps the
+internal Build ID via `scripts/build-version-args.sh`.
 
 ⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
 `error: No Account for Team "<id>"` / `No profiles for 'com.jlipworth.VisionPlay' were found`
@@ -128,7 +127,7 @@ the same script backs both the git hook and these agent steps.
 
 - The **main** worktree owns the *golden* logged-in sim (`D9BD8E9D…`, recorded in
   `<main>/.simid`). Never delete it.
-- A **linked** worktree gets a `vpwt-<branch>` clone of the golden, created **shut down**
+- A **linked** worktree gets a `vpwt-<branch>-<hash>` clone of the golden, created **shut down**
   (boot it yourself when building). Its UDID lives in `<worktree>/.simid` (git-ignored).
 - `scripts/worktree-sim.sh id` prints this worktree's UDID — used as `$SIMID` above.
   Always target `"$SIMID"`, never `booted` (which errors once two sims are up).
@@ -140,6 +139,9 @@ scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (
 scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-* sims
 scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone (backstop after a bare `git worktree remove`)
 ```
+
+If `install-hook` warns that `core.hooksPath` is set, Git will ignore the shared hook it
+just wrote; unset that config before relying on auto-clone behavior.
 
 **Agent rule:** after creating a worktree, run `setup`; when finishing/removing one, run
 `teardown` **before** `git worktree remove`, or run `closeout PATH` / `prune` immediately
@@ -191,8 +193,8 @@ self-serves the passive half — screenshots and logs. Don't ask the user for sc
 or log dumps:
 
 ```sh
-# SIMID is this worktree's sim (see Build block / "Worktree simulators"); in the main
-# worktree `booted` still works, but $SIMID is always correct.
+# SIMID is this worktree's sim (see Build block / "Worktree simulators"); always target it
+# explicitly because more than one simulator may be booted.
 SIMID=$(scripts/worktree-sim.sh id)
 
 # Claude takes its own screenshots after the user interacts

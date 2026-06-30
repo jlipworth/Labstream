@@ -39,17 +39,17 @@ The Emby lane does not reuse Jellyfin's `MediaBrowser` auth/header builder: Emby
 
 ## Local/offline playback
 
-Offline playback uses the custom player with a local file URL. There is no server session, PMS timeline, Jellyfin/Emby active-encoding cleanup, or remote stream reopener. Resume information comes from the offline metadata/record model. (Emby has no offline/download route yet.)
+Offline playback uses the custom player with a local file URL. There is no server session, PMS timeline, Jellyfin/Emby active-encoding cleanup, or remote stream reopener. Resume information comes from the offline metadata/record model.
 
 ## Restart/reopen matrix
 
-| Trigger | Plex | Jellyfin | Local/offline |
-| --- | --- | --- | --- |
-| Quality change | Stop current PMS session, then request a new stream | Use `RemoteStreamReopener` | Not applicable |
-| Audio/subtitle change | Stop current PMS session, then request a new stream | Use `RemoteStreamReopener` | Local track switching only if supported by the local asset |
-| Explicit Retry | Rebuild through the normal start path; resets restart budget | Reopen through the remote stream path | Reopen local file |
-| Final-target deep seek | Debounced rebuild after final target; throttled by `SeekRestartBudget` | Reopen/seek through remote stream path when available | Seek local file |
-| Adaptive down/up shift | Rebuild capped Plex stream when policy allows | Reopen lower/higher Jellyfin stream when policy allows | Disabled |
+| Trigger | Plex | Jellyfin | Emby | Local/offline |
+| --- | --- | --- | --- | --- |
+| Quality change | Stop current PMS session, then request a new stream | Use `RemoteStreamReopener` | Use the Emby remote stream reopener; stop active encoding when leaving a server-encoded source | Not applicable |
+| Audio/subtitle change | Stop current PMS session, then request a new stream | Use `RemoteStreamReopener` | Use the Emby remote stream reopener; preserve `RequiredHttpHeaders`/token handling from `PlaybackInfo` | Local track switching only if supported by the local asset |
+| Explicit Retry | Rebuild through the normal start path; resets restart budget | Reopen through the remote stream path | Reopen through the Emby playback-open path | Reopen local file |
+| Final-target deep seek | Debounced rebuild after final target; throttled by `SeekRestartBudget` | Reopen/seek through remote stream path when available | Reopen/seek through remote stream path when available | Seek local file |
+| Adaptive down/up shift | Rebuild capped Plex stream when policy allows | Reopen lower/higher Jellyfin stream when policy allows | Reopen lower/higher Emby stream when policy allows | Disabled |
 
 Silent auto-retry was removed. A failing stream should surface failure instead of hiding a retry loop.
 

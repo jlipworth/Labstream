@@ -46,7 +46,7 @@ flowchart LR
 
 ## Backend boundary
 
-There is no shared “everything backend” protocol yet. Plex and Jellyfin differ enough that a wide abstraction would hide important behavior. Emby research reinforces that rule: related APIs are not identical enough to justify pretending one backend implementation can cover both Jellyfin and Emby without explicit seams. The current bridge is `MediaItem`: browse/playback/download features adapt backend-specific responses into that shared model where useful.
+There is no shared “everything backend” protocol yet. Plex, Jellyfin, and Emby differ enough that a wide abstraction would hide important behavior. The Emby implementation reinforces that rule: related APIs are not identical enough to justify pretending one backend implementation can cover both Jellyfin and Emby without explicit seams. The current bridge is `MediaItem`: browse, playback, and library/search surfaces adapt backend-specific responses into that shared model where useful.
 
 See [`BACKENDS.md`](BACKENDS.md) for the backend comparison.
 

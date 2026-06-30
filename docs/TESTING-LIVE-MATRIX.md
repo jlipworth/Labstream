@@ -21,7 +21,7 @@ that is called out so the gap is explicit rather than silent. The strategy frami
 
 | Layer | What it is | Hermetic? | Where it lives |
 |---|---|---|---|
-| **Unit (mocked/local)** | Pure request builders, decoders, policy state machines, routing helpers. No network. | Yes — runs in plain `swift test` and CI. | `PMSKit/Tests/PMSKitTests/*Tests.swift` (everything except `Live*ProbeTests`). |
+| **Unit (mocked/local)** | Pure request builders, decoders, policy state machines, routing helpers. No network. | Yes — macOS can run plain `swift test`; Linux CI intentionally runs XCTest and Swift Testing as separate `swift test` invocations (see `.woodpecker/pmskit.yml`). | `PMSKit/Tests/PMSKitTests/*Tests.swift` (everything except `Live*ProbeTests`). |
 | **Live probe (opt-in)** | Sends the *real* PMSKit request builders through `URLSession` to a real server, asserts decoders/decisions against the live wire shape. | Yes by default (no-op without env vars); exercises the network only when creds are present. | `PMSKit/Tests/PMSKitTests/Live*ProbeTests.swift` + `scripts/live-*.sh` + `scripts/*-live.env`. |
 | **Sim smoke** | `xcodebuild` install → launch → log → screenshot on the worktree simulator. Proves the app *runs* and reaches the expected UI. | macOS+Xcode only; no remote server beyond the signed-in Plex account. | `docs/DEVELOPMENT.md` build/smoke block; run after any app-code change. |
 | **Device-only (manual)** | Headset playback, AVPlayer media-plane behavior, audio routing, Spotlight/Intents, on-head transfer. Cannot be asserted off-device. | No. | `TESTING-CHECKLIST.md`. |

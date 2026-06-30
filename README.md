@@ -1,7 +1,7 @@
 # VisionPlay
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Platform: visionOS 26.5](https://img.shields.io/badge/Platform-visionOS%2026.5-black.svg)](https://developer.apple.com/visionos/)
+[![Platform: visionOS 26](https://img.shields.io/badge/Platform-visionOS%2026-black.svg)](https://developer.apple.com/visionos/)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
@@ -9,7 +9,7 @@ A personal-use, native **visionOS (Apple Vision Pro)** media client for Plex, Je
 server-aware streaming quality control, custom Apple Vision Pro cinema playback, and offline downloads
 that choose between raw originals and compatible server-rendered copies.
 
-> **Status: working app.** End-to-end playback runs in the visionOS 26.5 simulator and on device.
+> **Status: working app.** End-to-end playback runs in the visionOS 26 simulator runtime and on device.
 > Build is green and the `PMSKit` package ships a full unit-test suite (`cd PMSKit && swift test`).
 > This is a single-user, sideload-only project — there is no App Store build.
 
@@ -40,7 +40,7 @@ that choose between raw originals and compatible server-rendered copies.
 - **Swift 6** with strict concurrency
 - **`PMSKit`** — a local Swift package providing tested Plex/Jellyfin/Emby request builders, models,
   playback/download decision helpers, diagnostics primitives, and policy state machines
-- **Xcode 26**, targeting **visionOS 26.5**
+- **Xcode 26**, targeting **visionOS 26.0**; examples assume an installed Apple Vision Pro 26.x simulator/runtime
 
 ## Project structure
 
@@ -54,7 +54,10 @@ VisionPlay/
 │   ├── Player/           # custom AVPlayer surface + app-owned Cinema mode + recovery
 │   ├── Music/            # Plexamp-style music browse + audio player
 │   ├── Downloads/        # offline transfers + offline library
-│   └── UI/               # Home · Libraries · Search · Detail
+│   ├── SystemIntegration/ # App Intents, Spotlight, and system-entry routing
+│   ├── Diagnostics/      # local diagnostics/reporting helpers
+│   ├── Theater/          # RealityKit theater prototype scaffolding
+│   └── UI/               # Home · Libraries · Search · Detail · Settings
 ├── PMSKit/              # local Swift package: request/model/policy layer (+ tests)
 └── docs/                 # current architecture docs plus archived research/plans
 ```
@@ -62,16 +65,18 @@ VisionPlay/
 ## Build & run
 
 This is a **personal-device sideload** project today. The app identity is **VisionPlay** and the
-development bundle identifier is `com.jlipworth.VisionPlay`. It runs from Xcode on the visionOS 26.5
+development bundle identifier is `com.jlipworth.VisionPlay`. It runs from Xcode on a visionOS 26.x
 simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
 expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
 the first-launch trust prompt are Apple's expected security gate for sideloaded development builds.
 
-Build the app (visionOS 26.5 simulator, unsigned):
+Build the app (visionOS 26.x simulator, unsigned):
 
 ```bash
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -93,14 +98,16 @@ hostnames, or LAN IPs.
 Local validation before handing off:
 
 ```bash
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 (cd PMSKit && swift test)
 ./scripts/ci-hygiene.sh
 ```
 
-Woodpecker runs the portable CI checks only: `PMSKit` tests and repo hygiene. The unsigned
+Woodpecker runs the portable CI checks: split `PMSKit` tests, repo hygiene, and a strict MkDocs site build/deploy on docs changes. The unsigned
 visionOS simulator `xcodebuild` remains a local macOS/Xcode validation step unless or until a future
 macOS-runner CI job is added. A future App Store/TestFlight pass can add distribution signing,
 entitlements review, screenshots, privacy metadata, and store-specific release automation later; it

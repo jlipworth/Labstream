@@ -1,7 +1,7 @@
 # Worktree-linked simulators — design
 
 **Date:** 2026-06-20
-**Status:** Approved (pending spec review)
+**Status:** Archived after implementation; current guidance lives in `AGENTS.md`, `CLAUDE.md`, and `scripts/worktree-sim.sh`.
 
 ## Problem
 

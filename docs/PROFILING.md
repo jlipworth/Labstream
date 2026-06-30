@@ -48,11 +48,14 @@ must be repeated on a physical Vision Pro before filing it as a product finding.
 8. Save the `.trace` outside the repo or in a local ignored scratch directory. Do not commit raw traces.
 9. Write down the finding in the issue or PR using the baseline template below.
 
-Command-line build sanity before profiling:
+Command-line build sanity before profiling (target this worktree's simulator, not a generic
+`booted` or name-only destination):
 
 ```sh
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 

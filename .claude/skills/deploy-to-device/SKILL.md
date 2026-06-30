@@ -17,11 +17,13 @@ traps below never have to be re-derived.
 scripts/deploy-to-device.sh            # build (signed) + install to the paired Vision Pro
 scripts/deploy-to-device.sh --launch   # also launch it (headset must be awake/worn)
 scripts/deploy-to-device.sh --no-build # reinstall the last device build without rebuilding
+scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
 ```
 
 The script auto-derives the device UUID (from `devicectl list devices`) and the signing
 team (from the cert OU — see trap #1). Override with `VP_DEVICE_ID` / `VP_DEVELOPMENT_TEAM`
-only if you have several devices or teams.
+only if you have several devices or teams. By default it masks device/team IDs in output;
+`--verbose` / `--full-ids` prints them in full for private debugging.
 
 ## Prerequisites (one-time, GUI — the agent cannot do these headlessly)
 
@@ -59,7 +61,8 @@ ever build by hand, pass `DEVELOPMENT_TEAM=XXXXXXXXXX -allowProvisioningUpdates`
 `-destination 'platform=visionOS,id=<UUID>'` (device), product in `Debug-xros`, real
 signing required. The LINK-SKIP trap from `CLAUDE.md` still applies — the script deletes
 the `Debug-xros/VisionPlay.app` before building so a skipped `Ld` step can't leave a stale
-binary, and verifies the built `TeamIdentifier` after.
+binary, stamps the internal Build ID via `scripts/build-version-args.sh`, and verifies the
+built `TeamIdentifier` after.
 
 ## Manual build (only if the script can't be used)
 
@@ -67,7 +70,9 @@ binary, and verifies the built `TeamIdentifier` after.
 DEVICE_ID=$(xcrun devicectl list devices | grep -iE 'vision|reality' \
   | grep -oiE '[0-9a-f-]{36}' | head -1)
 rm -rf "$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-"*/Build/Products/Debug-xros/VisionPlay.app
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
+VERSION_ARGS=()
+while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-version-args.sh)
+xcodebuild "${VERSION_ARGS[@]}" -project VisionPlay.xcodeproj -scheme VisionPlay \
   -destination "platform=visionOS,id=$DEVICE_ID" \
   -configuration Debug -allowProvisioningUpdates \
   DEVELOPMENT_TEAM=XXXXXXXXXX build
