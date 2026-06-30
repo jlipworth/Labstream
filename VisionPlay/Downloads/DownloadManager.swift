@@ -2327,40 +2327,40 @@ public final class DownloadManager {
     }
 
     private func recordDownloadHealthSnapshotIfNeeded(records: [DownloadRecord], now: Date) {
-        let activeCount = records.filter { $0.status == .queued || $0.status == .preparing || $0.status == .downloading }.count
         let sessionSnapshot = session.diagnosticSnapshot()
-        let hasSessionWork = sessionSnapshot.opaqueInflightCount > 0
-            || sessionSnapshot.rangeInflightCount > 0
-            || sessionSnapshot.finalizingRatingKeyCount > 0
-            || sessionSnapshot.pendingBackgroundCompletionOperationCount > 0
-        guard activeCount > 0 || hasSessionWork else { return }
-        guard lastDownloadHealthDiagnosticAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true else { return }
+        let snapshot = DownloadHealthSnapshotPolicy.makeSnapshot(
+            records: records,
+            activeJobCount: activeJobs.count,
+            retryingCount: retryingRows.count,
+            retryHandoffCount: retryHandoffRows.count,
+            pendingStaticResumeCount: staticRangeRecovery.pendingResumeCount,
+            finalizingStaticRecoveryCount: staticRangeRecovery.finalizingCount,
+            serverPrepPollerCount: serverPrepPollerTasks.count,
+            jellyfinKeepaliveCount: jellyfinDownloadKeepaliveTasks.count,
+            forwardStallWatchCount: forwardOnlyStallObservations.count,
+            session: makeDownloadHealthSessionSnapshot(from: sessionSnapshot))
+        guard DownloadHealthSnapshotPolicy.shouldRecord(snapshot: snapshot,
+                                                        lastRecordedAt: lastDownloadHealthDiagnosticAt,
+                                                        now: now) else { return }
         lastDownloadHealthDiagnosticAt = now
-        recordDownloadDiagnostic("downloads.health_snapshot", fields: [
-            "record_count": .int(records.count),
-            "active_record_count": .int(activeCount),
-            "queued_count": .int(records.filter { $0.status == .queued }.count),
-            "preparing_count": .int(records.filter { $0.status == .preparing }.count),
-            "downloading_count": .int(records.filter { $0.status == .downloading }.count),
-            "active_job_count": .int(activeJobs.count),
-            "retrying_count": .int(retryingRows.count),
-            "retry_handoff_count": .int(retryHandoffRows.count),
-            "pending_static_resume_count": .int(staticRangeRecovery.pendingResumeCount),
-            "finalizing_static_recovery_count": .int(staticRangeRecovery.finalizingCount),
-            "server_prep_poller_count": .int(serverPrepPollerTasks.count),
-            "jellyfin_keepalive_count": .int(jellyfinDownloadKeepaliveTasks.count),
-            "forward_stall_watch_count": .int(forwardOnlyStallObservations.count),
-            "session_inflight_count": .int(sessionSnapshot.opaqueInflightCount),
-            "session_range_inflight_count": .int(sessionSnapshot.rangeInflightCount),
-            "session_halted_range_count": .int(sessionSnapshot.haltedRangeKeyCount),
-            "session_finalizing_count": .int(sessionSnapshot.finalizingRatingKeyCount),
-            "session_pending_background_ops": .int(sessionSnapshot.pendingBackgroundCompletionOperationCount),
-            "session_deferred_background_handlers": .int(sessionSnapshot.deferredBackgroundCompletionIdentifierCount),
-            "session_background_handlers": .int(sessionSnapshot.backgroundCompletionHandlerCount),
-            "session_handoff_grace_count": .int(sessionSnapshot.rangeBackgroundHandoffGraceTaskCount),
-            "session_graceful_pause_count": .int(sessionSnapshot.gracefulRangePauseKeyCount),
-            "session_pending_temp_cleanup_bytes": .int(sessionSnapshot.pendingTempCleanupBytes),
-        ])
+        recordDownloadDiagnostic("downloads.health_snapshot",
+                                 fields: DownloadHealthSnapshotPolicy.diagnosticFields(for: snapshot))
+    }
+
+    private func makeDownloadHealthSessionSnapshot(
+        from snapshot: BackgroundDownloadSessionDiagnosticSnapshot
+    ) -> DownloadHealthSessionSnapshot {
+        DownloadHealthSessionSnapshot(
+            opaqueInflightCount: snapshot.opaqueInflightCount,
+            rangeInflightCount: snapshot.rangeInflightCount,
+            haltedRangeKeyCount: snapshot.haltedRangeKeyCount,
+            pendingBackgroundCompletionOperationCount: snapshot.pendingBackgroundCompletionOperationCount,
+            deferredBackgroundCompletionIdentifierCount: snapshot.deferredBackgroundCompletionIdentifierCount,
+            backgroundCompletionHandlerCount: snapshot.backgroundCompletionHandlerCount,
+            finalizingRatingKeyCount: snapshot.finalizingRatingKeyCount,
+            rangeBackgroundHandoffGraceTaskCount: snapshot.rangeBackgroundHandoffGraceTaskCount,
+            gracefulRangePauseKeyCount: snapshot.gracefulRangePauseKeyCount,
+            pendingTempCleanupBytes: snapshot.pendingTempCleanupBytes)
     }
 
     private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {

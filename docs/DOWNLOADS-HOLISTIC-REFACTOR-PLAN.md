@@ -202,6 +202,10 @@ snapshot derivation.
   `DownloadWatchdogPolicy` now owns the app-level watchdog predicate/cadence for rows that need
   periodic refreshes despite sparse URLSession callbacks: server-prep `.preparing` rows and
   forward-only MediaBrowser streams that require stall detection.
+- **Done: Slice 5i download health snapshot policy extraction.**
+  `DownloadHealthSnapshotPolicy` now owns low-frequency health diagnostic counting, work detection,
+  throttle cadence, and field names. `DownloadManager` only adapts live runtime/session counts and
+  records the already-derived `downloads.health_snapshot` payload.
 
 ## Target module boundaries
 
@@ -219,6 +223,7 @@ snapshot derivation.
   scanner routing.
 - `DownloadWatchdogPolicy`: pure refresh-watchdog predicate and cadence for server-prep/forward-only
   rows.
+- `DownloadHealthSnapshotPolicy`: pure health diagnostic counts, throttling, and field derivation.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
