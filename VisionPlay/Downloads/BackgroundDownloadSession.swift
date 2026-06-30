@@ -77,20 +77,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// it, a chunk finishing on the delegate queue AFTER `cancel`/`pause` snapshotted task ids would
     /// start a fresh (un-cancelled) chunk and resurrect a just-deleted file.
     private var haltedRangeKeys: Set<String> = []
-    /// #169 HIGH 1: consecutive validator-change restarts since the last successful chunk append,
-    /// per ratingKey. Bounds the changed-resource restart-from-0 path so an UNSTABLE validator (a
-    /// still-finalizing PlexOptimize Part whose ETag/Last-Modified advances as bytes land, or per-node
-    /// /proxy ETag variance) can't livelock in an unbounded delete→restart cycle. Reset to nil by any
-    /// chunk that actually appends (forward progress) and by a fresh user start. Deliberately NOT
-    /// `retryCounts` — that is zeroed on every chunk's first progress (`didWriteData`), so it can't
-    /// accumulate across restarts that make no progress.
-    private var validatorChangeRestarts: [String: Int] = [:]
-    static let maxValidatorChangeRestarts = 3
-    /// Consecutive HTTP 206 responses whose `Content-Range` did not match the durable checkpoint,
-    /// per ratingKey. Unlike `retryCounts`, this is not reset by progress callbacks from the bad
-    /// chunk's temp file; it is cleared only after a chunk is safely appended or on a fresh start.
-    private var rangeOffsetMismatchRetries: [String: Int] = [:]
-    static let maxRangeOffsetMismatchRetries = 3
+    /// #169 HIGH 1: range-specific retry counters that must not be reset by URLSession progress
+    /// callbacks. They bound validator-change restart loops and misaligned `Content-Range` retries
+    /// until an actual chunk append proves forward progress.
+    private var staticRangeRetryBudget = StaticRangeRetryBudget()
     /// taskIdentifiers whose expected-size has already been logged once (diagnostics).
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
@@ -921,8 +911,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         haltedRangeKeys.remove(ratingKey)
         gracefulRangePauseKeys.remove(ratingKey)
         if resetRangeRestartCounters {
-            validatorChangeRestarts[ratingKey] = nil
-            rangeOffsetMismatchRetries[ratingKey] = nil
+            staticRangeRetryBudget.reset(downloadID: ratingKey)
         }
         lock.unlock()
         if byteRangeCheckpoint {
@@ -2061,8 +2050,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Forward progress: this chunk's validator matched, so the resource is stable again — clear
             // the consecutive validator-change restart counter (#169 HIGH 1 livelock bound).
             lock.lock()
-            validatorChangeRestarts[entry.ratingKey] = nil
-            rangeOffsetMismatchRetries[entry.ratingKey] = nil
+            staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
             lock.unlock()
             // Pin the resource on the FIRST successful chunk so the rest send `If-Range`.
             if let validator, store.rangeValidator(ratingKey: entry.ratingKey) == nil {
@@ -2198,20 +2186,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func retryRangeOffsetMismatch(entry: RangeTransfer, durableBytes: Int, serverOffset: Int?) -> Bool {
         lock.lock()
         let halted = haltedRangeKeys.contains(entry.ratingKey)
-        let nextAttempt = (rangeOffsetMismatchRetries[entry.ratingKey] ?? 0) + 1
-        if nextAttempt <= Self.maxRangeOffsetMismatchRetries {
-            rangeOffsetMismatchRetries[entry.ratingKey] = nextAttempt
-        }
+        let retryAttempt = staticRangeRetryBudget.recordOffsetMismatch(downloadID: entry.ratingKey)
         lock.unlock()
 
         if halted { return true }
 
-        guard nextAttempt <= Self.maxRangeOffsetMismatchRetries else {
-            lock.lock(); rangeOffsetMismatchRetries[entry.ratingKey] = nil; lock.unlock()
+        guard !retryAttempt.isExhausted else {
+            lock.lock(); staticRangeRetryBudget.resetOffsetMismatch(downloadID: entry.ratingKey); lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry_exhausted", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "segment_kind": .label(entry.segmentKind.rawValue),
-                "attempt": .int(nextAttempt - 1),
+                "attempt": .int(retryAttempt.attempt - 1),
                 "expected_offset": .bytes(entry.baseOffset),
                 "expected_offset_exact": .int(entry.baseOffset),
                 "server_offset": .bytes(serverOffset),
@@ -2225,7 +2210,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         AppDiagnostics.record(.downloads, "downloads.range_offset_retry", fields: [
             "download_id": .identifier(entry.ratingKey),
             "segment_kind": .label(entry.segmentKind.rawValue),
-            "attempt": .int(nextAttempt),
+            "attempt": .int(retryAttempt.attempt),
             "expected_offset": .bytes(entry.baseOffset),
             "expected_offset_exact": .int(entry.baseOffset),
             "server_offset": .bytes(serverOffset),
@@ -2263,7 +2248,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "attempt": .int(nextAttempt),
+                "attempt": .int(retryAttempt.attempt),
                 "error": .error(error),
             ])
             return false
@@ -2277,14 +2262,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func restartRangeFromChangedResource(entry: RangeTransfer) {
         lock.lock()
         let halted = haltedRangeKeys.contains(entry.ratingKey)
-        let restarts = (validatorChangeRestarts[entry.ratingKey] ?? 0) + 1
-        validatorChangeRestarts[entry.ratingKey] = restarts
+        let retryAttempt = staticRangeRetryBudget.recordValidatorChange(downloadID: entry.ratingKey)
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.range_validator_changed", fields: [
             "download_id": .identifier(entry.ratingKey),
             "segment_kind": .label(entry.segmentKind.rawValue),
             "bytes": .bytes(entry.baseOffset),
-            "restart_count": .int(restarts),
+            "restart_count": .int(retryAttempt.attempt),
         ])
         try? fileManager.removeItem(at: entry.destination)
         store.clearRangeValidator(ratingKey: entry.ratingKey)
@@ -2294,14 +2278,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // PlexOptimize Part still being written, or a load-balanced/proxied ETag) would otherwise spin
         // forever re-downloading from 0 with zero forward progress. After N consecutive restarts with
         // no successful append, fail clearly instead of livelocking.
-        if restarts > Self.maxValidatorChangeRestarts {
+        if retryAttempt.isExhausted {
             lock.lock()
-            validatorChangeRestarts[entry.ratingKey] = nil
-            rangeOffsetMismatchRetries[entry.ratingKey] = nil
+            staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
             lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_validator_unstable", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "restart_count": .int(restarts),
+                "restart_count": .int(retryAttempt.attempt),
             ])
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed("The source file kept changing during download."))
