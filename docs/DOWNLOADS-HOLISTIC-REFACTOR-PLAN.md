@@ -186,6 +186,10 @@ snapshot derivation.
   `DownloadDeletePolicy` now owns the delete-time Emby convert cancellation decision: preparing rows
   with a persistent convert job cancel that server job when the persisted Emby lane matches, log a
   skip when the lane is unavailable/mismatched, and otherwise delete purely locally.
+- **Done: Slice 5e download retry preparation policy extraction.**
+  `DownloadRetryPreparationPolicy` now owns retry-entry predicates for manual queue-paused static
+  resumes, paused Emby convert polling reentry, persisted URLSession resume-data continuation,
+  paused Plex server-prep reattachment, and async retry-attempt cancellation.
 
 ## Target module boundaries
 
@@ -196,6 +200,7 @@ snapshot derivation.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
 - `DownloadDeletePolicy`: pure delete-time backend cleanup decision table for Emby convert jobs.
+- `DownloadRetryPreparationPolicy`: pure retry-entry gates before backend-specific retry dispatch.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.

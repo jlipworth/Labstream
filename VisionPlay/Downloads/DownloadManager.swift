@@ -871,9 +871,11 @@ public final class DownloadManager {
         guard !retryingRows.contains(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         guard record.status != .complete, record.status != .unverified else { return }
-        let isManualStaticResumeWhileQueuePaused = isQueuePaused
-            && Self.isStaticRangeRecord(record)
-            && (record.status == .paused || record.status == .failed || record.status == .queued)
+        let isManualStaticResumeWhileQueuePaused = DownloadRetryPreparationPolicy.isManualStaticResumeWhileQueuePaused(
+            isQueuePaused: isQueuePaused,
+            isStaticRangeRecord: Self.isStaticRangeRecord(record),
+            status: record.status
+        )
         if isManualStaticResumeWhileQueuePaused {
             staticRangeRecovery.markManualQueueResume(ratingKey)
             recordDownloadDiagnostic("downloads.range_queue_paused_manual_resume", fields: [
@@ -899,18 +901,23 @@ public final class DownloadManager {
         // resume data, so transcoded JF/Emby rows naturally fall through to the clean restart
         // below. If the resume task is later rejected by the server (200 full-restart / 416), the
         // normal failure path makes the row retryable again from scratch.
-        if record.status == .paused,
-           record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .serverPrepThenStatic,
-           Self.isEmbyRecordKey(ratingKey),
-           record.metadata?.embyConvertJobID != nil {
+        if DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+            status: record.status,
+            resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey),
+            isEmbyRecord: Self.isEmbyRecordKey(ratingKey),
+            hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil
+        ) {
             store.setStatus(ratingKey: ratingKey, .preparing)
             resumePendingEmbyConvertDownloads()
             refreshRecords()
             return
         }
-        if record.status == .paused,
-           store.supportsPersistedResumeData(ratingKey: ratingKey),
-           let resumeData = store.resumeData(ratingKey: ratingKey) {
+        let persistedResumeData = store.resumeData(ratingKey: ratingKey)
+        if DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(
+            status: record.status,
+            supportsPersistedResumeData: store.supportsPersistedResumeData(ratingKey: ratingKey),
+            hasResumeData: persistedResumeData != nil
+        ), let resumeData = persistedResumeData {
             store.clearResumeData(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, .downloading)
             if session.resume(ratingKey: ratingKey, resumeData: resumeData, to: record.localURL) {
@@ -921,13 +928,14 @@ public final class DownloadManager {
             // resume() refused the blob — fall through to a clean restart below.
             store.setStatus(ratingKey: ratingKey, .failed)
         }
-        if record.status == .paused,
-           record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .serverPrepThenStatic,
-           !Self.isJellyfinRecordKey(ratingKey),
-           !Self.isEmbyRecordKey(ratingKey),
-           let targetName = record.metadata?.optimizeTargetName,
-           !targetName.isEmpty,
-           !Self.hasIncompleteStaticPartial(record) {
+        if DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(
+            status: record.status,
+            resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey),
+            isJellyfinRecord: Self.isJellyfinRecordKey(ratingKey),
+            isEmbyRecord: Self.isEmbyRecordKey(ratingKey),
+            optimizeTargetName: record.metadata?.optimizeTargetName,
+            hasIncompleteStaticPartial: Self.hasIncompleteStaticPartial(record)
+        ), let targetName = record.metadata?.optimizeTargetName {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
             return
         }
@@ -1057,8 +1065,12 @@ public final class DownloadManager {
     }
 
     private func retryAttemptCanContinue(ratingKey: String) -> Bool {
-        retryingRows.contains(ratingKey)
-            && store.records.contains { $0.ratingKey == ratingKey && $0.status != .paused }
+        let row = store.records.first { $0.ratingKey == ratingKey }
+        return DownloadRetryPreparationPolicy.attemptCanContinue(
+            isRetrying: retryingRows.contains(ratingKey),
+            rowIsPresent: row != nil,
+            rowStatus: row?.status
+        )
     }
 
     private func resolveStaticRetryTarget(record: DownloadRecord,
