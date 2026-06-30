@@ -138,6 +138,10 @@ snapshot derivation.
   `BackgroundDownloadSession`: relaunch expected-byte recovery from persisted progress, durable
   range-progress diagnostic throttling, and UI progress refresh throttling while preserving terminal
   completion updates.
+- **Done: Slice 6j transient retry policy extraction.**
+  `BackgroundDownloadTransientRetryPolicy` now owns the retry gates for transient URLSession errors:
+  opaque download retries require OS resume data plus a persisted-resume-safe lane, while static
+  Range retries require an in-memory authenticated request and use the same bounded retry budget.
 
 ## Target module boundaries
 
@@ -156,6 +160,7 @@ snapshot derivation.
   `StaticRangeSegmentStrategyPolicy`, `StaticRangeReattachPolicy`,
   `BackgroundDownloadTaskIdentity`,
   `BackgroundDownloadProgressPolicy`,
+  `BackgroundDownloadTransientRetryPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
