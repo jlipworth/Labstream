@@ -1714,64 +1714,42 @@ public final class DownloadManager {
         let resolvedBackend = backend ?? appModel.activeBackend.downloadBackendKind
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
-        let mediaBytes: Int?
-        switch choice {
-        case .original, .existingVersion:
-            // #112: an existing server version is a static byte-for-byte part transfer, so the
-            // chosen part's size is the storage estimate (same as `.original`).
-            mediaBytes = part?.size
-        case .optimizeCompatible:
-            // #83: the video stream is COPIED, so the output is close to the original size (audio may
-            // shrink slightly when transcoded to AAC). Use the source size as the storage estimate.
-            mediaBytes = part?.size
-        case .optimize(let targetName):
-            if Self.isPlexOriginalQualityTarget(targetName) {
-                mediaBytes = part?.size
-            } else if let profile = Self.customDownloadProfile(named: targetName) {
-                if let kbps = profile.settings.maxVideoBitrateKbps {
-                    mediaBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
-                                                             videoBitrateBps: kbps * 1_000)
-                } else {
-                    mediaBytes = part?.size
-                }
-            } else {
-                mediaBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
-                                                          videoBitrateBps: Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps.map { $0 * 1_000 } ?? 8_000_000)
-            }
-        }
+        let mediaBytes = DownloadStorageEstimatePolicy.estimatedMediaBytes(
+            source: Self.storageEstimateMediaSource(for: choice),
+            sourcePartBytes: part?.size,
+            durationMs: item.duration)
         // Add the thumbnail-cache estimate for every backend that caches one (not just Jellyfin) so
         // the preflight doesn't under-count for Plex/Emby. Text-subtitle sidecars are small and
         // variable, so they're accounted post-hoc from disk via `DownloadRecord.sideAssetBytes`
         // rather than pre-estimated here. Resolve against the job's OWN backend (#84), never the
         // active lane.
         let chapterImageCount = item.chapters?.filter { $0.thumb?.isEmpty == false }.count ?? 0
-        let sideAssetBytes = Self.estimatedSideAssetBytes(durationMs: item.duration,
-                                                         backend: resolvedBackend,
-                                                         chapterImageCount: chapterImageCount)
-        guard sideAssetBytes > 0 else { return mediaBytes }
-        return (mediaBytes ?? 0) + sideAssetBytes
+        let sideAssetBytes = DownloadStorageEstimatePolicy.estimatedSideAssetBytes(
+            durationMs: item.duration,
+            backend: resolvedBackend,
+            chapterImageCount: chapterImageCount)
+        return DownloadStorageEstimatePolicy.totalBytes(mediaBytes: mediaBytes,
+                                                        sideAssetBytes: sideAssetBytes)
     }
 
-    /// Rough pre-download estimate of a backend's thumbnail-cache side assets. Plex BIF + Jellyfin
-    /// tile sheets are duration-proportional scrub-preview data of comparable magnitude and share
-    /// one model. EVERY backend now also caches per-chapter images (#88/#89), bounded by the actual
-    /// chapter image count carried by the source item.
-    private static func estimatedSideAssetBytes(durationMs: Int?,
-                                                backend: DownloadBackendKind,
-                                                chapterImageCount: Int) -> Int {
-        let chapterImages = estimatedChapterImageBytes(chapterImageCount: chapterImageCount)
-        switch backend {
-        case .jellyfin, .plex:
-            return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs) + chapterImages
-        case .emby:
-            return chapterImages
+    private static func storageEstimateMediaSource(for choice: DownloadChoice) -> DownloadStorageEstimatePolicy.MediaSource {
+        switch choice {
+        case .original, .existingVersion, .optimizeCompatible:
+            // #112: existing server versions are static byte-for-byte transfers. #83 compatible
+            // remux copies the video stream, so the output remains close to source size.
+            return .sourceFile
+        case .optimize(let targetName):
+            if Self.isPlexOriginalQualityTarget(targetName) {
+                return .sourceFile
+            }
+            if let profile = Self.customDownloadProfile(named: targetName) {
+                guard let kbps = profile.settings.maxVideoBitrateKbps else { return .sourceFile }
+                return .transcode(videoBitrateBps: kbps * 1_000)
+            }
+            let bitrate = Self.mediaSettings(forTargetName: targetName).maxVideoBitrateKbps
+                .map { $0 * 1_000 } ?? 8_000_000
+            return .transcode(videoBitrateBps: bitrate)
         }
-    }
-
-    /// Coarse per-chapter-image cache estimate (#88/#89). Chapters are typically a few dozen ~30 KB
-    /// 480×270 JPEGs; only chapters with a thumbnail key are fetched.
-    private static func estimatedChapterImageBytes(chapterImageCount: Int) -> Int {
-        max(0, chapterImageCount) * 30_000
     }
 
     func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
