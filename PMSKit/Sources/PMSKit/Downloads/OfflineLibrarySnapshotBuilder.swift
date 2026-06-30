@@ -10,19 +10,18 @@ public enum OfflineLibrarySnapshotBuilder {
     public static func make(records: [DownloadRecord],
                             isQueuePaused: Bool,
                             downloadSpeed: [String: Double],
-                            backendKind: (DownloadRecord) -> DownloadBackendKind,
                             errorMessage: (DownloadRecord) -> String?,
                             displayProgress: (DownloadRecord) -> Double?,
                             statusCaption: (DownloadRecord, DownloadBackendKind) -> String,
                             isRetrying: (String) -> Bool,
                             isCheckpointPausing: (String) -> Bool) -> OfflineLibrarySnapshot {
         let backendsByKey = Dictionary(uniqueKeysWithValues: records.map { record in
-            (record.ratingKey, backendKind(record))
+            (record.ratingKey, DownloadJobSnapshot(record: record).backend)
         })
         let hasMixedBackends = Set(backendsByKey.values.map(\.rawValue)).count > 1
 
         let rows = records.map { record in
-            let backend = backendsByKey[record.ratingKey] ?? backendKind(record)
+            let backend = backendsByKey[record.ratingKey] ?? DownloadJobSnapshot(record: record).backend
             return OfflineDownloadRowSnapshot(
                 record: record,
                 showBackendBadge: hasMixedBackends,

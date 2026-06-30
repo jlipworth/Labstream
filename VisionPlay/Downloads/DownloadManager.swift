@@ -590,7 +590,7 @@ public final class DownloadManager {
     }
 
     private func staticRangeBackendSession(for record: DownloadRecord) -> BackendSession? {
-        let kind = backendKind(for: record)
+        let kind = DownloadJobSnapshot(record: record).backend
         guard let session = appModel.backendSession(for: kind) else { return nil }
         if let metadata = record.metadata, !session.matchesPersistedServer(metadata) {
             return nil
@@ -613,7 +613,7 @@ public final class DownloadManager {
                                         reason: String,
                                         preserveActiveIntent: Bool = false) {
         let ratingKey = record.ratingKey
-        let backend = backendKind(for: record)
+        let backend = DownloadJobSnapshot(record: record).backend
         let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
         staticRangeRecovery.addPendingResume(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
@@ -736,7 +736,7 @@ public final class DownloadManager {
         staticRangeRecovery.removePendingResume(ratingKey)
         recordDownloadDiagnostic("downloads.range_resume_ready", fields: [
             "download_id": .identifier(ratingKey),
-            "backend": .label(backendKind(for: record).rawValue),
+            "backend": .label(DownloadJobSnapshot(record: record).backend.rawValue),
             "reason": .label(reason),
             "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)),
         ])
@@ -1771,7 +1771,7 @@ public final class DownloadManager {
                     }
                     recordDownloadDiagnostic("downloads.range_stale_queued_paused", fields: [
                         "download_id": .identifier(record.ratingKey),
-                        "backend": .label(backendKind(for: record).rawValue),
+                        "backend": .label(DownloadJobSnapshot(record: record).backend.rawValue),
                         "checkpoint_bytes": .bytes(checkpointBytes),
                     ])
                 }
@@ -1779,7 +1779,7 @@ public final class DownloadManager {
                     staticRangeRecovery.addPendingResume(record.ratingKey)
                     recordDownloadDiagnostic("downloads.range_stale_queued_manual_resume", fields: [
                         "download_id": .identifier(record.ratingKey),
-                        "backend": .label(backendKind(for: record).rawValue),
+                        "backend": .label(DownloadJobSnapshot(record: record).backend.rawValue),
                         "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey)),
                     ])
                 }
@@ -1792,7 +1792,7 @@ public final class DownloadManager {
                     staticRangeRecovery.addPendingResume(record.ratingKey)
                     recordDownloadDiagnostic("downloads.range_stale_queued_resume", fields: [
                         "download_id": .identifier(record.ratingKey),
-                        "backend": .label(backendKind(for: record).rawValue),
+                        "backend": .label(DownloadJobSnapshot(record: record).backend.rawValue),
                         "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey)),
                     ])
                 }
@@ -1969,7 +1969,7 @@ public final class DownloadManager {
         let ratingKey = restart.record.ratingKey
         guard let current = store.records.first(where: { $0.ratingKey == ratingKey }),
               DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
-        let backend = backendKind(for: current)
+        let backend = DownloadJobSnapshot(record: current).backend
         recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backend.rawValue),
@@ -2272,7 +2272,6 @@ public final class DownloadManager {
             records: records,
             isQueuePaused: isQueuePaused,
             downloadSpeed: downloadSpeed,
-            backendKind: { record in backendKind(for: record) },
             errorMessage: { record in
                 guard record.status == .failed else { return nil }
                 return lastError[record.ratingKey].map(message(for:))
@@ -2289,15 +2288,6 @@ public final class DownloadManager {
         DownloadRowDisplayPolicy.displayProgress(for: record,
                                                  fraction: displayFraction(for: record),
                                                  serverPrepProgress: optimizeProgress[record.ratingKey])
-    }
-
-    /// Backend that owns this row, via the single migration fallback on the
-    /// persisted snapshot (#84): a stored `backendKind` wins; pre-#84 rows fall
-    /// back to the ratingKey prefix. Kept in the manager's UI snapshot so the
-    /// hot Offline row bodies don't repeatedly re-scan all records or manager state.
-    private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
-        record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
     }
 
     private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
