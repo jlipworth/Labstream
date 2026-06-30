@@ -62,8 +62,16 @@ final class DownloadStore: @unchecked Sendable {
     private static let progressPersistInterval: TimeInterval = 1
 
     private let lock = NSLock()
+    private struct HydratedSideAssets {
+        var posterURL: URL?
+        var plexBIFURL: URL?
+        var jellyfinTrickPlayPlaylistURL: URL?
+        var chapterImageURLs: [Int: URL]
+        var sideAssetBytes: Int
+    }
+
     private var rows: [String: Row] = [:]          // ratingKey -> Row
-    private var sideAssetByteCache: [String: (signature: [String], bytes: Int)] = [:] // guarded by `lock`
+    private var sideAssetHydrationCache: [String: HydratedSideAssets] = [:] // guarded by `lock`
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
     private let indexURL: URL                        // baseDirectory/index.json
@@ -185,20 +193,19 @@ final class DownloadStore: @unchecked Sendable {
         let snapshot = Array(rows.values)
         lock.unlock()
         let hydrated = snapshot.map { row in
-            DownloadRecord(ratingKey: row.ratingKey,
-                           title: row.title,
-                           localURL: baseDirectory.appendingPathComponent(row.relativePath),
-                           bytes: row.bytes,
-                           progress: row.progress,
-                           status: row.status,
-                           metadata: row.metadata,
-                           posterURL: fastResolvedDownloadAssetURL(row.metadata?.posterRelativePath),
-                           plexBIFURL: fastResolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
-                           jellyfinTrickPlayPlaylistURL: fastResolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
-                           chapterImageURLs: Self.fastResolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
-                                                                              baseDirectory: baseDirectory),
-                           sideAssetBytes: sideAssetBytes(ratingKey: row.ratingKey,
-                                                          metadata: row.metadata))
+            let sideAssets = hydratedSideAssets(ratingKey: row.ratingKey, metadata: row.metadata)
+            return DownloadRecord(ratingKey: row.ratingKey,
+                                  title: row.title,
+                                  localURL: baseDirectory.appendingPathComponent(row.relativePath),
+                                  bytes: row.bytes,
+                                  progress: row.progress,
+                                  status: row.status,
+                                  metadata: row.metadata,
+                                  posterURL: sideAssets.posterURL,
+                                  plexBIFURL: sideAssets.plexBIFURL,
+                                  jellyfinTrickPlayPlaylistURL: sideAssets.jellyfinTrickPlayPlaylistURL,
+                                  chapterImageURLs: sideAssets.chapterImageURLs,
+                                  sideAssetBytes: sideAssets.sideAssetBytes)
         }
         return OfflineDownloadSort.sorted(hydrated)
     }
@@ -317,30 +324,35 @@ final class DownloadStore: @unchecked Sendable {
         relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
         relatives.append(contentsOf: Array(metadata.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
         relatives.append(contentsOf: metadata.offlineTextSubtitles?.map(\.relativePath) ?? [])
-        return relatives.filter(Self.isSafeOneLevelRelativePath).sorted()
+        return relatives.filter(Self.isSafeOneLevelRelativePath)
     }
 
-    private func sideAssetBytes(ratingKey: String, metadata: OfflineMetadata?) -> Int {
-        let signature = sideAssetRelativePaths(for: metadata)
-        guard !signature.isEmpty else { return 0 }
-
+    private func hydratedSideAssets(ratingKey: String, metadata: OfflineMetadata?) -> HydratedSideAssets {
         lock.lock()
-        if let cached = sideAssetByteCache[ratingKey], cached.signature == signature {
-            let bytes = cached.bytes
+        if let cached = sideAssetHydrationCache[ratingKey] {
             lock.unlock()
-            return bytes
+            return cached
         }
         lock.unlock()
 
-        let bytes = signature.reduce(0) { total, relative in
+        let relatives = sideAssetRelativePaths(for: metadata)
+        let sideAssetBytes = relatives.reduce(0) { total, relative in
             let url = baseDirectory.appendingPathComponent(relative)
             let attrs = try? fileManager.attributesOfItem(atPath: url.path)
             return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
         }
+        let hydrated = HydratedSideAssets(
+            posterURL: fastResolvedDownloadAssetURL(metadata?.posterRelativePath),
+            plexBIFURL: fastResolvedDownloadAssetURL(metadata?.plexBIFRelativePath),
+            jellyfinTrickPlayPlaylistURL: fastResolvedDownloadAssetURL(metadata?.jellyfinTrickPlayPlaylistRelativePath),
+            chapterImageURLs: Self.fastResolvedChapterImageURLs(metadata?.chapterImageRelativePaths,
+                                                               baseDirectory: baseDirectory),
+            sideAssetBytes: sideAssetBytes
+        )
         lock.lock()
-        sideAssetByteCache[ratingKey] = (signature: signature, bytes: bytes)
+        sideAssetHydrationCache[ratingKey] = hydrated
         lock.unlock()
-        return bytes
+        return hydrated
     }
 
     private func directoryFileSnapshots() -> [OfflineDownloadFileSnapshot] {
@@ -414,7 +426,7 @@ final class DownloadStore: @unchecked Sendable {
                                      progress: record.progress,
                                      status: record.status,
                                      metadata: metadata)
-        sideAssetByteCache.removeValue(forKey: record.ratingKey)
+        sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
         persist()
     }
@@ -681,7 +693,7 @@ final class DownloadStore: @unchecked Sendable {
         guard meta != oldMeta else { lock.unlock(); return }
         row.metadata = meta
         rows[ratingKey] = row
-        sideAssetByteCache.removeValue(forKey: ratingKey)
+        sideAssetHydrationCache.removeValue(forKey: ratingKey)
         lock.unlock()
         persist()
     }
@@ -879,7 +891,7 @@ final class DownloadStore: @unchecked Sendable {
     func remove(ratingKey: String) {
         lock.lock()
         let row = rows.removeValue(forKey: ratingKey)
-        sideAssetByteCache.removeValue(forKey: ratingKey)
+        sideAssetHydrationCache.removeValue(forKey: ratingKey)
         lock.unlock()
         if let row {
             let url = baseDirectory.appendingPathComponent(row.relativePath)
