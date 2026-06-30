@@ -237,7 +237,23 @@ fi
 cleanup
 trap - EXIT
 
+probe_status=0
+if grep -Eq 'probe\.plex_download\.fail|probe\.fail' "$log_file"; then
+  echo "ERROR: probe logged a failure; inspect $log_file" >&2
+  probe_status=1
+fi
+if [[ $delete_existing != "1" && $delete_existing != "true" && $delete_existing != "yes" ]]; then
+  # A route-only log is inconclusive for the recovery harness: it proves item resolution, but not
+  # that the app actually entered the transfer/observation path. Fail visibly so callers don't cite
+  # a no-op as network-drop evidence.
+  if ! grep -Eq 'probe\.plex_download\.(observe|done|resume_check|deleted)|downloads\.(enqueue|start|start_failed|range_start|range_retry|range_failed|range_checkpoint)' "$log_file"; then
+    echo "ERROR: probe did not reach transfer observation/start; inspect $log_file" >&2
+    probe_status=1
+  fi
+fi
+
 printf '==> Probe complete. Key outputs:\n'
 printf '    %s\n' "$summary_file" "$build_log" "$log_file" "$stdout_file" "$stderr_file"
 printf '\n==> Recent probe lines:\n'
-grep -E 'probe\.|range-drop|Range|retry|failed|complete' "$log_file" | tail -80 || true
+grep -E 'probe\.|range-drop|Range|retry|failed|complete|downloads\.(enqueue|start|range_)' "$log_file" | tail -80 || true
+exit "$probe_status"
