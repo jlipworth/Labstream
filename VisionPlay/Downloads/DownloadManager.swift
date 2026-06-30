@@ -16,17 +16,6 @@ enum DownloadOptimizeStateLabel {
     static let finalizing = "finalizing"
 }
 
-private struct ForwardOnlyStallObservation {
-    var bytes: Int
-    var lastForwardProgressAt: Date
-}
-
-private struct ForwardOnlyStallRestart {
-    let record: DownloadRecord
-    let stalledFor: TimeInterval
-    let attempt: Int
-}
-
 /// Coordinates the offline-download pipeline:
 ///   1. trigger a server-side capped-bitrate optimize (8 Mbps 1080p preset),
 ///   2. poll the item's metadata until the optimized `Part` appears,
@@ -121,8 +110,7 @@ public final class DownloadManager {
     /// preservation.
     private var staticRangeRecovery = StaticRangeRecoveryTracker()
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
-    @ObservationIgnored private var forwardOnlyStallObservations: [String: ForwardOnlyStallObservation] = [:]
-    @ObservationIgnored private var forwardOnlyStallRestartAttempts: [String: Int] = [:]
+    @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
 
     /// Ephemeral live Range bytes. Persisted records stay pinned to durable checkpoints so storage
@@ -2091,46 +2079,13 @@ public final class DownloadManager {
     }
 
     private func detectForwardOnlyStreamStalls(in records: [DownloadRecord],
-                                               now: Date) -> [ForwardOnlyStallRestart] {
-        var candidateKeys: Set<String> = []
-        var restarts: [ForwardOnlyStallRestart] = []
-        for record in records where DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(record) {
-            candidateKeys.insert(record.ratingKey)
-            let active = activeJobs.contains(record.ratingKey)
-                || session.isTrackingTransfer(ratingKey: record.ratingKey)
-            var observation = forwardOnlyStallObservations[record.ratingKey]
-                ?? ForwardOnlyStallObservation(bytes: record.bytes, lastForwardProgressAt: now)
-            if record.bytes > observation.bytes {
-                observation.bytes = record.bytes
-                observation.lastForwardProgressAt = now
-                forwardOnlyStallRestartAttempts[record.ratingKey] = 0
-            }
-            let attempts = forwardOnlyStallRestartAttempts[record.ratingKey] ?? 0
-            if DownloadStallRecoveryPolicy.shouldRestartForwardOnlyStream(
-                record: record,
-                active: active,
-                lastForwardProgressAt: observation.lastForwardProgressAt,
-                now: now,
-                restartAttempts: attempts
-            ) {
-                let nextAttempt = attempts + 1
-                forwardOnlyStallRestartAttempts[record.ratingKey] = nextAttempt
-                restarts.append(ForwardOnlyStallRestart(
-                    record: record,
-                    stalledFor: now.timeIntervalSince(observation.lastForwardProgressAt),
-                    attempt: nextAttempt))
-                observation.lastForwardProgressAt = now
-                observation.bytes = record.bytes
-            }
-            forwardOnlyStallObservations[record.ratingKey] = observation
+                                               now: Date) -> [DownloadForwardOnlyStallRestart] {
+        forwardOnlyStallTracker.detectRestarts(records: records, now: now) { [activeJobs, session] ratingKey in
+            activeJobs.contains(ratingKey) || session.isTrackingTransfer(ratingKey: ratingKey)
         }
-        forwardOnlyStallObservations = forwardOnlyStallObservations.filter { candidateKeys.contains($0.key) }
-        let liveOrRetryableKeys = Set(records.filter { $0.status != .complete && $0.status != .unverified }.map(\.ratingKey))
-        forwardOnlyStallRestartAttempts = forwardOnlyStallRestartAttempts.filter { liveOrRetryableKeys.contains($0.key) }
-        return restarts
     }
 
-    private func restartStalledForwardOnlyStream(_ restart: ForwardOnlyStallRestart) {
+    private func restartStalledForwardOnlyStream(_ restart: DownloadForwardOnlyStallRestart) {
         let ratingKey = restart.record.ratingKey
         guard let current = store.records.first(where: { $0.ratingKey == ratingKey }),
               DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
@@ -2186,7 +2141,7 @@ public final class DownloadManager {
             finalizingStaticRecoveryCount: staticRangeRecovery.finalizingCount,
             serverPrepPollerCount: serverPrepPollerTasks.count,
             jellyfinKeepaliveCount: jellyfinDownloadKeepaliveTasks.count,
-            forwardStallWatchCount: forwardOnlyStallObservations.count,
+            forwardStallWatchCount: forwardOnlyStallTracker.trackedCount,
             session: makeDownloadHealthSessionSnapshot(from: sessionSnapshot))
         guard DownloadHealthSnapshotPolicy.shouldRecord(snapshot: snapshot,
                                                         lastRecordedAt: lastDownloadHealthDiagnosticAt,
@@ -2314,7 +2269,7 @@ public final class DownloadManager {
         _ = serverPrepAttempts.releaseAll(forRecordKey: ratingKey)
         serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
-        forwardOnlyStallObservations.removeValue(forKey: ratingKey)
+        forwardOnlyStallTracker.remove(ratingKey)
         // CLEANUP INVARIANT: a transcoded Emby download leaves a live FFmpeg encoder running on
         // the server until ActiveEncodings is deleted. Fire teardown for the minted PlaySessionId
         // on EVERY terminal transition (complete / failed / cancelled / deleted). Best-effort and

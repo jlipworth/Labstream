@@ -226,6 +226,10 @@ snapshot derivation.
   `JellyfinDownloadKeepalivePolicy` now owns the active-row predicate, required persisted
   PlaySession/MediaSource inputs, keepalive cadence, and progress-to-ticks calculation for Jellyfin
   transcoding downloads. The app layer still owns live session matching and request side effects.
+- **Done: Slice 5t forward-only stall tracker extraction.**
+  `DownloadForwardOnlyStallTracker` now owns the IO-free observation state for Jellyfin/Emby
+  forward-only stream recovery: byte-progress timestamps, restart-attempt budgets, stale candidate
+  pruning, and restart requests. `DownloadManager` keeps only the cancel/retry side effects.
 - **Done: Slice 5n static retry target policy extraction.**
   `DownloadStaticRetryTargetPolicy` now owns source-part matching for static byte-range retries
   after metadata refresh, preserving true-original versus server-prepared/existing-version routing.
@@ -303,6 +307,8 @@ snapshot derivation.
 - `DownloadExpectedBytesPolicy`: pure expected-total byte selection for range progress and ETA.
 - `JellyfinDownloadKeepalivePolicy`: pure Jellyfin transcoding keepalive candidate/cadence/tick
   decisions.
+- `DownloadForwardOnlyStallTracker`: IO-free forward-only stream progress observation and bounded
+  auto-restart tracking for Jellyfin/Emby live downloads.
 - `DownloadStaticRetryTargetPolicy`: pure static retry source-part and original/existing-version
   target selection.
 - `DownloadStorageEstimatePolicy`: pure storage preflight estimates for media bytes and sidecars.
