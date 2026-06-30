@@ -173,6 +173,11 @@ snapshot derivation.
   `DownloadStartSlotPolicy` now owns the admission table for the app-level in-flight slot:
   duplicate active rows are rejected, duplicate active slots with visible rows stay rejected, and
   stale active slots with no store row are recovered before accepting a replacement start.
+- **Done: Slice 5c download pause policy extraction.**
+  `DownloadPausePolicy` now owns the visible-row pause routing table: terminal rows ignore pause,
+  preparing rows park immediately, static byte-range rows either checkpoint-drain or park depending
+  on live URLSession ownership, opaque/live-forward rows route through URLSession, and global queue
+  pause skips persistent Emby convert polling while pausing other active work.
 
 ## Target module boundaries
 
@@ -180,6 +185,8 @@ snapshot derivation.
 
 - `DownloadRecordIdentity`: backend-aware record keys and item-id extraction.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
+- `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
+  effects.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
