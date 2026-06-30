@@ -220,7 +220,7 @@ extension DownloadManager {
               let metadata = record.metadata,
               metadata.resolvedBackendKind(ratingKey: ratingKey) == .plex,
               !transcodeSourcedDownloads.contains(ratingKey),
-              queueTitleByRatingKey[ratingKey] == nil,
+              serverPrepAttempts.queueTitle(forRecordKey: ratingKey) == nil,
               metadata.optimizeTargetName?.isEmpty != false,
               let backendSession = appModel.backendSession(for: .plex) else { return }
         let item = metadata.makeMediaItem()

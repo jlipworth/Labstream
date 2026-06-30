@@ -70,6 +70,11 @@ snapshot derivation.
   through `JellyfinDownloadRouter`, including original/static, explicit transcode, and
   compatible-remux fallback. The router now also carries stable diagnostic labels and the
   compatible-remux eligibility needed by the request builder.
+- **Done: Slice 5a server-prep attempt tracker.** `ServerPrepAttemptTracker` now owns
+  IO-free attempt identities shared by Plex optimize and Emby convert: protected Plex
+  queue titles, Plex poller ownership, and Emby convert attempt UUID replacement. The app
+  still owns URLSession/tasks and backend requests, but releases server-prep identities
+  through one tested model.
 
 ## Target module boundaries
 

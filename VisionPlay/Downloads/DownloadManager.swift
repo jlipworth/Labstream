@@ -120,7 +120,11 @@ public final class DownloadManager {
     @ObservationIgnored private var refreshRecordsTask: Task<Void, Never>?
     private var serverPrepResumeRetryTask: Task<Void, Never>?
     @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
-    private var serverPrepPollerIDs: [String: UUID] = [:]
+    /// Server-prep attempt identities for Plex optimize and Emby convert. Keeps protected Plex
+    /// queue titles, Plex poller ownership, and Emby convert attempt UUIDs in one IO-free model.
+    /// The queue title must stay protected for the REAL download lifetime (until the file
+    /// finishes/fails), not merely until optimize kickoff returns.
+    var serverPrepAttempts = ServerPrepAttemptTracker()
     private var serverPrepRefreshKickScheduled = false
     private var lastServerPrepRefreshKickAt: Date?
     private var lastServerPrepQueuePausedLogAt: Date?
@@ -156,24 +160,6 @@ public final class DownloadManager {
     /// User-controlled queue pause. Persisted so a relaunch does not immediately restart
     /// server-prep polling or paused transfers the user intentionally stopped before refreshing.
     public private(set) var isQueuePaused: Bool = UserDefaults.standard.bool(forKey: queuePausedDefaultsKey)
-
-    /// Full optimize-queue titles (`"<title> [VisionPlay <hex>]"`) of in-flight jobs. Used to
-    /// protect them from `cleanStaleOptimizeJobs`, which only removes abandoned items.
-    var activeQueueTitles: Set<String> = []
-
-    /// ratingKey -> the optimize-queue title we submitted for its in-flight download. Lets the
-    /// download-completion/failure path release the right `activeQueueTitles` entry. CRITICAL:
-    /// the queue title must stay protected for the REAL download lifetime (until the file
-    /// finishes/fails), NOT just until the optimize kickoff returns — `session.start` only
-    /// KICKS OFF the URLSession transfer, so releasing it when `triggerOptimizeAndDownload`
-    /// returns would leave the rendered Part unprotected while it is still downloading, and
-    /// a concurrent job's `cleanStaleOptimizeJobs` could then delete that Part out from under it.
-    var queueTitleByRatingKey: [String: String] = [:]
-
-    /// Per-attempt identity for Emby convert preflight/poll tasks. Unlike Plex, Emby does not
-    /// preserve our submitted queue title, so a ratingKey-only active slot cannot distinguish an old
-    /// async preflight from a newer retry of the same item.
-    var embyConvertAttemptByRatingKey: [String: UUID] = [:]
 
     /// Last error per ratingKey, for UI surfacing.
     public internal(set) var lastError: [String: DownloadError] = [:]
@@ -1447,7 +1433,7 @@ public final class DownloadManager {
         // Same current-store rule as Emby: callers often set the row queued/preparing immediately
         // before asking the prep scanner to attach a poller.
         let serverPrepRows = store.records.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
-        let candidates = serverPrepRows.filter { serverPrepPollerIDs[$0.ratingKey] == nil }
+        let candidates = serverPrepRows.filter { !serverPrepAttempts.hasPlexPoller(forRecordKey: $0.ratingKey) }
         let skippedActivePollers = serverPrepRows.count - candidates.count
         if skippedActivePollers > 0 {
             recordDownloadDiagnostic("downloads.optimize_resume_scan", fields: [
@@ -1496,8 +1482,7 @@ public final class DownloadManager {
             }
             activeJobs.insert(ratingKey)
             if let queueTitle = metadata.optimizeQueueTitle {
-                activeQueueTitles.insert(queueTitle)
-                queueTitleByRatingKey[ratingKey] = queueTitle
+                serverPrepAttempts.protectQueueTitle(queueTitle, forRecordKey: ratingKey)
             }
             recordDownloadDiagnostic("downloads.optimize_resume", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1527,7 +1512,7 @@ public final class DownloadManager {
     }
 
     func beginServerPrepPoller(ratingKey: String, source: String) -> UUID? {
-        if serverPrepPollerIDs[ratingKey] != nil {
+        guard let id = serverPrepAttempts.beginPlexPoller(forRecordKey: ratingKey) else {
             recordDownloadDiagnostic("downloads.optimize_poller_skip", fields: [
                 "download_id": .identifier(ratingKey),
                 "source": .label(source),
@@ -1535,8 +1520,6 @@ public final class DownloadManager {
             ])
             return nil
         }
-        let id = UUID()
-        serverPrepPollerIDs[ratingKey] = id
         recordDownloadDiagnostic("downloads.optimize_poller_attached", fields: [
             "download_id": .identifier(ratingKey),
             "source": .label(source),
@@ -1545,8 +1528,7 @@ public final class DownloadManager {
     }
 
     func endServerPrepPoller(ratingKey: String, id: UUID) {
-        guard serverPrepPollerIDs[ratingKey] == id else { return }
-        serverPrepPollerIDs.removeValue(forKey: ratingKey)
+        guard serverPrepAttempts.endPlexPoller(forRecordKey: ratingKey, id: id) else { return }
         serverPrepPollerTasks.removeValue(forKey: ratingKey)
         recordDownloadDiagnostic("downloads.optimize_poller_detached", fields: [
             "download_id": .identifier(ratingKey),
@@ -1554,7 +1536,7 @@ public final class DownloadManager {
     }
 
     private func clearServerPrepPoller(ratingKey: String, reason: String) {
-        let hadPoller = serverPrepPollerIDs.removeValue(forKey: ratingKey) != nil
+        let hadPoller = serverPrepAttempts.clearPlexPoller(forRecordKey: ratingKey)
         let task = serverPrepPollerTasks.removeValue(forKey: ratingKey)
         task?.cancel()
         if hadPoller || task != nil {
@@ -2092,7 +2074,7 @@ public final class DownloadManager {
         }
         let unattachedServerPrepRows = fresh.filter { record in
             if DownloadRetryPolicy.isPlexServerPrepResumeCandidate(record) {
-                return serverPrepPollerIDs[record.ratingKey] == nil
+                return !serverPrepAttempts.hasPlexPoller(forRecordKey: record.ratingKey)
             }
             let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
@@ -2480,14 +2462,10 @@ public final class DownloadManager {
         clearRetryHandoff(ratingKey: ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
-        embyConvertAttemptByRatingKey.removeValue(forKey: ratingKey)
-        serverPrepPollerIDs.removeValue(forKey: ratingKey)
+        _ = serverPrepAttempts.releaseAll(forRecordKey: ratingKey)
         serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
         forwardOnlyStallObservations.removeValue(forKey: ratingKey)
-        if let title = queueTitleByRatingKey.removeValue(forKey: ratingKey) {
-            activeQueueTitles.remove(title)
-        }
         // CLEANUP INVARIANT: a transcoded Emby download leaves a live FFmpeg encoder running on
         // the server until ActiveEncodings is deleted. Fire teardown for the minted PlaySessionId
         // on EVERY terminal transition (complete / failed / cancelled / deleted). Best-effort and
