@@ -59,6 +59,26 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(paused.hasPrefix("Paused — tap to resume • 50% • "))
     }
 
+
+    @Test("Phase classification makes row state machine explicit")
+    func phases() {
+        #expect(DownloadRowStatusCaptionPolicy.phase(context(
+            status: .failed,
+            isRetrying: true)) == .failed(isRetrying: true))
+        #expect(DownloadRowStatusCaptionPolicy.phase(context(
+            resumeMode: .staticByteRange,
+            isActive: true)) == .activeStaticZeroByteTransfer)
+        #expect(DownloadRowStatusCaptionPolicy.phase(context(
+            resumeMode: .serverPrepThenStatic,
+            serverPrepState: "finalizing",
+            serverPrepProgress: 1.0)) == .serverPrepFinalizing)
+        #expect(DownloadRowStatusCaptionPolicy.phase(context(
+            isBackendConfigured: false)) == .waitingForBackend)
+        #expect(DownloadRowStatusCaptionPolicy.phase(context(
+            bytes: 1_000_000,
+            isActive: true)) == .activeTransfer)
+    }
+
     @Test("Transfer finalizing caption uses local verification wording")
     func transferFinalizingCaption() {
         let caption = DownloadRowStatusCaptionPolicy.caption(context(

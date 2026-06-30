@@ -77,81 +77,130 @@ public enum DownloadRowStatusCaptionPolicy {
 
     public static let serverPrepQueuedState = "queued"
 
-    public static func caption(_ context: Context) -> String {
-        switch context.status {
-        case .failed:
-            if context.isRetrying { return "Retrying…" }
-            return context.failureCaption ?? "Download failed. Tap to retry."
-        case .paused:
-            return DownloadRowDisplayPolicy.pausedCaption(fraction: context.displayFraction,
-                                                          bytes: context.bytes)
-        case .complete, .unverified:
-            return DownloadRowDisplayPolicy.completeCaption(isUnverified: context.status == .unverified,
-                                                            bytes: context.bytes,
-                                                            resolutionLabel: context.resolutionLabel)
-        case .queued, .preparing, .downloading:
-            return progressCaption(context)
-        }
+    /// Explicit row phase for the offline-download UI. This is deliberately UI-facing rather than
+    /// persisted: it names the currently observed phase after durable status and live coordinator
+    /// facts have been combined.
+    public enum Phase: Sendable, Equatable {
+        case failed(isRetrying: Bool)
+        case paused
+        case complete(isUnverified: Bool)
+        case transferFinalizing
+        case activeStaticZeroByteTransfer
+        case serverPrepFinalizing
+        case serverPrepProgressing
+        case serverPrepQueued
+        case waitingForBackend
+        case activeServerPrep
+        case queued
+        case activeTransfer
+        case inactiveTransfer
     }
 
-    private static func progressCaption(_ context: Context) -> String {
+    public static func phase(_ context: Context) -> Phase {
+        switch context.status {
+        case .failed:
+            return .failed(isRetrying: context.isRetrying)
+        case .paused:
+            return .paused
+        case .complete, .unverified:
+            return .complete(isUnverified: context.status == .unverified)
+        case .queued, .preparing, .downloading:
+            break
+        }
+
         if DownloadProgressDisplay.isTransferFinalizing(status: context.status,
                                                         progress: context.progress) {
-            return transferFinalizingCaption(context)
+            return .transferFinalizing
         }
 
         let isServerPrep = context.resumeMode == .serverPrepThenStatic
         if context.bytes == 0 {
-            // A static byte-range row can have no durable bytes while URLSession owns a promoted
-            // background remainder. Keep this in file-transfer language, not server-prep language.
             if context.isActive, context.resumeMode == .staticByteRange {
-                var pieces: [String] = []
-                var head = DownloadRowDisplayPolicy.activeHead(lane: context.lane,
-                                                               backend: context.backend,
-                                                               isServerPreparedVersion: context.isServerPreparedVersion,
-                                                               isCheckpointPausing: false)
-                if let fraction = context.displayFraction {
-                    head += " • \(DownloadRowDisplayPolicy.percentText(fraction))"
-                } else {
-                    head += " • 0%"
-                }
-                if let eta = context.downloadETA, eta > 0,
-                   let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
-                    head += " • ~\(left) left"
-                }
-                pieces.append(head)
-                if let speed = context.downloadSpeedBytesPerSecond, speed > 0 {
-                    pieces.append("\(DownloadRowDisplayPolicy.byteString(Int(speed)))/s")
-                }
-                if let resolutionLabel = context.resolutionLabel { pieces.append(resolutionLabel) }
-                return pieces.joined(separator: " • ")
+                return .activeStaticZeroByteTransfer
             }
-
-            let prepHead = (isServerPrep || context.status == .preparing) ? "Preparing on server…" : "Transcoding"
             if DownloadProgressDisplay.isServerPrepFinalizing(state: context.serverPrepState,
                                                               progress: context.serverPrepProgress) {
-                return serverPrepFinalizingCaption(context)
+                return .serverPrepFinalizing
             }
-            if let progress = context.serverPrepProgress {
-                var caption = "\(prepHead) \(Int(progress * 100))%"
-                if let eta = context.serverPrepETA, eta > 0,
-                   let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
-                    caption += " • ~\(left) left"
-                }
-                return caption
-            }
-            if context.serverPrepState == serverPrepQueuedState {
-                return "Preparing on server…"
-            }
-            if isServerPrep { return "Preparing on server…" }
-            if !context.isActive, !context.isBackendConfigured {
-                return "Waiting for \(context.backend.displayName)…"
-            }
-            if context.isActive { return "Preparing on server…" }
-            if context.hasServerPrepQueueTitle { return "Preparing on server…" }
-            return "Queued…"
+            if context.serverPrepProgress != nil { return .serverPrepProgressing }
+            if context.serverPrepState == serverPrepQueuedState { return .serverPrepQueued }
+            if isServerPrep { return .serverPrepQueued }
+            if !context.isActive, !context.isBackendConfigured { return .waitingForBackend }
+            if context.isActive { return .activeServerPrep }
+            if context.hasServerPrepQueueTitle { return .serverPrepQueued }
+            return .queued
         }
 
+        return context.isActive ? .activeTransfer : .inactiveTransfer
+    }
+
+    public static func caption(_ context: Context) -> String {
+        switch phase(context) {
+        case .failed(let isRetrying):
+            if isRetrying { return "Retrying…" }
+            return context.failureCaption ?? "Download failed. Tap to retry."
+        case .paused:
+            return DownloadRowDisplayPolicy.pausedCaption(fraction: context.displayFraction,
+                                                          bytes: context.bytes)
+        case .complete(let isUnverified):
+            return DownloadRowDisplayPolicy.completeCaption(isUnverified: isUnverified,
+                                                            bytes: context.bytes,
+                                                            resolutionLabel: context.resolutionLabel)
+        case .transferFinalizing:
+            return transferFinalizingCaption(context)
+        case .activeStaticZeroByteTransfer:
+            return activeStaticZeroByteTransferCaption(context)
+        case .serverPrepFinalizing:
+            return serverPrepFinalizingCaption(context)
+        case .serverPrepProgressing:
+            return serverPrepProgressCaption(context)
+        case .serverPrepQueued, .activeServerPrep:
+            return "Preparing on server…"
+        case .waitingForBackend:
+            return "Waiting for \(context.backend.displayName)…"
+        case .queued:
+            return "Queued…"
+        case .activeTransfer, .inactiveTransfer:
+            return transferCaption(context)
+        }
+    }
+
+    private static func activeStaticZeroByteTransferCaption(_ context: Context) -> String {
+        var pieces: [String] = []
+        var head = DownloadRowDisplayPolicy.activeHead(lane: context.lane,
+                                                       backend: context.backend,
+                                                       isServerPreparedVersion: context.isServerPreparedVersion,
+                                                       isCheckpointPausing: false)
+        if let fraction = context.displayFraction {
+            head += " • \(DownloadRowDisplayPolicy.percentText(fraction))"
+        } else {
+            head += " • 0%"
+        }
+        if let eta = context.downloadETA, eta > 0,
+           let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
+            head += " • ~\(left) left"
+        }
+        pieces.append(head)
+        if let speed = context.downloadSpeedBytesPerSecond, speed > 0 {
+            pieces.append("\(DownloadRowDisplayPolicy.byteString(Int(speed)))/s")
+        }
+        if let resolutionLabel = context.resolutionLabel { pieces.append(resolutionLabel) }
+        return pieces.joined(separator: " • ")
+    }
+
+    private static func serverPrepProgressCaption(_ context: Context) -> String {
+        let isServerPrep = context.resumeMode == .serverPrepThenStatic
+        let prepHead = (isServerPrep || context.status == .preparing) ? "Preparing on server…" : "Transcoding"
+        guard let progress = context.serverPrepProgress else { return prepHead }
+        var caption = "\(prepHead) \(Int(progress * 100))%"
+        if let eta = context.serverPrepETA, eta > 0,
+           let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
+            caption += " • ~\(left) left"
+        }
+        return caption
+    }
+
+    private static func transferCaption(_ context: Context) -> String {
         var pieces: [String] = []
         let percentPiece = context.displayFraction.map(DownloadRowDisplayPolicy.percentText)
         if context.isActive {
