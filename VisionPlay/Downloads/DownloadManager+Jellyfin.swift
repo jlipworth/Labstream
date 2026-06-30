@@ -76,7 +76,10 @@ extension DownloadManager {
         var request: URLRequest
         var destination: URL
         var expectedBytes: Int?
-        var transferRoute: JellyfinDownloadRouter.Route = .staticOriginal
+        var transferRoute = JellyfinDownloadRouter.route(intent: .original,
+                                                          videoCodec: nil,
+                                                          audioCodec: nil,
+                                                          container: part?.container ?? media?.container)
         // #84: captured here so the minted PlaySessionId can be PERSISTED after the row is seeded
         // (below), enabling encoder teardown after a hard app kill — not just in-memory teardown.
         var mintedPlaySessionId: String?
@@ -96,7 +99,10 @@ extension DownloadManager {
                                                               mediaSourceId: jellyfinMediaSourceID,
                                                               container: ext)
                 expectedBytes = part?.size
-                transferRoute = .staticOriginal
+                transferRoute = JellyfinDownloadRouter.route(intent: Self.jellyfinDownloadIntent(for: choice),
+                                                             videoCodec: part?.videoStreams.first?.codec ?? media?.videoCodec,
+                                                             audioCodec: part?.audioStreams.first?.codec,
+                                                             container: part?.container ?? media?.container)
 
             case .optimize(let targetName):
                 // Ask Jellyfin for a real PlaybackInfo session before starting the progressive
@@ -129,10 +135,13 @@ extension DownloadManager {
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = decision.playSessionId
-                transferRoute = .transcode
+                transferRoute = JellyfinDownloadRouter.route(intent: Self.jellyfinDownloadIntent(for: choice),
+                                                             videoCodec: decision.videoCodec,
+                                                             audioCodec: decision.audioCodec,
+                                                             container: decision.container)
                 recordDownloadDiagnostic("downloads.jellyfin_transcode_decision", fields: [
                     "download_id": .identifier(ratingKey),
-                    "route": .label("transcode"),
+                    "route": .label(transferRoute.diagnosticLabel),
                     "container": .label(decision.container ?? "unknown"),
                     "source_video_codec": .label(decision.videoCodec ?? "unknown"),
                     "source_audio_codec": .label(decision.audioCodec ?? "unknown"),
@@ -161,21 +170,18 @@ extension DownloadManager {
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
                                                                      preferredMediaSourceId: jellyfinMediaSourceID)
                 resolvedJellyfinMediaSourceID = decision.mediaSourceId
-                let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-                    videoCodec: decision.videoCodec,
-                    audioCodec: decision.audioCodec,
-                    sourceContainer: decision.container)
-                transferRoute = JellyfinDownloadRouter.route(intent: .compatible,
-                                                             videoCodec: decision.videoCodec,
-                                                             audioCodec: decision.audioCodec,
-                                                             container: decision.container)
-                let routeIsRemux = transferRoute == .compatibleRemux
+                let routeDecision = JellyfinDownloadRouter.compatibleDecision(videoCodec: decision.videoCodec,
+                                                                               audioCodec: decision.audioCodec,
+                                                                               container: decision.container)
+                let eligibility = routeDecision.eligibility
+                transferRoute = routeDecision.route
+                let routeIsRemux = routeDecision.isRemux
                 recordDownloadDiagnostic("downloads.jellyfin_decision", fields: [
                     "download_id": .identifier(ratingKey),
                     "negotiated_direct_play": .bool(decision.supportsDirectPlay),
                     "negotiated_direct_stream": .bool(decision.supportsDirectStream),
                     "container": .label(decision.container ?? "unknown"),
-                    "route": .label(routeIsRemux ? "compatible_remux" : "transcode"),
+                    "route": .label(transferRoute.diagnosticLabel),
                     "reasons": .label(decision.transcodeReasons.joined(separator: ",")),
                 ])
                 if routeIsRemux, let videoCodec = eligibility.videoCodec {
@@ -280,6 +286,19 @@ extension DownloadManager {
                                          mediaIndex: Int = 0,
                                          partIndex: Int = 0) async {
         await downloadJellyfin(item, choice: .original, mediaIndex: mediaIndex, partIndex: partIndex)
+    }
+
+    private static func jellyfinDownloadIntent(for choice: DownloadChoice) -> JellyfinDownloadRouter.Intent {
+        switch choice {
+        case .original, .existingVersion:
+            // `.existingVersion` is a Plex-only UI lane; retry code can still map it safely to
+            // Jellyfin's static-original route if it reaches this backend.
+            return .original
+        case .optimize:
+            return .transcode
+        case .optimizeCompatible:
+            return .compatible
+        }
     }
 
     /// Best-effort cache of Jellyfin trickplay assets for offline scrubbing (#79). Fetches the

@@ -38,6 +38,24 @@ public enum JellyfinDownloadRouter {
         public var usesByteRangeCheckpoint: Bool {
             !isLiveForwardOnly
         }
+
+        public var diagnosticLabel: String {
+            switch self {
+            case .staticOriginal:
+                return "static_original"
+            case .compatibleRemux:
+                return "compatible_remux"
+            case .transcode:
+                return "transcode"
+            }
+        }
+    }
+
+    public struct CompatibleDecision: Sendable, Equatable {
+        public let route: Route
+        public let eligibility: CompatibleRemuxEligibility
+
+        public var isRemux: Bool { route == .compatibleRemux }
     }
 
     public static func route(intent: Intent,
@@ -50,11 +68,20 @@ public enum JellyfinDownloadRouter {
         case .transcode:
             return .transcode
         case .compatible:
-            let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-                videoCodec: videoCodec,
-                audioCodec: audioCodec,
-                sourceContainer: container)
-            return eligibility.isEligible ? .compatibleRemux : .transcode
+            return compatibleDecision(videoCodec: videoCodec,
+                                      audioCodec: audioCodec,
+                                      container: container).route
         }
+    }
+
+    public static func compatibleDecision(videoCodec: String?,
+                                          audioCodec: String?,
+                                          container: String?) -> CompatibleDecision {
+        let eligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
+            videoCodec: videoCodec,
+            audioCodec: audioCodec,
+            sourceContainer: container)
+        return CompatibleDecision(route: eligibility.isEligible ? .compatibleRemux : .transcode,
+                                  eligibility: eligibility)
     }
 }

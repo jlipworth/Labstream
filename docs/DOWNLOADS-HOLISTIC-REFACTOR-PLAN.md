@@ -66,6 +66,10 @@ snapshot derivation.
   are static downloads that skip optimizer/preflight, explicit optimizer targets pass
   through unchanged, and Jellyfin/Emby-style compatible intent maps onto Plex's optimizer
   fallback target.
+- **Done: Slice 4c Jellyfin route-planner wiring.** All Jellyfin entry routes now flow
+  through `JellyfinDownloadRouter`, including original/static, explicit transcode, and
+  compatible-remux fallback. The router now also carries stable diagnostic labels and the
+  compatible-remux eligibility needed by the request builder.
 
 ## Target module boundaries
 
