@@ -13,6 +13,13 @@ struct EmbyDownloadRouterTests {
         Part(id: 1, key: "/library/parts/1/file", file: nil, size: 123, container: container)
     }
 
+    @Test func choiceIntentMapping() {
+        #expect(EmbyDownloadRouter.intent(for: .original) == .original)
+        #expect(EmbyDownloadRouter.intent(for: .existingVersion) == .existingVersion)
+        #expect(EmbyDownloadRouter.intent(for: .optimizeCompatible) == .compatible)
+        #expect(EmbyDownloadRouter.intent(for: .optimize(targetName: "1080p 8 Mbps")) == .transcode)
+    }
+
     // MARK: - container gate
 
     @Test func containerGateAcceptsLocallyPlayablePartEvenWithoutNegotiatedContainer() {

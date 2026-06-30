@@ -84,7 +84,7 @@ extension DownloadManager {
 
         let staticPart = chosenMedia?.part[safe: partIndex]
         let initialRoute = PlexDownloadRouter.initialRoute(
-            intent: Self.plexDownloadIntent(for: choice),
+            intent: PlexDownloadRouter.intent(for: choice),
             hasPart: staticPart != nil,
             compatibleFallbackTarget: Self.originalFallbackOptimizeTarget()
         )
@@ -150,19 +150,6 @@ extension DownloadManager {
         case .optimize(let targetName):
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
                                              metadata: metadata, session: backendSession)
-        }
-    }
-
-    private static func plexDownloadIntent(for choice: DownloadChoice) -> PlexDownloadRouter.Intent {
-        switch choice {
-        case .original:
-            return .original
-        case .existingVersion:
-            return .existingVersion
-        case .optimize(let targetName):
-            return .optimize(targetName: targetName)
-        case .optimizeCompatible:
-            return .optimizeCompatible
         }
     }
 
