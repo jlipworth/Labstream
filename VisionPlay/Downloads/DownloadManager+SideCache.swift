@@ -289,19 +289,20 @@ extension DownloadManager {
             guard let thumb = chapter.thumb, !thumb.isEmpty else { continue }
             switch backend {
             case .plex:
-                guard let url = Self.chapterImageTranscodeURL(thumb: thumb, server: server, token: token) else { continue }
+                guard let url = PlexPhotoTranscode.url(server: server, token: token, imagePath: thumb,
+                                                       width: 480, height: 270) else { continue }
                 requests.append((index, URLRequest(url: url)))
             case .jellyfin:
-                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "jellyfin"),
-                      let url = try? JellyfinLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
+                guard let parsed = DownloadSideAssetPolicy.parsedSyntheticChapterImageKey(thumb, scheme: "jellyfin"),
+                      let url = try? JellyfinLibrary.chapterImageURL(server: server, itemId: parsed.itemID,
                                                                     chapterIndex: parsed.index, tag: parsed.tag,
                                                                     width: 480, height: 270) else { continue }
                 var req = JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity.jellyfin)
                 req.setValue("*/*", forHTTPHeaderField: "Accept")
                 requests.append((index, req))
             case .emby:
-                guard let parsed = Self.parsedSyntheticChapterImageKey(thumb, scheme: "emby"),
-                      let url = try? EmbyLibrary.chapterImageURL(server: server, itemId: parsed.itemId,
+                guard let parsed = DownloadSideAssetPolicy.parsedSyntheticChapterImageKey(thumb, scheme: "emby"),
+                      let url = try? EmbyLibrary.chapterImageURL(server: server, itemId: parsed.itemID,
                                                                chapterIndex: parsed.index, tag: parsed.tag,
                                                                width: 480, height: 270) else { continue }
                 let userId = appModel.backendSession(for: .emby)?.userID
@@ -359,30 +360,5 @@ extension DownloadManager {
                 self?.refreshRecords()
             }
         }
-    }
-
-    /// `/photo/:/transcode` URL for a Plex chapter `thumb` key, 16:9 landscape — the same shape the
-    /// online `PlaybackController.chapterThumbnailRequest` builds for the Chapters rail.
-    private static func chapterImageTranscodeURL(thumb: String, server: URL, token: String) -> URL? {
-        guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
-                                        resolvingAgainstBaseURL: false) else { return nil }
-        PlexURLQueryEncoder.replaceQueryItems([
-            .init(name: "url", value: thumb),
-            .init(name: "width", value: "480"),
-            .init(name: "height", value: "270"),
-            .init(name: "minSize", value: "1"),
-            .init(name: "upscale", value: "1"),
-            .init(name: "X-Plex-Token", value: token),
-        ], in: &comps)
-        return comps.url
-    }
-
-    /// Parse a synthetic `<scheme>://item/{itemId}/Chapter/{index}?tag=` chapter-image key (Jellyfin
-    /// or Emby). Mirrors the private parsers in `PlaybackController` / `EmbyChapterTrickPlayThumbnailProvider`.
-    static func parsedSyntheticChapterImageKey(_ imagePath: String, scheme: String) -> (itemId: String, index: Int, tag: String?)? {
-        guard let parsed = DownloadSideAssetPolicy.parsedSyntheticChapterImageKey(imagePath, scheme: scheme) else {
-            return nil
-        }
-        return (parsed.itemID, parsed.index, parsed.tag)
     }
 }

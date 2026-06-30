@@ -382,6 +382,10 @@ snapshot derivation.
   `DownloadRowDisplayPolicy` now owns the row progress-value composition for server-prep-then-static
   handoff rows, including the pre-byte server progress clamp below 100%. The manager supplies the
   current server-prep progress and transfer fraction without owning that display rule.
+- **Done: Slice 7l chapter side-cache wrapper cleanup.**
+  Chapter-image side caching now calls the shared `PlexPhotoTranscode` URL builder and
+  `DownloadSideAssetPolicy` synthetic-key parser directly. The side-cache file still owns request
+  authentication and IO, but no longer carries duplicate pure URL/parser wrappers for chapter images.
 
 ## Target module boundaries
 
