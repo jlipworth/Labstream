@@ -133,6 +133,11 @@ snapshot derivation.
   background URLSession tasks back to download row keys. It preserves the task-description-first
   contract, legacy Plex/Jellyfin URL fallbacks, and the important Plex `/library/parts/...`
   limitation that cannot infer the source rating key without an explicit task description.
+- **Done: Slice 6i background progress policy extraction.**
+  `BackgroundDownloadProgressPolicy` now owns transfer-progress decisions that were embedded in
+  `BackgroundDownloadSession`: relaunch expected-byte recovery from persisted progress, durable
+  range-progress diagnostic throttling, and UI progress refresh throttling while preserving terminal
+  completion updates.
 
 ## Target module boundaries
 
@@ -150,6 +155,7 @@ snapshot derivation.
   `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`,
   `StaticRangeSegmentStrategyPolicy`, `StaticRangeReattachPolicy`,
   `BackgroundDownloadTaskIdentity`,
+  `BackgroundDownloadProgressPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
