@@ -53,7 +53,7 @@ extension DownloadManager {
         }
 
         let chosenMedia = item.media?[safe: mediaIndex]
-        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: chosenMedia)
+        let resolutionLabel = DownloadPresetPolicy.displayResolutionLabel(choice: choice, chosenMedia: chosenMedia)
         let optimizeTargetName: String?
         if case .optimize(let targetName) = choice {
             optimizeTargetName = targetName

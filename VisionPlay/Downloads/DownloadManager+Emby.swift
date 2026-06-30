@@ -65,7 +65,7 @@ extension DownloadManager {
         let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
         let media = selection.media
         let part = selection.part
-        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
+        let resolutionLabel = DownloadPresetPolicy.displayResolutionLabel(choice: choice, chosenMedia: media)
         // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
         // onto the row after the decision is known (see below).
         let embyMediaSourceHint = mediaSourceIDOverride ?? selection.mediaSourceID
@@ -137,7 +137,7 @@ extension DownloadManager {
         // ACTUAL downloaded resolution, not the original's. Only for server-prepared/existing
         // versions; a genuine original keeps its primary-media label.
         if DownloadChoicePolicy.isServerPreparedVersion(for: choice),
-           let correctedResolution = Self.resolutionLabel(forHeight: decision.height) {
+           let correctedResolution = DownloadResolutionLabel.label(width: nil, height: decision.height) {
             metadata.resolutionLabel = correctedResolution
         }
 
@@ -243,9 +243,9 @@ extension DownloadManager {
                 // transcode URL with the minted PlaySessionId instead (see transcodedDownloadRequest).
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 // Transcode is rendered as it downloads → estimate, no Content-Length.
-                let profile = Self.jellyfinTranscodeProfile(named: {
+                let profile = DownloadPresetPolicy.jellyfinTranscodeProfile(named: {
                     if case .optimize(let targetName) = choice { return targetName }
-                    return Self.jellyfinDefaultDownloadPreset
+                    return DownloadPresetPolicy.jellyfinDefaultDownloadPreset
                 }())
                 request = try EmbyLibrary.transcodedDownloadRequest(
                     server: server, token: token, identity: identity, userId: userId,

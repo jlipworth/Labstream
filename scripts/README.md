@@ -14,6 +14,14 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
 - `worktree-sim.sh` — provisions one Vision Pro simulator per git worktree. Use `SIMID=$(scripts/worktree-sim.sh id)` and target `"$SIMID"`, not `booted`.
 - `simclick.swift` — local simulator click helper.
 - `probe-plex-range-drop.sh` — simulator-only Plex download recoverability probe. It launches the DEBUG app in the worktree simulator with the range-drop URLProtocol enabled, using the simulator's signed-in app state and no token env file. Provide `VISIONPLAY_PROBE_QUERY` or `VISIONPLAY_PROBE_RATING_KEY`; logs go under `build/probes/plex-range-drop/`. Add `--keep-app-running` during iterative refactor work when you want the probe to leave the app alive after the observation window. The probe exits non-zero if logs show only item resolution/route selection without any transfer start or observation evidence.
+- `probe-jellyfin-download.sh` — simulator-only Jellyfin download probe. It launches the DEBUG app
+  with the simulator's signed-in Jellyfin session, can run original/static or optimize/transcode
+  lanes, supports the same DEBUG range-drop argument for static range downloads, and writes logs
+  under `build/probes/jellyfin-download/`.
+- `probe-emby-download.sh` — simulator-only Emby download probe. It launches the DEBUG app with the
+  simulator's signed-in Emby session, can dry-run route negotiation, refresh/poll existing converted
+  sources, or start the optimize/convert/download lane, and writes logs under
+  `build/probes/emby-download/`.
 - `deploy-to-device.sh` — signed build/install wrapper for the paired Apple Vision Pro. Mutates the device install and may replace another app with the same bundle id.
 - `headset-evidence.sh` — read-only devicectl evidence collector for a paired Apple Vision Pro after a user-driven repro; writes local bundles under `build/headset-evidence/` and may contain private artifacts that must be redacted before sharing.
 

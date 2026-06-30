@@ -1608,7 +1608,7 @@ public final class DownloadManager {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
         let mediaBytes = DownloadStorageEstimatePolicy.estimatedMediaBytes(
-            source: Self.storageEstimateMediaSource(for: choice),
+            source: DownloadPresetPolicy.storageEstimateMediaSource(for: choice),
             sourcePartBytes: part?.size,
             durationMs: item.duration)
         // Add the thumbnail-cache estimate for every backend that caches one (not just Jellyfin) so
@@ -1624,11 +1624,6 @@ public final class DownloadManager {
         return DownloadStorageEstimatePolicy.totalBytes(mediaBytes: mediaBytes,
                                                         sideAssetBytes: sideAssetBytes)
     }
-
-    private static func storageEstimateMediaSource(for choice: DownloadChoice) -> DownloadStorageEstimatePolicy.MediaSource {
-        DownloadPresetPolicy.storageEstimateMediaSource(for: choice)
-    }
-
     func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
         guard let message = storageLimitMessage(adding: expectedBytes) else { return false }
         recordDownloadDiagnostic("downloads.enqueue_failed", fields: [
@@ -2326,43 +2321,6 @@ public final class DownloadManager {
                                                 downloadLane: downloadLane,
                                                 serverPreparedVersion: serverPreparedVersion)
     }
-
-    /// Human-readable resolution label for the chosen media version, for the offline-library
-    /// caption only (descriptive, never a transcode cap). Derived from the media's pixel
-    /// height with the common consumer-resolution buckets; falls back to "W×H" then nil.
-    static func resolutionLabel(for media: Media?) -> String? {
-        guard let media else { return nil }
-        return DownloadResolutionLabel.label(width: media.width, height: media.height)
-    }
-
-    /// Resolution label to STORE/DISPLAY on the offline row.
-    ///
-    /// For a `.optimize` choice whose target encodes a resolution (the custom "720p …"/"1080p …"
-    /// profiles, or the built-in server targets), this is the TARGET resolution — NOT the source.
-    /// Showing the source was misleading: a "720p 4 Mbps" job against a 4K source displayed "4K",
-    /// implying a 4K file the user is not getting. For DIRECT (`.original`) downloads and the
-    /// "Original"/"Original Quality" optimize target (no downscale), the source resolution IS
-    /// correct, so we keep it. Falls back to the source whenever the target's resolution can't be
-    /// derived — we never fabricate a resolution.
-    static func displayResolutionLabel(choice: DownloadChoice, chosenMedia: Media?) -> String? {
-        DownloadPresetPolicy.displayResolutionLabel(choice: choice, chosenMedia: chosenMedia)
-    }
-
-    /// Map an optimize target's `"WIDTHxHEIGHT"` videoResolution (e.g. "1280x720") to the same
-    /// human bucket label as `resolutionLabel(for:)` ("4K"/"1080p"/"720p"/"480p"/"W×H"). Accepts
-    /// the lowercase `x` separator the MediaSettings strings use. Returns nil for an unparseable
-    /// value so the caller can fall back to the source label.
-    static func resolutionLabel(forVideoResolution raw: String) -> String? {
-        DownloadResolutionLabel.label(forVideoResolution: raw)
-    }
-
-    /// Bucket a raw pixel height into the same human label as `resolutionLabel(for:)`. Used to label
-    /// a server-prepared/existing-version download by the CONVERTED source's real height (e.g. a 720p
-    /// copy of a 4K original) rather than the item's primary-source height. Returns nil for nil input.
-    static func resolutionLabel(forHeight height: Int?) -> String? {
-        DownloadResolutionLabel.label(forHeight: height)
-    }
-
     /// Whether the original source part is a good local-file download target. PMS may be able
     /// to stream/copy an MKV through HLS, but AVFoundation often cannot open that same MKV as a
     /// downloaded local file. Keep direct-original conservative and route other containers
@@ -2375,39 +2333,6 @@ public final class DownloadManager {
         let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
         return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")
     }
-
-    // #135 Stage 5c: `internal` so DownloadManager+PlexOptimize.swift can read a resolved custom
-    // preset's device profile + media settings when PUTting the optimize job.
-    typealias CustomDownloadProfile = DownloadPresetPolicy.CustomDownloadProfile
-
-    static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
-        DownloadPresetPolicy.customDownloadProfile(named: name)
-    }
-
-    static let plexOriginalQualityTargetName = DownloadPresetPolicy.plexOriginalQualityTargetName
-
-    static func isPlexOriginalQualityTarget(_ name: String) -> Bool {
-        DownloadPresetPolicy.isPlexOriginalQualityTarget(name)
-    }
-
-    // #135 Stage 5c: `internal` so DownloadManager+Jellyfin.swift can read the resolved preset's
-    // bitrate/dimension caps when building the transcoded-download request + size estimate.
-    typealias JellyfinTranscodeProfile = DownloadPresetPolicy.JellyfinTranscodeProfile
-
-    static let jellyfinDefaultDownloadPreset = DownloadPresetPolicy.jellyfinDefaultDownloadPreset
-
-    private static func jellyfinDownloadPreset(named name: String) -> String {
-        DownloadPresetPolicy.jellyfinDownloadPreset(named: name)
-    }
-
-    static func jellyfinTranscodeProfile(named name: String) -> JellyfinTranscodeProfile {
-        DownloadPresetPolicy.jellyfinTranscodeProfile(named: name)
-    }
-
-    private static func estimatedTranscodeBytes(for record: DownloadRecord) -> Int? {
-        DownloadPresetPolicy.estimatedTranscodeBytes(for: record)
-    }
-
     /// Unified download fraction for a row's bar + caption (#97), so Plex/Jellyfin/Emby
     /// all present progress the same way. Returns the EXACT `Content-Length` fraction when
     /// the server reported a size (`record.progress`), otherwise an ESTIMATED fraction
@@ -2425,7 +2350,7 @@ public final class DownloadManager {
                 return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(staticExpectedBytes), 1.0),
                                                         isEstimated: false)
             }
-            if let estimatedBytes = Self.estimatedTranscodeBytes(for: record), estimatedBytes > 0 {
+            if let estimatedBytes = DownloadPresetPolicy.estimatedTranscodeBytes(for: record), estimatedBytes > 0 {
                 return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(estimatedBytes),
                                                                   DownloadProgressDisplay.estimatedCeiling),
                                                         isEstimated: true)
@@ -2433,7 +2358,7 @@ public final class DownloadManager {
         }
         return DownloadProgressDisplay.fraction(progress: record.progress,
                                                 bytes: bytes,
-                                                estimatedTotalBytes: Self.estimatedTranscodeBytes(for: record))
+                                                estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record))
     }
 
     private func expectedDownloadBytes(for record: DownloadRecord, liveBytes: Int? = nil) -> Int? {
@@ -2442,7 +2367,7 @@ public final class DownloadManager {
             liveExpectedBytes: liveRangeProgress[record.ratingKey]?.expectedBytes,
             liveBytes: liveBytes,
             staticExpectedBytes: staticRangeExpectedBytes(for: record),
-            estimatedTranscodeBytes: Self.estimatedTranscodeBytes(for: record))
+            estimatedTranscodeBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record))
     }
 
     private func liveDisplayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
@@ -2626,7 +2551,7 @@ public final class DownloadManager {
                                                    baselinePartIDs: Set<Int>,
                                                    targetName: String,
                                                    sourceHeight: Int?) -> Part? {
-        let settings = customDownloadProfile(named: targetName)?.settings ?? mediaSettings(forTargetName: targetName)
+        let settings = DownloadPresetPolicy.customDownloadProfile(named: targetName)?.settings ?? mediaSettings(forTargetName: targetName)
         let targetDimensions = settings.videoResolution
             .flatMap(DownloadResolutionLabel.dimensions(forVideoResolution:))
         return OptimizedVersionMatch.candidate(
@@ -2634,7 +2559,7 @@ public final class DownloadManager {
             baselinePartIDs: baselinePartIDs,
             targetDimensions: targetDimensions,
             targetVideoKbps: settings.maxVideoBitrateKbps,
-            isOriginalQuality: isPlexOriginalQualityTarget(targetName),
+            isOriginalQuality: DownloadPresetPolicy.isPlexOriginalQualityTarget(targetName),
             sourceHeight: sourceHeight)
     }
 
