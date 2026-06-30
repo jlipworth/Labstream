@@ -128,6 +128,11 @@ snapshot derivation.
   byte-range URLSession tasks: requested offsets must match the durable partial checkpoint, and
   duplicate adopted tasks are replaced or suppressed using the same authoritative-task rule as live
   progress/finish handling.
+- **Done: Slice 6h background task identity extraction.**
+  `BackgroundDownloadTaskIdentity` now owns the pure best-effort mapping from surviving
+  background URLSession tasks back to download row keys. It preserves the task-description-first
+  contract, legacy Plex/Jellyfin URL fallbacks, and the important Plex `/library/parts/...`
+  limitation that cannot infer the source rating key without an explicit task description.
 
 ## Target module boundaries
 
@@ -144,6 +149,7 @@ snapshot derivation.
   `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
   `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`,
   `StaticRangeSegmentStrategyPolicy`, `StaticRangeReattachPolicy`,
+  `BackgroundDownloadTaskIdentity`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
