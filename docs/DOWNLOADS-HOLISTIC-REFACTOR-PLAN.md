@@ -118,6 +118,11 @@ snapshot derivation.
   `StaticRangeFinishedChunkPolicy` now owns the pure decision for finished chunks that race with
   pause/cancel: hard halts discard the temp, paused rows write then remain paused, and graceful
   checkpoint pauses preserve durable bounded/background chunks without starting the next range.
+- **Done: Slice 6f static range segment strategy policy.**
+  `StaticRangeSegmentStrategyPolicy` now owns the pure scene/background-event decision for choosing
+  foreground bounded checkpoint chunks versus background-owned checkpoint chunks. The app still
+  counts live candidates and logs diagnostics, but the off-head strategy/reason semantics are pinned
+  in PMSKit.
 
 ## Target module boundaries
 
@@ -132,8 +137,9 @@ snapshot derivation.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
   `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
-  `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`, `DownloadCompletionValidation`,
-  `DownloadRateEstimator`, aggregate stats, file inventory, text subtitle parsing.
+  `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`,
+  `StaticRangeSegmentStrategyPolicy`, `DownloadCompletionValidation`, `DownloadRateEstimator`,
+  aggregate stats, file inventory, text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 
