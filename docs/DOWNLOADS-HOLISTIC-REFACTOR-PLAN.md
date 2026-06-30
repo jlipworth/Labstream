@@ -99,6 +99,11 @@ snapshot derivation.
   and safe acceptance of URLSession's internally-resumed closed Range temps.
   `BackgroundDownloadSession` still owns URLSession/temp-file side effects, but its parsing
   semantics are pinned in PMSKit.
+- **Done: Slice 6b background completion gate extraction.**
+  `BackgroundDownloadCompletionGate` now owns the pure state machine for holding app-delegate
+  background URLSession completion handlers until durable append/finalization work drains.
+  `BackgroundDownloadSession` still calls the app registry and owns locking, but the defer/fire
+  semantics are unit-tested outside the delegate.
 
 ## Target module boundaries
 
@@ -112,8 +117,8 @@ snapshot derivation.
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
-  `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
-  text subtitle parsing.
+  `BackgroundDownloadCompletionGate`, `DownloadCompletionValidation`, `DownloadRateEstimator`,
+  aggregate stats, file inventory, text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 
