@@ -500,7 +500,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         continuousRangeRemainderReason = reason
         let candidateCount = shouldPreferBackgroundCheckpoint
             ? rangeInflight.values.filter {
-                Self.isDurableCheckpointSegment($0.segmentKind) && $0.request != nil
+                RangeTransferHTTPPolicy.isDurableCheckpointSegment($0.segmentKind) && $0.request != nil
             }.count
             : 0
         lock.unlock()
@@ -538,7 +538,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             self.lock.lock()
             let candidateIDs = self.rangeInflight.compactMap { element -> Int? in
                 let (id, entry) = element
-                guard Self.isDurableCheckpointSegment(entry.segmentKind), entry.request != nil else { return nil }
+                guard RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind), entry.request != nil else { return nil }
                 return id
             }
             for id in candidateIDs {
@@ -673,10 +673,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // durable partial size (this chunk has not been appended yet); expected is
                     // recovered from the persisted bytes/progress.
                     let partialSize = self.fileSize(at: destination) ?? 0
-                    let requestedOffset = Self.rangeRequestStart(from: task.originalRequest)
-                        ?? Self.rangeRequestStart(from: task.currentRequest)
-                    let reattachedSegmentKind = Self.segmentKind(
-                        for: task.originalRequest ?? task.currentRequest
+                    let requestedOffset = RangeTransferHTTPPolicy.rangeRequestStart(from: task.originalRequest)
+                        ?? RangeTransferHTTPPolicy.rangeRequestStart(from: task.currentRequest)
+                    let reattachedRequest = task.originalRequest ?? task.currentRequest
+                    let reattachedSegmentKind = RangeTransferHTTPPolicy.segmentKind(
+                        rangeHeader: reattachedRequest?.value(forHTTPHeaderField: "Range"),
+                        foregroundChunkSize: Self.rangeChunkSize
                     )
                     if let requestedOffset, requestedOffset != partialSize {
                         // The durable partial is the only checkpoint we trust. A reappearing task
@@ -876,45 +878,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         let expanded = candidates.flatMap { [$0, "jellyfin:\($0)"] }
         return expanded.first { knownKeys.contains($0) }
-    }
-
-    private static func isDurableCheckpointSegment(_ kind: RangeTransferSegmentKind) -> Bool {
-        kind == .boundedCheckpoint || kind == .backgroundCheckpoint
-    }
-
-    private static func segmentKind(for request: URLRequest?) -> RangeTransferSegmentKind {
-        guard let rangeHeader = request?.value(forHTTPHeaderField: "Range") else {
-            return .boundedCheckpoint
-        }
-        let normalized = rangeHeader
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard normalized.hasPrefix("bytes=") else { return .boundedCheckpoint }
-        let byteSpec = normalized
-            .dropFirst("bytes=".count)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Treat only a single open-ended byte-range (`bytes=<offset>-`) as the #169 continuous
-        // remainder. Multi-range or closed ranges are durable checkpoints. Closed ranges larger
-        // than the foreground chunk size are older/larger off-head checkpoint segments.
-        if byteSpec.range(of: #"^\d+-$"#, options: .regularExpression) != nil {
-            return .continuousRemainder
-        }
-        if let length = Self.closedRangeLength(byteSpec), length > Self.rangeChunkSize {
-            return .backgroundCheckpoint
-        }
-        return .boundedCheckpoint
-    }
-
-    private static func closedRangeLength(_ byteSpec: String) -> Int? {
-        guard byteSpec.range(of: #"^\d+-\d+$"#, options: .regularExpression) != nil else {
-            return nil
-        }
-        let bounds = byteSpec.split(separator: "-", maxSplits: 1)
-        guard bounds.count == 2,
-              let lower = Int(bounds[0]),
-              let upper = Int(bounds[1]),
-              upper >= lower else { return nil }
-        return upper - lower + 1
     }
 
     /// Force the lazy background session to be created (and thus its delegate bound),
@@ -1385,7 +1348,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func pauseRangeTask(_ task: URLSessionTask, ratingKey: String) {
         lock.lock()
         if let entry = rangeInflight[task.taskIdentifier],
-           Self.isDurableCheckpointSegment(entry.segmentKind) {
+           RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind) {
             gracefulRangePauseKeys.insert(ratingKey)
             lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_pause_after_checkpoint", fields: [
@@ -1569,7 +1532,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.unlock()
 
             let total = rangeEntry.baseOffset + chunkBytesWritten
-            let responseExpectedBytes = Self.contentRangeTotal(from: downloadTask.response as? HTTPURLResponse)
+            let responseExpectedBytes = RangeTransferHTTPPolicy.contentRangeTotal(from: downloadTask.response as? HTTPURLResponse)
             let effectiveExpectedBytes = responseExpectedBytes ?? rangeEntry.expectedBytes
             if responseExpectedBytes != nil {
                 store.setSourcePartSize(ratingKey: rangeEntry.ratingKey, effectiveExpectedBytes)
@@ -1871,7 +1834,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // reported total. If the server says more bytes exist, keep requesting from the real
             // checkpoint instead of validating a truncated partial.
             let durableBytes = fileSize(at: entry.destination) ?? entry.baseOffset
-            let contentRangeTotal = Self.contentRangeTotal(from: http)
+            let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
             if let contentRangeTotal {
                 store.setSourcePartSize(ratingKey: entry.ratingKey, contentRangeTotal)
             }
@@ -1914,9 +1877,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 failRangeMove(entry: entry, error: error)
                 return
             }
-            let validator = Self.rangeValidator(from: http)
-            let contentRangeStart = Self.contentRangeStart(from: http)
-            let contentRangeTotal = Self.contentRangeTotal(from: http)
+            let validator = RangeTransferHTTPPolicy.rangeValidator(from: http)
+            let contentRangeStart = RangeTransferHTTPPolicy.contentRangeStart(from: http)
+            let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
             beginPendingBackgroundCompletionOperation()
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
                                            ratingKey: entry.ratingKey,
@@ -1946,7 +1909,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let preserveHaltedChunk = halted
             && shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
         let pauseAfterCheckpoint: Bool
-        if Self.isDurableCheckpointSegment(entry.segmentKind) {
+        if RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind) {
             pauseAfterCheckpoint = consumeGracefulRangePause(ratingKey: entry.ratingKey)
         } else {
             // If a continuous remainder happens to finish before the async pause/cancel callback
@@ -2192,53 +2155,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // stash move is an O(1) rename. Unique per task id (unique within a session) and deleted
         // after the append/replace consumes it.
         fileManager.temporaryDirectory.appendingPathComponent("vp-range-chunk-\(taskIdentifier)")
-    }
-
-    /// HTTP validator for `If-Range`: prefer a STRONG `ETag`, fall back to `Last-Modified`.
-    ///
-    /// A weak validator (`W/"…"`) is deliberately rejected: RFC 7233 requires the *strong*
-    /// comparison for `If-Range`, so a `W/`-prefixed ETag never matches and the server answers every
-    /// post-first chunk with `200` (whole resource) → `replaceWhole` discards the durable partial and
-    /// re-fetches the entire file, silently defeating the #169 checkpoint on flaky links. Skipping it
-    /// to `Last-Modified` (or nil) keeps the checkpoint intact when a usable validator exists.
-    private static func rangeValidator(from response: HTTPURLResponse?) -> String? {
-        guard let response else { return nil }
-        if let etag = response.value(forHTTPHeaderField: "ETag")?
-            .trimmingCharacters(in: .whitespaces),
-           !etag.isEmpty, !etag.hasPrefix("W/"), !etag.hasPrefix("w/") {
-            return etag
-        }
-        if let lastModified = response.value(forHTTPHeaderField: "Last-Modified"), !lastModified.isEmpty {
-            return lastModified
-        }
-        return nil
-    }
-
-    /// Lower bound of a `Content-Range: bytes <start>-<end>/<total>` header, or nil if absent/unparseable.
-    private static func contentRangeStart(from response: HTTPURLResponse?) -> Int? {
-        guard let value = response?.value(forHTTPHeaderField: "Content-Range"),
-              let spec = value.split(separator: " ").last,          // "<start>-<end>/<total>"
-              let start = spec.split(separator: "-").first else { return nil }
-        return Int(start)
-    }
-
-    /// Total size from `Content-Range: bytes <start>-<end>/<total>`, or nil for `*`/absent.
-    private static func contentRangeTotal(from response: HTTPURLResponse?) -> Int? {
-        guard let value = response?.value(forHTTPHeaderField: "Content-Range"),
-              let spec = value.split(separator: " ").last,
-              let total = spec.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).last,
-              total != "*" else { return nil }
-        return Int(total)
-    }
-
-    private static func rangeRequestStart(from request: URLRequest?) -> Int? {
-        guard let value = request?.value(forHTTPHeaderField: "Range")?
-            .trimmingCharacters(in: .whitespaces),
-              value.lowercased().hasPrefix("bytes=") else { return nil }
-        let rangeSpec = value.dropFirst("bytes=".count)
-        guard let start = rangeSpec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false).first,
-              !start.isEmpty else { return nil }
-        return Int(start)
     }
 
     private func expectedRangeSegmentBytes(entry: RangeTransfer) -> Int? {
