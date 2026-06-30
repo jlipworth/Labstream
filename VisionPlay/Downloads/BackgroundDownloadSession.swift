@@ -2136,8 +2136,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Defense in depth alongside the `finishRangeChunk` halt gate: never start a chunk behind a
         // concurrent cancel/pause.
         lock.lock(); let halted = haltedRangeKeys.contains(entry.ratingKey); lock.unlock()
-        if halted { return }
-        guard let request = entry.request else {
+        let disposition = StaticRangeContinuationPolicy.afterFinishedChunk(
+            isHalted: halted,
+            hasRequest: entry.request != nil
+        )
+        switch disposition {
+        case .halted:
+            return
+        case .requestNeeded(let reason):
             AppDiagnostics.record(.downloads, "downloads.range_chunk_relaunch_pause", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "segment_kind": .label(entry.segmentKind.rawValue),
@@ -2147,24 +2153,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // again before DownloadManager rebuilds the authenticated request, launch reconciliation
             // can derive that this non-user-paused row should continue from the durable checkpoint.
             store.setStatus(ratingKey: entry.ratingKey, .queued)
-            onRangeRequestNeeded?(entry.ratingKey, .adoptedChunkFinished)
+            onRangeRequestNeeded?(entry.ratingKey, reason)
             return
-        }
-        do {
-            let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
-            try startRangeChunk(ratingKey: entry.ratingKey, with: request, to: entry.destination,
-                                expectedBytes: entry.expectedBytes, resetsRetryCount: false,
-                                holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion)
-        } catch {
-            if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
-                                               error: error,
-                                               context: "continue_chunk") {
+        case .startInSession:
+            guard let request = entry.request else { return }
+            do {
+                let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
+                try startRangeChunk(ratingKey: entry.ratingKey, with: request, to: entry.destination,
+                                    expectedBytes: entry.expectedBytes, resetsRetryCount: false,
+                                    holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion)
+            } catch {
+                if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
+                                                   error: error,
+                                                   context: "continue_chunk") {
+                    onChange?()
+                    return
+                }
+                store.setStatus(ratingKey: entry.ratingKey, .paused)
+                onError?(entry.ratingKey, .interruptedResumable)
                 onChange?()
-                return
             }
-            store.setStatus(ratingKey: entry.ratingKey, .paused)
-            onError?(entry.ratingKey, .interruptedResumable)
-            onChange?()
+        case .failExhausted:
+            return
         }
     }
 
@@ -2180,9 +2190,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let retryAttempt = staticRangeRetryBudget.recordOffsetMismatch(downloadID: entry.ratingKey)
         lock.unlock()
 
-        if halted { return true }
-
-        guard !retryAttempt.isExhausted else {
+        let disposition = StaticRangeContinuationPolicy.afterOffsetMismatch(
+            isHalted: halted,
+            retryAttempt: retryAttempt,
+            hasRequest: entry.request != nil
+        )
+        switch disposition {
+        case .halted:
+            return true
+        case .failExhausted:
             lock.lock(); staticRangeRetryBudget.resetOffsetMismatch(downloadID: entry.ratingKey); lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry_exhausted", fields: [
                 "download_id": .identifier(entry.ratingKey),
@@ -2196,53 +2212,62 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes_exact": .int(durableBytes),
             ])
             return false
-        }
-
-        AppDiagnostics.record(.downloads, "downloads.range_offset_retry", fields: [
-            "download_id": .identifier(entry.ratingKey),
-            "segment_kind": .label(entry.segmentKind.rawValue),
-            "attempt": .int(retryAttempt.attempt),
-            "expected_offset": .bytes(entry.baseOffset),
-            "expected_offset_exact": .int(entry.baseOffset),
-            "server_offset": .bytes(serverOffset),
-            "server_offset_exact": .int(serverOffset ?? -1),
-            "bytes": .bytes(durableBytes),
-            "bytes_exact": .int(durableBytes),
-        ])
-
-        guard let request = entry.request else {
+        case .requestNeeded(let reason):
+            AppDiagnostics.record(.downloads, "downloads.range_offset_retry", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "segment_kind": .label(entry.segmentKind.rawValue),
+                "attempt": .int(retryAttempt.attempt),
+                "expected_offset": .bytes(entry.baseOffset),
+                "expected_offset_exact": .int(entry.baseOffset),
+                "server_offset": .bytes(serverOffset),
+                "server_offset_exact": .int(serverOffset ?? -1),
+                "bytes": .bytes(durableBytes),
+                "bytes_exact": .int(durableBytes),
+            ])
             // Relaunch-adopted chunk: the bad temp is gone and the durable partial remains the
             // checkpoint, but this object lacks auth headers. Persist an active continuation intent
             // so DownloadManager rebuilds the backend-owned request and resumes automatically.
             store.setStatus(ratingKey: entry.ratingKey, .queued)
-            onRangeRequestNeeded?(entry.ratingKey, .adoptedChunkFailed)
+            onRangeRequestNeeded?(entry.ratingKey, reason)
             onChange?()
             return true
-        }
-
-        do {
-            let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
-            try startRangeChunk(ratingKey: entry.ratingKey,
-                                with: request,
-                                to: entry.destination,
-                                expectedBytes: entry.expectedBytes,
-                                resetsRetryCount: false,
-                                holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion)
-            onChange?()
-            return true
-        } catch {
-            if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
-                                               error: error,
-                                               context: "offset_retry") {
+        case .startInSession:
+            AppDiagnostics.record(.downloads, "downloads.range_offset_retry", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "segment_kind": .label(entry.segmentKind.rawValue),
+                "attempt": .int(retryAttempt.attempt),
+                "expected_offset": .bytes(entry.baseOffset),
+                "expected_offset_exact": .int(entry.baseOffset),
+                "server_offset": .bytes(serverOffset),
+                "server_offset_exact": .int(serverOffset ?? -1),
+                "bytes": .bytes(durableBytes),
+                "bytes_exact": .int(durableBytes),
+            ])
+            guard let request = entry.request else { return false }
+            do {
+                let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
+                try startRangeChunk(ratingKey: entry.ratingKey,
+                                    with: request,
+                                    to: entry.destination,
+                                    expectedBytes: entry.expectedBytes,
+                                    resetsRetryCount: false,
+                                    holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion)
                 onChange?()
                 return true
+            } catch {
+                if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
+                                                   error: error,
+                                                   context: "offset_retry") {
+                    onChange?()
+                    return true
+                }
+                AppDiagnostics.record(.downloads, "downloads.range_offset_retry_failed", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "attempt": .int(retryAttempt.attempt),
+                    "error": .error(error),
+                ])
+                return false
             }
-            AppDiagnostics.record(.downloads, "downloads.range_offset_retry_failed", fields: [
-                "download_id": .identifier(entry.ratingKey),
-                "attempt": .int(retryAttempt.attempt),
-                "error": .error(error),
-            ])
-            return false
         }
     }
 
@@ -2264,12 +2289,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         try? fileManager.removeItem(at: entry.destination)
         store.clearRangeValidator(ratingKey: entry.ratingKey)
         store.updateProgress(ratingKey: entry.ratingKey, bytes: 0, progress: 0)
-        if halted { return }
-        // Bound the loop: a validator that keeps changing per-response (mechanism certain, e.g. a
-        // PlexOptimize Part still being written, or a load-balanced/proxied ETag) would otherwise spin
-        // forever re-downloading from 0 with zero forward progress. After N consecutive restarts with
-        // no successful append, fail clearly instead of livelocking.
-        if retryAttempt.isExhausted {
+        let disposition = StaticRangeContinuationPolicy.afterValidatorChange(
+            isHalted: halted,
+            retryAttempt: retryAttempt,
+            hasRequest: entry.request != nil
+        )
+        switch disposition {
+        case .halted:
+            return
+        case .failExhausted:
+            // Bound the loop: a validator that keeps changing per-response (mechanism certain, e.g. a
+            // PlexOptimize Part still being written, or a load-balanced/proxied ETag) would otherwise spin
+            // forever re-downloading from 0 with zero forward progress. After N consecutive restarts with
+            // no successful append, fail clearly instead of livelocking.
             lock.lock()
             staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
             lock.unlock()
@@ -2280,33 +2312,32 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             store.setStatus(ratingKey: entry.ratingKey, .failed)
             onError?(entry.ratingKey, .transferFailed("The source file kept changing during download."))
             onChange?()
-            return
-        }
-        guard let request = entry.request else {
+        case .requestNeeded(let reason):
             // Relaunch-adopted chunk: no in-memory request to rebuild auth headers, and the stale
             // partial has already been discarded. Persist active restart intent before the in-memory
             // callback so a second app kill still auto-restarts from byte 0 on the next launch.
             store.setStatus(ratingKey: entry.ratingKey, .queued)
-            onRangeRequestNeeded?(entry.ratingKey, .validatorChanged)
-            return
-        }
-        do {
-            // The partial was just deleted, so `startRangeChunk` derives offset 0 and pins a fresh
-            // validator on the new first chunk.
-            let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
-            try startRangeChunk(ratingKey: entry.ratingKey, with: request, to: entry.destination,
-                                expectedBytes: entry.expectedBytes, resetsRetryCount: false,
-                                holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion)
-        } catch {
-            if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
-                                               error: error,
-                                               context: "validator_restart") {
+            onRangeRequestNeeded?(entry.ratingKey, reason)
+        case .startInSession:
+            guard let request = entry.request else { return }
+            do {
+                // The partial was just deleted, so `startRangeChunk` derives offset 0 and pins a fresh
+                // validator on the new first chunk.
+                let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
+                try startRangeChunk(ratingKey: entry.ratingKey, with: request, to: entry.destination,
+                                    expectedBytes: entry.expectedBytes, resetsRetryCount: false,
+                                    holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion)
+            } catch {
+                if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
+                                                   error: error,
+                                                   context: "validator_restart") {
+                    onChange?()
+                    return
+                }
+                store.setStatus(ratingKey: entry.ratingKey, .paused)
+                onError?(entry.ratingKey, .interruptedResumable)
                 onChange?()
-                return
             }
-            store.setStatus(ratingKey: entry.ratingKey, .paused)
-            onError?(entry.ratingKey, .interruptedResumable)
-            onChange?()
         }
     }
 
