@@ -86,6 +86,9 @@ public final class DownloadManager {
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
+    /// Physical headset launch can otherwise resume every interrupted static Range row at once.
+    /// Keep automatic scanner starts conservative; manual row Resume/Retry still bypasses this cap.
+    private let maxAutomaticStaticRangeResumes = 2
     /// App-level retry guard/presentation/handoff markers. The handoff sentinel prevents refresh
     /// cleanup from treating a transient `.failed` retry row as terminal before replacement work is
     /// seeded, while `retrying` still guards async retry continuations.
@@ -774,7 +777,18 @@ public final class DownloadManager {
     private func resumePendingStaticRangeDownloads() {
         let keys = staticRangeRecovery.resumablePendingKeys(isQueuePaused: isQueuePaused)
         guard !keys.isEmpty else { return }
-        for key in keys {
+        var remainingStarts = max(0, maxAutomaticStaticRangeResumes - session.diagnosticSnapshot().rangeInflightCount)
+        for key in keys.sorted() {
+            guard remainingStarts > 0 else {
+                recordDownloadDiagnostic("downloads.range_auto_resume_deferred", fields: [
+                    "download_id": .identifier(key),
+                    "reason": .label("automatic_range_limit"),
+                    "range_inflight_count": .int(session.diagnosticSnapshot().rangeInflightCount),
+                    "max_automatic": .int(maxAutomaticStaticRangeResumes),
+                ])
+                continue
+            }
+            remainingStarts -= 1
             resumeStaticRangeWhenReady(ratingKey: key, reason: "backend_ready")
         }
     }
@@ -1265,9 +1279,21 @@ public final class DownloadManager {
     /// partial (or byte 0). Rows whose background task DID survive are in `liveKeys` (already
     /// continuing) and skipped.
     private func resumeInterruptedStaticByteRangeDownloads(candidateKeys: [String], liveKeys: Set<String>) {
-        for ratingKey in candidateKeys where !liveKeys.contains(ratingKey) {
+        var remainingStarts = max(0, maxAutomaticStaticRangeResumes - session.diagnosticSnapshot().rangeInflightCount)
+        for ratingKey in candidateKeys.sorted() where !liveKeys.contains(ratingKey) {
             guard let status = records.first(where: { $0.ratingKey == ratingKey })?.status,
                   status == .paused || status == .failed else { continue }
+            guard remainingStarts > 0 else {
+                staticRangeRecovery.addPendingResume(ratingKey)
+                recordDownloadDiagnostic("downloads.range_auto_resume_deferred", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("launch_range_limit"),
+                    "range_inflight_count": .int(session.diagnosticSnapshot().rangeInflightCount),
+                    "max_automatic": .int(maxAutomaticStaticRangeResumes),
+                ])
+                continue
+            }
+            remainingStarts -= 1
             recordDownloadDiagnostic("downloads.range_auto_resume", fields: [
                 "download_id": .identifier(ratingKey),
             ])
