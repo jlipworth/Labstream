@@ -81,8 +81,9 @@ then Read the crop (rendered ~1:1) and refine the center.
 ## Screenshot + logs (verify every click)
 
 ```sh
-xcrun simctl io booted screenshot /tmp/visionplay-test.png   # then Read it
-xcrun simctl spawn booted log show --last 5m --predicate 'process == "VisionPlay"'
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl io "$SIMID" screenshot /tmp/visionplay-test.png   # then Read it
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"'
 ```
 
 After a click, sleep ~2s before screenshotting (navigation/animation settles). If a click

@@ -8,9 +8,12 @@ Use these files only for context. Current architecture and operating guidance li
 - [`PLAYBACK-ARCHITECTURE.md`](../PLAYBACK-ARCHITECTURE.md)
 - [`BACKENDS.md`](../BACKENDS.md)
 - [`PERSISTENCE.md`](../PERSISTENCE.md)
-- [`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md)
 - [`DIAGNOSTICS-PRIVACY.md`](../DIAGNOSTICS-PRIVACY.md)
 - [`SYSTEM-INTEGRATION.md`](../SYSTEM-INTEGRATION.md)
 - [`TESTING-STRATEGY.md`](../TESTING-STRATEGY.md)
 
 Archived files may mention retired decisions such as the `Safari` Plex client profile, old proxy-owned seek designs, or pre-Jellyfin assumptions. Do not copy those details back into code or active docs without re-verifying them against current source.
+
+Completed or superseded Superpowers specs/reviews are under `docs/archive/superpowers/`. Active `docs/superpowers/` files, when present, are implementation handoff notes rather than public docs source of truth.
+
+Archived future-refactor/proposal notes live under `docs/archive/proposals/`. They are preserved only as historical context from earlier app versions; do not treat them as queued work or current guidance.

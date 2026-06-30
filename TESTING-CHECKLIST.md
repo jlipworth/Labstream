@@ -1,8 +1,9 @@
 # Testing Checklist — live verification pass
 
 _Everything below is implemented + build-verified on `main` (app builds green; the full `PMSKit`
-suite passes — run `cd PMSKit && swift test`) but the unchecked items are NOT yet human-verified
-in the headset/simulator. Work through them in one pass._
+suite passes locally on macOS with `cd PMSKit && swift test`; Linux CI runs the XCTest and Swift
+Testing halves separately as documented in `.woodpecker/pmskit.yml`) but the unchecked items are NOT
+yet human-verified in the headset/simulator. Work through them in one pass._
 
 **Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlay/issues)).
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in

@@ -7,9 +7,11 @@ for the basic build/run.
 ## Build, test, run
 
 ```sh
-# Build (visionOS 26.5 simulator, unsigned)
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+# Build (visionOS 26.x simulator, unsigned)
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
 # PMSKit unit tests
@@ -29,7 +31,7 @@ xcrun simctl install "$SIMID" "$APP" && xcrun simctl launch "$SIMID" com.jlipwor
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"' --style compact
 ```
 
-- App bundle id: `com.jlipworth.VisionPlay` · Sim: "Apple Vision Pro" (visionOS 26.5). Use `scripts/worktree-sim.sh id` and target `"$SIMID"`, not `booted`, because multiple worktree simulators can be running.
+- App bundle id: `com.jlipworth.VisionPlay` · project deployment target: visionOS 26.0 · normal local sim runtime: the installed Apple Vision Pro visionOS 26.x runtime. Use `scripts/worktree-sim.sh id` and target `"$SIMID"`, not `booted`, because multiple worktree simulators can be running.
 - Docs map: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](TESTING-STRATEGY.md). Active-but-not-implemented research lives under [`research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/); historical research lives under [`archive/research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/).
 - Profiling workflow: see [`docs/PROFILING.md`](PROFILING.md) for Instruments baseline targets, simulator/device caveats, and finding templates.
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
@@ -60,10 +62,10 @@ metadata, and review-specific release automation can be handled in a later publi
 Public docs are built with MkDocs and should stay strict-clean:
 
 ```sh
-mkdocs build --strict
+uv run --with-requirements requirements.txt mkdocs build --strict
 ```
 
-Use root-relative GitHub links for files outside `docs/` because the published site only includes the MkDocs document tree.
+CI installs `requirements.txt` and runs `mkdocs build --strict` before deploying the site from `.woodpecker/docs.yml`. Use root-relative GitHub links for files outside `docs/` because the published site only includes the MkDocs document tree.
 
 ## Gotchas we don't want to re-learn
 
@@ -255,8 +257,8 @@ Use root-relative GitHub links for files outside `docs/` because the published s
 - **Emby is its own auth scheme — `Emby `, not `MediaBrowser `.** `EmbyAuth.authorizationHeader` emits
   `Authorization: Emby UserId="…", Client, Device, DeviceId, Version, Token="…"` and authenticated calls also
   set `X-Emby-Token`. Do not reuse Jellyfin's `MediaBrowser` builder. (The live server happens to accept the
-  `MediaBrowser` header too — that overlap is the basis of the proposed future shared seam, but the Emby lane
-  still sends the canonical `Emby` scheme.) Two more Emby divergences from Jellyfin that bite silently:
+  `MediaBrowser` header too, but the current shared MediaBrowser helpers still keep the auth scheme
+  explicit and the Emby lane sends the canonical `Emby` scheme.) Two more Emby divergences from Jellyfin that bite silently:
   PlaybackInfo needs `UserId` in BOTH the query and the body and uses `AutoOpenLiveStream:false`; and the
   user-entered base path (e.g. `/emby`) must be PRESERVED, because PlaybackInfo returns relative stream URLs
   joined back onto `server.path`.

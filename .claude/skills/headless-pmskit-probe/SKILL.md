@@ -114,14 +114,16 @@ the probe does not authenticate):
 
 ```sh
 # 1. Guarded build + install (see CLAUDE.md link-skip / stale-process traps)
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
-xcrun simctl install booted "$APP"
+xcrun simctl install "$SIMID" "$APP"
 # 2. Launch with the probe flag (launch args go AFTER the bundle id). Optional overrides:
 #    --vp-probe-query "<title>"  --vp-probe-bitrate-kbps N  --vp-probe-seek-ms N
-xcrun simctl terminate booted com.jlipworth.VisionPlay 2>/dev/null
-xcrun simctl launch booted com.jlipworth.VisionPlay --vp-probe-emby-playback --vp-probe-query "Some Movie"
+xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null
+xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay --vp-probe-emby-playback --vp-probe-query "Some Movie"
 # 3. Read the probe's own log lines (probe.start / probe.item_resolved / probe.progress / probe.pass|fail)
-xcrun simctl spawn booted log show --last 2m --predicate 'process == "VisionPlay"' | grep -iE 'EmbyProbe|probe\.'
+xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "VisionPlay"' | grep -iE 'EmbyProbe|probe\.'
 ```
 
 To add a probe for a new backend, mirror `DebugEmbyPlaybackProbe.swift` (swap the browse

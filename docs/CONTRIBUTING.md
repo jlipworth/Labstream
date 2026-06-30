@@ -4,7 +4,7 @@ VisionPlay is a personal-use, sideloaded visionOS media client. Contributions ar
 
 ## Prerequisites
 
-- macOS with Xcode 26 and the visionOS 26.5 simulator runtime.
+- macOS with Xcode 26 and an Apple Vision Pro visionOS 26.x simulator runtime.
 - Swift 6 / Swift Package Manager, as provided by the selected Xcode toolchain.
 - Optional: a paired Apple Vision Pro for device-only validation.
 - Optional live-server env files copied locally from your own secrets. Never commit tokens, URLs, LAN IPs, or signing material.
@@ -15,8 +15,10 @@ VisionPlay is a personal-use, sideloaded visionOS media client. Contributions ar
 git clone https://github.com/jlipworth/VisionPlay.git
 cd VisionPlay
 (cd PMSKit && swift test)
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ./scripts/ci-hygiene.sh
 ```
@@ -57,8 +59,8 @@ Run the cheapest faithful checks for your change:
 - Pure request/model/policy changes: targeted `PMSKit` tests, then `cd PMSKit && swift test`.
 - App-code changes: generic unsigned visionOS simulator build plus relevant unit tests.
 - UI/runtime changes: install and launch on the worktree simulator when possible.
-- Playback, background downloads, audio routing, and off-head behavior: device validation is required before calling behavior headset-proven.
-- Docs changes: `mkdocs build --strict`.
+- Playback, audio routing, and off-head behavior: device validation is required before calling behavior headset-proven.
+- Docs changes: `uv run --with-requirements requirements.txt mkdocs build --strict`.
 
 ## Secrets and privacy
 
@@ -74,5 +76,5 @@ Diagnostics and bug reports should follow [`REPORTING-BUGS.md`](REPORTING-BUGS.m
 
 - Keep `PMSKit` pure and testable: request builders, decoders, route decisions, and policy state machines.
 - Keep backend-specific behavior explicit. Plex, Jellyfin, and Emby share concepts, not one universal protocol.
-- Avoid growing `DownloadManager`, `BackgroundDownloadSession`, or `PlaybackController` into god objects. Prefer small coordinators or pure policy helpers at new seams.
-- Promote proven current behavior into public docs; keep unimplemented plans in `docs/research/`, `docs/proposals/`, or `docs/archive/`.
+- Avoid growing large app controllers such as `PlaybackController` into god objects. Prefer small coordinators or pure policy helpers at new seams.
+- Promote proven current behavior into public docs; keep active research in `docs/research/` and move obsolete/future-refactor notes to `docs/archive/`.

@@ -4,42 +4,44 @@
 
 Secrets and stable identifiers belong in `KeychainStore`:
 
-- Plex account/server tokens
-- stable client identifier
-- selected backend/server details that are sensitive enough to avoid UserDefaults
+- Plex account token
+- stable client identifier (`clientIdentifier`), reused as the Jellyfin/Emby device id through `ClientIdentity`
+- selected backend and selected Plex server id
 - Jellyfin server URL, access token, user ID, and server ID
-- Emby server URL (with any base path preserved), access token, user ID, and server ID
+- Emby server URL, access token, user ID, and server ID
 
-Passwords are not persisted.
+Passwords are not persisted. Emby Connect cloud tokens/access keys are used only during the PIN exchange and are not stored; once exchange succeeds, the app persists only the normal local Emby server session.
+
+`KeychainStore` uses `kSecAttrAccessibleAfterFirstUnlock`. Simulator/debug fallback files are only a development/migration escape hatch and should not be treated as a second source of truth.
 
 ### Emby session fields
 
-`KeychainStore` persists four Emby keys: `embyServerURL`, `embyAccessToken`, `embyUserID`, `embyServerID`. The user-entered base path (for example `/emby`) is stored verbatim as part of `embyServerURL` — it must not be normalized away, because PlaybackInfo returns relative stream URLs that are joined back onto that base path. The stable device id is not a separate Emby key; it comes from the shared `ClientIdentity` (`identity.emby`) so the same device id is reused across sessions.
+`KeychainStore` persists four Emby session keys: `embyServerURL`, `embyAccessToken`, `embyUserID`, and `embyServerID`.
 
-On launch, `AuthManager.restoreEmbySession()` reads those keys back into `AppModel` and validates the token with a `userViews` request. Distinguish failure modes: `401`/`403` clears the session and forces re-login (`signOutEmby()`); an unreachable server keeps the saved session and surfaces an offline/unreachable state rather than logging the user out. On explicit sign-out, the Emby keys are cleared locally even if `POST /Sessions/Logout` fails.
+The saved Emby server URL preserves the API base path. Manual URL login preserves any user-entered path, and Emby Connect addresses are normalized through `EmbyConnect.apiBaseURL(forConnectAddress:)`, which appends `/emby` unless it is already present. Do not strip that base path: PlaybackInfo can return relative stream URLs that must be joined back onto the same server base.
 
-The Emby access token is a secret: redact it (and any `api_key`/`X-Emby-Token` value) from logs and diagnostics.
+The stable device id is not a separate Emby key. It comes from `ClientIdentity.emby`, so the same app client identifier is reused across Emby sessions.
+
+On launch, `AuthManager.restoreEmbySession()` reads those keys back into `AppModel` and validates the token with an `EmbyLibrary.userViewsRequest`. Treat failures differently:
+
+- `401`/`403`: clear the session and force re-login via `signOutEmby()`.
+- transient unreachable/server errors: keep the saved session and surface an offline/unreachable state rather than logging the user out.
+
+On explicit sign-out, the Emby keys are cleared locally.
+
+The Emby access token is a secret: redact it, `api_key`, and `X-Emby-Token` values from logs and diagnostics.
 
 ## UserDefaults
 
 UserDefaults stores non-secret preferences and feature toggles, including:
 
-- selected backend kind and UI state that is safe to persist outside Keychain
 - home/remote/legacy streaming quality preferences
 - playback speed
-- preferred audio/subtitle languages and subtitle mode
+- preferred audio/subtitle languages, subtitle auto-select mode, subtitle burn mode, and subtitles-off state
 - adaptive bitrate preference
-- default download quality and storage limit
-- diagnostics enabled toggle
+- diagnostics/MetricKit preference state
+- non-secret UI preferences and local feature toggles
 
 Keep quality preference migrations explicit. Home and remote quality settings are intentionally separate.
 
-## Offline store
-
-`DownloadStore` persists a JSON index of offline records using PMSKit Codable models:
-
-- `DownloadRecord`
-- `DownloadStatus`
-- `OfflineMetadata`
-
-Records store relative paths so app-container moves do not permanently break the index. The app owns file placement, cleanup, poster/art caching, and reconcile behavior.
+Download/offline persistence is intentionally not covered in this document.

@@ -14,8 +14,9 @@ diagnostic report to make that easy and safe.
    **Settings ▸ Diagnostics** and turn on **Enable diagnostic logging**. Then
    make the problem happen once.
 2. **Grab the report.** Tap **Send feedback to developer** to review the redacted
-   report and share it via the visionOS share sheet, or **Copy diagnostic report**
-   to copy it to the clipboard.
+   report and share it via the visionOS share sheet, **Copy diagnostic report**
+   to copy it to the clipboard, or **Export diagnostic report file** if you want
+   a text file.
 3. **Review it.** The report is redacted for you (see below) — but give it a
    quick read so you're comfortable with what it contains.
 4. **Open a bug.** Go to the
@@ -37,7 +38,8 @@ context like:
 - backend name (Plex / Jellyfin / Emby) and connection scheme
 - server product/version where known
 - your selected quality settings
-- a recent playback snapshot and recent **redacted** event summaries
+- a recent playback snapshot, passive redacted MetricKit crash/hang summaries
+  when available, and recent **redacted** event summaries
 
 It is designed to **omit** sensitive values, including:
 
@@ -45,9 +47,9 @@ It is designed to **omit** sensitive values, including:
 - your server's hostname, IP address, or full URLs
 - usernames, library paths, filenames, and media titles
 
-Diagnostics are **off by default**, kept in a small local buffer, and **never
-uploaded by the app** — the report leaves your device only when *you* copy or
-share it. For the full contract, see
+Diagnostics are **off by default**, kept in bounded local storage, and **never
+uploaded by the app** — the report leaves your device only when *you* copy,
+export, or share it. For the full contract, see
 [Diagnostics and privacy](DIAGNOSTICS-PRIVACY.md) and [PRIVACY.md](https://github.com/jlipworth/VisionPlay/blob/main/PRIVACY.md).
 
 ## Before you post: a 10-second privacy check

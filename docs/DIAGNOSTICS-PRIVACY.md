@@ -6,7 +6,7 @@ VisionPlay diagnostics are for user-initiated debugging, not analytics.
 
 - Diagnostic event logging is off by default.
 - When enabled, events stay in a bounded local ring buffer.
-- Reports are copied/exported only when the user taps the copy action.
+- Reports are copied, exported, or shared only when the user taps a report action.
 - No diagnostic report is uploaded by the app.
 - Reports must omit or redact tokens, client identifiers, hostnames/IP addresses, full URLs, usernames, library paths, filenames, and media titles.
 - Passive MetricKit crash/hang summaries are a separate local-only channel: visionOS may deliver them after a bad run, VisionPlay stores only a small bounded list of redacted summaries, and they surface only in a user-previewed/copied/exported report.
@@ -29,10 +29,12 @@ The redaction layer runs at field construction/rendering time. Do not add raw UR
 The report may include:
 
 - app product/version/build and OS/device class
+- build identifier/timestamp when present
 - backend name
 - server product/version where safe
 - connection scheme, not host
 - selected quality settings
+- Adaptive Bitrate state when present
 - recent playback snapshot when present
 - passive redacted MetricKit crash/hang summaries when present
 - recent redacted event summaries when diagnostic event logging was enabled

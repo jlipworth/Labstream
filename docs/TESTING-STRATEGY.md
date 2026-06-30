@@ -9,22 +9,33 @@
 
 ## CI / portable checks
 
-Portable CI should run:
+Portable CI should run the Woodpecker gates:
 
 ```sh
-(cd PMSKit && swift test)
+# Linux SwiftPM gate (see .woodpecker/pmskit.yml). Keep XCTest and Swift Testing
+# separate on Linux; the combined runner can deadlock under swift-corelibs-foundation.
+cd PMSKit
+swift test --no-parallel --disable-swift-testing
+swift test --no-parallel --disable-xctest
+
+# Repo hygiene / Python tooling gate (see .woodpecker/hygiene.yml).
+cd ..
 ./scripts/ci-hygiene.sh
 ```
 
-`PMSKit` tests cover pure request builders, models, decision helpers, routing helpers, and policy state machines. Repo hygiene covers redaction/signing guardrails and other cheap checks.
+On macOS, a plain `(cd PMSKit && swift test)` remains a valid local convenience run.
+
+`PMSKit` tests cover pure request builders, models, decision helpers, routing helpers, and policy state machines. Repo hygiene covers redaction/signing guardrails, project churn, Python tooling tests, and other cheap checks.
 
 ## Local simulator checks
 
-Run an unsigned simulator build locally on macOS/Xcode:
+Run an unsigned simulator build locally on macOS/Xcode against this worktree's simulator:
 
 ```sh
-xcodebuild -project VisionPlay.xcodeproj -scheme VisionPlay \
-  -destination 'platform=visionOS Simulator,name=Apple Vision Pro' \
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -40,7 +51,7 @@ Use live probes to confirm wire shape and server behavior before documenting a b
 
 The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
 
-It is opt-in and a no-op unless `EMBY_LIVE_SERVER`, `EMBY_LIVE_TOKEN`, `EMBY_LIVE_USER_ID`, and `EMBY_LIVE_ITEM_ID` are set, so plain `swift test` and CI stay hermetic. Credentials live ONLY in the gitignored `scripts/emby-live.env`; the script refuses to run if that file is somehow tracked by git. The probe redacts the token, `api_key`, `X-Emby-Token`, and the live scheme/host before printing any URL or header.
+It is opt-in and a no-op unless `EMBY_LIVE_SERVER`, `EMBY_LIVE_TOKEN`, `EMBY_LIVE_USER_ID`, and `EMBY_LIVE_ITEM_ID` are set, so plain macOS `swift test` and the split Linux CI test invocations stay hermetic. Credentials live ONLY in the gitignored `scripts/emby-live.env`; the script refuses to run if that file is somehow tracked by git. The probe redacts the token, `api_key`, `X-Emby-Token`, and the live scheme/host before printing any URL or header.
 
 ```sh
 # fill scripts/emby-live.env (gitignored) once, then:

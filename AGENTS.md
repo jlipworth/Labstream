@@ -55,7 +55,7 @@ truth (also invoked by a `post-checkout` git hook).
 
 - The **main** worktree owns the *golden* logged-in sim (`D9BD8E9D…`, in `<main>/.simid`).
   Never delete it.
-- A **linked** worktree gets a `vpwt-<branch>` clone of the golden, created **shut down**;
+- A **linked** worktree gets a `vpwt-<branch>-<hash>` clone of the golden, created **shut down**;
   its UDID lives in `<worktree>/.simid` (git-ignored). Boot it yourself before building.
 - Target `"$SIMID"` (from `scripts/worktree-sim.sh id`), never `booted` — `booted` errors
   once more than one sim is up.
@@ -68,6 +68,9 @@ scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune or
 scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone
 SIMID=$(scripts/worktree-sim.sh id)    # this worktree's UDID for build/install/log
 ```
+
+If `install-hook` warns that `core.hooksPath` is set, Git will ignore the shared hook it
+just wrote; unset that config before relying on auto-clone behavior.
 
 **Rule:** after creating a worktree run `setup`; when finishing/removing one run
 `teardown` **before** `git worktree remove`, or run `closeout PATH` / `prune` immediately

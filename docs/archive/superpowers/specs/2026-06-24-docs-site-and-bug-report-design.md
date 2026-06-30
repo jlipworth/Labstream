@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-24
 **Issues:** #69 (CI pipeline + published docs site), #85 (anonymized bug-report path)
-**Status:** approved design; implementation pending
+**Status:** Archived after implementation; current guidance lives in `mkdocs.yml`, `.woodpecker/docs.yml`, `SUPPORT.md`, `PRIVACY.md`, and `docs/REPORTING-BUGS.md`.
 
 ## Goal
 
