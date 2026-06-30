@@ -1777,7 +1777,7 @@ public final class DownloadManager {
         var fields: [String: DiagnosticFieldValue] = [
             "download_id": .identifier(recordKey(for: item, backend: backendKind)),
             "backend": .label(backend),
-            "choice": .label(Self.diagnosticChoiceLabel(choice)),
+            "choice": .label(DownloadChoicePolicy.diagnosticChoiceLabel(choice)),
             "item_type": .label(item.type),
             "media_index": .int(mediaIndex),
             "part_index": .int(partIndex),
@@ -1793,26 +1793,6 @@ public final class DownloadManager {
         return fields
     }
 
-    static func diagnosticChoiceLabel(_ choice: DownloadChoice) -> String {
-        DownloadChoicePolicy.diagnosticChoiceLabel(choice)
-    }
-
-    /// #83: the persisted lane discriminator for a choice. Stored on the row so a retry/resume after
-    /// an app kill preserves the user's intent — original and compatible-remux both lack an
-    /// `optimizeTargetName`, so the legacy inference can't tell them apart.
-    static func downloadLane(for choice: DownloadChoice) -> DownloadLane {
-        DownloadChoicePolicy.downloadLane(for: choice)
-    }
-
-    /// Display-only discriminator persisted alongside the lane: true when the chosen download is a
-    /// SERVER-PREPARED (transcoded) version rather than the user's true source. `.existingVersion`
-    /// covers all three: the Emby convert-then-download handoff, the Emby #126 reuse of an existing
-    /// converted version, and the Plex #112 existing-version download. They all ride the `.original`
-    /// static lane (resumable), so this flag — not the lane — is what lets the UI badge them
-    /// "Transcode" instead of "Original". See `OfflineMetadata.serverPreparedVersion`.
-    static func isServerPreparedVersion(for choice: DownloadChoice) -> Bool {
-        DownloadChoicePolicy.isServerPreparedVersion(for: choice)
-    }
 
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
         store.setLocalPlaybackPosition(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)

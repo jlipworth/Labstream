@@ -77,8 +77,8 @@ extension DownloadManager {
                                             }(),
                                             session: backendSession,
                                             mediaSourceID: embyMediaSourceHint,
-                                            downloadLane: Self.downloadLane(for: choice),
-                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
+                                            downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
+                                            serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -136,7 +136,7 @@ extension DownloadManager {
         // original). Re-label from the negotiated source's real height so the caption shows the
         // ACTUAL downloaded resolution, not the original's. Only for server-prepared/existing
         // versions; a genuine original keeps its primary-media label.
-        if Self.isServerPreparedVersion(for: choice),
+        if DownloadChoicePolicy.isServerPreparedVersion(for: choice),
            let correctedResolution = Self.resolutionLabel(forHeight: decision.height) {
             metadata.resolutionLabel = correctedResolution
         }
@@ -320,7 +320,7 @@ extension DownloadManager {
             choiceLabel: EmbyDownloadRoutePlan.diagnosticChoiceLabel(
                 route: route,
                 choice: choice,
-                choiceLabel: Self.diagnosticChoiceLabel(choice)),
+                choiceLabel: DownloadChoicePolicy.diagnosticChoiceLabel(choice)),
             urlShape: request.url,
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true

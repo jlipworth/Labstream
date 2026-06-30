@@ -332,6 +332,11 @@ snapshot derivation.
   aggregate local byte/speed counters, paused footer text, and per-row live overlays. The app
   `DownloadManager` still supplies live dictionaries and backend availability, but the coarse
   offline-library value is now a tested download-core boundary instead of an app-only helper.
+- **Done: Slice 5x download choice wrapper cleanup.**
+  Remaining app-side pass-through helpers for choice diagnostics, persisted lane mapping, and
+  server-prepared display flags were removed. Plex, Jellyfin, Emby, and shared enqueue diagnostics
+  now call `DownloadChoicePolicy` directly, keeping that PMSKit policy as the single choice-model
+  boundary.
 
 ## Target module boundaries
 
