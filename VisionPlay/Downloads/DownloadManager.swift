@@ -527,25 +527,27 @@ public final class DownloadManager {
     /// ignored as "already active" and the item would never appear in Downloads. Treat that
     /// combination as stale bookkeeping and clear it before accepting the new start.
     func acquireInFlightSlotForStart(ratingKey: String, backend: String) -> Bool {
-        if let existing = store.records.first(where: { $0.ratingKey == ratingKey }),
-           existing.status.isActiveWork {
+        let existingStatus = store.records.first(where: { $0.ratingKey == ratingKey })?.status
+        switch DownloadStartSlotPolicy.decision(existingRecordStatus: existingStatus,
+                                                hasActiveSlot: activeJobs.contains(ratingKey)) {
+        case .accept:
+            break
+        case .rejectExistingActiveRow(let status):
             recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label(backend),
                 "reason": .label("existing_active_row"),
-                "status": .label(existing.status.rawValue),
+                "status": .label(status.rawValue),
             ])
             return false
-        }
-        if activeJobs.contains(ratingKey) {
-            if store.records.contains(where: { $0.ratingKey == ratingKey }) {
-                recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "backend": .label(backend),
-                    "reason": .label("already_active"),
-                ])
-                return false
-            }
+        case .rejectAlreadyActive:
+            recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend),
+                "reason": .label("already_active"),
+            ])
+            return false
+        case .recoverStaleSlotAndAccept:
             recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label(backend),
