@@ -503,9 +503,14 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let existing = rows[ratingKey]?.metadata?.sourcePartSize ?? 0
         lock.unlock()
+        // Range progress delegates see the same Content-Range denominator on every callback.
+        // Avoid rewriting metadata/index JSON, invalidating caches, and notifying refresh paths
+        // when the value is already durable.
+        guard existing != size else { return }
         guard !onlyIfMissing || existing <= 0 else { return }
         updateMetadata(ratingKey: ratingKey) { meta in
-            if !onlyIfMissing || (meta.sourcePartSize ?? 0) <= 0 {
+            if meta.sourcePartSize != size,
+               (!onlyIfMissing || (meta.sourcePartSize ?? 0) <= 0) {
                 meta.sourcePartSize = size
             }
         }

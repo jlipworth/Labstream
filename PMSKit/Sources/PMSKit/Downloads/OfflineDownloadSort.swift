@@ -7,13 +7,22 @@ import Foundation
 /// episode number, then episode title. Legacy rows without metadata keep the historical title sort.
 public enum OfflineDownloadSort {
     public static func sorted(_ records: [DownloadRecord]) -> [DownloadRecord] {
+        // Build each locale-folded key once. The offline list refreshes at live-download cadence,
+        // and constructing SortKey inside the comparator repeated expensive String folding during
+        // every comparison, which showed up as main-thread CPU while multiple Range downloads ran.
         records.enumerated()
-            .sorted { lhs, rhs in
-                let l = SortKey(record: lhs.element, originalOffset: lhs.offset)
-                let r = SortKey(record: rhs.element, originalOffset: rhs.offset)
-                return l < r
+            .map { keyedRecord in
+                KeyedRecord(record: keyedRecord.element,
+                            key: SortKey(record: keyedRecord.element,
+                                         originalOffset: keyedRecord.offset))
             }
-            .map(\.element)
+            .sorted { $0.key < $1.key }
+            .map(\.record)
+    }
+
+    private struct KeyedRecord {
+        let record: DownloadRecord
+        let key: SortKey
     }
 
     private struct SortKey: Comparable {

@@ -245,7 +245,11 @@ public final class DownloadManager {
                     expectedBytes: expectedBytes,
                     previous: self.liveRangeProgress[ratingKey],
                     updatedAt: Date())
-                self.scheduleRefreshRecords(reason: "range_live_progress")
+                // Range delegates can fire many times per second across several active downloads.
+                // Publishing the whole offline snapshot at the default 500 ms cadence made the
+                // headset main thread alternate between smooth frames and 300+ ms microhangs while
+                // scrolling. Keep live Range UI responsive, but cap full snapshot rebuilds to ~1 Hz.
+                self.scheduleRefreshRecords(reason: "range_live_progress", delay: .seconds(1))
             }
         }
         // D2: rows with no live task can't be told apart from a stall, so reconcile
