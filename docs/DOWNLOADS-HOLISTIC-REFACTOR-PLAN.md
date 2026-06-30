@@ -217,6 +217,10 @@ snapshot derivation.
   `DownloadExpectedBytesPolicy` now owns expected-total selection for static range UI/ETA, preserving
   precedence across live Content-Length, progress-derived totals, static part size, and transcode
   estimates.
+- **Done: Slice 5m Jellyfin keepalive policy extraction.**
+  `JellyfinDownloadKeepalivePolicy` now owns the active-row predicate, required persisted
+  PlaySession/MediaSource inputs, keepalive cadence, and progress-to-ticks calculation for Jellyfin
+  transcoding downloads. The app layer still owns live session matching and request side effects.
 
 ## Target module boundaries
 
@@ -239,6 +243,8 @@ snapshot derivation.
   progress overlays.
 - `DownloadTerminalReleasePolicy`: pure terminal-row release predicate for active slots/pollers.
 - `DownloadExpectedBytesPolicy`: pure expected-total byte selection for range progress and ETA.
+- `JellyfinDownloadKeepalivePolicy`: pure Jellyfin transcoding keepalive candidate/cadence/tick
+  decisions.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
