@@ -104,6 +104,11 @@ snapshot derivation.
   background URLSession completion handlers until durable append/finalization work drains.
   `BackgroundDownloadSession` still calls the app registry and owns locking, but the defer/fire
   semantics are unit-tested outside the delegate.
+- **Done: Slice 6c static range task selection policy.**
+  `StaticRangeTaskSelectionPolicy` now pins the pure ownership rule for duplicate or racing
+  static byte-range URLSession tasks: the furthest checkpoint wins, with in-flight chunk bytes
+  breaking ties. `BackgroundDownloadSession` still owns the actual task registry and cancellation,
+  but stale progress/finish suppression now delegates the comparison semantics to PMSKit tests.
 
 ## Target module boundaries
 
@@ -117,8 +122,9 @@ snapshot derivation.
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
-  `BackgroundDownloadCompletionGate`, `DownloadCompletionValidation`, `DownloadRateEstimator`,
-  aggregate stats, file inventory, text subtitle parsing.
+  `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
+  `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
+  text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 

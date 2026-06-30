@@ -198,45 +198,43 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let shouldReplaceExisting: Bool
     }
 
+    private func rangeTaskSnapshot(taskIdentifier: Int,
+                                   entry: RangeTransfer,
+                                   chunkBytesWritten: Int? = nil) -> StaticRangeTaskSnapshot {
+        StaticRangeTaskSnapshot(
+            taskIdentifier: taskIdentifier,
+            downloadID: entry.ratingKey,
+            baseOffset: entry.baseOffset,
+            chunkBytesWritten: chunkBytesWritten ?? entry.chunkBytesWritten
+        )
+    }
+
     /// Enforce the #169 ownership invariant: a static byte-range row may have only one authoritative
     /// URLSession range task at a time. A stale/lower checkpoint task must never publish progress or
     /// append after a newer checkpoint has taken over.
     private func duplicateRangeTaskDecision(for candidate: RangeTransfer) -> DuplicateRangeTaskDecision? {
-        guard let duplicate = rangeInflight
-            .filter({ $0.value.ratingKey == candidate.ratingKey })
-            .max(by: { lhs, rhs in
-                if lhs.value.baseOffset != rhs.value.baseOffset {
-                    return lhs.value.baseOffset < rhs.value.baseOffset
-                }
-                return lhs.value.chunkBytesWritten < rhs.value.chunkBytesWritten
-            }) else { return nil }
-        let existing = duplicate.value
-        let shouldReplace = candidate.baseOffset > existing.baseOffset
-            || (candidate.baseOffset == existing.baseOffset
-                && candidate.chunkBytesWritten > existing.chunkBytesWritten)
-        return DuplicateRangeTaskDecision(existingTaskIdentifier: duplicate.key,
+        let snapshots = rangeInflight.map { rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value) }
+        guard let decision = StaticRangeTaskSelectionPolicy.duplicateDecision(
+            candidate: rangeTaskSnapshot(taskIdentifier: -1, entry: candidate),
+            existingTasks: snapshots
+        ),
+              let existing = rangeInflight[decision.existingTaskIdentifier] else { return nil }
+        return DuplicateRangeTaskDecision(existingTaskIdentifier: decision.existingTaskIdentifier,
                                           existingEntry: existing,
-                                          shouldReplaceExisting: shouldReplace)
+                                          shouldReplaceExisting: decision.shouldReplaceExisting)
     }
 
     private func newerRangeTaskIdentifier(for entry: RangeTransfer,
                                           currentTaskIdentifier: Int,
                                           currentChunkBytes: Int) -> Int? {
-        rangeInflight
-            .filter { id, candidate in
-                id != currentTaskIdentifier
-                    && candidate.ratingKey == entry.ratingKey
-                    && (candidate.baseOffset > entry.baseOffset
-                        || (candidate.baseOffset == entry.baseOffset
-                            && candidate.chunkBytesWritten > currentChunkBytes))
-            }
-            .max(by: { lhs, rhs in
-                if lhs.value.baseOffset != rhs.value.baseOffset {
-                    return lhs.value.baseOffset < rhs.value.baseOffset
-                }
-                return lhs.value.chunkBytesWritten < rhs.value.chunkBytesWritten
-            })?
-            .key
+        StaticRangeTaskSelectionPolicy.newerTaskIdentifier(
+            than: rangeTaskSnapshot(
+                taskIdentifier: currentTaskIdentifier,
+                entry: entry,
+                chunkBytesWritten: currentChunkBytes
+            ),
+            in: rangeInflight.map { rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value) }
+        )
     }
 
     private func supersedeRangeTasksLocked(ratingKey: String, keeping keptIdentifier: Int? = nil) -> [Int] {
