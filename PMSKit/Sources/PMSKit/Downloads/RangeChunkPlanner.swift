@@ -29,8 +29,11 @@ public enum RangeChunkNext: Equatable, Sendable {
 public enum RangeTransferSegmentKind: String, Equatable, Sendable {
     /// Foreground/active app path: bounded slices give frequent durable checkpoints.
     case boundedCheckpoint
-    /// Off-head/background path: one open-ended remainder task should already be owned by
-    /// `nsurlsessiond` before the app is suspended, avoiding app-chained 64 MB tasks.
+    /// Off-head/background path: bounded slices still let `nsurlsessiond` own a
+    /// background task while capping non-durable temp progress between app wakeups.
+    case backgroundCheckpoint
+    /// Legacy/fallback path: one open-ended remainder task. This is only appropriate when
+    /// callers deliberately accept all-or-nothing temp progress until task completion.
     case continuousRemainder
 }
 
@@ -57,18 +60,21 @@ public struct RangeTransferSegmentPlan: Equatable, Sendable {
 /// `URLSessionDownloadTask`, but a background task hands back its temp file only on completion —
 /// it cannot byte-append into our durable partial mid-flight. While active, we download bounded
 /// `Range` chunks and append each finished chunk into the durable partial. When the app is likely
-/// going off-head, the next plan is an open-ended remainder (`bytes=<checkpoint>-`) so one
-/// `nsurlsessiond` task owns the transfer across suspension. In both modes the partial remains the
-/// real checkpoint (`DownloadStore.reconcile`'s `hasAppRangeCheckpoint`) across force-quit/relaunch:
-/// if an in-flight segment is lost, only bytes already appended to that partial are durable.
+/// going off-head, the next plan uses bounded background chunks so `nsurlsessiond` still owns each
+/// transfer segment, but the durable partial advances periodically instead of waiting for EOF.
+/// The partial remains the real checkpoint (`DownloadStore.reconcile`'s `hasAppRangeCheckpoint`)
+/// across force-quit/relaunch: if an in-flight segment is lost, only bytes already appended to that
+/// partial are durable.
 ///
-/// `chunkSize <= 0` degrades to a single open-ended `bytes=offset-` request (used when the final
-/// size is unknown and bounding is not worth a guess); the same append/finalize path still applies.
+/// `chunkSize <= 0` degrades to a single open-ended `bytes=offset-` request; the same
+/// append/finalize path still applies.
 public struct RangeChunkPlanner: Equatable, Sendable {
     public let chunkSize: Int
+    public let backgroundChunkSize: Int
 
-    public init(chunkSize: Int) {
+    public init(chunkSize: Int, backgroundChunkSize: Int? = nil) {
         self.chunkSize = chunkSize
+        self.backgroundChunkSize = backgroundChunkSize ?? chunkSize
     }
 
     /// The `Range` header value for a chunk starting at `offset`, or `nil` to omit the header
@@ -84,10 +90,12 @@ public struct RangeChunkPlanner: Equatable, Sendable {
                             expectedBytes: Int?,
                             kind: RangeTransferSegmentKind) -> RangeTransferSegmentPlan {
         switch kind {
-        case .boundedCheckpoint:
+        case .boundedCheckpoint, .backgroundCheckpoint:
             return RangeTransferSegmentPlan(
                 kind: kind,
-                rangeHeaderValue: boundedRangeHeaderValue(offset: offset, expectedBytes: expectedBytes),
+                rangeHeaderValue: boundedRangeHeaderValue(offset: offset,
+                                                          expectedBytes: expectedBytes,
+                                                          chunkSize: chunkSize(for: kind)),
                 expectedSegmentBytes: expectedSegmentBytes(
                     offset: offset,
                     expectedBytes: expectedBytes,
@@ -108,7 +116,11 @@ public struct RangeChunkPlanner: Equatable, Sendable {
         }
     }
 
-    private func boundedRangeHeaderValue(offset: Int, expectedBytes: Int?) -> String? {
+    private func chunkSize(for kind: RangeTransferSegmentKind) -> Int {
+        kind == .backgroundCheckpoint ? backgroundChunkSize : chunkSize
+    }
+
+    private func boundedRangeHeaderValue(offset: Int, expectedBytes: Int?, chunkSize: Int) -> String? {
         guard chunkSize > 0 else {
             return offset > 0 ? "bytes=\(offset)-" : nil
         }
@@ -132,15 +144,16 @@ public struct RangeChunkPlanner: Equatable, Sendable {
         case .continuousRemainder:
             guard let expectedBytes else { return nil }
             return max(0, expectedBytes - max(0, offset))
-        case .boundedCheckpoint:
-            guard chunkSize > 0 else {
+        case .boundedCheckpoint, .backgroundCheckpoint:
+            let plannedChunkSize = chunkSize(for: kind)
+            guard plannedChunkSize > 0 else {
                 guard let expectedBytes else { return nil }
                 return max(0, expectedBytes - max(0, offset))
             }
             if let expectedBytes {
-                return max(0, min(chunkSize, expectedBytes - max(0, offset)))
+                return max(0, min(plannedChunkSize, expectedBytes - max(0, offset)))
             }
-            return chunkSize
+            return plannedChunkSize
         }
     }
 
@@ -178,8 +191,9 @@ public struct RangeChunkPlanner: Equatable, Sendable {
         if kind == .continuousRemainder { return .complete }
         // Unknown final size: an open-ended chunk fetched the rest; a bounded chunk that came back
         // short (or empty) hit EOF; only a full-sized chunk implies more remains.
-        if chunkSize <= 0 { return .complete }
-        if chunkBytes <= 0 || chunkBytes < chunkSize { return .complete }
+        let plannedChunkSize = chunkSize(for: kind)
+        if plannedChunkSize <= 0 { return .complete }
+        if chunkBytes <= 0 || chunkBytes < plannedChunkSize { return .complete }
         return .continueFrom(offset: partialSize)
     }
 }

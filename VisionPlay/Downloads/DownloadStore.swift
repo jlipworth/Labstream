@@ -445,6 +445,10 @@ final class DownloadStore: @unchecked Sendable {
     /// instead of falling back to a spinner + 0% caption.
     func setSourcePartSizeIfMissing(ratingKey: String, _ size: Int?) {
         guard let size, size > 0 else { return }
+        lock.lock()
+        let existing = rows[ratingKey]?.metadata?.sourcePartSize ?? 0
+        lock.unlock()
+        guard existing <= 0 else { return }
         updateMetadata(ratingKey: ratingKey) { meta in
             if (meta.sourcePartSize ?? 0) <= 0 {
                 meta.sourcePartSize = size
@@ -612,7 +616,9 @@ final class DownloadStore: @unchecked Sendable {
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
         guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }
+        let oldMeta = meta
         mutate(&meta)
+        guard meta != oldMeta else { lock.unlock(); return }
         row.metadata = meta
         rows[ratingKey] = row
         lock.unlock()

@@ -41,6 +41,37 @@ struct RangeChunkPlannerTests {
                                     kind: .continuousRemainder).expectedSegmentBytes == nil)
     }
 
+
+    @Test("Background checkpoint defaults to the foreground chunk size")
+    func backgroundCheckpointDefaultsToForegroundChunkSize() {
+        let planner = RangeChunkPlanner(chunkSize: 100)
+        let plan = planner.segmentPlan(offset: 200,
+                                       expectedBytes: 1_000,
+                                       kind: .backgroundCheckpoint)
+        #expect(plan.rangeHeaderValue == "bytes=200-299")
+        #expect(plan.expectedSegmentBytes == 100)
+    }
+
+    @Test("Background checkpoint uses the larger bounded chunk size")
+    func backgroundCheckpointUsesLargerBoundedRange() {
+        let planner = RangeChunkPlanner(chunkSize: 100, backgroundChunkSize: 400)
+        let plan = planner.segmentPlan(offset: 200,
+                                       expectedBytes: 1_000,
+                                       kind: .backgroundCheckpoint)
+        #expect(plan.rangeHeaderValue == "bytes=200-599")
+        #expect(plan.expectedSegmentBytes == 400)
+    }
+
+    @Test("Background checkpoint clamps its final bounded range")
+    func backgroundCheckpointClampsFinalRange() {
+        let planner = RangeChunkPlanner(chunkSize: 100, backgroundChunkSize: 400)
+        let plan = planner.segmentPlan(offset: 850,
+                                       expectedBytes: 1_000,
+                                       kind: .backgroundCheckpoint)
+        #expect(plan.rangeHeaderValue == "bytes=850-999")
+        #expect(plan.expectedSegmentBytes == 150)
+    }
+
     @Test("Chunked planner emits a closed range from offset 0")
     func chunkedFromZero() {
         let planner = RangeChunkPlanner(chunkSize: 100)
@@ -132,6 +163,24 @@ struct RangeChunkPlannerTests {
     func nextUnknownFullContinue() {
         let planner = RangeChunkPlanner(chunkSize: 100)
         #expect(planner.nextStep(partialSize: 200, expectedBytes: nil, chunkBytes: 100) == .continueFrom(offset: 200))
+    }
+
+    @Test("Unknown size, background checkpoint continues after a full background chunk")
+    func nextUnknownBackgroundCheckpointFullContinue() {
+        let planner = RangeChunkPlanner(chunkSize: 100, backgroundChunkSize: 400)
+        #expect(planner.nextStep(partialSize: 800,
+                                 expectedBytes: nil,
+                                 chunkBytes: 400,
+                                 kind: .backgroundCheckpoint) == .continueFrom(offset: 800))
+    }
+
+    @Test("Unknown size, background checkpoint completes on a short read")
+    func nextUnknownBackgroundCheckpointShortReadCompletes() {
+        let planner = RangeChunkPlanner(chunkSize: 100, backgroundChunkSize: 400)
+        #expect(planner.nextStep(partialSize: 750,
+                                 expectedBytes: nil,
+                                 chunkBytes: 350,
+                                 kind: .backgroundCheckpoint) == .complete)
     }
 
     @Test("Unknown size, continuous remainder completes instead of app-chaining another chunk")
