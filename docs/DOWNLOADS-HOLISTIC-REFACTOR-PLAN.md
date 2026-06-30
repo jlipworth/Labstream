@@ -364,6 +364,11 @@ snapshot derivation.
   composition: selected media/part source bytes, transcode byte estimates, backend side-asset
   estimates, and chapter-image counting. `DownloadManager` only resolves the active-backend default
   before delegating, so the coordinator no longer reassembles PMSKit estimate leaves itself.
+- **Done: Slice 5ac Plex optimize source-location policy extraction.**
+  `DownloadOptimizeSourcePolicy` now also owns Plex library-location containment and alternate
+  optimizer-location selection, preserving the boundary-safe path matching that avoids treating
+  sibling roots as source locations. Plex optimize setup now asks PMSKit for the writable alternate
+  location instead of keeping the path policy in `DownloadManager`.
 
 ## Target module boundaries
 

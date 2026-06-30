@@ -46,6 +46,31 @@ struct DownloadOptimizeSourcePolicyTests {
                                                            partIndex: 0) == [])
     }
 
+    @Test("Optimizer location matching respects path boundaries and prefers non-source roots")
+    func optimizerLocationSelection() {
+        let locations = [
+            (id: 1, path: "/Media/Movies"),
+            (id: 2, path: "/Media/Movies 4K/"),
+            (id: 3, path: "/Media/Plex Versions"),
+        ]
+        let sourceFiles = [
+            "/Media/Movies/Feature.mkv",
+            "/Media/Movies 4K/Feature.mkv",
+            "/Media/Movies2/NotInLocation.mkv",
+        ]
+
+        #expect(DownloadOptimizeSourcePolicy.filePath("/Media/Movies/Feature.mkv",
+                                                      isUnder: "/Media/Movies"))
+        #expect(DownloadOptimizeSourcePolicy.filePath("/Media/Movies",
+                                                      isUnder: "/Media/Movies/"))
+        #expect(!DownloadOptimizeSourcePolicy.filePath("/Media/Movies2/Feature.mkv",
+                                                       isUnder: "/Media/Movies"))
+        #expect(DownloadOptimizeSourcePolicy.sourceLocationIDs(sourceFiles: sourceFiles,
+                                                              libraryLocations: locations) == [1, 2])
+        #expect(DownloadOptimizeSourcePolicy.alternateOptimizerLocationID(sourceFiles: sourceFiles,
+                                                                         libraryLocations: locations) == 3)
+    }
+
     private func metadata(sourcePartID: Int? = nil,
                           mediaIndex: Int? = nil,
                           partIndex: Int? = nil,

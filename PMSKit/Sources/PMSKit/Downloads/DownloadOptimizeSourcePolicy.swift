@@ -37,6 +37,31 @@ public enum DownloadOptimizeSourcePolicy {
         return nonOptimizedPartIDs(item: fallback)
     }
 
+    /// True when `file` is exactly `directory` or is nested below it.
+    ///
+    /// Plex library locations are directory roots. Optimizer setup uses this containment check to
+    /// identify locations that already hold the original media so it can prefer a different writable
+    /// optimized-version location when one exists. Keep the path-boundary semantics here so
+    /// `/Movies2/file.mkv` is not treated as a child of `/Movies`.
+    public static func filePath(_ file: String, isUnder directory: String) -> Bool {
+        let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
+        return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")
+    }
+
+    public static func sourceLocationIDs(sourceFiles: [String],
+                                         libraryLocations: [(id: Int, path: String)]) -> Set<Int> {
+        Set(libraryLocations.compactMap { location in
+            sourceFiles.contains { filePath($0, isUnder: location.path) } ? location.id : nil
+        })
+    }
+
+    public static func alternateOptimizerLocationID(sourceFiles: [String],
+                                                    libraryLocations: [(id: Int, path: String)]) -> Int? {
+        let sourceLocationIDs = sourceLocationIDs(sourceFiles: sourceFiles,
+                                                  libraryLocations: libraryLocations)
+        return libraryLocations.first { !sourceLocationIDs.contains($0.id) }?.id
+    }
+
     private static func selectedMedia(item: MediaItem, mediaIndex: Int) -> Media? {
         guard let media = item.media, media.indices.contains(mediaIndex) else { return nil }
         return media[mediaIndex]

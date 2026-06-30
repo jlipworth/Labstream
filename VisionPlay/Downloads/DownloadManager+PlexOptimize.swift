@@ -88,7 +88,7 @@ extension DownloadManager {
             // #88: carry forward already-cached chapter images so an optimize re-fetch doesn't drop
             // the offline Chapters rail thumbnails.
             optimizeMetadata.chapterImageRelativePaths = existingMetadata?.chapterImageRelativePaths
-            optimizeMetadata.optimizeBaselinePartIDs = Self.optimizeSourcePartIDs(
+            optimizeMetadata.optimizeBaselinePartIDs = DownloadOptimizeSourcePolicy.sourcePartIDs(
                 item: sourceItem,
                 fallbackItem: item,
                 mediaIndex: sourceMediaIndex,
@@ -573,13 +573,13 @@ extension DownloadManager {
         else { return nil }
 
         let sourceFiles = (item.media ?? []).flatMap { $0.part.compactMap(\.file) }
-        let sourceLocationIDs = Set(section.location.compactMap { location -> Int? in
-            sourceFiles.contains { Self.filePath($0, isUnder: location.path) } ? location.id : nil
-        })
+        let libraryLocations = section.location.map { (id: $0.id, path: $0.path) }
         // PlexAPI's `locationID = -1` means "beside the original file". If the library has
         // an extra location (for example a writable optimized-version mount), prefer that so
         // read-only media libraries do not force optimizer failures.
-        let alternateLocationID = section.location.first { !sourceLocationIDs.contains($0.id) }?.id
+        let alternateLocationID = DownloadOptimizeSourcePolicy.alternateOptimizerLocationID(
+            sourceFiles: sourceFiles,
+            libraryLocations: libraryLocations)
 
         return OptimizerSource(uri: "library://\(uuid)/item/\(metadataKey.urlQueryEscapedForPlexPath)",
                                locationID: alternateLocationID ?? -1)
