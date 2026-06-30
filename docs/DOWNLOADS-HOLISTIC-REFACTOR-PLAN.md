@@ -159,6 +159,11 @@ snapshot derivation.
   URLSession download errors: cancellation is non-failure, persisted-resume-safe static lanes pause
   with resume data, forward-only streams fail even if URLSession offers a byte-offset blob, and all
   other non-cancelled errors fail normally.
+- **Done: Slice 6o range completion error policy extraction.**
+  `BackgroundRangeCompletionPolicy` now owns the pure post-retry terminal mapping for static
+  byte-range task completions: successful chunks are handled by the finish callback, cancellations
+  are ignored as user/system intent, adopted failed chunks request backend-auth rebuild, and
+  in-memory failed chunks become resumable pauses from the durable checkpoint.
 
 ## Target module boundaries
 
@@ -182,6 +187,7 @@ snapshot derivation.
   `BackgroundTempFileCleanupPolicy`,
   `BackgroundFinalizationResultPolicy`,
   `BackgroundOpaqueCompletionPolicy`,
+  `BackgroundRangeCompletionPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
