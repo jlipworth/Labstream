@@ -257,6 +257,11 @@ snapshot derivation.
   `PlexOriginalFallbackPolicy` now owns the pure guard for retrying a failed true-original Plex
   validation as a compatible server-prepared copy, including backend ownership, transcode-loop
   suppression, server-prep ownership, Plex session availability, and fallback target selection.
+- **Done: Slice 4f Jellyfin source-plan extraction.**
+  `JellyfinDownloadSourcePlan` now owns the pure post-PlaybackInfo transfer semantics for
+  Jellyfin: static original source sizing, bitrate-transcode expected bytes, compatible-remux
+  source-sized plans, compatible fallback-to-transcode lane restamping, negotiated MediaSource and
+  PlaySession propagation, and byte-range-vs-forward-only route selection.
 
 ## Target module boundaries
 
@@ -294,7 +299,7 @@ snapshot derivation.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Plex original-validation fallback guards.
-  - Jellyfin original/live-forward intent helpers and tested stream request builders.
+  - Jellyfin original/live-forward intent helpers, source plans, and tested stream request builders.
   - Emby route planner (already partly `EmbyDownloadRouter`).
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
