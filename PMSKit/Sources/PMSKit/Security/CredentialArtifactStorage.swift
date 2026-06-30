@@ -90,10 +90,24 @@ public enum CredentialArtifactStorage {
         values.isExcludedFromBackup = true
         var mutableURL = url
         try mutableURL.setResourceValues(values)
-        try fileManager.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
+        if supportsFileProtectionAttributes {
+            try fileManager.setAttributes([.protectionKey: protection], ofItemAtPath: url.path)
+        }
+    }
+
+    /// Darwin exposes `FileProtectionType` on macOS, but macOS unit-test temp directories can reject
+    /// complete-protection atomic writes with `EPERM`. Keep the production iOS/visionOS behavior,
+    /// while making host-side package tests assert only the backup-exclusion contract.
+    public static var supportsFileProtectionAttributes: Bool {
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        true
+        #else
+        false
+        #endif
     }
 
     public static func writingOptions(for protection: FileProtectionType) -> Data.WritingOptions {
+        guard supportsFileProtectionAttributes else { return [.atomic] }
         if protection == .complete { return [.atomic, .completeFileProtection] }
         if protection == .completeUnlessOpen { return [.atomic, .completeFileProtectionUnlessOpen] }
         if protection == .completeUntilFirstUserAuthentication {
