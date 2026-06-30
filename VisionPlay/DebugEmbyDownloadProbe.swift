@@ -268,13 +268,7 @@ enum DebugEmbyDownloadProbe {
             let (data, response) = try await URLSession.shared.data(for: req)
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            let fileSources = info.mediaSources.filter { source in
-                guard source.id?.isEmpty == false else { return false }
-                if let proto = source.mediaProtocol, proto.caseInsensitiveCompare("File") != .orderedSame {
-                    return false
-                }
-                return true
-            }
+            let fileSources = EmbyConvertedSourcePolicy.fileSources(info.mediaSources)
             let converted = fileSources.filter { ($0.container ?? "").lowercased().contains("mp4") }
             sawConvertedFile = sawConvertedFile || !converted.isEmpty
             log.notice("probe.existing_sources attempt=\(attempt, privacy: .public) http=\(status, privacy: .public) sources=\(info.mediaSources.count, privacy: .public) files=\(fileSources.count, privacy: .public) converted=\(converted.count, privacy: .public)")
