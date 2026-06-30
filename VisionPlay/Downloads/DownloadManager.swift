@@ -1384,13 +1384,7 @@ public final class DownloadManager {
     }
 
     private func shouldKeepEmbyServerPrepPollingWhileQueuePaused(_ record: DownloadRecord) -> Bool {
-        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-        return record.status == .preparing
-            && backend == .emby
-            && record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
-            && record.metadata?.resolvedDownloadLane() == .optimize
-            && record.metadata?.embyConvertJobID != nil
+        ServerPrepRefreshPolicy.shouldPollEmbyServerPrepWhileQueuePaused(record)
     }
 
     /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
@@ -2072,46 +2066,43 @@ public final class DownloadManager {
             }
             fresh = store.records
         }
-        let unattachedServerPrepRows = fresh.filter { record in
-            if DownloadRetryPolicy.isPlexServerPrepResumeCandidate(record) {
-                return !serverPrepAttempts.hasPlexPoller(forRecordKey: record.ratingKey)
-            }
-            let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-                ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-            return record.status == .preparing
-                && backend == .emby
-                && record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic
-                && record.metadata?.resolvedDownloadLane() == .optimize
-                && record.metadata?.embyConvertJobID != nil
-                && !activeJobs.contains(record.ratingKey)
-        }
         let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
-        if !unattachedServerPrepRows.isEmpty, isQueuePaused {
-            let embyRowsToPoll = unattachedServerPrepRows.filter(shouldKeepEmbyServerPrepPollingWhileQueuePaused)
-            let rowsToPark = unattachedServerPrepRows.filter { !shouldKeepEmbyServerPrepPollingWhileQueuePaused($0) }
-            let plexCount = rowsToPark.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate).count
-            let embyCount = rowsToPark.count - plexCount
-            for record in rowsToPark where record.status != .paused {
-                store.setStatus(ratingKey: record.ratingKey, .paused)
+        let serverPrepRefreshPlan = ServerPrepRefreshPolicy.refreshPlan(
+            records: fresh,
+            isQueuePaused: isQueuePaused,
+            refreshKickScheduled: serverPrepRefreshKickScheduled,
+            refreshKickRecent: serverPrepKickIsRecent,
+            hasPlexPoller: { [serverPrepAttempts] ratingKey in
+                serverPrepAttempts.hasPlexPoller(forRecordKey: ratingKey)
+            },
+            isActiveJob: { [activeJobs] ratingKey in
+                activeJobs.contains(ratingKey)
             }
-            fresh = store.records
-            if !rowsToPark.isEmpty,
+        )
+        if isQueuePaused {
+            for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys {
+                if fresh.first(where: { $0.ratingKey == ratingKey })?.status != .paused {
+                    store.setStatus(ratingKey: ratingKey, .paused)
+                }
+            }
+            if !serverPrepRefreshPlan.parkWhileQueuePausedKeys.isEmpty { fresh = store.records }
+            if !serverPrepRefreshPlan.parkWhileQueuePausedKeys.isEmpty,
                lastServerPrepQueuePausedLogAt.map({ now.timeIntervalSince($0) >= 5 }) ?? true {
                 lastServerPrepQueuePausedLogAt = now
                 recordDownloadDiagnostic("downloads.server_prep_queue_paused", fields: [
-                    "candidate_count": .int(rowsToPark.count),
-                    "plex_count": .int(plexCount),
-                    "emby_count": .int(embyCount),
+                    "candidate_count": .int(serverPrepRefreshPlan.parkWhileQueuePausedKeys.count),
+                    "plex_count": .int(serverPrepRefreshPlan.parkedCounts.plex),
+                    "emby_count": .int(serverPrepRefreshPlan.parkedCounts.emby),
                     "reason": .label("parked_for_manual_resume"),
                 ])
             }
-            if !embyRowsToPoll.isEmpty, !serverPrepRefreshKickScheduled, !serverPrepKickIsRecent {
+            if serverPrepRefreshPlan.shouldScheduleKick, serverPrepRefreshPlan.kickEmbyOnly {
                 serverPrepRefreshKickScheduled = true
                 lastServerPrepRefreshKickAt = now
                 recordDownloadDiagnostic("downloads.server_prep_refresh_kick", fields: [
-                    "candidate_count": .int(embyRowsToPoll.count),
-                    "plex_count": .int(0),
-                    "emby_count": .int(embyRowsToPoll.count),
+                    "candidate_count": .int(serverPrepRefreshPlan.pollEmbyWhileQueuePausedKeys.count),
+                    "plex_count": .int(serverPrepRefreshPlan.kickCounts.plex),
+                    "emby_count": .int(serverPrepRefreshPlan.kickCounts.emby),
                     "reason": .label("queue_paused_emby_reconcile"),
                 ])
                 Task { [weak self] in
@@ -2122,15 +2113,13 @@ public final class DownloadManager {
                     }
                 }
             }
-        } else if !unattachedServerPrepRows.isEmpty, !serverPrepRefreshKickScheduled, !serverPrepKickIsRecent {
+        } else if serverPrepRefreshPlan.shouldScheduleKick {
             serverPrepRefreshKickScheduled = true
             lastServerPrepRefreshKickAt = now
-            let plexCount = unattachedServerPrepRows.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate).count
-            let embyCount = unattachedServerPrepRows.count - plexCount
             recordDownloadDiagnostic("downloads.server_prep_refresh_kick", fields: [
-                "candidate_count": .int(unattachedServerPrepRows.count),
-                "plex_count": .int(plexCount),
-                "emby_count": .int(embyCount),
+                "candidate_count": .int(serverPrepRefreshPlan.candidateKeys.count),
+                "plex_count": .int(serverPrepRefreshPlan.kickCounts.plex),
+                "emby_count": .int(serverPrepRefreshPlan.kickCounts.emby),
                 "reason": .label("refresh_detected_unattached_prep"),
             ])
             Task { [weak self] in
