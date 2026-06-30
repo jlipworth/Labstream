@@ -413,14 +413,19 @@ snapshot derivation.
   the bounded observation window without shutting down the simulator app afterward. The harness exits
   non-zero for route-only/no-observation runs so they cannot be mistaken for network-drop proof.
 - Current signed-in simulator evidence (2026-06-30, worktree sim only):
-  - Plex `Flight` existing-version media index 1 (`mp4`) started a static range transfer,
-    injected `NSURLErrorNetworkConnectionLost` at ~1 MB, retried once from durable checkpoint
-    0, and resumed range progress through tens of MB before cleanup.
-  - Jellyfin `Flight` original/static lane started, transitioned queued -> downloading, and
-    reported bounded range progress before cleanup.
-  - Emby `Flight` original dry-run correctly negotiated transcode for the MKV source; the
-    optimize lane reused an existing converted MP4, handed off to the static range lane, and
-    reported bounded range progress before cleanup.
+  - Plex `Flight` existing-version media index 1 (`mp4`), output
+    `build/probes/plex-range-drop/20260630T114636Z/`, started a static range transfer, injected
+    `NSURLErrorNetworkConnectionLost` at ~1 MB, retried once from durable checkpoint 0, appended
+    a 64 MiB bounded checkpoint, resumed from offset 67,108,864, and deleted the probe row after
+    observation.
+  - Jellyfin `Flight` original/static lane, output
+    `build/probes/jellyfin-download/20260630T114819Z/`, negotiated an MKV/HEVC source as a static
+    original range download, transitioned queued -> downloading, appended two 64 MiB bounded
+    checkpoints, and deleted the probe row after observation.
+  - Emby `Flight` optimize lane, output `build/probes/emby-download/20260630T114935Z/`, correctly
+    negotiated the original MKV source as transcode-only, reused an existing converted MP4 for the
+    `1080p 8 Mbps` request, handed off to `.existingVersion` static range download, appended two
+    64 MiB bounded checkpoints, and deleted the probe row after observation.
 - Live request-shape probes remain in `scripts/live-*.sh` and require gitignored
   `scripts/*-live.env` files. They validate server API behavior but do not prove
   headset/off-head background transfer behavior.
