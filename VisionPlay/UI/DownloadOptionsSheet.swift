@@ -150,7 +150,7 @@ struct DownloadOptionsSheet: View {
         let part = probe.part ?? media?.part[safe: partIndex]
         let original = (probe.direct && DownloadManager.isLocallyPlayableOriginal(part: part))
             ? OriginalOption(sizeBytes: part?.size,
-                             resolution: DownloadManager.resolutionLabel(for: media))
+                             resolution: DownloadPresetPolicy.resolutionLabel(for: media))
             : nil
         let unsupportedOriginal = probe.direct && original == nil
 
@@ -171,7 +171,7 @@ struct DownloadOptionsSheet: View {
         let originalLocallyPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
         let original = originalLocallyPlayable
             ? OriginalOption(sizeBytes: part?.size,
-                             resolution: DownloadManager.resolutionLabel(for: media))
+                             resolution: DownloadPresetPolicy.resolutionLabel(for: media))
             : nil
         let mediaSourceId = selection.mediaSourceID
         // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
@@ -331,7 +331,7 @@ struct DownloadOptionsSheet: View {
         let containerPlayable = EmbyDownloadRouter.containerGate(part: part, negotiatedContainer: negotiatedContainer)
         let original = (negotiatedDirectPlay && containerPlayable)
             ? OriginalOption(sizeBytes: part?.size,
-                             resolution: DownloadManager.resolutionLabel(for: media))
+                             resolution: DownloadPresetPolicy.resolutionLabel(for: media))
             : nil
         // #83: use the dedicated compatible-remux PlaybackInfo profile for codec/container probing.
         // The normal download profile remains conservative for the forced-transcode lane.

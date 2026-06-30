@@ -52,7 +52,7 @@ extension DownloadManager {
         let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
         let media = selection.media
         let part = selection.part
-        let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
+        let resolutionLabel = DownloadPresetPolicy.displayResolutionLabel(choice: choice, chosenMedia: media)
         let jellyfinMediaSourceID = mediaSourceIDOverride ?? selection.mediaSourceID
         var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
         var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
@@ -111,7 +111,7 @@ extension DownloadManager {
                 guard let userId = backendSession.userID, !userId.isEmpty else {
                     throw DownloadError.notAuthenticated
                 }
-                let profile = Self.jellyfinTranscodeProfile(named: targetName)
+                let profile = DownloadPresetPolicy.jellyfinTranscodeProfile(named: targetName)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
                 expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
@@ -176,7 +176,7 @@ extension DownloadManager {
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
                                                                      preferredMediaSourceId: jellyfinMediaSourceID)
-                let fallbackProfile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
+                let fallbackProfile = DownloadPresetPolicy.jellyfinTranscodeProfile(named: DownloadPresetPolicy.jellyfinDefaultDownloadPreset)
                 let sourcePlan = JellyfinDownloadSourcePlan.compatible(
                     decision: decision,
                     sourcePartBytes: part?.size,

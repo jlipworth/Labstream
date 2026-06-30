@@ -72,7 +72,7 @@ extension DownloadManager {
                                              targetName: targetName)
             let sourceMediaIndex = metadata.mediaIndex ?? 0
             let sourcePartIndex = metadata.partIndex ?? 0
-            let refreshedResolutionLabel = Self.displayResolutionLabel(
+            let refreshedResolutionLabel = DownloadPresetPolicy.displayResolutionLabel(
                 choice: .optimize(targetName: targetName),
                 chosenMedia: sourceItem.media?[safe: sourceMediaIndex])
             let existingMetadata = records.first { $0.ratingKey == ratingKey }?.metadata
@@ -337,9 +337,9 @@ extension DownloadManager {
         // 2. Resolve built-in PMS target tags from the server. Custom iPad-style
         //    quality rows intentionally leave targetTagID empty and instead send
         //    Item[Device][profile] + Item[MediaSettings], matching python-plexapi.
-        let originalQuality = Self.isPlexOriginalQualityTarget(targetName)
-        let custom = originalQuality ? nil : Self.customDownloadProfile(named: targetName)
-        let serverTargetName = originalQuality ? Self.plexOriginalQualityTargetName : targetName
+        let originalQuality = DownloadPresetPolicy.isPlexOriginalQualityTarget(targetName)
+        let custom = originalQuality ? nil : DownloadPresetPolicy.customDownloadProfile(named: targetName)
+        let serverTargetName = originalQuality ? DownloadPresetPolicy.plexOriginalQualityTargetName : targetName
         var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: serverTargetName) : nil
         if custom == nil,
            let targets = try? await appModel.client.send(

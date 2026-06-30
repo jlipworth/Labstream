@@ -337,6 +337,18 @@ snapshot derivation.
   server-prepared display flags were removed. Plex, Jellyfin, Emby, and shared enqueue diagnostics
   now call `DownloadChoicePolicy` directly, keeping that PMSKit policy as the single choice-model
   boundary.
+- **Done: Slice 5y preset/resolution wrapper cleanup.**
+  Remaining app-side pass-through helpers for download preset profiles, resolution labels, storage
+  estimate media-source selection, original-quality detection, and transcode byte estimates were
+  removed. The UI sheet and backend adapters now call `DownloadPresetPolicy` /
+  `DownloadResolutionLabel` directly, leaving `DownloadManager` responsible for app coordination
+  instead of mirroring PMSKit's pure preset vocabulary.
+- **Done: Slice 8a MediaBrowser simulator probe harnesses.**
+  Added `scripts/probe-jellyfin-download.sh` and `scripts/probe-emby-download.sh` so Jellyfin and
+  Emby simulator download probes have the same repeatable, token-safe wrapper as the Plex
+  range-drop harness. Both scripts target the worktree simulator, build/install a debug app, source
+  credentials only from the signed-in simulator state, support `--keep-app-running`, and capture
+  redacted probe/Downloads logs under `build/probes/<backend>-download/`.
 
 ## Target module boundaries
 
@@ -447,6 +459,16 @@ snapshot derivation.
     with `--keep-app-running`, injected `NSURLErrorNetworkConnectionLost` at ~1 MiB, retried from
     offset 0, appended a 64 MiB durable checkpoint, continued from offset 67,108,864, and deleted
     the probe row after the observation window.
+  - Jellyfin `Flight` original/static lane refreshed with the new harness, output
+    `build/probes/jellyfin-download/20260630T121247Z/`, used `--keep-app-running`, injected
+    `NSURLErrorNetworkConnectionLost` at ~1 MiB, retried from offset 0, appended a 64 MiB durable
+    checkpoint, continued from offset 67,108,864, and deleted the probe row after observation.
+  - Emby `Flight` optimize lane refreshed with the new harness, output
+    `build/probes/emby-download/20260630T121355Z/`, used `--keep-app-running`, negotiated the
+    original MKV source as transcode-only, reused an existing converted MP4 for `1080p 8 Mbps`,
+    handed off to the static range path, injected `NSURLErrorNetworkConnectionLost` at ~1 MiB,
+    retried from offset 0, appended two 64 MiB durable checkpoints, and deleted the probe row after
+    observation.
   - Plex `Flight` existing-version media index 1 (`mp4`), output
     `build/probes/plex-range-drop/20260630T114636Z/`, started a static range transfer, injected
     `NSURLErrorNetworkConnectionLost` at ~1 MB, retried once from durable checkpoint 0, appended
