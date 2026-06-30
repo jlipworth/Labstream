@@ -59,8 +59,11 @@ snapshot derivation.
 - **Done: Probe harness for static range recovery.** `scripts/probe-plex-range-drop.sh`
   wraps the existing DEBUG launch-argument probe so a signed-in worktree simulator can
   exercise static byte-range recovery after an injected `NSURLErrorNetworkConnectionLost`
-  without committing Plex tokens or hard-coded media ids. This is intentionally a behavior
-  probe, not a replacement for PMSKit unit tests or device/background validation.
+  without committing Plex tokens or hard-coded media ids. It now forces the Plex backend for
+  the probe run, uses absolute `simctl launch` stdout/stderr paths, and can target existing
+  server-generated Plex versions by media/part index so a pre-optimized MP4 can validate the
+  static range lane quickly. This is intentionally a behavior probe, not a replacement for
+  PMSKit unit tests or device/background validation.
 - **Done: Slice 4b Plex route-planner extraction.** `PlexDownloadRouter` now pins the
   pure Plex route choices: true originals require an AV preflight, existing Plex versions
   are static downloads that skip optimizer/preflight, explicit optimizer targets pass
@@ -127,7 +130,17 @@ snapshot derivation.
   builds and launches the DEBUG app with `--vp-probe-range-drop-after-bytes`, captures
   `DownloadProbe`/`Downloads` logs under `build/probes/plex-range-drop/`, and refuses to
   run without an explicit media selector. Add `--pause-resume` when specifically checking
-  manual pause/resume on the same static lane.
+  manual pause/resume on the same static lane. Add `--existing-version --media-index N`
+  to use a known playable/pre-optimized Plex version for quick static-range validation.
+- Current signed-in simulator evidence (2026-06-30, worktree sim only):
+  - Plex `Flight` existing-version media index 1 (`mp4`) started a static range transfer,
+    injected `NSURLErrorNetworkConnectionLost` at ~1 MB, retried once from durable checkpoint
+    0, and resumed range progress through tens of MB before cleanup.
+  - Jellyfin `Flight` original/static lane started, transitioned queued -> downloading, and
+    reported bounded range progress before cleanup.
+  - Emby `Flight` original dry-run correctly negotiated transcode for the MKV source; the
+    optimize lane reused an existing converted MP4, handed off to the static range lane, and
+    reported bounded range progress before cleanup.
 - Live request-shape probes remain in `scripts/live-*.sh` and require gitignored
   `scripts/*-live.env` files. They validate server API behavior but do not prove
   headset/off-head background transfer behavior.

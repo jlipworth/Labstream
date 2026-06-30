@@ -21,7 +21,12 @@ Options:
   --observe-seconds N               Probe post-start observation window (default: env or 90).
   --pause-after-seconds N           Delay before pause in --pause-resume mode (default: env or 8).
   --pause-resume                    Also exercise pause -> retry/resume after starting.
+  --existing-version                Download an existing server-generated Plex Version.
+  --media-index N                   Media/version index to probe (default: env or 0).
+  --part-index N                    Part index to probe (default: env or 0).
+  --list-versions                   Log available media/version choices before starting.
   --preset NAME                     Plex optimize preset if original is not eligible.
+  --delete-existing                 Delete any existing probe record and exit.
   --delete-after                    Delete the probe record after observation.
   --skip-build                      Reuse the existing DerivedData app.
   --no-install                      Reuse the already installed app.
@@ -41,7 +46,12 @@ drop_after=${VISIONPLAY_PROBE_DROP_AFTER_BYTES:-2097152}
 observe_seconds=${VISIONPLAY_PROBE_OBSERVE_SECONDS:-90}
 pause_after_seconds=${VISIONPLAY_PROBE_PAUSE_AFTER_SECONDS:-8}
 preset=${VISIONPLAY_PROBE_PRESET:-}
+media_index=${VISIONPLAY_PROBE_MEDIA_INDEX:-0}
+part_index=${VISIONPLAY_PROBE_PART_INDEX:-0}
 pause_resume=0
+existing_version=${VISIONPLAY_PROBE_EXISTING_VERSION:-0}
+list_versions=${VISIONPLAY_PROBE_LIST_VERSIONS:-0}
+delete_existing=${VISIONPLAY_PROBE_DELETE_EXISTING:-0}
 delete_after=${VISIONPLAY_PROBE_DELETE_AFTER:-0}
 skip_build=0
 no_install=0
@@ -66,7 +76,16 @@ while [[ $# -gt 0 ]]; do
     --preset)
       [[ $# -ge 2 ]] || { echo "ERROR: --preset needs a value" >&2; exit 2; }
       preset=$2; shift 2 ;;
+    --media-index)
+      [[ $# -ge 2 ]] || { echo "ERROR: --media-index needs a value" >&2; exit 2; }
+      media_index=$2; shift 2 ;;
+    --part-index)
+      [[ $# -ge 2 ]] || { echo "ERROR: --part-index needs a value" >&2; exit 2; }
+      part_index=$2; shift 2 ;;
     --pause-resume) pause_resume=1; shift ;;
+    --existing-version) existing_version=1; shift ;;
+    --list-versions) list_versions=1; shift ;;
+    --delete-existing) delete_existing=1; shift ;;
     --delete-after) delete_after=1; shift ;;
     --skip-build) skip_build=1; shift ;;
     --no-install) no_install=1; shift ;;
@@ -84,6 +103,10 @@ if [[ -z "$query" && -z "$rating_key" ]]; then
 fi
 if ! is_positive_int "$drop_after"; then
   echo "ERROR: drop-after-bytes must be a positive integer (got '$drop_after')." >&2
+  exit 2
+fi
+if [[ ! ${media_index:-} =~ ^[0-9]+$ || ! ${part_index:-} =~ ^[0-9]+$ ]]; then
+  echo "ERROR: media-index and part-index must be non-negative integers." >&2
   exit 2
 fi
 if ! is_positive_int "$observe_seconds" || ! is_positive_int "$pause_after_seconds"; then
@@ -115,7 +138,12 @@ drop_after_bytes: $drop_after
 observe_seconds: $observe_seconds
 pause_resume: $pause_resume
 pause_after_seconds: $pause_after_seconds
+existing_version: $existing_version
+media_index: $media_index
+part_index: $part_index
+list_versions: $list_versions
 preset_set: $([[ -n "$preset" ]] && echo yes || echo no)
+delete_existing: $delete_existing
 delete_after: $delete_after
 SUMMARY
 
@@ -150,15 +178,27 @@ if [[ $no_install -eq 0 ]]; then
 fi
 
 probe_args=(
+  --vp-probe-backend plex
   --vp-probe-plex-download
   --vp-probe-start-download
   --vp-probe-range-check
   --vp-probe-range-drop-after-bytes "$drop_after"
   --vp-probe-observe-seconds "$observe_seconds"
+  --vp-probe-media-index "$media_index"
+  --vp-probe-part-index "$part_index"
 )
 [[ -n "$rating_key" ]] && probe_args+=(--vp-probe-rating-key "$rating_key")
 [[ -n "$query" ]] && probe_args+=(--vp-probe-query "$query")
 [[ -n "$preset" ]] && probe_args+=(--vp-probe-download-preset "$preset")
+if [[ $existing_version == "1" || $existing_version == "true" || $existing_version == "yes" ]]; then
+  probe_args+=(--vp-probe-existing-version)
+fi
+if [[ $list_versions == "1" || $list_versions == "true" || $list_versions == "yes" ]]; then
+  probe_args+=(--vp-probe-list-versions)
+fi
+if [[ $delete_existing == "1" || $delete_existing == "true" || $delete_existing == "yes" ]]; then
+  probe_args+=(--vp-probe-delete-existing)
+fi
 if [[ $pause_resume -eq 1 ]]; then
   probe_args+=(--vp-probe-pause-resume --vp-probe-pause-after-seconds "$pause_after_seconds")
 fi
