@@ -2480,57 +2480,16 @@ public final class DownloadManager {
                                         mediaSourceID: String? = nil,
                                         downloadLane: DownloadLane? = nil,
                                         serverPreparedVersion: Bool = false) -> OfflineMetadata {
-        let sourcePart = item.media?[safe: mediaIndex]?.part[safe: partIndex]
-        let sourcePartID = sourcePart?.id
-        let sourcePartSize = sourcePart?.size
-        let lane = downloadLane ?? ((optimizeTargetName?.isEmpty == false) ? .optimize : .original)
-        let resumeMode = DownloadResumeMode.resolved(backend: session.kind,
-                                                     lane: lane,
-                                                     optimizeTargetName: optimizeTargetName)
-        return OfflineMetadata(ratingKey: item.ratingKey,
-                               key: item.key,
-                               title: item.title,
-                               type: item.type,
-                               year: item.year,
-                               duration: item.duration,
-                               viewOffset: item.viewOffset,
-                               viewCount: item.viewCount,
-                               summary: item.summary,
-                               contentRating: item.contentRating,
-                               tagline: item.tagline,
-                               grandparentTitle: item.grandparentTitle,
-                               grandparentRatingKey: item.grandparentRatingKey,
-                               grandparentThumb: item.grandparentThumb,
-                               parentTitle: item.parentTitle,
-                               parentRatingKey: item.parentRatingKey,
-                               parentThumb: item.parentThumb,
-                               parentIndex: item.parentIndex,
-                               index: item.index,
-                               thumb: item.thumb,
-                               art: item.art,
-                               chapters: item.chapters?.map(OfflineChapter.init),
-                               markers: item.markers?.map(OfflineMarker.init),
-                               resolutionLabel: resolutionLabel,
-                               librarySectionID: item.librarySectionID,
-                               librarySectionKey: item.librarySectionKey,
-                               mediaIndex: mediaIndex,
-                               partIndex: partIndex,
-                               sourcePartID: sourcePartID,
-                               sourcePartSize: sourcePartSize,
-                               optimizeTargetName: optimizeTargetName,
-                               optimizeQueueTitle: optimizeQueueTitle,
-                               posterRelativePath: nil,
-                               // #84: per-job backend context captured at ENQUEUE from the job's own
-                               // `BackendSession`, so resume/retry/cleanup never read `appModel.active*`.
-                               backendKind: session.kind,
-                               backendBaseURLString: session.baseURL.absoluteString,
-                               backendServerID: session.serverID,
-                               backendUserID: session.userID,
-                               mediaSourceID: mediaSourceID,
-                               playSessionID: nil,
-                               downloadLane: downloadLane,
-                               resumeMode: resumeMode,
-                               serverPreparedVersion: serverPreparedVersion ? true : nil)
+        DownloadOfflineMetadataBuilder.metadata(from: item,
+                                                resolutionLabel: resolutionLabel,
+                                                mediaIndex: mediaIndex,
+                                                partIndex: partIndex,
+                                                optimizeTargetName: optimizeTargetName,
+                                                optimizeQueueTitle: optimizeQueueTitle,
+                                                session: session,
+                                                mediaSourceID: mediaSourceID,
+                                                downloadLane: downloadLane,
+                                                serverPreparedVersion: serverPreparedVersion)
     }
 
     /// Human-readable resolution label for the chosen media version, for the offline-library
