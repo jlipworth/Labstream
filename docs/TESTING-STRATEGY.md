@@ -47,6 +47,13 @@ The simulator is useful for compile/runtime smoke, browse flows, settings, downl
 
 Use live probes to confirm wire shape and server behavior before documenting a behavior as “proven.”
 
+For downloads there are two live layers:
+
+- **PMSKit live probes** (`scripts/live-*.sh`, `Live*ProbeTests`) prove request builders, server wire shape, response decoding, and server-side route behavior.
+- **App-driven simulator probes** (`scripts/probe-plex-range-drop.sh`, `scripts/probe-jellyfin-download.sh`, `scripts/probe-emby-download.sh`) launch the DEBUG app in the signed-in worktree simulator and prove app glue: backend session restore, route handoff, `DownloadManager`, `BackgroundDownloadSession`, static byte-range checkpointing, row cleanup, and diagnostics. They are still simulator proof, not headset/off-head proof.
+
+When running app-driven probes during a refactor, target `SIMID=$(scripts/worktree-sim.sh id)`, use `--keep-app-running` to preserve the single signed-in worktree simulator, and keep probe artifacts under `build/probes/**` private.
+
 ### LiveEmbyProbe gate
 
 The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
@@ -72,16 +79,17 @@ Keep these as manual Apple Vision Pro checks:
 - audio interruptions and route changes
 - Spotlight and Shortcuts/App Intents end-to-end behavior
 - background downloads and headset sleep/off-head transfer behavior
-- server-specific Plex/Jellyfin live download behavior
+- headset/off-head download scheduling and long-running background behavior
+- final user-facing download UX across Plex/Jellyfin/Emby after the simulator probes pass
 - Emby headset playback validation (the PMSKit wire shape is proven via `LiveEmbyProbe`, but in-headset playback/progress/cleanup behavior is still a device-only gate)
 
 ## Current validation boundaries
 
-- Plex playback and download paths have the most live validation.
+- Plex playback and download paths have the most live/headset validation.
 - Plex raw original download is intentionally offered only for compatible local containers.
 - Plex compatible original-quality copies use the server optimizer/rendered-part route.
-- Jellyfin browse/playback/download request paths are implemented and unit-tested, but Jellyfin downloads still need explicit live validation before being called headset-proven.
-- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, active-encoding cleanup, and download route/request paths are implemented and unit-tested. The core playback wire shape is live-proven via `LiveEmbyProbe`, Emby Connect PIN request/exchange shape is live-verified, and Emby downloads have `LiveEmbyDownloadProbe` coverage. In-headset PIN UX, playback/progress/cleanup, and download/off-head behavior remain device-only gates before calling those flows headset-proven.
+- Jellyfin browse/playback/download request paths are implemented and unit-tested. The app-driven simulator download probe has also proven Jellyfin static byte-range recovery against a live signed-in backend; headset/off-head behavior remains device-only before calling it headset-proven.
+- Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, active-encoding cleanup, and download route/request paths are implemented and unit-tested. The core playback wire shape is live-proven via `LiveEmbyProbe`, Emby Connect PIN request/exchange shape is live-verified, Emby downloads have `LiveEmbyDownloadProbe` coverage, and the app-driven simulator probe has proven existing-converted-source reuse plus static byte-range recovery. In-headset PIN UX, playback/progress/cleanup, and download/off-head behavior remain device-only gates before calling those flows headset-proven.
 
 The manual checklist remains in [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/VisionPlay/blob/main/TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
 

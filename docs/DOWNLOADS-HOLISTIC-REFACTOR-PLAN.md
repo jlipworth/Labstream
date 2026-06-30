@@ -504,6 +504,25 @@ snapshot derivation.
   the bounded observation window without shutting down the simulator app afterward. The harness exits
   non-zero for route-only/no-observation runs so they cannot be mistaken for network-drop proof.
 - Current signed-in simulator evidence (2026-06-30, worktree sim only):
+  - Plex `Flight` existing-version static lane refreshed after the final PMSKit row-status/context
+    cleanup, output `build/probes/plex-range-drop/20260630T124843Z/`, used the worktree simulator
+    with `--keep-app-running`, targeted a recently optimized/static MP4 server version, injected
+    `NSURLErrorNetworkConnectionLost` at ~1 MiB, retried from offset 0, appended bounded 64 MiB
+    checkpoints through 335 MiB+, and deleted the probe row after observation.
+  - Jellyfin `Flight` original/static lane refreshed after the final PMSKit row-status/context
+    cleanup, output `build/probes/jellyfin-download/20260630T125201Z/`, used `--keep-app-running`,
+    negotiated the MKV/HEVC source as a static original range download, injected
+    `NSURLErrorNetworkConnectionLost` at ~1 MiB, retried from offset 0, appended bounded 64 MiB
+    checkpoints through 268 MiB, and deleted the probe row after observation.
+  - Emby `Flight` existing converted-source discovery, output
+    `build/probes/emby-download/20260630T125913Z/`, refreshed the item and confirmed API-visible
+    converted MP4 file sources without starting a transfer.
+  - Emby `Flight` optimize/reuse static lane, output
+    `build/probes/emby-download/20260630T130201Z/`, used `--keep-app-running`, negotiated the
+    original MKV as transcode-only, reused the existing converted MP4 for `1080p 8 Mbps`, handed off
+    to the static range path, recovered from injected `NSURLErrorNetworkConnectionLost` plus a
+    transient connection-refused retry, appended bounded 64 MiB checkpoints through 402 MiB, and
+    deleted the probe row after observation.
   - Plex `Flight` existing-version media index 1 refreshed after the latest PMSKit snapshot/choice
     cleanup, output `build/probes/plex-range-drop/20260630T120642Z/`, used the worktree simulator
     with `--keep-app-running`, injected `NSURLErrorNetworkConnectionLost` at ~1 MiB, retried from
@@ -600,11 +619,12 @@ coordinator owning every formatting decision.
 
 ### Final step: update all documentation to represent this refactor
 
-After the code refactor and validation are complete, update all documentation that describes
-downloads, backend routing, download-agent behavior, live/headless probes, diagnostics, and
-operator workflows so the docs represent the final architecture rather than the transitional
-slices. Treat this as part of done for the holistic refactor, not a follow-up task. The refactor
-is not ready to close until those docs have been refreshed and checked against the final code.
+Status: **done in the final documentation pass (2026-06-30)**. Active docs now describe the
+post-refactor boundaries (`docs/ARCHITECTURE.md`, `docs/DOWNLOADS-OFFLINE.md`), app-driven
+download-agent/probe behavior (`docs/DOWNLOADS-OFFLINE.md`, `docs/TESTING-STRATEGY.md`), coverage
+expectations (`docs/TESTING-LIVE-MATRIX.md`, `TESTING-CHECKLIST.md`), and the latest signed-in
+simulator evidence above. Keep this section as the closeout checklist: future download refactors are
+not done until docs, probes, and operator instructions match the code that actually shipped.
 
 ## Non-goals
 
