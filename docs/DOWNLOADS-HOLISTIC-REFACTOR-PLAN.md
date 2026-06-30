@@ -240,6 +240,10 @@ snapshot derivation.
 - **Done: Slice 7d side-asset selection policy extraction.**
   `DownloadSideAssetPolicy` now owns offline poster preference, Plex BIF source-part selection,
   synthetic Jellyfin/Emby chapter-image key parsing, and chapter-image fanout throttling decisions.
+- **Done: Slice 7e download job snapshot extraction.**
+  `DownloadJobPhase` and `DownloadJobSnapshot` now provide a shared PMSKit vocabulary for durable
+  row status plus metadata-derived backend/lane/resume facts. Row captions and health diagnostics
+  can now count/classify jobs through the same explicit phase model.
 - **Done: Slice 5p shared download choice model extraction.**
   `DownloadIntentChoice` now lives in PMSKit with `DownloadChoicePolicy` owning diagnostic labels,
   persisted lane mapping, and server-prepared-version flagging. `DownloadManager.DownloadChoice`
@@ -317,7 +321,8 @@ snapshot derivation.
   - Plex original-validation fallback guards.
   - Jellyfin original/live-forward intent helpers, source plans, and tested stream request builders.
   - Emby route planner and post-route action policy.
-- `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
+- `DownloadJobPhase` / `DownloadJobSnapshot`: pure model for persisted row state, metadata-derived
+  backend/lane/resume facts, and shared app-observed phase labels.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
   `DownloadSideAssetPolicy`,
