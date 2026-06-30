@@ -2806,34 +2806,19 @@ public final class DownloadManager {
     }
 
     private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {
-        let backendsByKey = Dictionary(uniqueKeysWithValues: records.map { record in
-            (record.ratingKey, backendKind(for: record))
-        })
-        let hasMixedBackends = Set(backendsByKey.values.map(\.rawValue)).count > 1
-
-        let rows = records.map { record in
-            let backend = backendsByKey[record.ratingKey] ?? backendKind(for: record)
-            return OfflineDownloadRowSnapshot(
-                record: record,
-                showBackendBadge: hasMixedBackends,
-                backendName: backend.displayName,
-                errorMessage: record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil,
-                displayProgress: rowDisplayProgress(for: record),
-                statusCaption: statusCaption(for: record, backend: backend),
-                isRetrying: retryPresentationRows.contains(record.ratingKey),
-                isCheckpointPausing: staticRangeRecovery.isCheckpointPausing(record.ratingKey)
-            )
-        }
-
-        return OfflineLibrarySnapshot(
-            rows: rows,
-            queueToolbarAction: DownloadQueueToolbarPolicy.action(
-                isQueuePaused: isQueuePaused,
-                statuses: records.map(\.status)
-            ),
+        OfflineLibrarySnapshotBuilder.make(
+            records: records,
             isQueuePaused: isQueuePaused,
-            aggregateStats: OfflineDownloadAggregateStats.make(records: records,
-                                                               speedsByRatingKey: downloadSpeed)
+            downloadSpeed: downloadSpeed,
+            backendKind: { record in backendKind(for: record) },
+            errorMessage: { record in
+                guard record.status == .failed else { return nil }
+                return lastError[record.ratingKey].map(message(for:))
+            },
+            displayProgress: { record in rowDisplayProgress(for: record) },
+            statusCaption: { record, backend in statusCaption(for: record, backend: backend) },
+            isRetrying: { ratingKey in retryPresentationRows.contains(ratingKey) },
+            isCheckpointPausing: { ratingKey in staticRangeRecovery.isCheckpointPausing(ratingKey) }
         )
     }
 

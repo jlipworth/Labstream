@@ -85,6 +85,10 @@ snapshot derivation.
   and local/server finalizing states. `DownloadManager` supplies live dictionaries and
   app-local error text, but the nuanced caption state machine is no longer embedded in the
   coordinator.
+- **Done: Slice 7c offline snapshot builder extraction.** `OfflineLibrarySnapshotBuilder`
+  now owns the app-layer aggregation from records plus live coordinator facts into rows, mixed
+  backend badges, queue toolbar action, and aggregate metrics. `DownloadManager` still owns
+  the facts, but the hot UI publication shape has its own seam.
 
 ## Target module boundaries
 
