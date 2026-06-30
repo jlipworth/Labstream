@@ -50,6 +50,11 @@ This should usually be much faster than a capped video encode when PMS can copy 
 
 Numeric presets request explicit lower-resolution/lower-bitrate compatible files through the optimizer route. Do not expose generic Plex labels such as “Optimized for TV” in the user-facing sheet; use the app’s concrete bitrate/resolution labels.
 
+`DownloadPresetPolicy` is the shared source of truth for these labels and their backend mappings:
+the Original-quality aliases, custom bitrate ladder caps, visible-picker filtering, stored row
+resolution label, storage preflight source sizing, Jellyfin/Emby transcode caps, and Plex fallback
+target tag/settings all live there instead of being redefined in backend-specific download paths.
+
 ## Jellyfin routes
 
 Jellyfin download support mirrors the same offline goal:
