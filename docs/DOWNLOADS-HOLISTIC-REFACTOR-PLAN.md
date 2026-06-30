@@ -290,6 +290,12 @@ snapshot derivation.
   and Emby share the bitrate-only ladder, compatible-remux beats bitrate caps when available, and
   existing server versions remain explicit non-default alternates. The sheet and Emby manager also
   reuse `EmbyDownloadRouter.containerGate` instead of hand-rolling the MP4-family container test.
+- **Done: Slice 7g existing-version option policy extraction.**
+  `DownloadExistingVersionOptionPolicy` now owns the pure UI option model for already-rendered
+  server versions: Plex `Media` alternates skip the selected source and target an exact media index,
+  Emby Convert-Media alternates target a PlaybackInfo MediaSource id, both share label/detail
+  formatting, and incompatible alternates remain visible but disabled instead of disappearing. The
+  sheet now only maps those pure targets to app download actions.
 
 ## Target module boundaries
 
@@ -302,6 +308,9 @@ snapshot derivation.
 - `DownloadPresetPolicy`: shared preset/profile catalog and pure mapping for picker labels,
   backend transcode caps, storage estimates, display labels, Plex fallback settings, sheet default
   selection, Plex source-quality row separation, and MediaBrowser bitrate-only ladders.
+- `DownloadExistingVersionOptionPolicy`: pure option rows for Plex existing `Media` versions and
+  Emby Convert-Media `MediaSource` versions, including label/detail formatting, offline-playable
+  disabled gates, target addressing, and MediaSource id extraction.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
