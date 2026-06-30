@@ -390,6 +390,10 @@ snapshot derivation.
   Download UI captions now call `DownloadDisplayClassifier.isLiveTranscoderSourced` directly for
   live-transcoder rate suppression. The public row lookup still gates on active downloads, but the
   manager no longer carries a private classifier mirror for snapshot captions.
+- **Done: Slice 7n offline snapshot backend resolver cleanup.**
+  `OfflineLibrarySnapshotBuilder` now derives row backend ownership from `DownloadJobSnapshot`
+  directly, using the same persisted-backend and rating-key fallback policy as other PMSKit job
+  classifiers. `DownloadManager` no longer passes a UI-only backend resolver closure.
 
 ## Target module boundaries
 
