@@ -124,16 +124,11 @@ public final class DownloadManager {
     private var serverPrepRefreshKickScheduled = false
     private var lastServerPrepRefreshKickAt: Date?
     private var lastServerPrepQueuePausedLogAt: Date?
-    /// Static byte-range rows whose next chunk/restart needs the backend/auth lane to be restored
-    /// before an authenticated request can be rebuilt. This is queue policy/backend state, not
-    /// URLSession delegate state, so it deliberately lives here rather than in BackgroundDownloadSession.
-    private var pendingStaticRangeResumeKeys: Set<String> = []
-    private var preserveRangeRestartCounterRows: Set<String> = []
-    /// Static byte-range rows whose fully-downloaded checkpoint is already being handed to
-    /// BackgroundDownloadSession finalization. Without this guard, a refresh fired by
-    /// `publishTransferFinalizing` sees the row still at 100%/downloading until the async probe
-    /// writes a terminal status, re-enters recovery, and can recurse until the main stack overflows.
-    private var finalizingStaticRangeRecoveryKeys: Set<String> = []
+    /// Static byte-range recovery bookkeeping that belongs to app queue/retry policy rather than
+    /// URLSession mechanics: pending backend-auth rebuilds, finalization re-entry guards,
+    /// checkpoint-draining pauses, queue-paused manual resumes, and one-shot restart-counter
+    /// preservation.
+    private var staticRangeRecovery = StaticRangeRecoveryTracker()
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallObservations: [String: ForwardOnlyStallObservation] = [:]
     @ObservationIgnored private var forwardOnlyStallRestartAttempts: [String: Int] = [:]
@@ -149,11 +144,6 @@ public final class DownloadManager {
     /// and Pause/Pause All accounting never claim non-resumable OS temp bytes. This overlay drives
     /// active row progress, speed, and ETA between checkpoints.
     private var liveRangeProgress: [String: LiveRangeProgressSample] = [:]
-    private var rangeCheckpointPauseRows: Set<String> = []
-    /// Rows explicitly resumed while the global queue is paused. The queue gate should keep
-    /// automatic work parked, but a user's per-row Resume means "let this row continue" until they
-    /// pause it again, delete it, hit Pause All, or it reaches a terminal state.
-    private var queuePausedManualResumeKeys: Set<String> = []
     private static let liveRangeProgressStaleInterval: TimeInterval = 15
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
@@ -591,7 +581,7 @@ public final class DownloadManager {
             "download_id": .identifier(ratingKey),
         ])
         retryingRows.remove(ratingKey)
-        queuePausedManualResumeKeys.remove(ratingKey)
+        staticRangeRecovery.removeManualQueueResume(ratingKey)
         lastError[ratingKey] = .interruptedResumable
         switch record.status {
         case .queued, .downloading:
@@ -605,7 +595,7 @@ public final class DownloadManager {
                 // and the row does not bounce Paused→Downloading from delegate progress. The
                 // session will write `.paused` once the checkpoint is appended (or immediately for
                 // non-drainable cases).
-                rangeCheckpointPauseRows.insert(ratingKey)
+                staticRangeRecovery.markCheckpointPause(ratingKey)
             } else if Self.isStaticRangeRecord(record) {
                 // No live task to drain; this is a queued/gap pause and can park immediately.
                 store.setStatus(ratingKey: ratingKey, .paused)
@@ -624,7 +614,7 @@ public final class DownloadManager {
     /// Pause all non-terminal work and persist the queue gate across relaunch.
     public func pauseQueue() {
         isQueuePaused = true
-        queuePausedManualResumeKeys.removeAll()
+        staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
         for record in records where record.status == .queued || record.status == .preparing || record.status == .downloading {
             if shouldKeepEmbyServerPrepPollingWhileQueuePaused(record) {
@@ -644,7 +634,7 @@ public final class DownloadManager {
     /// URLSession tasks.
     public func resumeQueue() {
         isQueuePaused = false
-        queuePausedManualResumeKeys.removeAll()
+        staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
         let retryKeys = records
             .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
@@ -707,7 +697,7 @@ public final class DownloadManager {
     private func deferStaticRangeRetryIfBackendUnavailable(record: DownloadRecord, reason: String) -> Bool {
         guard Self.isStaticRangeRecord(record),
               staticRangeBackendSession(for: record) == nil else {
-            pendingStaticRangeResumeKeys.remove(record.ratingKey)
+            staticRangeRecovery.removePendingResume(record.ratingKey)
             return false
         }
         deferStaticRangeResume(record: record, reason: reason)
@@ -720,7 +710,7 @@ public final class DownloadManager {
         let ratingKey = record.ratingKey
         let backend = backendKind(for: record)
         let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
-        pendingStaticRangeResumeKeys.insert(ratingKey)
+        staticRangeRecovery.addPendingResume(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         retryingRows.remove(ratingKey)
         switch StaticRangeRecoveryPolicy.deferredResumeDisposition(
@@ -762,11 +752,11 @@ public final class DownloadManager {
         switch StaticRangeRecoveryPolicy.finalizeDecision(
             for: record,
             checkpointBytes: checkpointBytes,
-            isAlreadyFinalizing: finalizingStaticRangeRecoveryKeys.contains(ratingKey)
+            isAlreadyFinalizing: staticRangeRecovery.isFinalizing(ratingKey)
         ) {
         case .ignore:
             if record.status == .complete || record.status == .unverified || record.status == .failed {
-                finalizingStaticRangeRecoveryKeys.remove(ratingKey)
+                staticRangeRecovery.unmarkFinalizing(ratingKey)
             }
             return false
         case .alreadyFinalizing:
@@ -774,8 +764,8 @@ public final class DownloadManager {
         case .start:
             break
         }
-        pendingStaticRangeResumeKeys.remove(ratingKey)
-        finalizingStaticRangeRecoveryKeys.insert(ratingKey)
+        staticRangeRecovery.removePendingResume(ratingKey)
+        staticRangeRecovery.markFinalizing(ratingKey)
         recordDownloadDiagnostic("downloads.range_finalize_resume", fields: [
             "download_id": .identifier(ratingKey),
             "reason": .label(reason),
@@ -786,7 +776,7 @@ public final class DownloadManager {
         if started {
             lastError[ratingKey] = nil
         } else {
-            finalizingStaticRangeRecoveryKeys.remove(ratingKey)
+            staticRangeRecovery.unmarkFinalizing(ratingKey)
         }
         return started
     }
@@ -794,14 +784,14 @@ public final class DownloadManager {
     private func resumeStaticRangeWhenReady(ratingKey: String, reason: String) {
         if StaticRangeRecoveryPolicy.shouldWaitForManualResume(
             isQueuePaused: isQueuePaused,
-            wasManuallyResumedWhileQueuePaused: queuePausedManualResumeKeys.contains(ratingKey)
+            wasManuallyResumedWhileQueuePaused: staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)
         ) {
             guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
-                pendingStaticRangeResumeKeys.remove(ratingKey)
+                staticRangeRecovery.removePendingResume(ratingKey)
                 return
             }
             guard Self.isStaticRangeRecord(record) else {
-                pendingStaticRangeResumeKeys.remove(ratingKey)
+                staticRangeRecovery.removePendingResume(ratingKey)
                 return
             }
             let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey)
@@ -809,7 +799,7 @@ public final class DownloadManager {
                 store.setStatus(ratingKey: ratingKey, .paused)
                 lastError[ratingKey] = .interruptedResumable
             }
-            pendingStaticRangeResumeKeys.remove(ratingKey)
+            staticRangeRecovery.removePendingResume(ratingKey)
             recordDownloadDiagnostic("downloads.range_resume_queue_paused", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label(reason),
@@ -819,16 +809,16 @@ public final class DownloadManager {
             return
         }
         guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
-            pendingStaticRangeResumeKeys.remove(ratingKey)
+            staticRangeRecovery.removePendingResume(ratingKey)
             return
         }
         guard Self.isStaticRangeRecord(record) else {
-            pendingStaticRangeResumeKeys.remove(ratingKey)
+            staticRangeRecovery.removePendingResume(ratingKey)
             return
         }
         if record.status == .complete || record.status == .unverified {
-            pendingStaticRangeResumeKeys.remove(ratingKey)
-            finalizingStaticRangeRecoveryKeys.remove(ratingKey)
+            staticRangeRecovery.removePendingResume(ratingKey)
+            staticRangeRecovery.unmarkFinalizing(ratingKey)
             return
         }
         if finalizeCompletedStaticRangeIfNeeded(record: record, reason: reason) {
@@ -838,7 +828,7 @@ public final class DownloadManager {
             deferStaticRangeResume(record: record, reason: reason, preserveActiveIntent: true)
             return
         }
-        pendingStaticRangeResumeKeys.remove(ratingKey)
+        staticRangeRecovery.removePendingResume(ratingKey)
         recordDownloadDiagnostic("downloads.range_resume_ready", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(backendKind(for: record).rawValue),
@@ -852,7 +842,7 @@ public final class DownloadManager {
         retryingRows.remove(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
-            preserveRangeRestartCounterRows.insert(ratingKey)
+            staticRangeRecovery.preserveRestartCountersForNextStart(ratingKey)
         }
         if StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record) {
             // A persisted system-resume intent is not a live task. Drop it to an inactive status for
@@ -865,7 +855,7 @@ public final class DownloadManager {
     }
 
     func consumeRangeRestartCounterPreservation(ratingKey: String) -> Bool {
-        preserveRangeRestartCounterRows.remove(ratingKey) != nil
+        staticRangeRecovery.consumeRestartCounterPreservation(ratingKey)
     }
 
 
@@ -877,9 +867,7 @@ public final class DownloadManager {
     }
 
     private func resumePendingStaticRangeDownloads() {
-        let keys = isQueuePaused
-            ? pendingStaticRangeResumeKeys.intersection(queuePausedManualResumeKeys)
-            : pendingStaticRangeResumeKeys
+        let keys = staticRangeRecovery.resumablePendingKeys(isQueuePaused: isQueuePaused)
         guard !keys.isEmpty else { return }
         for key in keys {
             resumeStaticRangeWhenReady(ratingKey: key, reason: "backend_ready")
@@ -898,7 +886,7 @@ public final class DownloadManager {
             && Self.isStaticRangeRecord(record)
             && (record.status == .paused || record.status == .failed || record.status == .queued)
         if isManualStaticResumeWhileQueuePaused {
-            queuePausedManualResumeKeys.insert(ratingKey)
+            staticRangeRecovery.markManualQueueResume(ratingKey)
             recordDownloadDiagnostic("downloads.range_queue_paused_manual_resume", fields: [
                 "download_id": .identifier(ratingKey),
             ])
@@ -1843,8 +1831,8 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
-        pendingStaticRangeResumeKeys.remove(ratingKey)
-        queuePausedManualResumeKeys.remove(ratingKey)
+        staticRangeRecovery.removePendingResume(ratingKey)
+        staticRangeRecovery.removeManualQueueResume(ratingKey)
         retryingRows.remove(ratingKey)
         // Emby convert parity (#126 + Plex): deleting a `.preparing` row must ALSO cancel the
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
@@ -2051,10 +2039,14 @@ public final class DownloadManager {
         }
         if !staleQueuedStaticPartials.isEmpty {
             if isQueuePaused {
-                let manuallyResumed = staleQueuedStaticPartials.filter { queuePausedManualResumeKeys.contains($0.ratingKey) }
-                let queueParked = staleQueuedStaticPartials.filter { !queuePausedManualResumeKeys.contains($0.ratingKey) }
+                let manuallyResumed = staleQueuedStaticPartials.filter {
+                    staticRangeRecovery.wasManuallyResumedWhileQueuePaused($0.ratingKey)
+                }
+                let queueParked = staleQueuedStaticPartials.filter {
+                    !staticRangeRecovery.wasManuallyResumedWhileQueuePaused($0.ratingKey)
+                }
                 for record in queueParked {
-                    pendingStaticRangeResumeKeys.remove(record.ratingKey)
+                    staticRangeRecovery.removePendingResume(record.ratingKey)
                     let checkpointBytes = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: record.ratingKey)
                     if checkpointBytes > 0 {
                         store.setStatus(ratingKey: record.ratingKey, .paused)
@@ -2066,8 +2058,8 @@ public final class DownloadManager {
                         "checkpoint_bytes": .bytes(checkpointBytes),
                     ])
                 }
-                for record in manuallyResumed where !pendingStaticRangeResumeKeys.contains(record.ratingKey) {
-                    pendingStaticRangeResumeKeys.insert(record.ratingKey)
+                for record in manuallyResumed where !staticRangeRecovery.hasPendingResume(record.ratingKey) {
+                    staticRangeRecovery.addPendingResume(record.ratingKey)
                     recordDownloadDiagnostic("downloads.range_stale_queued_manual_resume", fields: [
                         "download_id": .identifier(record.ratingKey),
                         "backend": .label(backendKind(for: record).rawValue),
@@ -2079,8 +2071,8 @@ public final class DownloadManager {
                                                reason: "stale_queued_static_manual_resume")
                 }
             } else {
-                for record in staleQueuedStaticPartials where !pendingStaticRangeResumeKeys.contains(record.ratingKey) {
-                    pendingStaticRangeResumeKeys.insert(record.ratingKey)
+                for record in staleQueuedStaticPartials where !staticRangeRecovery.hasPendingResume(record.ratingKey) {
+                    staticRangeRecovery.addPendingResume(record.ratingKey)
                     recordDownloadDiagnostic("downloads.range_stale_queued_resume", fields: [
                         "download_id": .identifier(record.ratingKey),
                         "backend": .label(backendKind(for: record).rawValue),
@@ -2173,7 +2165,7 @@ public final class DownloadManager {
             }
         }
         let finalizedRecoveryKeys = Set(fresh.filter { $0.status == .complete || $0.status == .unverified || $0.status == .failed }.map(\.ratingKey))
-        finalizingStaticRangeRecoveryKeys.subtract(finalizedRecoveryKeys)
+        staticRangeRecovery.subtractFinalizing(finalizedRecoveryKeys)
         let manualResumeTerminalKeys = Set(fresh.filter { record in
             if record.status == .complete || record.status == .unverified { return true }
             if record.status == .failed,
@@ -2183,10 +2175,10 @@ public final class DownloadManager {
             }
             return record.status == .failed
         }.map(\.ratingKey))
-        queuePausedManualResumeKeys.subtract(manualResumeTerminalKeys)
+        staticRangeRecovery.subtractManualQueueResumes(manualResumeTerminalKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
-        let pendingPauseKeys = Set(fresh.filter { rangeCheckpointPauseRows.contains($0.ratingKey) }.map(\.ratingKey))
-        rangeCheckpointPauseRows = rangeCheckpointPauseRows.filter { key in
+        let pendingPauseKeys = Set(fresh.filter { staticRangeRecovery.isCheckpointPausing($0.ratingKey) }.map(\.ratingKey))
+        staticRangeRecovery.keepCheckpointPauses { key in
             guard let record = fresh.first(where: { $0.ratingKey == key }) else { return false }
             return record.status == .downloading && session.isTrackingTransfer(ratingKey: key)
         }
@@ -2362,8 +2354,8 @@ public final class DownloadManager {
             "active_job_count": .int(activeJobs.count),
             "retrying_count": .int(retryingRows.count),
             "retry_handoff_count": .int(retryHandoffRows.count),
-            "pending_static_resume_count": .int(pendingStaticRangeResumeKeys.count),
-            "finalizing_static_recovery_count": .int(finalizingStaticRangeRecoveryKeys.count),
+            "pending_static_resume_count": .int(staticRangeRecovery.pendingResumeCount),
+            "finalizing_static_recovery_count": .int(staticRangeRecovery.finalizingCount),
             "server_prep_poller_count": .int(serverPrepPollerTasks.count),
             "jellyfin_keepalive_count": .int(jellyfinDownloadKeepaliveTasks.count),
             "forward_stall_watch_count": .int(forwardOnlyStallObservations.count),
@@ -2821,7 +2813,7 @@ public final class DownloadManager {
     }
 
     private func liveDisplayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
-        guard record.status == .downloading || rangeCheckpointPauseRows.contains(record.ratingKey),
+        guard record.status == .downloading || staticRangeRecovery.isCheckpointPausing(record.ratingKey),
               let sample = liveRangeProgress[record.ratingKey],
               now.timeIntervalSince(sample.updatedAt) <= Self.liveRangeProgressStaleInterval,
               sample.bytes > record.bytes else { return nil }
@@ -2851,7 +2843,7 @@ public final class DownloadManager {
                 displayProgress: rowDisplayProgress(for: record),
                 statusCaption: statusCaption(for: record, backend: backend),
                 isRetrying: retryPresentationRows.contains(record.ratingKey),
-                isCheckpointPausing: rangeCheckpointPauseRows.contains(record.ratingKey)
+                isCheckpointPausing: staticRangeRecovery.isCheckpointPausing(record.ratingKey)
             )
         }
 
@@ -2933,7 +2925,7 @@ public final class DownloadManager {
         if DownloadProgressDisplay.isTransferFinalizing(status: record.status, progress: record.progress) {
             return transferFinalizingCaption(for: record)
         }
-        let isCheckpointPausing = rangeCheckpointPauseRows.contains(record.ratingKey)
+        let isCheckpointPausing = staticRangeRecovery.isCheckpointPausing(record.ratingKey)
         let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading || isCheckpointPausing
         let resumeMode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
         let isServerPrep = resumeMode == .serverPrepThenStatic

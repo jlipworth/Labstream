@@ -50,6 +50,12 @@ snapshot derivation.
   live-forward streams, and transcode live-forward streams. The app backend still owns
   PlaybackInfo calls, request construction, PlaySession keepalive, metadata mutation, and
   side-cache work; only the pure route decision moved.
+- **Done: Slice 3b recovery-state tracker extraction.** `StaticRangeRecoveryTracker` now
+  groups the stateful, IO-free static-range recovery sets that used to be independent
+  `DownloadManager` fields: pending backend-auth resumes, finalization re-entry guards,
+  checkpoint-draining pauses, queue-paused per-row manual resumes, and one-shot restart
+  counter preservation. This keeps URLSession mechanics separate while preparing the later
+  app-layer recovery coordinator.
 
 ## Target module boundaries
 
