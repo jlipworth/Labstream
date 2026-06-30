@@ -317,6 +317,11 @@ snapshot derivation.
   and the enqueue rejection message for projected-over-limit downloads. Settings and download
   enqueue preflight now share the same tested cap vocabulary instead of duplicating labels and
   message composition in the app layer.
+- **Done: Slice 4i optimize source-part policy extraction.**
+  `DownloadOptimizeSourcePolicy` now owns Plex optimize baseline/source-part selection for new
+  enqueue paths and relaunch retry paths. It preserves the compatibility order for old rows:
+  persisted source part first, selected media/part second, legacy baseline ids third, then
+  non-optimized current parts while skipping existing Plex Versions.
 
 ## Target module boundaries
 
@@ -361,6 +366,8 @@ snapshot derivation.
   auto-restart tracking for Jellyfin/Emby live downloads.
 - `DownloadStaticRetryTargetPolicy`: pure static retry source-part and original/existing-version
   target selection.
+- `DownloadOptimizeSourcePolicy`: pure Plex optimize source/baseline part-id selection for enqueue
+  and relaunch retry.
 - `DownloadStorageEstimatePolicy`: pure storage preflight estimates for media bytes and sidecars.
 - `DownloadStorageLimitPolicy`: pure storage-cap options/labels, byte formatting, and projected
   over-limit rejection messaging.

@@ -1571,32 +1571,17 @@ public final class DownloadManager {
     }
 
     private static func resumeOriginalPartIDs(metadata: OfflineMetadata, item: MediaItem) -> Set<Int> {
-        // Prefer the selected/source part over legacy persisted baselines. Older builds wrote ALL
-        // current part ids here, which included already-rendered Plex Versions and prevented a
-        // queued optimize row from ever discovering that matching server-prepared file.
-        if let sourcePartID = metadata.sourcePartID { return [sourcePartID] }
-        if let mediaIndex = metadata.mediaIndex,
-           let partIndex = metadata.partIndex,
-           let id = item.media?[safe: mediaIndex]?.part[safe: partIndex]?.id {
-            return [id]
-        }
-        if let baseline = metadata.optimizeBaselinePartIDs, !baseline.isEmpty {
-            return Set(baseline)
-        }
-        return Set((item.media ?? []).flatMap { media in
-            media.part.filter { !OptimizedVersionMatch.isServerOptimizedPart($0) }.map(\.id)
-        })
+        DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: item)
     }
 
     static func optimizeSourcePartIDs(item: MediaItem,
                                               fallbackItem: MediaItem,
                                               mediaIndex: Int,
                                               partIndex: Int) -> [Int] {
-        let media = item.media?[safe: mediaIndex] ?? fallbackItem.media?[safe: mediaIndex]
-        if let selected = media?.part[safe: partIndex]?.id { return [selected] }
-        if let ids = media?.part.map(\.id), !ids.isEmpty { return ids }
-        return (item.media ?? fallbackItem.media ?? [])
-            .flatMap { media in media.part.filter { !OptimizedVersionMatch.isServerOptimizedPart($0) }.map(\.id) }
+        DownloadOptimizeSourcePolicy.sourcePartIDs(item: item,
+                                                   fallbackItem: fallbackItem,
+                                                   mediaIndex: mediaIndex,
+                                                   partIndex: partIndex)
     }
 
     public var totalDownloadedBytes: Int {
