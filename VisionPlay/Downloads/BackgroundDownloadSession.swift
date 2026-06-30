@@ -138,9 +138,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// reached a safe state. `urlSessionDidFinishEvents` must not release the app delegate
     /// background completion handler until these reach zero, or visionOS can suspend us between a
     /// temp-stash move and the append/finalize/status write that makes the row durable.
-    private var pendingBackgroundCompletionOperations = 0
-    private var backgroundCompletionHandlersAwaitingFinish: Set<String> = []
-    private var deferredBackgroundCompletionIdentifiers: Set<String> = []
+    private var backgroundCompletionGate = BackgroundDownloadCompletionGate()
     /// Range tasks started while a background-session completion handler is deferred. Holding that
     /// handler briefly gives `nsurlsessiond` time to observe the newly chained task before the app is
     /// suspended again; otherwise an off-head device can finish chunk N, start chunk N+1 in the event
@@ -299,9 +297,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let opaqueInflightCount = inflight.count
         let rangeInflightCount = rangeInflight.count
         let haltedRangeKeyCount = haltedRangeKeys.count
-        let pendingBackgroundCompletionOperationCount = pendingBackgroundCompletionOperations
-        let deferredBackgroundCompletionIdentifierCount = deferredBackgroundCompletionIdentifiers.count
-        let backgroundCompletionHandlerCount = backgroundCompletionHandlersAwaitingFinish.count
+        let pendingBackgroundCompletionOperationCount = backgroundCompletionGate.pendingOperationCount
+        let deferredBackgroundCompletionIdentifierCount = backgroundCompletionGate.deferredIdentifierCount
+        let backgroundCompletionHandlerCount = backgroundCompletionGate.awaitingFinishIdentifierCount
         let rangeBackgroundHandoffGraceTaskCount = rangeBackgroundHandoffGraceTasks.count
         let gracefulRangePauseKeyCount = gracefulRangePauseKeys.count
         lock.unlock()
@@ -397,20 +395,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func beginPendingBackgroundCompletionOperation() {
         lock.lock()
-        pendingBackgroundCompletionOperations += 1
+        backgroundCompletionGate.beginOperation()
         lock.unlock()
     }
 
     private func endPendingBackgroundCompletionOperation() {
-        let identifiers: [String]
         lock.lock()
-        pendingBackgroundCompletionOperations = max(0, pendingBackgroundCompletionOperations - 1)
-        if pendingBackgroundCompletionOperations == 0 {
-            identifiers = Array(deferredBackgroundCompletionIdentifiers)
-            deferredBackgroundCompletionIdentifiers.removeAll()
-        } else {
-            identifiers = []
-        }
+        let identifiers = backgroundCompletionGate.endOperation()
         lock.unlock()
         for identifier in identifiers {
             Task { @MainActor in
@@ -421,28 +412,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     func noteBackgroundCompletionHandlerStored(identifier: String) {
         lock.lock()
-        backgroundCompletionHandlersAwaitingFinish.insert(identifier)
+        backgroundCompletionGate.storeHandler(identifier: identifier)
         lock.unlock()
     }
 
     private func fireBackgroundCompletionWhenFinalizationIsSafe(identifier: String) {
         lock.lock()
-        backgroundCompletionHandlersAwaitingFinish.remove(identifier)
-        if pendingBackgroundCompletionOperations > 0 {
-            deferredBackgroundCompletionIdentifiers.insert(identifier)
-            lock.unlock()
-            return
-        }
+        let identifiers = backgroundCompletionGate.finishEvents(identifier: identifier)
         lock.unlock()
-        Task { @MainActor in
-            BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+        for identifier in identifiers {
+            Task { @MainActor in
+                BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+            }
         }
     }
 
     private func hasPendingBackgroundCompletionHandler() -> Bool {
         lock.lock()
-        let hasPending = !backgroundCompletionHandlersAwaitingFinish.isEmpty
-            || !deferredBackgroundCompletionIdentifiers.isEmpty
+        let hasPending = backgroundCompletionGate.hasPendingHandler
         lock.unlock()
         return hasPending
     }
