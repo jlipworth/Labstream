@@ -114,6 +114,10 @@ snapshot derivation.
   misaligned `Content-Range` retries. These counters are intentionally distinct from generic
   URLSession retry counts because progress callbacks from a bad temp file must not erase them; only
   a real durable append or fresh user start resets the budget.
+- **Done: Slice 6e finished range chunk pause policy.**
+  `StaticRangeFinishedChunkPolicy` now owns the pure decision for finished chunks that race with
+  pause/cancel: hard halts discard the temp, paused rows write then remain paused, and graceful
+  checkpoint pauses preserve durable bounded/background chunks without starting the next range.
 
 ## Target module boundaries
 
@@ -128,8 +132,8 @@ snapshot derivation.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
   `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
-  `StaticRangeRetryBudget`, `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate
-  stats, file inventory, text subtitle parsing.
+  `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`, `DownloadCompletionValidation`,
+  `DownloadRateEstimator`, aggregate stats, file inventory, text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 

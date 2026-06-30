@@ -1751,7 +1751,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // should preserve a just-finished chunk: otherwise the delegate can log
         // `range_chunk_finished`, then the async append sees the pause halt and silently throws away
         // tens of MB/GB of completed work. That is the restart-from-0-ish race seen after relaunch.
-        if halted, !shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey) {
+        if StaticRangeFinishedChunkPolicy.shouldDiscardBeforeStash(
+            isHalted: halted,
+            persistedStatusPaused: shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
+        ) {
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
                                            ratingKey: entry.ratingKey,
                                            reason: "halted")
@@ -1880,8 +1883,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let entry = entry.replacingExpectedBytes(effectiveExpectedBytes)
         // A cancel/pause may have landed during the delegate→IO hop.
         lock.lock(); let halted = haltedRangeKeys.contains(entry.ratingKey); lock.unlock()
-        let preserveHaltedChunk = halted
-            && shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
+        let persistedStatusPaused = shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
         let pauseAfterCheckpoint: Bool
         if RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind) {
             pauseAfterCheckpoint = consumeGracefulRangePause(ratingKey: entry.ratingKey)
@@ -1891,7 +1893,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             clearGracefulRangePause(ratingKey: entry.ratingKey)
             pauseAfterCheckpoint = false
         }
-        if halted, !preserveHaltedChunk {
+        let finishedChunkDisposition = StaticRangeFinishedChunkPolicy.disposition(
+            isHalted: halted,
+            persistedStatusPaused: persistedStatusPaused,
+            segmentKind: entry.segmentKind,
+            gracefulPauseRequested: pauseAfterCheckpoint
+        )
+        if finishedChunkDisposition == .discardTemp {
             let stashBytes = fileSize(at: stash)
             try? fileManager.removeItem(at: stash)
             AppDiagnostics.record(.downloads, "downloads.range_halted_chunk_discarded", fields: [
@@ -1931,7 +1939,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
-            if preserveHaltedChunk || pauseAfterCheckpoint {
+            if finishedChunkDisposition == .writeThenPause {
                 let bytes = fileSize(at: entry.destination) ?? 0
                 store.updateProgress(ratingKey: entry.ratingKey,
                                      bytes: bytes,
@@ -2077,7 +2085,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "expected_exact": .int(entry.expectedBytes ?? -1),
             ])
 
-            if preserveHaltedChunk || pauseAfterCheckpoint {
+            if finishedChunkDisposition == .writeThenPause {
                 AppDiagnostics.record(.downloads, "downloads.range_halted_chunk_preserved", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "segment_kind": .label(entry.segmentKind.rawValue),
