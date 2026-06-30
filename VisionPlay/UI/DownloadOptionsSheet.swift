@@ -35,26 +35,7 @@ struct DownloadOptionsSheet: View {
         case ready(original: OriginalOption?, compatibleRemux: CompatibleRemuxOption?,
                    presets: [String], probeFailed: Bool,
                    originalStreamableButOfflineUnsupported: Bool,
-                   existingVersions: [ExistingVersionOption])
-    }
-
-    /// #112: an existing server-generated Plex Version offered as an explicit, separate download
-    /// choice. Carries the `Media` array index it lives at (so the download addresses that exact
-    /// version/part) plus a human label built from its resolution/codec/bitrate/container.
-    private struct ExistingVersionOption: Equatable, Identifiable {
-        /// Stable row identity within the sheet (Plex: the `Media` array index; Emby: enumeration
-        /// order). A sheet is single-backend, so these never collide.
-        let id: Int
-        let label: String
-        let detail: String?
-        let sizeBytes: Int?
-        /// #125: whether this alternate's container/codec can play back offline as a standalone
-        /// local file. Incompatible versions are shown DISABLED rather than hidden so the user
-        /// understands why they can't pick them.
-        let playableOffline: Bool
-        /// What picking this row selects. Plex addresses a `Media` index (#112); Emby addresses a
-        /// PlaybackInfo MediaSource id (#126) — different models, same row UI.
-        let selection: DownloadSelection
+                   existingVersions: [DownloadExistingVersionOption])
     }
 
     private enum DownloadSelection: Equatable {
@@ -191,7 +172,7 @@ struct DownloadOptionsSheet: View {
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
-        let mediaSourceId = selectedMediaSourceID(media: media, part: part)
+        let mediaSourceId = DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: media, part: part)
         // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
         // not decide remux eligibility from the local Part alone. Ask PlaybackInfo whenever the
         // raw file is not already locally playable, then use the server's authoritative codec and
@@ -289,7 +270,7 @@ struct DownloadOptionsSheet: View {
         let media = item.media?[safe: mediaIndex]
         let part = media?.part[safe: partIndex]
         let presets = embyPresets
-        let mediaSourceId = selectedMediaSourceID(media: media, part: part)
+        let mediaSourceId = DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: media, part: part)
         guard let server = appModel.embyServerBaseURL,
               let token = appModel.embyAccessToken,
               let userId = appModel.embyUserID else {
@@ -308,7 +289,7 @@ struct DownloadOptionsSheet: View {
         var probeFailed = false
         // #126: existing server-side converted versions ("Convert Media" copies) surfaced from the
         // SAME PlaybackInfo call that probes the primary source — no extra round trip.
-        var existingVersions: [ExistingVersionOption] = []
+        var existingVersions: [DownloadExistingVersionOption] = []
         do {
             let req = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity,
@@ -397,36 +378,13 @@ struct DownloadOptionsSheet: View {
                             existingVersions: existingVersions)
     }
 
-    /// #126: map Emby PlaybackInfo alternate sources to existing-version download rows, applying the
-    /// same offline-compatibility gate as the Plex lane (#125) so an incompatible alternate is shown
-    /// disabled rather than hidden.
-    private static func embyExistingVersionOptions(
-        response: EmbyPlaybackInfoResponse,
-        primaryMediaSourceId: String?) -> [ExistingVersionOption] {
-        EmbyPlayback.existingDownloadableVersions(
-            response: response, primaryMediaSourceId: primaryMediaSourceId
-        ).enumerated().map { index, version in
-            let playableOffline = version.supportsDirectPlay
-                && OfflineDownloadDecision.existingVersionPlayableOffline(
-                    container: version.container, videoCodec: version.videoCodec)
-            return ExistingVersionOption(
-                id: index,
-                label: embyVersionLabel(version),
-                detail: embyVersionDetail(version),
-                sizeBytes: version.size,
-                playableOffline: playableOffline,
-                selection: .embyExistingVersion(mediaSourceId: version.mediaSourceId,
-                                                sizeBytes: version.size))
-        }
-    }
-
     private func embyExistingVersionsWithRefresh(server: URL,
                                                  token: String,
                                                  identity: EmbyClientIdentity,
                                                  userId: String,
                                                  itemId: String,
-                                                 selectedMediaSourceId: String?) async throws -> [ExistingVersionOption] {
-        func fetch() async throws -> [ExistingVersionOption] {
+                                                 selectedMediaSourceId: String?) async throws -> [DownloadExistingVersionOption] {
+        func fetch() async throws -> [DownloadExistingVersionOption] {
             let allReq = try EmbyPlayback.downloadPlaybackInfoRequest(
                 server: server, token: token, identity: identity,
                 userId: userId, itemId: itemId,
@@ -441,7 +399,7 @@ struct DownloadOptionsSheet: View {
             // back to the unfiltered decision's chosen primary when none was resolved.
             let primaryId = selectedMediaSourceId
                 ?? (try? EmbyPlayback.downloadDecision(response: info))?.mediaSourceId
-            return Self.embyExistingVersionOptions(response: info, primaryMediaSourceId: primaryId)
+            return DownloadExistingVersionOptionPolicy.embyOptions(response: info, primaryMediaSourceId: primaryId)
         }
 
         let initial = try await fetch()
@@ -520,57 +478,12 @@ struct DownloadOptionsSheet: View {
     /// pre-rendered versions Plex already keeps on the server. Plex-only (Jellyfin/Emby model the
     /// alternate versions differently and use the compatible-remux lane), and never offered when
     /// the item has a single version.
-    private func plexExistingVersions() -> [ExistingVersionOption] {
-        guard sheetBackend == .plex, let media = item.media, media.count > 1 else {
-            downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(item.media?.count ?? 0, privacy: .public) offered=0")
-            return []
-        }
-        let result: [ExistingVersionOption] = media.enumerated().compactMap { index, m -> ExistingVersionOption? in
-            // The selected source version is offered through the normal quality options above, not
-            // as an "existing version" — skip it.
-            guard index != mediaIndex else { return nil }
-            // A version is only downloadable if it exposes a part with a streamable key.
-            guard let part = m.part.first, !part.key.isEmpty else { return nil }
-            // #125: this lane has NO offline-compatibility preflight, so gate here on Media-level
-            // container/codec (reliably present for every alternate). Fall back to media.container
-            // like versionDetail so an empty part container doesn't fail open. Incompatible
-            // versions stay visible but disabled (see existingVersionsSection).
-            let playableOffline = OfflineDownloadDecision.existingVersionPlayableOffline(
-                container: part.container ?? m.container,
-                videoCodec: m.videoCodec)
-            return ExistingVersionOption(id: index,
-                                         label: Self.versionLabel(m),
-                                         detail: Self.versionDetail(media: m, part: part),
-                                         sizeBytes: part.size,
-                                         playableOffline: playableOffline,
-                                         selection: .existingVersion(index))
-        }
+    private func plexExistingVersions() -> [DownloadExistingVersionOption] {
+        let result = DownloadExistingVersionOptionPolicy.plexOptions(media: item.media,
+                                                                    sourceMediaIndex: mediaIndex)
         let blocked = result.filter { !$0.playableOffline }.count
-        downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(media.count, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) blockedOffline=\(blocked, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
+        downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(item.media?.count ?? 0, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) blockedOffline=\(blocked, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
         return result
-    }
-
-    /// Primary label for an existing-version row: resolution · codec · bitrate, e.g. "1080p · H264 · 8.0 Mbps".
-    private static func versionLabel(_ media: Media) -> String {
-        var parts: [String] = []
-        if let res = DownloadManager.resolutionLabel(for: media) { parts.append(res) }
-        if let codec = media.videoCodec?.uppercased(), !codec.isEmpty { parts.append(codec) }
-        if let bitrate = media.bitrate, bitrate > 0 {
-            parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1000))
-        }
-        return parts.isEmpty ? "Server version" : parts.joined(separator: " · ")
-    }
-
-    /// Secondary caption for an existing-version row: container + file size where available.
-    private static func versionDetail(media: Media, part: Part) -> String? {
-        var parts: [String] = []
-        if let container = (part.container ?? media.container)?.uppercased(), !container.isEmpty {
-            parts.append(container)
-        }
-        if let size = part.size, size > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     // MARK: - Sections
@@ -747,11 +660,12 @@ struct DownloadOptionsSheet: View {
     }
 
     @ViewBuilder
-    private func existingVersionsSection(_ versions: [ExistingVersionOption]) -> some View {
+    private func existingVersionsSection(_ versions: [DownloadExistingVersionOption]) -> some View {
         SwiftUI.Section {
             ForEach(versions) { version in
+                let selection = selection(forExistingVersion: version)
                 Button {
-                    selectedChoice = version.selection
+                    selectedChoice = selection
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "rectangle.stack.badge.play")
@@ -771,7 +685,7 @@ struct DownloadOptionsSheet: View {
                             }
                         }
                         Spacer()
-                        if version.playableOffline, selectedChoice == version.selection {
+                        if version.playableOffline, selectedChoice == selection {
                             Image(systemName: "checkmark").foregroundStyle(.tint)
                         }
                     }
@@ -844,6 +758,15 @@ struct DownloadOptionsSheet: View {
         return partIndex
     }
 
+    private func selection(forExistingVersion option: DownloadExistingVersionOption) -> DownloadSelection {
+        switch option.target {
+        case .plexMediaIndex(let index):
+            return .existingVersion(index)
+        case .embyMediaSource(let id, let sizeBytes):
+            return .embyExistingVersion(mediaSourceId: id, sizeBytes: sizeBytes)
+        }
+    }
+
     private func preferredSelection(originalAvailable: Bool,
                                     compatibleRemuxAvailable: Bool,
                                     presets: [String]) -> DownloadSelection? {
@@ -880,16 +803,6 @@ struct DownloadOptionsSheet: View {
         case .existingVersion: return .existingVersion
         case .embyExistingVersion: return .existingVersion
         }
-    }
-
-    private func selectedMediaSourceID(media: Media?, part: Part?) -> String? {
-        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
-        for key in keys.compactMap({ $0 }) {
-            guard let marker = key.range(of: "/media/") else { continue }
-            let source = String(key[marker.upperBound...])
-            if !source.isEmpty { return source }
-        }
-        return nil
     }
 
     // MARK: - Already-downloaded state
