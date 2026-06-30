@@ -23,6 +23,14 @@ public enum BackgroundDownloadTransientRetryDecision: Sendable, Equatable {
 /// authenticated request still to be in memory.
 public enum BackgroundDownloadTransientRetryPolicy {
     public static let defaultMaxRetries = 3
+    public static let defaultMaxRangeRehydrations = 1
+
+    /// HTTP statuses where repeating the identical Range request is unlikely to help, but rebuilding
+    /// the backend/playback negotiation can mint a fresh authorized static-file request.
+    public static let rehydratableHTTPStatusCodes: Set<Int> = [
+        401,
+        403,
+    ]
 
     /// Server-side / edge-proxy HTTP responses that are usually transient for a static file chunk.
     ///
@@ -80,6 +88,20 @@ public enum BackgroundDownloadTransientRetryPolicy {
             return .reject(.missingRangeRequest)
         }
         return retryBudgetDecision(currentRetryCount: currentRetryCount, maxRetries: maxRetries)
+    }
+
+    public static func rangeRehydrationDecision(statusCode: Int,
+                                                supportsDurableCheckpoint: Bool,
+                                                currentRehydrationCount: Int,
+                                                maxRehydrations: Int = defaultMaxRangeRehydrations) -> BackgroundDownloadTransientRetryDecision {
+        guard rehydratableHTTPStatusCodes.contains(statusCode) else {
+            return .reject(.nonTransientHTTPStatus)
+        }
+        guard supportsDurableCheckpoint else {
+            return .reject(.unsupportedRangeSegment)
+        }
+        return retryBudgetDecision(currentRetryCount: currentRehydrationCount,
+                                   maxRetries: maxRehydrations)
     }
 
     public static func rangeHTTPDecision(statusCode: Int,

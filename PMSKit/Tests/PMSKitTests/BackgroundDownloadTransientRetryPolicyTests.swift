@@ -142,6 +142,39 @@ struct BackgroundDownloadTransientRetryPolicyTests {
         ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
     }
 
+    @Test("Range HTTP rehydration is limited to auth statuses, durable checkpoints, and one attempt")
+    func rangeHTTPRehydrationGate() {
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 403,
+            supportsDurableCheckpoint: true,
+            currentRehydrationCount: 0
+        ) == .retry(nextAttempt: 1))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 401,
+            supportsDurableCheckpoint: true,
+            currentRehydrationCount: 0
+        ) == .retry(nextAttempt: 1))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 521,
+            supportsDurableCheckpoint: true,
+            currentRehydrationCount: 0
+        ) == .reject(.nonTransientHTTPStatus))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 403,
+            supportsDurableCheckpoint: false,
+            currentRehydrationCount: 0
+        ) == .reject(.unsupportedRangeSegment))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 403,
+            supportsDurableCheckpoint: true,
+            currentRehydrationCount: 1
+        ) == .reject(.retryBudgetExhausted(nextAttempt: 2, maxRetries: 1)))
+    }
+
     @Test("Transient HTTP status set covers the proxy and origin-unavailable statuses used by downloads")
     func transientHTTPStatusCodes() {
         #expect(BackgroundDownloadTransientRetryPolicy.transientHTTPStatusCodes == [
@@ -155,6 +188,14 @@ struct BackgroundDownloadTransientRetryPolicyTests {
             524,
             525,
             526,
+        ])
+    }
+
+    @Test("Rehydratable HTTP status set covers auth and forbidden responses")
+    func rehydratableHTTPStatusCodes() {
+        #expect(BackgroundDownloadTransientRetryPolicy.rehydratableHTTPStatusCodes == [
+            401,
+            403,
         ])
     }
 }

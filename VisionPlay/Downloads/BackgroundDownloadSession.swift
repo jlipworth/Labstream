@@ -73,6 +73,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
     private var retryCounts: [String: Int] = [:]
+    /// Bounded per-row backend/request rehydrations after auth/forbidden HTTP responses on durable
+    /// static Range chunks. This is intentionally separate from transient retry counts: 403 should
+    /// not blindly replay the same URL, but one fresh backend negotiation may mint a usable request.
+    private var rangeHTTPRehydrateCounts: [String: Int] = [:]
     /// RatingKeys currently inside post-transfer finalization. A duplicated URLSession/adoption
     /// callback must not launch a second AVPlayer validation for the same finished file; that can
     /// leave the UI stuck on repeated "Verifying download…" and increases headset memory/CPU load.
@@ -902,6 +906,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         gracefulRangePauseKeys.remove(ratingKey)
         if resetRangeRestartCounters {
             staticRangeRetryBudget.reset(downloadID: ratingKey)
+            rangeHTTPRehydrateCounts.removeValue(forKey: ratingKey)
         }
         lock.unlock()
         if byteRangeCheckpoint {
@@ -1787,6 +1792,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                               durableBytes: durableBytes) {
                 return
             }
+            if requestRangeRehydrationAfterHTTPFailure(statusCode: code,
+                                                       entry: entry,
+                                                       durableBytes: durableBytes) {
+                return
+            }
             AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "segment_kind": .label(entry.segmentKind.rawValue),
@@ -2050,6 +2060,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // the consecutive validator-change restart counter (#169 HIGH 1 livelock bound).
             lock.lock()
             staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
+            rangeHTTPRehydrateCounts.removeValue(forKey: entry.ratingKey)
             lock.unlock()
             // Pin the resource on the FIRST successful chunk so the rest send `If-Range`.
             if let validator, store.rangeValidator(ratingKey: entry.ratingKey) == nil {
@@ -2882,6 +2893,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func clearRetryCount(ratingKey: String) {
         lock.lock()
         retryCounts.removeValue(forKey: ratingKey)
+        rangeHTTPRehydrateCounts.removeValue(forKey: ratingKey)
         lastProgressNotify = nil
         lock.unlock()
     }
@@ -3000,6 +3012,42 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             return false
         }
+    }
+
+    /// Auth/forbidden HTTP statuses are not transient edge outages: replaying the same static Range
+    /// URL usually repeats the 401/403. For durable checkpoint chunks, ask the manager/backend layer
+    /// to rebuild PlaybackInfo / source selection once while preserving the partial-file checkpoint.
+    private func requestRangeRehydrationAfterHTTPFailure(statusCode: Int,
+                                                         entry: RangeTransfer,
+                                                         durableBytes: Int) -> Bool {
+        lock.lock()
+        let decision = BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: statusCode,
+            supportsDurableCheckpoint: RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind),
+            currentRehydrationCount: rangeHTTPRehydrateCounts[entry.ratingKey] ?? 0
+        )
+        guard case .retry(let nextAttempt) = decision else {
+            lock.unlock()
+            return false
+        }
+        rangeHTTPRehydrateCounts[entry.ratingKey] = nextAttempt
+        lock.unlock()
+
+        downloadLog.error("range-http-rehydrate ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) status=\(statusCode, privacy: .public) bytes=\(durableBytes, privacy: .public)")
+        AppDiagnostics.record(.downloads, "downloads.range_http_rehydrate", fields: [
+            "download_id": .identifier(entry.ratingKey),
+            "segment_kind": .label(entry.segmentKind.rawValue),
+            "attempt": .int(nextAttempt),
+            "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRangeRehydrations),
+            "status_code": .int(statusCode),
+            "bytes": .bytes(durableBytes),
+        ])
+        // Persist active intent before the callback so a kill during backend rehydration still leaves
+        // a queued static-range row with its durable partial as the checkpoint.
+        store.setStatus(ratingKey: entry.ratingKey, .queued)
+        onRangeRequestNeeded?(entry.ratingKey, .serverAuthorizationRejected)
+        onChange?()
+        return true
     }
 
     /// HTTP 52x/503-style responses are real server replies, so URLSession reports a successful
