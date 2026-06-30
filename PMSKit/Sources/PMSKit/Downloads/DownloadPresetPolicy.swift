@@ -84,6 +84,15 @@ public enum DownloadPresetPolicy {
         }
     }
 
+    /// Merge live Plex target names with the app's explicit quality ladder, preserving first-seen
+    /// spelling/order, removing case-insensitive duplicates, hiding generic Plex labels, and dropping
+    /// empty names before the picker sees them.
+    public static func visiblePresetNames(serverTargets: [String]) -> [String] {
+        dedup(serverTargets + customDownloadProfileNames)
+            .filter(isVisibleDownloadPresetName)
+            .filter { !$0.isEmpty }
+    }
+
     /// Resolution label to store/display on the offline row for a user's choice.
     ///
     /// Server-prepared bitrate ladder targets display the target resolution. Direct-original and
@@ -184,5 +193,17 @@ public enum DownloadPresetPolicy {
         default:
             return .init(videoQuality: 100, maxVideoBitrateKbps: 8_000, videoResolution: "1920x1080")
         }
+    }
+
+    private static func dedup(_ names: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for name in names {
+            let key = name.lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(name)
+        }
+        return result
     }
 }

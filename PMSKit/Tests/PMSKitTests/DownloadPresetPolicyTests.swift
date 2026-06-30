@@ -13,6 +13,18 @@ struct DownloadPresetPolicyTests {
         #expect(DownloadPresetPolicy.isExplicitDownloadPresetName("1080p 8 Mbps"))
         #expect(!DownloadPresetPolicy.isVisibleDownloadPresetName("Optimized for TV"))
         #expect(DownloadPresetPolicy.isVisibleDownloadPresetName("Original video quality"))
+        let visibleNames = DownloadPresetPolicy.visiblePresetNames(serverTargets: [
+            "Optimized for TV",
+            "720p 4 Mbps",
+            "720P 4 MBPS",
+            "",
+            "Server custom",
+        ])
+        #expect(visibleNames.first == "720p 4 Mbps")
+        #expect(visibleNames.contains("720P 4 MBPS") == false)
+        #expect(visibleNames.contains("Optimized for TV") == false)
+        #expect(visibleNames.contains("") == false)
+        #expect(visibleNames.contains("Server custom"))
     }
 
     @Test("Display resolution uses target label only for downscaling optimize choices")

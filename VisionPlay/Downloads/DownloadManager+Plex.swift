@@ -243,17 +243,11 @@ extension DownloadManager {
     }
 
     private static func isExplicitDownloadPresetName(_ name: String) -> Bool {
-        isPlexOriginalQualityTarget(name) || customDownloadProfile(named: name) != nil
+        DownloadPresetPolicy.isExplicitDownloadPresetName(name)
     }
 
     static func isVisibleDownloadPresetName(_ name: String) -> Bool {
-        ![
-            "Original Quality",
-            "Optimized for TV",
-            "Optimized for Mobile",
-        ].contains { hidden in
-            name.localizedCaseInsensitiveCompare(hidden) == .orderedSame
-        }
+        DownloadPresetPolicy.isVisibleDownloadPresetName(name)
     }
 
     /// Second-stage safety gate for user-selected Plex original downloads. The decision endpoint
