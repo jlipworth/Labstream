@@ -122,6 +122,12 @@ extension DownloadManager {
                     maxStaticBitrate: max(profile.videoBitrateBps, 200_000_000))
                 let (data, response) = try await URLSession.shared.data(for: infoReq)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "backend": .label("Jellyfin"),
+                        "status_code": .int(http.statusCode),
+                        "phase": .label("download_negotiation"),
+                    ])
                     throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
                 }
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)
@@ -171,6 +177,12 @@ extension DownloadManager {
                     maxStaticBitrate: 200_000_000)
                 let (data, response) = try await URLSession.shared.data(for: infoReq)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "backend": .label("Jellyfin"),
+                        "status_code": .int(http.statusCode),
+                        "phase": .label("download_negotiation"),
+                    ])
                     throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
                 }
                 let info = try JellyfinPlaybackInfoResponse.decode(from: data)

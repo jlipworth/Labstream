@@ -10,6 +10,10 @@ public enum BackgroundRangeRequestReason: String, Sendable, Equatable {
     /// A Range chunk failed after relaunch before it could be appended. The durable partial remains
     /// the checkpoint and the manager/backend layer must rebuild the authenticated request.
     case adoptedChunkFailed
+    /// The server rejected a static Range chunk as unauthorized/forbidden. The durable partial
+    /// remains valid, but the manager/backend layer should mint a fresh per-row download request
+    /// instead of blindly retrying the same forbidden URL/session.
+    case serverAuthorizationRejected
 }
 
 public enum BackgroundRangeCompletionDisposition: Sendable, Equatable {

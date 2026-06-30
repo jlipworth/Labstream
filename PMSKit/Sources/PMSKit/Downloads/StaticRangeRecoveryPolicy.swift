@@ -87,6 +87,8 @@ public enum StaticRangeRecoveryPolicy {
     /// Restart counters should survive adopted relaunch restarts that did not append forward
     /// progress, otherwise validator/offset livelock bounds can be reset by each rebuilt request.
     public static func shouldPreserveRangeRestartCounters(reason: String) -> Bool {
-        reason == "validatorChanged" || reason == "adoptedChunkFailed"
+        reason == "validatorChanged"
+            || reason == "adoptedChunkFailed"
+            || reason == "serverAuthorizationRejected"
     }
 }
