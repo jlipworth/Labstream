@@ -224,6 +224,10 @@ snapshot derivation.
 - **Done: Slice 5n static retry target policy extraction.**
   `DownloadStaticRetryTargetPolicy` now owns source-part matching for static byte-range retries
   after metadata refresh, preserving true-original versus server-prepared/existing-version routing.
+- **Done: Slice 5o storage estimate policy extraction.**
+  `DownloadStorageEstimatePolicy` now owns source-sized vs bitrate-derived media estimates,
+  backend sidecar estimates, per-chapter image estimates, and total-byte combination for storage
+  preflight.
 
 ## Target module boundaries
 
@@ -250,6 +254,7 @@ snapshot derivation.
   decisions.
 - `DownloadStaticRetryTargetPolicy`: pure static retry source-part and original/existing-version
   target selection.
+- `DownloadStorageEstimatePolicy`: pure storage preflight estimates for media bytes and sidecars.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
