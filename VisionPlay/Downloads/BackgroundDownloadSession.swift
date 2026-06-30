@@ -102,9 +102,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var lastRangeProgressDiagnostic: [Int: BackgroundRangeProgressDiagnosticSnapshot] = [:]
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.5
-    private static let cfNetworkTempPrefix = "CFNetworkDownload_"
-    private static let cfNetworkTempSuffix = ".tmp"
-    private static let nsurlsessiondRelativeDownloadCache = "Caches/com.apple.nsurlsessiond/Downloads/com.jlipworth.VisionPlay"
+    private static let appBundleIdentifier = "com.jlipworth.VisionPlay"
     private let lock = NSLock()
 
     /// #169/#190: the static byte-range lane downloads in bounded Range chunks via the
@@ -754,9 +752,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let tmp = fileManager.temporaryDirectory
         guard let entries = try? fileManager.contentsOfDirectory(
             at: tmp, includingPropertiesForKeys: nil) else { return }
-        for url in entries where url.lastPathComponent.hasPrefix("vp-range-chunk-") {
-            let idString = url.lastPathComponent.dropFirst("vp-range-chunk-".count)
-            if let id = Int(idString), liveTaskIdentifiers.contains(id) { continue }
+        for url in entries where BackgroundTempFileCleanupPolicy.shouldDeleteRangeChunkStash(
+            fileName: url.lastPathComponent,
+            liveTaskIdentifiers: liveTaskIdentifiers
+        ) {
             try? fileManager.removeItem(at: url)
         }
     }
@@ -765,8 +764,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let candidates = cfNetworkTempDirectories()
             .flatMap { directory in cfNetworkTempFiles(in: directory).map { (directory, $0) } }
         let candidateBytes = candidates.reduce(0) { $0 + (fileSize(at: $1.1) ?? 0) }
-        guard !candidates.isEmpty else { return }
-        guard liveTaskCount == 0 else {
+        switch BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            liveTaskCount: liveTaskCount,
+            candidateCount: candidates.count
+        ) {
+        case .none:
+            return
+        case .skipLiveTasks:
             AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
                 "reason": .label(reason),
                 "live_task_count": .int(liveTaskCount),
@@ -774,6 +778,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "candidate_bytes": .int(candidateBytes),
             ])
             return
+        case .deleteCandidates:
+            break
         }
 
         var deletedCount = 0
@@ -810,8 +816,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                  in: .userDomainMask,
                                                  appropriateFor: nil,
                                                  create: false) {
-            let library = appSupport.deletingLastPathComponent()
-            directories.append(library.appendingPathComponent(Self.nsurlsessiondRelativeDownloadCache, isDirectory: true))
+            directories = BackgroundTempFileCleanupPolicy.networkTempDirectories(
+                tempDirectory: fileManager.temporaryDirectory,
+                appSupportDirectory: appSupport,
+                bundleID: Self.appBundleIdentifier
+            )
         }
         return directories
     }
@@ -823,11 +832,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             options: [.skipsHiddenFiles]
         ) else { return [] }
         return entries.filter { url in
-            let name = url.lastPathComponent
-            guard name.hasPrefix(Self.cfNetworkTempPrefix), name.hasSuffix(Self.cfNetworkTempSuffix) else {
-                return false
-            }
-            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            BackgroundTempFileCleanupPolicy.isCFNetworkDownloadTempFile(
+                fileName: url.lastPathComponent,
+                isRegularFile: (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            )
         }
     }
 

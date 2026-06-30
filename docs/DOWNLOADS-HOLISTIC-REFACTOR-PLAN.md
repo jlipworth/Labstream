@@ -146,6 +146,10 @@ snapshot derivation.
   `BackgroundDownloadPauseCancellationPolicy` now owns the pure pause/cancel race decisions used by
   delayed URLSession callbacks: old cancel callbacks may mark a row paused only when no replacement
   task owns it, and range-start cancellation is suppressed when pause/delete already owns the row.
+- **Done: Slice 6l background temp-file cleanup policy extraction.**
+  `BackgroundTempFileCleanupPolicy` now owns the pure cleanup boundaries for background transfer
+  temps: range chunk stash ownership, CFNetwork temp filename eligibility, nsurlsessiond cache path
+  derivation, and the "never delete while URLSession reports live tasks" gate.
 
 ## Target module boundaries
 
@@ -166,6 +170,7 @@ snapshot derivation.
   `BackgroundDownloadProgressPolicy`,
   `BackgroundDownloadTransientRetryPolicy`,
   `BackgroundDownloadPauseCancellationPolicy`,
+  `BackgroundTempFileCleanupPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
