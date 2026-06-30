@@ -190,6 +190,10 @@ snapshot derivation.
   `DownloadRetryPreparationPolicy` now owns retry-entry predicates for manual queue-paused static
   resumes, paused Emby convert polling reentry, persisted URLSession resume-data continuation,
   paused Plex server-prep reattachment, and async retry-attempt cancellation.
+- **Done: Slice 5f backend encoder teardown policy extraction.**
+  `DownloadEncoderTeardownPolicy` now owns the terminal cleanup decision for Emby/Jellyfin live
+  encoders: transient play sessions stop only against an available matching backend lane, and
+  persisted playSession cleanup logs a mismatch instead of firing against the wrong server.
 
 ## Target module boundaries
 
@@ -201,6 +205,8 @@ snapshot derivation.
   effects.
 - `DownloadDeletePolicy`: pure delete-time backend cleanup decision table for Emby convert jobs.
 - `DownloadRetryPreparationPolicy`: pure retry-entry gates before backend-specific retry dispatch.
+- `DownloadEncoderTeardownPolicy`: pure terminal encoder teardown/skip decision table for
+  Jellyfin and Emby play sessions.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
