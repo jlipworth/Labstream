@@ -28,6 +28,7 @@ Options:
   --preset NAME                     Plex optimize preset if original is not eligible.
   --delete-existing                 Delete any existing probe record and exit.
   --delete-after                    Delete the probe record after observation.
+  --keep-app-running                Do not terminate VisionPlay after the observation window.
   --skip-build                      Reuse the existing DerivedData app.
   --no-install                      Reuse the already installed app.
   -h, --help                        Show this help.
@@ -53,6 +54,7 @@ existing_version=${VISIONPLAY_PROBE_EXISTING_VERSION:-0}
 list_versions=${VISIONPLAY_PROBE_LIST_VERSIONS:-0}
 delete_existing=${VISIONPLAY_PROBE_DELETE_EXISTING:-0}
 delete_after=${VISIONPLAY_PROBE_DELETE_AFTER:-0}
+keep_app_running=${VISIONPLAY_PROBE_KEEP_APP_RUNNING:-0}
 skip_build=0
 no_install=0
 
@@ -87,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --list-versions) list_versions=1; shift ;;
     --delete-existing) delete_existing=1; shift ;;
     --delete-after) delete_after=1; shift ;;
+    --keep-app-running) keep_app_running=1; shift ;;
     --skip-build) skip_build=1; shift ;;
     --no-install) no_install=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -145,6 +148,7 @@ list_versions: $list_versions
 preset_set: $([[ -n "$preset" ]] && echo yes || echo no)
 delete_existing: $delete_existing
 delete_after: $delete_after
+keep_app_running: $keep_app_running
 SUMMARY
 
 printf '==> Using simulator %s\n' "$simid"
@@ -225,7 +229,11 @@ xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr
   "$simid" com.jlipworth.VisionPlay "${probe_args[@]}"
 
 sleep "$timeout_seconds"
-xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
+if [[ $keep_app_running == "1" || $keep_app_running == "true" || $keep_app_running == "yes" ]]; then
+  printf '==> Leaving VisionPlay running in simulator %s\n' "$simid"
+else
+  xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
+fi
 cleanup
 trap - EXIT
 
