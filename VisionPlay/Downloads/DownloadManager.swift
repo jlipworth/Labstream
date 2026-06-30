@@ -1608,15 +1608,9 @@ public final class DownloadManager {
     }
 
     public func storageLimitMessage(adding expectedBytes: Int?) -> String? {
-        guard let expectedBytes, expectedBytes > 0 else { return nil }
-        let limit = storageLimitBytes
-        guard limit > 0 else { return nil }
-        let projected = totalDownloadedBytes + expectedBytes
-        guard projected > limit else { return nil }
-        let incoming = ByteCountFormatter.string(fromByteCount: Int64(expectedBytes), countStyle: .file)
-        let used = ByteCountFormatter.string(fromByteCount: Int64(totalDownloadedBytes), countStyle: .file)
-        let cap = DownloadStorageLimit.label(bytes: limit)
-        return "This download needs about \(incoming), but \(used) is already used and the limit is \(cap). Increase the limit or remove downloads first."
+        DownloadStorageLimitPolicy.rejectionMessage(adding: expectedBytes,
+                                                    currentBytes: totalDownloadedBytes,
+                                                    limitBytes: storageLimitBytes)
     }
 
     public func estimatedBytes(for item: MediaItem, choice: DownloadChoice,
