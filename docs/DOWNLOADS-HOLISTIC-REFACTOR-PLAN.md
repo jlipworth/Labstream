@@ -80,10 +80,11 @@ snapshot derivation.
   paused/complete captions, byte strings, and ETA buckets. The app snapshot still supplies
   live state, but repeated UI wording is no longer embedded directly in `DownloadManager`.
 - **Done: Slice 7b row status-caption policy extraction.** `DownloadRowStatusCaptionPolicy`
-  now owns the tested row phase/caption composition for failed/retrying, paused, complete,
-  server-prep, zero-byte static transfer, active transfer, server-paced transcode, and
-  local/server finalizing states. `DownloadManager` supplies live dictionaries and app-local
-  error text, but the nuanced caption state machine is no longer embedded in the coordinator.
+  now owns the explicit tested row phase/caption composition for failed/retrying, paused,
+  complete, server-prep, zero-byte static transfer, active transfer, server-paced transcode,
+  and local/server finalizing states. `DownloadManager` supplies live dictionaries and
+  app-local error text, but the nuanced caption state machine is no longer embedded in the
+  coordinator.
 
 ## Target module boundaries
 
