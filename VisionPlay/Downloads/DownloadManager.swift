@@ -2203,14 +2203,10 @@ public final class DownloadManager {
         // #95: a `.paused` (recoverably-interrupted) row has genuinely stopped transferring, so it
         // releases too — its slot is re-acquired by `retry()` on resume, and releasing also fires
         // any encoder teardown should a transcoded row ever land here.
-        let terminalKeys = Set(fresh.filter {
-            let isInternalRetryFailedSentinel = $0.status == .failed
-                && retryHandoffRows.contains($0.ratingKey)
-                && retryingRows.contains($0.ratingKey)
-            return !isInternalRetryFailedSentinel
-                && ($0.status == .complete || $0.status == .unverified
-                    || $0.status == .failed || $0.status == .paused)
-        }.map(\.ratingKey))
+        let terminalKeys = DownloadTerminalReleasePolicy.terminalReleaseKeys(
+            records: fresh,
+            retryHandoffKeys: retryHandoffRows,
+            retryingKeys: retryingRows)
         for key in terminalKeys { releaseInFlight(ratingKey: key) }
 
         records = fresh
