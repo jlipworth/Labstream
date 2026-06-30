@@ -326,6 +326,12 @@ snapshot derivation.
   Plex, Jellyfin, and Emby route planners now each own the pure mapping from shared
   `DownloadIntentChoice` to their backend-specific router intent. The app adapters no longer carry
   separate switch copies for Plex/Emby, and the unused Jellyfin app-side mapper was removed.
+- **Done: Slice 7i offline library snapshot extraction.**
+  `OfflineLibrarySnapshot`, `OfflineDownloadRowSnapshot`, and `OfflineLibrarySnapshotBuilder` now
+  live in PMSKit with package tests for mixed-backend badge derivation, queue toolbar state,
+  aggregate local byte/speed counters, paused footer text, and per-row live overlays. The app
+  `DownloadManager` still supplies live dictionaries and backend availability, but the coarse
+  offline-library value is now a tested download-core boundary instead of an app-only helper.
 
 ## Target module boundaries
 
