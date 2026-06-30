@@ -109,6 +109,11 @@ snapshot derivation.
   static byte-range URLSession tasks: the furthest checkpoint wins, with in-flight chunk bytes
   breaking ties. `BackgroundDownloadSession` still owns the actual task registry and cancellation,
   but stale progress/finish suppression now delegates the comparison semantics to PMSKit tests.
+- **Done: Slice 6d static range retry budget extraction.**
+  `StaticRangeRetryBudget` now owns the separate retry counters for validator-change restarts and
+  misaligned `Content-Range` retries. These counters are intentionally distinct from generic
+  URLSession retry counts because progress callbacks from a bad temp file must not erase them; only
+  a real durable append or fresh user start resets the budget.
 
 ## Target module boundaries
 
@@ -123,8 +128,8 @@ snapshot derivation.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
   `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
-  `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
-  text subtitle parsing.
+  `StaticRangeRetryBudget`, `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate
+  stats, file inventory, text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 
