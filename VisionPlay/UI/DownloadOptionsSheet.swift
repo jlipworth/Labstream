@@ -422,31 +422,6 @@ struct DownloadOptionsSheet: View {
         return []
     }
 
-    /// Primary label for an Emby existing-version row: resolution · codec · bitrate (Emby `Bitrate`
-    /// is bits/sec). Falls back to the source name, then a generic label.
-    private static func embyVersionLabel(_ version: EmbyPlayback.EmbyExistingVersion) -> String {
-        var parts: [String] = []
-        if let resolution = DownloadResolutionLabel.label(width: version.width, height: version.height) {
-            parts.append(resolution)
-        }
-        if let codec = version.videoCodec?.uppercased(), !codec.isEmpty { parts.append(codec) }
-        if let bitrate = version.bitrate, bitrate > 0 {
-            parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1_000_000))
-        }
-        if parts.isEmpty, let name = version.name, !name.isEmpty { return name }
-        return parts.isEmpty ? "Server version" : parts.joined(separator: " · ")
-    }
-
-    /// Secondary caption for an Emby existing-version row: container + file size where available.
-    private static func embyVersionDetail(_ version: EmbyPlayback.EmbyExistingVersion) -> String? {
-        var parts: [String] = []
-        if let container = version.container?.uppercased(), !container.isEmpty { parts.append(container) }
-        if let size = version.size, size > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     private var defaultPresets: [String] {
         DownloadPresetPolicy.visiblePresetNames(serverTargets: [])
     }
