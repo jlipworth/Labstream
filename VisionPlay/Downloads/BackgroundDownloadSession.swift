@@ -650,7 +650,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         rangeHeader: reattachedRequest?.value(forHTTPHeaderField: "Range"),
                         foregroundChunkSize: Self.rangeChunkSize
                     )
-                    if let requestedOffset, requestedOffset != partialSize {
+                    let reattachPlan = StaticRangeReattachPolicy.plan(
+                        taskIdentifier: task.taskIdentifier,
+                        downloadID: ratingKey,
+                        durableBytes: partialSize,
+                        requestedOffset: requestedOffset,
+                        chunkBytesWritten: Int(task.countOfBytesReceived),
+                        existingTasks: self.rangeInflight.map {
+                            self.rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value)
+                        }
+                    )
+                    if case .rejectOffsetMismatch(let requestedOffset, let durableBytes) = reattachPlan.disposition {
                         // The durable partial is the only checkpoint we trust. A reappearing task
                         // whose Range begins before/after that checkpoint is stale (or gapped) and
                         // must not become authoritative, publish backwards progress, or append later.
@@ -660,7 +670,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             "download_id": .identifier(ratingKey),
                             "task_id": .int(task.taskIdentifier),
                             "requested_offset": .int(requestedOffset),
-                            "durable_bytes": .int(partialSize),
+                            "durable_bytes": .int(durableBytes),
                             "segment_kind": .label(reattachedSegmentKind.rawValue),
                         ])
                         continue
@@ -670,13 +680,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         request: nil,
                         destination: destination,
                         expectedBytes: record.flatMap(Self.derivedExpectedBytes),
-                        baseOffset: requestedOffset ?? partialSize,
+                        baseOffset: reattachPlan.candidateBaseOffset,
                         responseStatus: nil,
                         chunkBytesWritten: max(0, Int(task.countOfBytesReceived)),
                         segmentKind: reattachedSegmentKind,
                         segmentReason: "reattached")
-                    if let duplicate = self.duplicateRangeTaskDecision(for: reattached) {
-                        if duplicate.shouldReplaceExisting {
+                    switch reattachPlan.disposition {
+                    case .rejectOffsetMismatch:
+                        // Handled above.
+                        continue
+                    case .replaceExisting(let existingTaskIdentifier, let existingBaseOffset):
                             let superseded = self.supersedeRangeTasksLocked(ratingKey: ratingKey)
                             self.rangeInflight[task.taskIdentifier] = reattached
                             self.supersededRangeTaskIdentifiers.remove(task.taskIdentifier)
@@ -684,15 +697,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             AppDiagnostics.record(.downloads, "downloads.range_duplicate_reattach_replaced", fields: [
                                 "download_id": .identifier(ratingKey),
                                 "task_id": .int(task.taskIdentifier),
-                                "existing_task_id": .int(duplicate.existingTaskIdentifier),
+                                "existing_task_id": .int(existingTaskIdentifier),
                                 "superseded_task_count": .int(superseded.count),
                                 "base_offset": .int(reattached.baseOffset),
-                                "existing_base_offset": .int(duplicate.existingEntry.baseOffset),
+                                "existing_base_offset": .int(existingBaseOffset),
                             ])
-                        } else {
+                    case .suppressForExisting(let existingTaskIdentifier, let existingBaseOffset):
                             let superseded = self.supersedeRangeTasksLocked(
                                 ratingKey: ratingKey,
-                                keeping: duplicate.existingTaskIdentifier
+                                keeping: existingTaskIdentifier
                             )
                             self.supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
                             rangeTaskIdentifiersToCancel.append(task.taskIdentifier)
@@ -700,15 +713,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             AppDiagnostics.record(.downloads, "downloads.range_duplicate_reattach_suppressed", fields: [
                                 "download_id": .identifier(ratingKey),
                                 "task_id": .int(task.taskIdentifier),
-                                "existing_task_id": .int(duplicate.existingTaskIdentifier),
+                                "existing_task_id": .int(existingTaskIdentifier),
                                 "superseded_task_count": .int(superseded.count + 1),
                                 "base_offset": .int(reattached.baseOffset),
-                                "existing_base_offset": .int(duplicate.existingEntry.baseOffset),
+                                "existing_base_offset": .int(existingBaseOffset),
                             ])
                             liveKeys.insert(ratingKey)
                             continue
-                        }
-                    } else {
+                    case .adopt:
                         self.rangeInflight[task.taskIdentifier] = reattached
                     }
                     adoptedRangeKeys.insert(ratingKey)

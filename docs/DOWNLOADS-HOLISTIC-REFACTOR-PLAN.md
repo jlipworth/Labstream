@@ -123,6 +123,11 @@ snapshot derivation.
   foreground bounded checkpoint chunks versus background-owned checkpoint chunks. The app still
   counts live candidates and logs diagnostics, but the off-head strategy/reason semantics are pinned
   in PMSKit.
+- **Done: Slice 6g static range reattach policy.**
+  `StaticRangeReattachPolicy` now owns the pure relaunch-adoption decision for surviving static
+  byte-range URLSession tasks: requested offsets must match the durable partial checkpoint, and
+  duplicate adopted tasks are replaced or suppressed using the same authoritative-task rule as live
+  progress/finish handling.
 
 ## Target module boundaries
 
@@ -138,8 +143,9 @@ snapshot derivation.
 - Existing pure units remain here: `RangeChunkPlanner`, `RangeTransferHTTPPolicy`,
   `BackgroundDownloadCompletionGate`, `StaticRangeTaskSelectionPolicy`,
   `StaticRangeRetryBudget`, `StaticRangeFinishedChunkPolicy`,
-  `StaticRangeSegmentStrategyPolicy`, `DownloadCompletionValidation`, `DownloadRateEstimator`,
-  aggregate stats, file inventory, text subtitle parsing.
+  `StaticRangeSegmentStrategyPolicy`, `StaticRangeReattachPolicy`,
+  `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
+  text subtitle parsing.
 
 ### VisionPlay Downloads app layer
 
