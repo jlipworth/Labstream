@@ -231,12 +231,18 @@ snapshot derivation.
 - **Done: Slice 7d side-asset selection policy extraction.**
   `DownloadSideAssetPolicy` now owns offline poster preference, Plex BIF source-part selection,
   synthetic Jellyfin/Emby chapter-image key parsing, and chapter-image fanout throttling decisions.
+- **Done: Slice 5p shared download choice model extraction.**
+  `DownloadIntentChoice` now lives in PMSKit with `DownloadChoicePolicy` owning diagnostic labels,
+  persisted lane mapping, and server-prepared-version flagging. `DownloadManager.DownloadChoice`
+  remains as a compatibility alias for app call sites.
 
 ## Target module boundaries
 
 ### PMSKit pure download core
 
 - `DownloadRecordIdentity`: backend-aware record keys and item-id extraction.
+- `DownloadIntentChoice` / `DownloadChoicePolicy`: shared user-intent model plus pure persistence and
+  diagnostic mapping for choices.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.
