@@ -130,8 +130,16 @@ extension DownloadManager {
                 let decision = try JellyfinPlayback.downloadDecision(response: info,
                                                                      preferredMediaSourceId: jellyfinMediaSourceID)
                 resolvedJellyfinMediaSourceID = decision.mediaSourceId
-                let transcodedRequest: URLRequest = Self.jellyfinTranscodedDownloadRequest(
-                    server, token, identity, itemId, decision.mediaSourceId, decision.playSessionId, profile)
+                let transcodedRequest = try JellyfinLibrary.transcodedDownloadRequest(
+                    server: server,
+                    token: token,
+                    identity: identity,
+                    itemId: itemId,
+                    mediaSourceId: decision.mediaSourceId,
+                    playSessionId: decision.playSessionId,
+                    maxVideoBitrate: profile.videoBitrateBps,
+                    maxWidth: profile.maxWidth,
+                    maxHeight: profile.maxHeight)
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = decision.playSessionId
@@ -202,9 +210,16 @@ extension DownloadManager {
                     let profile = Self.jellyfinTranscodeProfile(named: Self.jellyfinDefaultDownloadPreset)
                     expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                                  videoBitrateBps: profile.videoBitrateBps)
-                    request = Self.jellyfinTranscodedDownloadRequest(
-                        server, token, identity, itemId, decision.mediaSourceId,
-                        decision.playSessionId, profile)
+                    request = try JellyfinLibrary.transcodedDownloadRequest(
+                        server: server,
+                        token: token,
+                        identity: identity,
+                        itemId: itemId,
+                        mediaSourceId: decision.mediaSourceId,
+                        playSessionId: decision.playSessionId,
+                        maxVideoBitrate: profile.videoBitrateBps,
+                        maxWidth: profile.maxWidth,
+                        maxHeight: profile.maxHeight)
                 }
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = decision.playSessionId
