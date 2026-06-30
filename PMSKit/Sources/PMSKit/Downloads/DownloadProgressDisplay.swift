@@ -79,4 +79,32 @@ public enum DownloadProgressDisplay {
         let raw = Double(bytes) / Double(estimatedTotalBytes)
         return Fraction(value: min(raw, estimatedCeiling), isEstimated: true)
     }
+
+    /// Derive a row fraction after the app has resolved live byte overlays and byte estimates.
+    ///
+    /// Static byte-range rows need a special exact path while `DownloadRecord.progress` remains
+    /// checkpoint-oriented: if a live/background range expected byte total is available, display the
+    /// byte fraction as exact; otherwise fall back to the row's transcode estimate and keep the
+    /// fraction marked approximate. Non-static rows use the backend-agnostic progress/estimate rule.
+    public static func fraction(for record: DownloadRecord,
+                                displayBytes: Int? = nil,
+                                staticExpectedBytes: Int?,
+                                estimatedTotalBytes: Int?) -> Fraction? {
+        let bytes = displayBytes ?? record.bytes
+        if record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+           bytes > 0 {
+            if let staticExpectedBytes {
+                return Fraction(value: min(Double(bytes) / Double(staticExpectedBytes), 1.0),
+                                isEstimated: false)
+            }
+            if let estimatedTotalBytes, estimatedTotalBytes > 0 {
+                return Fraction(value: min(Double(bytes) / Double(estimatedTotalBytes),
+                                          estimatedCeiling),
+                                isEstimated: true)
+            }
+        }
+        return fraction(progress: record.progress,
+                        bytes: bytes,
+                        estimatedTotalBytes: estimatedTotalBytes)
+    }
 }
