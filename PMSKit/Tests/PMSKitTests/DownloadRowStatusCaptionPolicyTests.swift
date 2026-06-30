@@ -95,6 +95,52 @@ struct DownloadRowStatusCaptionPolicyTests {
                                                                    isServerPreparedVersion: false) == "Transcoding + downloading…")
     }
 
+    @Test("Record context derives persisted row facts from the shared job snapshot")
+    func recordContextDerivesPersistedFacts() {
+        let record = DownloadRecord(
+            ratingKey: "emby:item-1",
+            title: "Fixture",
+            localURL: URL(fileURLWithPath: "/tmp/fixture.mp4"),
+            bytes: 1_000,
+            progress: 0.25,
+            status: .downloading,
+            metadata: OfflineMetadata(ratingKey: "emby:item-1",
+                                      title: "Fixture",
+                                      type: "movie",
+                                      resolutionLabel: "720p",
+                                      optimizeQueueTitle: "queue-title",
+                                      backendKind: .emby,
+                                      downloadLane: .compatibleRemux,
+                                      resumeMode: .liveForwardOnly,
+                                      serverPreparedVersion: true))
+
+        let context = DownloadRowStatusCaptionPolicy.Context(
+            record: record,
+            displayFraction: .init(value: 0.25, isEstimated: true),
+            isActive: true,
+            isCheckpointPausing: false,
+            isBackendConfigured: true,
+            isTranscodeLimited: true,
+            serverPrepState: nil,
+            serverPrepProgress: nil,
+            serverPrepETA: nil,
+            downloadETA: 120,
+            downloadSpeedBytesPerSecond: 500_000,
+            isRetrying: false,
+            failureCaption: nil)
+
+        #expect(context.status == .downloading)
+        #expect(context.progress == 0.25)
+        #expect(context.bytes == 1_000)
+        #expect(context.backend == .emby)
+        #expect(context.lane == .compatibleRemux)
+        #expect(context.resumeMode == .liveForwardOnly)
+        #expect(context.isServerPreparedVersion)
+        #expect(context.resolutionLabel == "720p")
+        #expect(context.hasServerPrepQueueTitle)
+        #expect(DownloadRowStatusCaptionPolicy.caption(context).contains("server-paced"))
+    }
+
     @Test("Transfer finalizing caption uses local verification wording")
     func transferFinalizingCaption() {
         let caption = DownloadRowStatusCaptionPolicy.caption(context(

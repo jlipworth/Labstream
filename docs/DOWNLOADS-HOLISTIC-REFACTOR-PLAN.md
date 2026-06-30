@@ -394,6 +394,11 @@ snapshot derivation.
   `OfflineLibrarySnapshotBuilder` now derives row backend ownership from `DownloadJobSnapshot`
   directly, using the same persisted-backend and rating-key fallback policy as other PMSKit job
   classifiers. `DownloadManager` no longer passes a UI-only backend resolver closure.
+- **Done: Slice 7o status-caption context extraction.**
+  `DownloadRowStatusCaptionPolicy.Context` can now be built directly from a `DownloadRecord`,
+  deriving status, backend, lane, resume mode, server-prepared state, bytes, and progress through
+  `DownloadJobSnapshot`. `DownloadManager` supplies only live runtime facts for captions instead of
+  reparsing persisted row metadata itself.
 
 ## Target module boundaries
 

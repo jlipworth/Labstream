@@ -2295,14 +2295,8 @@ public final class DownloadManager {
         let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading || isCheckpointPausing
         let failureCaption = record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil
         return DownloadRowStatusCaptionPolicy.caption(.init(
-            status: record.status,
-            progress: record.progress,
-            bytes: record.bytes,
-            lane: record.metadata?.resolvedDownloadLane() ?? .original,
+            record: record,
             backend: backend,
-            resumeMode: record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey),
-            isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true,
-            resolutionLabel: record.metadata?.resolutionLabel,
             displayFraction: displayFraction(for: record),
             isActive: isActive,
             isCheckpointPausing: isCheckpointPausing,
@@ -2314,7 +2308,6 @@ public final class DownloadManager {
             serverPrepETA: optimizeETA[record.ratingKey],
             downloadETA: downloadETA[record.ratingKey],
             downloadSpeedBytesPerSecond: downloadSpeed[record.ratingKey],
-            hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
             isRetrying: retryState.isPresentingRetry(record.ratingKey),
             failureCaption: failureCaption
         ))
