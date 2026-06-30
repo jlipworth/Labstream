@@ -2857,19 +2857,36 @@ public final class DownloadManager {
     }
 
     private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
-        switch record.status {
-        case .failed:
-            if retryPresentationRows.contains(record.ratingKey) { return "Retrying…" }
-            return lastError[record.ratingKey].map(message(for:)) ?? "Download failed. Tap to retry."
-        case .paused:
-            return pausedCaption(for: record)
-        case .complete, .unverified:
-            return completeCaption(for: record)
-        case .queued, .preparing, .downloading:
-            return progressCaption(for: record, backend: backend)
-        }
+        let isCheckpointPausing = staticRangeRecovery.isCheckpointPausing(record.ratingKey)
+        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading || isCheckpointPausing
+        let failureCaption = record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil
+        return DownloadRowStatusCaptionPolicy.caption(.init(
+            status: record.status,
+            progress: record.progress,
+            bytes: record.bytes,
+            lane: record.metadata?.resolvedDownloadLane() ?? .original,
+            backend: backend,
+            resumeMode: record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey),
+            isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true,
+            resolutionLabel: record.metadata?.resolutionLabel,
+            displayFraction: displayFraction(for: record),
+            isActive: isActive,
+            isCheckpointPausing: isCheckpointPausing,
+            isBackendConfigured: isBackendConfigured(for: record),
+            isTranscodeLimited: Self.isDownloadTranscodeLimited(record),
+            serverPrepState: optimizeState[record.ratingKey],
+            serverPrepProgress: optimizeProgress[record.ratingKey],
+            serverPrepETA: optimizeETA[record.ratingKey],
+            downloadETA: downloadETA[record.ratingKey],
+            downloadSpeedBytesPerSecond: downloadSpeed[record.ratingKey],
+            hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
+            isRetrying: retryPresentationRows.contains(record.ratingKey),
+            failureCaption: failureCaption
+        ))
     }
 
+    /// User-facing copy for failed rows. Pure phase/caption composition lives in PMSKit; the app
+    /// still maps local error cases here because `DownloadError` is an app-layer coordinator type.
     private func message(for error: DownloadError) -> String {
         switch error {
         case .notAuthenticated:        return "Sign in to download."
@@ -2882,156 +2899,6 @@ public final class DownloadManager {
         case .invalidDownload(let m):  return "Download invalid: \(m)"
         case .interruptedResumable:    return "Download paused — tap Resume to continue."
         }
-    }
-
-    /// #95: caption for a paused (recoverably-interrupted) row: how far it got + that it resumes.
-    private func pausedCaption(for record: DownloadRecord) -> String {
-        DownloadRowDisplayPolicy.pausedCaption(fraction: displayFraction(for: record),
-                                               bytes: record.bytes)
-    }
-
-    /// Caption under the in-progress bar, e.g. "23% • 106.5 MB • 12 MB/s • 1080p".
-    /// Each piece is included only when known. Speed comes from the smoothed EMA in
-    /// `refreshRecords`; the percentage is read from the same unified `displayFraction`
-    /// source that drives the bar.
-    private func progressCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
-        if DownloadProgressDisplay.isTransferFinalizing(status: record.status, progress: record.progress) {
-            return transferFinalizingCaption(for: record)
-        }
-        let isCheckpointPausing = staticRangeRecovery.isCheckpointPausing(record.ratingKey)
-        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading || isCheckpointPausing
-        let resumeMode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
-        let isServerPrep = resumeMode == .serverPrepThenStatic
-        if record.bytes == 0 {
-            // Once a prepared/original row has handed off to the static byte-range lane, it may sit
-            // at zero durable/checkpointed bytes while a promoted background remainder is still
-            // writing into URLSession's temp file. Do not label that as server prep; the app already
-            // started the file transfer. Also do not hard-code the caption to 0%: the progress bar,
-            // speed, and ETA are driven by the ephemeral live Range overlay for exactly this window.
-            if isActive, resumeMode == .staticByteRange {
-                var pieces: [String] = []
-                var head = DownloadRowDisplayPolicy.activeHead(
-                    lane: record.metadata?.resolvedDownloadLane() ?? .original,
-                    backend: backend,
-                    isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true,
-                    isCheckpointPausing: false
-                )
-                if let fraction = displayFraction(for: record) {
-                    head += " • \(DownloadRowDisplayPolicy.percentText(fraction))"
-                } else {
-                    head += " • 0%"
-                }
-                if let eta = downloadETA[record.ratingKey], eta > 0,
-                   let left = timeLeftString(eta) {
-                    head += " • ~\(left) left"
-                }
-                pieces.append(head)
-                if let speed = downloadSpeed[record.ratingKey], speed > 0 {
-                    pieces.append("\(byteString(Int(speed)))/s")
-                }
-                if let r = record.metadata?.resolutionLabel { pieces.append(r) }
-                return pieces.joined(separator: " • ")
-            }
-
-            let prepHead = (isServerPrep || record.status == .preparing) ? "Preparing on server…" : "Transcoding"
-            let prepState = optimizeState[record.ratingKey]
-            if DownloadProgressDisplay.isServerPrepFinalizing(state: prepState,
-                                                              progress: optimizeProgress[record.ratingKey]) {
-                return serverPrepFinalizingCaption(for: record)
-            }
-            if let p = optimizeProgress[record.ratingKey] {
-                var caption = "\(prepHead) \(Int(p * 100))%"
-                if let eta = optimizeETA[record.ratingKey], eta > 0,
-                   let left = timeLeftString(eta) {
-                    caption += " • ~\(left) left"
-                }
-                return caption
-            }
-            if prepState == DownloadOptimizeStateLabel.queued {
-                return "Preparing on server…"
-            }
-            // Server-prep rows have no URLSession task yet and may briefly have no in-memory
-            // active slot while auth restores or a poller reattaches. Keep the user-facing phase
-            // stable instead of flashing "signed out"/"queued" for a still-server-side transcode.
-            if isServerPrep { return "Preparing on server…" }
-            if !isActive, !isBackendConfigured(for: record) {
-                return "Waiting for \(backend.displayName)…"
-            }
-            if isActive { return "Preparing on server…" }
-            if record.metadata?.optimizeQueueTitle?.isEmpty == false {
-                return "Preparing on server…"
-            }
-            return "Queued…"
-        }
-
-        // Phase 2 — file download of the rendered/original Part. When the byte stream is gated
-        // by the server's transcoder, a slow rate means the server is still transcoding — not a
-        // network bottleneck — so suppress the "/s" rate in that case.
-        let transcodeLimited = Self.isDownloadTranscodeLimited(record)
-        var pieces: [String] = []
-        let fraction = displayFraction(for: record)
-        let percentPiece = fraction.map(DownloadRowDisplayPolicy.percentText)
-        if isActive {
-            var head = DownloadRowDisplayPolicy.activeHead(
-                lane: record.metadata?.resolvedDownloadLane() ?? .original,
-                backend: backend,
-                isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true,
-                isCheckpointPausing: isCheckpointPausing
-            )
-            if let percentPiece { head += " • \(percentPiece)" }
-            if let eta = downloadETA[record.ratingKey], eta > 0,
-               let left = timeLeftString(eta) {
-                head += " • ~\(left) left"
-            }
-            pieces.append(head)
-        } else if let percentPiece {
-            pieces.append(percentPiece)
-        }
-        // Bytes shown in the row are the honest durable/checkpointed bytes, not the
-        // live OS-temp Range bytes. The live overlay is reserved for progress, speed, and ETA.
-        pieces.append(byteString(record.bytes))
-        if isActive, let speed = downloadSpeed[record.ratingKey], speed > 0 {
-            let rate = "\(byteString(Int(speed)))/s"
-            pieces.append(transcodeLimited ? "\(rate) server-paced" : rate)
-        }
-        if let r = record.metadata?.resolutionLabel { pieces.append(r) }
-        return pieces.joined(separator: " • ")
-    }
-
-    /// The transfer has reached exact 100%, but the shared finalization/validation path still has
-    /// work to do. Keep the caption explicit so all backends avoid looking stuck on
-    /// "Downloading … 100%" while HEVC fixup / playback verification / truncation checks finish.
-    private func transferFinalizingCaption(for record: DownloadRecord) -> String {
-        var pieces = ["Verifying download…"]
-        if record.bytes > 0 { pieces.append(byteString(record.bytes)) }
-        if let r = record.metadata?.resolutionLabel { pieces.append(r) }
-        return pieces.joined(separator: " • ")
-    }
-
-    /// Server-side prep reached 100%, but the produced file/source/Part is not yet listed as
-    /// downloadable. Keep that distinct from local "Verifying download…" because no file bytes have
-    /// landed yet (#186).
-    private func serverPrepFinalizingCaption(for record: DownloadRecord) -> String {
-        var pieces = ["Finalizing server transcode…"]
-        if let r = record.metadata?.resolutionLabel { pieces.append(r) }
-        return pieces.joined(separator: " • ")
-    }
-
-    /// Human estimated-time-remaining string ("under a min" / "N min" / "Nh Mm" / "Nd Nh")
-    /// for a transcode or download ETA.
-    private func timeLeftString(_ seconds: TimeInterval) -> String? {
-        DownloadRowDisplayPolicy.timeLeftString(seconds)
-    }
-
-    /// Caption for a completed row: file size + resolution, e.g. "1.2 GB • 1080p".
-    private func completeCaption(for record: DownloadRecord) -> String {
-        DownloadRowDisplayPolicy.completeCaption(isUnverified: record.isUnverified,
-                                                 bytes: record.bytes,
-                                                 resolutionLabel: record.metadata?.resolutionLabel)
-    }
-
-    private func byteString(_ bytes: Int) -> String {
-        DownloadRowDisplayPolicy.byteString(bytes)
     }
 
     static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
