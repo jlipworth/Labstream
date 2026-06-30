@@ -463,17 +463,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// future starts. Existing bounded chunks are allowed to finish and append instead of being
     /// cancelled into a non-durable open-ended remainder.
     func noteAppScenePhase(_ phase: String) {
-        let normalized = phase.lowercased()
+        let strategy = StaticRangeSegmentStrategyPolicy.sceneStrategy(phase: phase)
         lock.lock()
-        guard lastAppScenePhase != normalized else {
+        guard lastAppScenePhase != strategy.normalizedPhase else {
             lock.unlock()
             return
         }
-        lastAppScenePhase = normalized
-        let shouldPreferBackgroundCheckpoint = normalized == "inactive" || normalized == "background"
-        let reason = shouldPreferBackgroundCheckpoint ? "scene_\(normalized)" : nil
-        continuousRangeRemainderReason = reason
-        let candidateCount = shouldPreferBackgroundCheckpoint
+        lastAppScenePhase = strategy.normalizedPhase
+        continuousRangeRemainderReason = strategy.preferenceReason
+        let candidateCount = strategy.shouldCountDurableCandidates
             ? rangeInflight.values.filter {
                 RangeTransferHTTPPolicy.isDurableCheckpointSegment($0.segmentKind) && $0.request != nil
             }.count
@@ -481,8 +479,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.unlock()
 
         AppDiagnostics.record(.downloads, "downloads.range_strategy", fields: [
-            "phase": .label(normalized),
-            "strategy": .label(shouldPreferBackgroundCheckpoint ? "background_checkpoint" : "bounded_checkpoint"),
+            "phase": .label(strategy.normalizedPhase),
+            "strategy": .label(strategy.diagnosticStrategy),
             "candidate_count": .int(candidateCount),
         ])
     }
@@ -492,13 +490,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let sceneReason = continuousRangeRemainderReason
         lock.unlock()
-        if let sceneReason {
-            return (.backgroundCheckpoint, sceneReason)
-        }
-        if holdBackgroundCompletionForFirstProgress {
-            return (.backgroundCheckpoint, "background_events")
-        }
-        return (.boundedCheckpoint, nil)
+        return StaticRangeSegmentStrategyPolicy.segmentPreference(
+            sceneReason: sceneReason,
+            holdBackgroundCompletionForFirstProgress: holdBackgroundCompletionForFirstProgress
+        )
     }
 
     /// Legacy escape hatch for replacing in-flight bounded Range chunks with one open-ended
