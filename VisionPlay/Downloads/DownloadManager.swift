@@ -2233,31 +2233,6 @@ public final class DownloadManager {
 
     // MARK: - D5: offline metadata + poster caching
 
-    /// Build the persisted snapshot of a source `MediaItem` + a human resolution label.
-    /// Captures only the fields the offline UI/player/retry actually read. `resolutionLabel`
-    /// is descriptive ("1080p"/"4K") for the offline-library caption — it is NOT a transcode
-    /// cap (the redesign downloads either the original file or a server-rendered MP4).
-    static func offlineMetadata(from item: MediaItem,
-                                        resolutionLabel: String?,
-                                        mediaIndex: Int,
-                                        partIndex: Int,
-                                        optimizeTargetName: String? = nil,
-                                        optimizeQueueTitle: String? = nil,
-                                        session: BackendSession,
-                                        mediaSourceID: String? = nil,
-                                        downloadLane: DownloadLane? = nil,
-                                        serverPreparedVersion: Bool = false) -> OfflineMetadata {
-        DownloadOfflineMetadataBuilder.metadata(from: item,
-                                                resolutionLabel: resolutionLabel,
-                                                mediaIndex: mediaIndex,
-                                                partIndex: partIndex,
-                                                optimizeTargetName: optimizeTargetName,
-                                                optimizeQueueTitle: optimizeQueueTitle,
-                                                session: session,
-                                                mediaSourceID: mediaSourceID,
-                                                downloadLane: downloadLane,
-                                                serverPreparedVersion: serverPreparedVersion)
-    }
     /// Unified download fraction for a row's bar + caption (#97), so Plex/Jellyfin/Emby
     /// all present progress the same way. Returns the EXACT `Content-Length` fraction when
     /// the server reported a size (`record.progress`), otherwise an ESTIMATED fraction
