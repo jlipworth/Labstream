@@ -73,6 +73,44 @@ public enum DownloadRowStatusCaptionPolicy {
             self.isRetrying = isRetrying
             self.failureCaption = failureCaption
         }
+
+        public init(record: DownloadRecord,
+                    backend: DownloadBackendKind? = nil,
+                    displayFraction: DownloadProgressDisplay.Fraction?,
+                    isActive: Bool,
+                    isCheckpointPausing: Bool,
+                    isBackendConfigured: Bool,
+                    isTranscodeLimited: Bool,
+                    serverPrepState: String?,
+                    serverPrepProgress: Double?,
+                    serverPrepETA: TimeInterval?,
+                    downloadETA: TimeInterval?,
+                    downloadSpeedBytesPerSecond: Double?,
+                    isRetrying: Bool,
+                    failureCaption: String?) {
+            let snapshot = DownloadJobSnapshot(record: record)
+            self.init(status: snapshot.status,
+                      progress: snapshot.progress,
+                      bytes: snapshot.bytes,
+                      lane: snapshot.lane,
+                      backend: backend ?? snapshot.backend,
+                      resumeMode: snapshot.resumeMode,
+                      isServerPreparedVersion: snapshot.isServerPreparedVersion,
+                      resolutionLabel: record.metadata?.resolutionLabel,
+                      displayFraction: displayFraction,
+                      isActive: isActive,
+                      isCheckpointPausing: isCheckpointPausing,
+                      isBackendConfigured: isBackendConfigured,
+                      isTranscodeLimited: isTranscodeLimited,
+                      serverPrepState: serverPrepState,
+                      serverPrepProgress: serverPrepProgress,
+                      serverPrepETA: serverPrepETA,
+                      downloadETA: downloadETA,
+                      downloadSpeedBytesPerSecond: downloadSpeedBytesPerSecond,
+                      hasServerPrepQueueTitle: record.metadata?.optimizeQueueTitle?.isEmpty == false,
+                      isRetrying: isRetrying,
+                      failureCaption: failureCaption)
+        }
     }
 
     public static let serverPrepQueuedState = "queued"
