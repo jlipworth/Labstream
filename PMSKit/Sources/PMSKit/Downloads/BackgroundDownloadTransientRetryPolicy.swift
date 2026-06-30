@@ -1,0 +1,77 @@
+import Foundation
+
+public enum BackgroundDownloadTransientRetryRejection: Sendable, Equatable {
+    case nonTransientError
+    case missingResumeData
+    case unsupportedResumeData
+    case missingRangeRequest
+    case retryBudgetExhausted(nextAttempt: Int, maxRetries: Int)
+}
+
+public enum BackgroundDownloadTransientRetryDecision: Sendable, Equatable {
+    case retry(nextAttempt: Int)
+    case reject(BackgroundDownloadTransientRetryRejection)
+}
+
+/// Pure retry-gating decisions for transient background transfer failures.
+///
+/// Opaque URLSession downloads can retry only when the OS provides resume data and the row's lane
+/// explicitly supports persisted resume blobs. App-managed static Range downloads retry by issuing
+/// a fresh Range request from the durable app-owned checkpoint, so they require the original
+/// authenticated request still to be in memory.
+public enum BackgroundDownloadTransientRetryPolicy {
+    public static let defaultMaxRetries = 3
+
+    public static let transientErrorCodes: Set<Int> = [
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorTimedOut,
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorCannotFindHost,
+        NSURLErrorDNSLookupFailed,
+    ]
+
+    public static func opaqueDownloadDecision(errorDomain: String,
+                                              errorCode: Int,
+                                              hasResumeData: Bool,
+                                              supportsResumeData: Bool,
+                                              currentRetryCount: Int,
+                                              maxRetries: Int = defaultMaxRetries) -> BackgroundDownloadTransientRetryDecision {
+        guard isTransientURLError(domain: errorDomain, code: errorCode) else {
+            return .reject(.nonTransientError)
+        }
+        guard hasResumeData else {
+            return .reject(.missingResumeData)
+        }
+        guard supportsResumeData else {
+            return .reject(.unsupportedResumeData)
+        }
+        return retryBudgetDecision(currentRetryCount: currentRetryCount, maxRetries: maxRetries)
+    }
+
+    public static func rangeDecision(errorDomain: String,
+                                     errorCode: Int,
+                                     hasRequest: Bool,
+                                     currentRetryCount: Int,
+                                     maxRetries: Int = defaultMaxRetries) -> BackgroundDownloadTransientRetryDecision {
+        guard isTransientURLError(domain: errorDomain, code: errorCode) else {
+            return .reject(.nonTransientError)
+        }
+        guard hasRequest else {
+            return .reject(.missingRangeRequest)
+        }
+        return retryBudgetDecision(currentRetryCount: currentRetryCount, maxRetries: maxRetries)
+    }
+
+    private static func isTransientURLError(domain: String, code: Int) -> Bool {
+        domain == NSURLErrorDomain && transientErrorCodes.contains(code)
+    }
+
+    private static func retryBudgetDecision(currentRetryCount: Int,
+                                            maxRetries: Int) -> BackgroundDownloadTransientRetryDecision {
+        let nextAttempt = currentRetryCount + 1
+        guard nextAttempt <= maxRetries else {
+            return .reject(.retryBudgetExhausted(nextAttempt: nextAttempt, maxRetries: maxRetries))
+        }
+        return .retry(nextAttempt: nextAttempt)
+    }
+}

@@ -100,7 +100,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// the off-head headset probe needs durable breadcrumbs showing whether delegate progress kept
     /// arriving, without logging every `didWriteData` callback.
     private var lastRangeProgressDiagnostic: [Int: BackgroundRangeProgressDiagnosticSnapshot] = [:]
-    private let maxTransientRetries = 3
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.5
     private static let cfNetworkTempPrefix = "CFNetworkDownload_"
@@ -2838,18 +2837,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func retryTransientFailure(_ error: NSError,
                                        task: URLSessionTask,
                                        entry: (ratingKey: String, destination: URL)) -> Bool {
-        guard error.domain == NSURLErrorDomain,
-              Self.transientDownloadErrorCodes.contains(error.code),
-              let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
-              !resumeData.isEmpty else { return false }
+        let resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+        let hasResumeData = resumeData?.isEmpty == false
         // #95: JF/Emby optimized downloads are live transcode streams; do not offset-resume them
         // even if URLSession hands back a blob. Let the caller surface a restart-required failure
         // instead of silently trying a 200-full-restart/416-prone resume.
-        guard store.supportsPersistedResumeData(ratingKey: entry.ratingKey) else { return false }
+        let isTransientURLFailure = error.domain == NSURLErrorDomain
+            && BackgroundDownloadTransientRetryPolicy.transientErrorCodes.contains(error.code)
+        let supportsResumeData = isTransientURLFailure
+            && hasResumeData
+            && store.supportsPersistedResumeData(ratingKey: entry.ratingKey)
 
         lock.lock()
-        let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1
-        guard nextAttempt <= maxTransientRetries else {
+        let decision = BackgroundDownloadTransientRetryPolicy.opaqueDownloadDecision(
+            errorDomain: error.domain,
+            errorCode: error.code,
+            hasResumeData: hasResumeData,
+            supportsResumeData: supportsResumeData,
+            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+        )
+        guard case .retry(let nextAttempt) = decision,
+              let resumeData,
+              !resumeData.isEmpty else {
             lock.unlock()
             return false
         }
@@ -2881,15 +2890,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func retryTransientRangeFailure(_ error: NSError,
                                             task: URLSessionTask,
                                             entry: RangeTransfer) -> Bool {
-        guard error.domain == NSURLErrorDomain,
-              Self.transientDownloadErrorCodes.contains(error.code) else { return false }
         // No in-memory request (a relaunch-adopted chunk) means we can't reissue here; fall through
         // to the resumable-pause path so DownloadManager rebuilds the request and resumes.
-        guard let request = entry.request else { return false }
-
         lock.lock()
-        let nextAttempt = (retryCounts[entry.ratingKey] ?? 0) + 1
-        guard nextAttempt <= maxTransientRetries else {
+        let decision = BackgroundDownloadTransientRetryPolicy.rangeDecision(
+            errorDomain: error.domain,
+            errorCode: error.code,
+            hasRequest: entry.request != nil,
+            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+        )
+        guard case .retry(let nextAttempt) = decision,
+              let request = entry.request else {
             lock.unlock()
             return false
         }
@@ -2934,14 +2945,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return false
         }
     }
-
-    private static let transientDownloadErrorCodes: Set<Int> = [
-        NSURLErrorNetworkConnectionLost,
-        NSURLErrorTimedOut,
-        NSURLErrorCannotConnectToHost,
-        NSURLErrorCannotFindHost,
-        NSURLErrorDNSLookupFailed
-    ]
 
     /// Called when the background session has delivered all events queued while the
     /// app was suspended/terminated (after a relaunch). We invoke the system-supplied
