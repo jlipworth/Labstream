@@ -370,7 +370,8 @@ extension DownloadManager {
                               with: request,
                               to: destination,
                               expectedBytes: expectedBytes,
-                              byteRangeCheckpoint: route == .original)
+                              byteRangeCheckpoint: route == .original,
+                              resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }
     }
 

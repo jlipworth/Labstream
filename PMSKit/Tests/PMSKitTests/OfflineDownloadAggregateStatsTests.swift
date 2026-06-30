@@ -6,13 +6,15 @@ import Testing
 struct OfflineDownloadAggregateStatsTests {
     private func record(_ key: String,
                         status: DownloadStatus,
-                        bytes: Int = 0) -> DownloadRecord {
+                        bytes: Int = 0,
+                        sideAssetBytes: Int = 0) -> DownloadRecord {
         DownloadRecord(ratingKey: key,
                        title: key,
                        localURL: URL(fileURLWithPath: "/tmp/\(key).mp4"),
                        bytes: bytes,
                        progress: 0,
-                       status: status)
+                       status: status,
+                       sideAssetBytes: sideAssetBytes)
     }
 
     @Test("no downloads produce no visible aggregate metrics")
@@ -26,9 +28,9 @@ struct OfflineDownloadAggregateStatsTests {
     @Test("downloaded total includes complete and partial local bytes")
     func downloadedTotalIncludesCompleteAndPartialRows() {
         let rows = [
-            record("complete", status: .complete, bytes: 1_000),
+            record("complete", status: .complete, bytes: 1_000, sideAssetBytes: 25),
             record("paused", status: .paused, bytes: 200),
-            record("downloading", status: .downloading, bytes: 300),
+            record("downloading", status: .downloading, bytes: 300, sideAssetBytes: 10),
             record("failed", status: .failed, bytes: 40),
             record("preparing", status: .preparing, bytes: 0),
         ]
@@ -36,7 +38,7 @@ struct OfflineDownloadAggregateStatsTests {
         let stats = OfflineDownloadAggregateStats.make(records: rows,
                                                        speedsByRatingKey: ["downloading": 12.5])
 
-        #expect(stats.downloadedBytes == 1_540)
+        #expect(stats.downloadedBytes == 1_575)
         #expect(stats.activeSpeedBytesPerSecond == 12.5)
         #expect(stats.hasVisibleMetrics)
     }

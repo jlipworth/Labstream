@@ -128,6 +128,7 @@ public final class DownloadManager {
     /// before an authenticated request can be rebuilt. This is queue policy/backend state, not
     /// URLSession delegate state, so it deliberately lives here rather than in BackgroundDownloadSession.
     private var pendingStaticRangeResumeKeys: Set<String> = []
+    private var preserveRangeRestartCounterRows: Set<String> = []
     /// Static byte-range rows whose fully-downloaded checkpoint is already being handed to
     /// BackgroundDownloadSession finalization. Without this guard, a refresh fired by
     /// `publishTransferFinalizing` sees the row still at 100%/downloading until the async probe
@@ -297,8 +298,16 @@ public final class DownloadManager {
                 guard let self else { return }
                 let previous = self.liveRangeProgress[ratingKey]
                 // Keep the largest live count within a chunk, but allow a new chunk/checkpoint to
-                // re-baseline upward from the durable checkpoint on the first callback.
-                let bytes = max(liveBytes, previous?.bytes ?? 0)
+                // re-baseline upward from the durable checkpoint on the first callback. If a
+                // validator/resource restart moves the durable checkpoint backwards, replace the old
+                // optimistic temp-byte sample instead of showing stale higher progress for the
+                // throttle window.
+                let bytes: Int
+                if let previous, liveBytes < previous.bytes {
+                    bytes = liveBytes
+                } else {
+                    bytes = max(liveBytes, previous?.bytes ?? 0)
+                }
                 self.liveRangeProgress[ratingKey] = LiveRangeProgressSample(
                     bytes: bytes,
                     expectedBytes: expectedBytes ?? previous?.expectedBytes,
@@ -322,11 +331,11 @@ public final class DownloadManager {
             store.reconcile(liveRatingKeys: liveKeys)
             Task { @MainActor in
                 self?.refreshRecords()
+                self?.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
                 if self?.isQueuePaused != true {
                     self?.resumePendingServerPrepDownloads()
                     self?.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
                                                                     liveKeys: liveKeys)
-                    self?.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
                 }
                 // #84: reclaim any server encoder leaked by a HARD app kill (the in-memory
                 // PlaySessionId maps are empty on a fresh launch; the persisted `playSessionID`
@@ -849,6 +858,10 @@ public final class DownloadManager {
         // user has to manually Pause→Resume to kick the exact same request.
         retryingRows.remove(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
+        if reason == BackgroundRangeRequestReason.validatorChanged.rawValue
+            || reason == BackgroundRangeRequestReason.adoptedChunkFailed.rawValue {
+            preserveRangeRestartCounterRows.insert(ratingKey)
+        }
         if record.status == .queued || record.status == .downloading {
             // A persisted system-resume intent is not a live task. Drop it to an inactive status for
             // the backend retry handoff so `acquireInFlightSlotForStart` will seed the replacement
@@ -857,6 +870,10 @@ public final class DownloadManager {
         }
         refreshRecords()
         retry(ratingKey: ratingKey)
+    }
+
+    func consumeRangeRestartCounterPreservation(ratingKey: String) -> Bool {
+        preserveRangeRestartCounterRows.remove(ratingKey) != nil
     }
 
 
@@ -1366,6 +1383,14 @@ public final class DownloadManager {
             guard let metadata = record.metadata,
                   let jobId = metadata.embyConvertJobID,
                   metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby else { continue }
+            guard session.matchesPersistedServer(metadata) else {
+                recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "job_id": .int(jobId),
+                    "reason": .label("emby_session_mismatch"),
+                ])
+                continue
+            }
             let ratingKey = record.ratingKey
             let targetName = metadata.optimizeTargetName ?? ""
             activeJobs.insert(ratingKey)
@@ -1836,7 +1861,9 @@ public final class DownloadManager {
         if let row = store.records.first(where: { $0.ratingKey == ratingKey }),
            row.status == .preparing,
            let jobId = row.metadata?.embyConvertJobID,
-           let session = appModel.backendSession(for: .emby) {
+           let metadata = row.metadata,
+           let session = appModel.backendSession(for: .emby),
+           session.matchesPersistedServer(metadata) {
             let server = session.baseURL
             let token = session.token
             let identity = appModel.identity.emby
@@ -1850,6 +1877,14 @@ public final class DownloadManager {
                     _ = try? await URLSession.shared.data(for: req)
                 }
             }
+        } else if let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+                  row.status == .preparing,
+                  let jobId = row.metadata?.embyConvertJobID {
+            recordDownloadDiagnostic("downloads.convert_cancel_skip", fields: [
+                "download_id": .identifier(ratingKey),
+                "job_id": .int(jobId),
+                "reason": .label("emby_session_mismatch_or_unavailable"),
+            ])
         }
         session.cancel(ratingKey: ratingKey)
         store.remove(ratingKey: ratingKey)
@@ -2474,7 +2509,9 @@ public final class DownloadManager {
         // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
         // sweep retries once the lane returns.
         if let playSessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey),
-           let session = appModel.backendSession(for: .emby) {
+           let session = appModel.backendSession(for: .emby),
+           (store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
+               .map { session.matchesPersistedServer($0) } ?? true) {
             recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
@@ -2485,9 +2522,21 @@ public final class DownloadManager {
                     store.clearPlaySessionID(ratingKey: ratingKey)
                 }
             }
+        } else if embyPlaySessionByRatingKey[ratingKey] == nil,
+                  let metadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata,
+                  metadata.playSessionID?.isEmpty == false,
+                  metadata.resolvedBackendKind(ratingKey: ratingKey) == .emby,
+                  let session = appModel.backendSession(for: .emby),
+                  !session.matchesPersistedServer(metadata) {
+            recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("server_mismatch"),
+            ])
         }
         if let playSessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey),
-           let session = appModel.backendSession(for: .jellyfin) {
+           let session = appModel.backendSession(for: .jellyfin),
+           (store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
+               .map { session.matchesPersistedServer($0) } ?? true) {
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
@@ -2498,6 +2547,16 @@ public final class DownloadManager {
                     store.clearPlaySessionID(ratingKey: ratingKey)
                 }
             }
+        } else if jellyfinPlaySessionByRatingKey[ratingKey] == nil,
+                  let metadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata,
+                  metadata.playSessionID?.isEmpty == false,
+                  metadata.resolvedBackendKind(ratingKey: ratingKey) == .jellyfin,
+                  let session = appModel.backendSession(for: .jellyfin),
+                  !session.matchesPersistedServer(metadata) {
+            recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("server_mismatch"),
+            ])
         }
     }
 

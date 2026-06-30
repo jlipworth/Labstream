@@ -224,6 +224,7 @@ struct OfflineDownloadModelsTests {
             ratingKey: "emby:63117",
             title: "Persona Non Grata",
             type: "episode",
+            sourcePartSize: 9_876_543_210,
             posterRelativePath: "emby_63117.poster.jpg",
             chapterImageRelativePaths: [0: "emby_63117.chapter-0.jpg"],
             offlineTextSubtitles: [
@@ -233,7 +234,9 @@ struct OfflineDownloadModelsTests {
                                          codec: "srt",
                                          relativePath: "emby_63117.sub-8.srt")
             ],
-            mediaSourceID: "mediasource_63117")
+            mediaSourceID: "mediasource_63117",
+            resumeDataRelativePath: "emby_63117.resume",
+            rangeValidator: "\"old-etag\"")
         var incoming = OfflineMetadata(
             ratingKey: "emby:63117",
             title: "Persona Non Grata",
@@ -249,6 +252,9 @@ struct OfflineDownloadModelsTests {
         #expect(incoming.posterRelativePath == "emby_63117.poster.jpg")
         #expect(incoming.chapterImageRelativePaths == [0: "emby_63117.chapter-0.jpg"])
         #expect(incoming.offlineTextSubtitles == previous.offlineTextSubtitles)
+        #expect(incoming.sourcePartSize == 9_876_543_210)
+        #expect(incoming.resumeDataRelativePath == "emby_63117.resume")
+        #expect(incoming.rangeValidator == "\"old-etag\"")
     }
 
     @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")

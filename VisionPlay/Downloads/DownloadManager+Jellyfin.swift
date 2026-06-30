@@ -241,10 +241,8 @@ extension DownloadManager {
                                server: server, token: token, identity: identity)
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
                            server: server, token: token)
-        if case .original = choice {
-            cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
-                                       part: part, server: server, token: token, identity: identity)
-        }
+        cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
+                                   part: part, server: server, token: token, identity: identity)
 
         beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Jellyfin",
                                 choiceLabel: Self.diagnosticChoiceLabel(choice),
@@ -268,7 +266,8 @@ extension DownloadManager {
                                   case .original, .existingVersion: return true
                                   case .optimize, .optimizeCompatible: return false
                                   }
-                              }())
+                              }(),
+                              resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }
     }
 

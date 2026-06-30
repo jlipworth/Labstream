@@ -35,6 +35,9 @@ public struct OfflineDownloadAggregateStats: Sendable, Equatable {
             if record.bytes > 0 {
                 totalBytes += record.bytes
             }
+            if record.sideAssetBytes > 0 {
+                totalBytes += record.sideAssetBytes
+            }
             if record.status.isActiveWork,
                let speed = speedsByRatingKey[record.ratingKey],
                speed.isFinite,

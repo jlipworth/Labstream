@@ -160,7 +160,7 @@ final class DownloadStore: @unchecked Sendable {
 
     /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
     private func resolvedDownloadAssetURL(_ relative: String?) -> URL? {
-        guard let relative, !relative.isEmpty else { return nil }
+        guard let relative, Self.isSafeOneLevelRelativePath(relative) else { return nil }
         let url = baseDirectory.appendingPathComponent(relative)
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
@@ -260,7 +260,7 @@ final class DownloadStore: @unchecked Sendable {
     /// limited to files that still exist on disk (#88/#89).
     func chapterImageURLs(for ratingKey: String) -> [Int: URL] {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[ratingKey], row.status == .complete else { return [:] }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return [:] }
         return Self.resolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
                                              baseDirectory: baseDirectory,
                                              fileManager: fileManager)
@@ -271,11 +271,19 @@ final class DownloadStore: @unchecked Sendable {
                                                  fileManager: FileManager) -> [Int: URL] {
         guard let relatives else { return [:] }
         var out: [Int: URL] = [:]
-        for (index, relative) in relatives where !relative.isEmpty {
+        for (index, relative) in relatives where isSafeOneLevelRelativePath(relative) {
             let url = baseDirectory.appendingPathComponent(relative)
             if fileManager.fileExists(atPath: url.path) { out[index] = url }
         }
         return out
+    }
+
+    private static func isSafeOneLevelRelativePath(_ relative: String) -> Bool {
+        !relative.isEmpty
+            && !relative.contains("/")
+            && !relative.contains("\\")
+            && relative != "."
+            && relative != ".."
     }
 
     private func sideAssetBytes(for metadata: OfflineMetadata?) -> Int {
@@ -290,7 +298,7 @@ final class DownloadStore: @unchecked Sendable {
         relatives.append(contentsOf: Array(metadata.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
         relatives.append(contentsOf: metadata.offlineTextSubtitles?.map(\.relativePath) ?? [])
         return relatives.reduce(0) { total, relative in
-            guard !relative.isEmpty else { return total }
+            guard Self.isSafeOneLevelRelativePath(relative) else { return total }
             let url = baseDirectory.appendingPathComponent(relative)
             let attrs = try? fileManager.attributesOfItem(atPath: url.path)
             return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
@@ -444,13 +452,21 @@ final class DownloadStore: @unchecked Sendable {
     /// denominator durable lets the Offline UI continue to show percent/ETA from live Range bytes
     /// instead of falling back to a spinner + 0% caption.
     func setSourcePartSizeIfMissing(ratingKey: String, _ size: Int?) {
+        setSourcePartSize(ratingKey: ratingKey, size, onlyIfMissing: true)
+    }
+
+    func setSourcePartSize(ratingKey: String, _ size: Int?) {
+        setSourcePartSize(ratingKey: ratingKey, size, onlyIfMissing: false)
+    }
+
+    private func setSourcePartSize(ratingKey: String, _ size: Int?, onlyIfMissing: Bool) {
         guard let size, size > 0 else { return }
         lock.lock()
         let existing = rows[ratingKey]?.metadata?.sourcePartSize ?? 0
         lock.unlock()
-        guard existing <= 0 else { return }
+        guard !onlyIfMissing || existing <= 0 else { return }
         updateMetadata(ratingKey: ratingKey) { meta in
-            if (meta.sourcePartSize ?? 0) <= 0 {
+            if !onlyIfMissing || (meta.sourcePartSize ?? 0) <= 0 {
                 meta.sourcePartSize = size
             }
         }
@@ -730,8 +746,7 @@ final class DownloadStore: @unchecked Sendable {
                 && (row.metadata?.optimizeTargetName?.isEmpty == false
                     || row.metadata?.embyConvertJobID != nil)
             let hasAppRangeCheckpoint = resumeMode == .staticByteRange
-                && (row.status == .paused || row.status == .queued
-                    || row.status == .downloading || row.status == .failed)
+                && (row.status == .paused || row.status == .queued || row.status == .downloading)
                 && partialBytes > 0
             let rangeCheckpointExpectedBytes = Self.expectedBytesEstimate(row: row)
             let rangeCheckpointProgress = Self.progressForDurableBytes(
@@ -837,7 +852,7 @@ final class DownloadStore: @unchecked Sendable {
             assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
             assets.append(contentsOf: Array(row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
             assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
-            for asset in assets where !asset.isEmpty {
+            for asset in assets where Self.isSafeOneLevelRelativePath(asset) {
                 try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
             }
         }
