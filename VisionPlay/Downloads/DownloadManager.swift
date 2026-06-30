@@ -563,36 +563,40 @@ public final class DownloadManager {
     /// when the backend lane supports it; server-prep rows are marked paused so relaunch/refresh
     /// does not auto-poll/retry until the user resumes.
     public func pause(ratingKey: String) {
-        guard let record = records.first(where: { $0.ratingKey == ratingKey }),
-              record.status == .queued || record.status == .preparing || record.status == .downloading else { return }
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        let pauseAction = DownloadPausePolicy.rowAction(
+            status: record.status,
+            isStaticRangeRecord: Self.isStaticRangeRecord(record),
+            isTrackingTransfer: session.isTrackingTransfer(ratingKey: ratingKey)
+        )
+        guard pauseAction != .ignore else { return }
+
         recordDownloadDiagnostic("downloads.pause", fields: [
             "download_id": .identifier(ratingKey),
         ])
         retryingRows.remove(ratingKey)
         staticRangeRecovery.removeManualQueueResume(ratingKey)
         lastError[ratingKey] = .interruptedResumable
-        switch record.status {
-        case .queued, .downloading:
-            // A freshly seeded URLSession task can still be `.queued` until its first progress
-            // callback promotes the row to `.downloading`. Route queued rows through the session too
-            // so Pause/queue-pause actually cancels that live task instead of merely changing UI state
-            // while nsurlsessiond keeps transferring in the background.
-            if Self.isStaticRangeRecord(record), session.isTrackingTransfer(ratingKey: ratingKey) {
-                // Static Range rows pause at a real durable checkpoint. Keep the persisted lifecycle
-                // as active while the current bounded chunk drains so progress/rate remain honest
-                // and the row does not bounce Paused→Downloading from delegate progress. The
-                // session will write `.paused` once the checkpoint is appended (or immediately for
-                // non-drainable cases).
-                staticRangeRecovery.markCheckpointPause(ratingKey)
-            } else if Self.isStaticRangeRecord(record) {
-                // No live task to drain; this is a queued/gap pause and can park immediately.
-                store.setStatus(ratingKey: ratingKey, .paused)
-            }
-            session.pause(ratingKey: ratingKey)
-        case .preparing:
-            store.setStatus(ratingKey: ratingKey, .paused)
-        default:
+
+        switch pauseAction {
+        case .ignore:
             break
+        case .checkpointPauseAndCancelTask:
+            // Static Range rows pause at a real durable checkpoint. Keep the persisted lifecycle
+            // as active while the current bounded chunk drains so progress/rate remain honest and
+            // the row does not bounce Paused→Downloading from delegate progress. The session writes
+            // `.paused` once the checkpoint is appended (or immediately for non-drainable cases).
+            staticRangeRecovery.markCheckpointPause(ratingKey)
+            session.pause(ratingKey: ratingKey)
+        case .parkStaticWithoutLiveTask:
+            // A freshly seeded URLSession task can still be `.queued` until first progress. Route
+            // queued rows through the session too, but park no-live static gaps immediately.
+            store.setStatus(ratingKey: ratingKey, .paused)
+            session.pause(ratingKey: ratingKey)
+        case .cancelTaskOnly:
+            session.pause(ratingKey: ratingKey)
+        case .parkPreparing:
+            store.setStatus(ratingKey: ratingKey, .paused)
         }
         clearOptimizeProgress(ratingKey: ratingKey)
         releaseInFlight(ratingKey: ratingKey)
@@ -604,10 +608,7 @@ public final class DownloadManager {
         isQueuePaused = true
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(true, forKey: Self.queuePausedDefaultsKey)
-        for record in records where record.status == .queued || record.status == .preparing || record.status == .downloading {
-            if shouldKeepEmbyServerPrepPollingWhileQueuePaused(record) {
-                continue
-            }
+        for record in records where DownloadPausePolicy.shouldPauseDuringQueuePause(record) {
             pause(ratingKey: record.ratingKey)
         }
         resumePendingEmbyConvertDownloads()
