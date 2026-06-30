@@ -95,7 +95,8 @@ snapshot derivation.
 - **Done: Slice 6a range HTTP policy extraction.** `RangeTransferHTTPPolicy` now owns
   tested pure HTTP-header decisions for static byte-range transfer reattachment and validation:
   Range segment classification, durable-checkpoint detection, closed-range length, strong
-  `If-Range` validator selection, `Content-Range` start/total parsing, and request offset parsing.
+  `If-Range` validator selection, `Content-Range` start/total parsing, request offset parsing,
+  and safe acceptance of URLSession's internally-resumed closed Range temps.
   `BackgroundDownloadSession` still owns URLSession/temp-file side effects, but its parsing
   semantics are pinned in PMSKit.
 
