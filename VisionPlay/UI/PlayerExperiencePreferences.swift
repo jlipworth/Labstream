@@ -138,25 +138,10 @@ enum PlaybackPreferences {
 }
 
 enum DownloadStorageLimit {
-    struct Option: Identifiable, Equatable {
-        let bytes: Int
-        let label: String
-        var id: Int { bytes }
-    }
-
-    static let unlimited: Int = 0
-    static let options: [Option] = [
-        .init(bytes: unlimited, label: "Unlimited"),
-        .init(bytes: 10 * 1_000_000_000, label: "10 GB"),
-        .init(bytes: 25 * 1_000_000_000, label: "25 GB"),
-        .init(bytes: 50 * 1_000_000_000, label: "50 GB"),
-        .init(bytes: 100 * 1_000_000_000, label: "100 GB"),
-        .init(bytes: 250 * 1_000_000_000, label: "250 GB"),
-    ]
+    static let unlimited: Int = DownloadStorageLimitPolicy.unlimited
+    static let options = DownloadStorageLimitPolicy.options
 
     static func label(bytes: Int) -> String {
-        if let option = options.first(where: { $0.bytes == bytes }) { return option.label }
-        if bytes <= 0 { return "Unlimited" }
-        return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        DownloadStorageLimitPolicy.label(bytes: bytes)
     }
 }

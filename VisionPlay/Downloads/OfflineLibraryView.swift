@@ -160,7 +160,7 @@ public struct OfflineLibraryView: View {
     }
 
     private static func aggregateByteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        DownloadStorageLimitPolicy.byteString(bytes)
     }
 
     private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {

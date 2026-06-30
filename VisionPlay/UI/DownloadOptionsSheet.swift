@@ -544,7 +544,7 @@ struct DownloadOptionsSheet: View {
     private func directDetail(sizeBytes: Int?, resolution: String?) -> String {
         var parts: [String] = []
         if let sizeBytes, sizeBytes > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file))
+            parts.append(DownloadStorageLimitPolicy.byteString(sizeBytes))
         }
         if let resolution { parts.append(resolution) }
         return parts.isEmpty ? "Original file" : parts.joined(separator: " · ")
@@ -799,7 +799,7 @@ struct DownloadOptionsSheet: View {
                     Label("Downloaded for offline viewing", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
-                Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
+                Text(DownloadStorageLimitPolicy.byteString(record.bytes))
                     .font(.caption).foregroundStyle(.secondary)
             } else if isFailed {
                 Label("Download failed", systemImage: "exclamationmark.circle")
@@ -815,7 +815,7 @@ struct DownloadOptionsSheet: View {
                 Label("Download paused", systemImage: "pause.circle")
                     .foregroundStyle(.secondary)
                 if record.bytes > 0 {
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(record.bytes), countStyle: .file))
+                    Text(DownloadStorageLimitPolicy.byteString(record.bytes))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Button {

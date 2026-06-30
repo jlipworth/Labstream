@@ -312,6 +312,11 @@ snapshot derivation.
   selection that permits lower non-ladder tv-profile outputs while refusing 4K/Original downgrades.
   The app-side convert coordinator still performs refresh/polling, diagnostics, cancellation guards,
   and the final `.existingVersion` handoff.
+- **Done: Slice 5w storage-limit policy extraction.**
+  `DownloadStorageLimitPolicy` now owns offline storage cap options/labels, shared byte formatting,
+  and the enqueue rejection message for projected-over-limit downloads. Settings and download
+  enqueue preflight now share the same tested cap vocabulary instead of duplicating labels and
+  message composition in the app layer.
 
 ## Target module boundaries
 
@@ -357,6 +362,8 @@ snapshot derivation.
 - `DownloadStaticRetryTargetPolicy`: pure static retry source-part and original/existing-version
   target selection.
 - `DownloadStorageEstimatePolicy`: pure storage preflight estimates for media bytes and sidecars.
+- `DownloadStorageLimitPolicy`: pure storage-cap options/labels, byte formatting, and projected
+  over-limit rejection messaging.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Plex original-validation fallback guards.
