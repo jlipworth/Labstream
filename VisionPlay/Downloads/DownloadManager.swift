@@ -1141,39 +1141,10 @@ public final class DownloadManager {
     }
 
     private func retryJellyfin(record: DownloadRecord) {
-        let metadata = record.metadata
-        let item = metadata?.makeMediaItem()
-            ?? MediaItem(ratingKey: Self.jellyfinItemID(fromRecordKey: record.ratingKey),
-                         title: record.title,
-                         type: "movie")
-        let mediaIndex = metadata?.mediaIndex ?? 0
-        let partIndex = metadata?.partIndex ?? 0
-        let media = item.media?.indices.contains(mediaIndex) == true ? item.media?[mediaIndex] : item.media?.first
-        let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : media?.part.first
-        let choice: DownloadChoice
-        if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
-            choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
-        } else if metadata?.resolvedDownloadLane() == .compatibleRemux {
-            // #83: a persisted compatible-remux row has no optimizeTargetName, so without the lane
-            // discriminator it would rehydrate as `.original` and silently drop the user's intent.
-            choice = .optimizeCompatible
-        } else if metadata != nil {
-            // #84: stored rows know the original user intent. `makeMediaItem()` intentionally does
-            // not rehydrate full MediaSource/Part arrays, so deriving this from `part` after a
-            // relaunch would incorrectly turn original retries into optimized transcodes.
-            // #90 (won't-fix): deliberately NO Emby-style PlaybackInfo re-probe here — Jellyfin's
-            // normal `.original` path doesn't probe either, and re-probing only on retry would make
-            // retry behave differently from the first attempt. The theoretical
-            // `.original`→fail→`.original` loop needs a non-transient route-specific failure and is
-            // self-limiting (manual retry only). If a real stuck loop is ever reported, the minimal
-            // fix is an attempt-count escalation to the default download preset after N consecutive
-            // `.original` failures — cheaper than a speculative re-probe (mediaSourceID IS persisted).
-            choice = .original
-        } else if Self.isLocallyPlayableOriginal(part: part) {
-            choice = .original
-        } else {
-            choice = .optimize(targetName: Self.jellyfinDefaultDownloadPreset)
-        }
+        let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
+            for: record,
+            fallbackItemID: Self.jellyfinItemID(fromRecordKey: record.ratingKey),
+            fallbackOriginalIsLocallyPlayable: false)
 
         Task { [weak self] in
             guard let self else { return }
@@ -1203,43 +1174,18 @@ public final class DownloadManager {
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
             // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
             // mark this existing row `.failed` instead of making the retry affordance disappear.
-            await self.downloadJellyfin(item, choice: choice,
-                                        mediaIndex: mediaIndex,
-                                        partIndex: partIndex,
-                                        mediaSourceIDOverride: metadata?.mediaSourceID)
+            await self.downloadJellyfin(retryIntent.item, choice: retryIntent.choice,
+                                        mediaIndex: retryIntent.mediaIndex,
+                                        partIndex: retryIntent.partIndex,
+                                        mediaSourceIDOverride: retryIntent.mediaSourceIDOverride)
             self.refreshRecords()
         }
     }
 
     private func retryEmby(record: DownloadRecord) {
-        let metadata = record.metadata
-        let item = metadata?.makeMediaItem()
-            ?? MediaItem(ratingKey: Self.embyItemID(fromRecordKey: record.ratingKey),
-                         title: record.title,
-                         type: "movie")
-        let mediaIndex = metadata?.mediaIndex ?? 0
-        let partIndex = metadata?.partIndex ?? 0
-        // Choice intent only — `downloadEmby` re-probes PlaybackInfo and decides the real route, so
-        // a now-compatible file goes original even if the failed row had an optimize target. We
-        // pass `.original` unless the row explicitly recorded an optimize preset, in which case we
-        // honour the user's downscale request via the explicit ladder.
-        let choice: DownloadChoice
-        if metadata?.isServerPreparedVersion == true, let sourceID = metadata?.mediaSourceID, !sourceID.isEmpty {
-            // A server-prepared version (Emby convert-then-download output / #126 reuse) downloads a
-            // specific converted MediaSource byte-for-byte. Retry MUST re-address that source via
-            // `.existingVersion` (the override below carries its id) — NOT a plain `.original`, which
-            // would drop the server-prepared intent and re-badge the row "Original" instead of
-            // "Transcode". `.existingVersion` re-stamps `serverPreparedVersion` on the reseeded row.
-            choice = .existingVersion
-        } else if let targetName = metadata?.optimizeTargetName, !targetName.isEmpty {
-            choice = .optimize(targetName: Self.jellyfinDownloadPreset(named: targetName))
-        } else if metadata?.resolvedDownloadLane() == .compatibleRemux {
-            // #83: preserve the compatible-remux intent (downloadEmby re-probes PlaybackInfo and
-            // re-decides remux-vs-transcode, falling back safely if the source is no longer copyable).
-            choice = .optimizeCompatible
-        } else {
-            choice = .original
-        }
+        let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
+            for: record,
+            fallbackItemID: Self.embyItemID(fromRecordKey: record.ratingKey))
 
         Task { [weak self] in
             guard let self else { return }
@@ -1269,10 +1215,10 @@ public final class DownloadManager {
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
             // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
             // existing row `.failed` instead of making the retry affordance disappear.
-            await self.downloadEmby(item, choice: choice,
-                                    mediaIndex: mediaIndex,
-                                    partIndex: partIndex,
-                                    mediaSourceIDOverride: metadata?.mediaSourceID)
+            await self.downloadEmby(retryIntent.item, choice: retryIntent.choice,
+                                    mediaIndex: retryIntent.mediaIndex,
+                                    partIndex: retryIntent.partIndex,
+                                    mediaSourceIDOverride: retryIntent.mediaSourceIDOverride)
             self.refreshRecords()
         }
     }
