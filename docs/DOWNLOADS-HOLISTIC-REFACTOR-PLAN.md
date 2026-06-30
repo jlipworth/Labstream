@@ -300,6 +300,11 @@ snapshot derivation.
   `DownloadRowStatusCaptionPolicy` now also owns the modal sheet's compact active-row phase labels,
   preserving the sheet's concise original-download wording while pinning the server-prepared,
   compatible-remux, and backend-specific transcode labels in the same tested policy family.
+- **Done: Slice 4h media-source selection policy extraction.**
+  `DownloadMediaSelectionPolicy` now owns the shared safe media/part selection and MediaBrowser
+  MediaSource-id hint parsing used by the download sheet, Jellyfin downloads, Emby downloads, and
+  existing-version option rows. PlaybackInfo decisions remain authoritative, but the repeated
+  synthesized-part-key parsing no longer lives separately in each adapter.
 
 ## Target module boundaries
 
@@ -314,7 +319,9 @@ snapshot derivation.
   selection, Plex source-quality row separation, and MediaBrowser bitrate-only ladders.
 - `DownloadExistingVersionOptionPolicy`: pure option rows for Plex existing `Media` versions and
   Emby Convert-Media `MediaSource` versions, including label/detail formatting, offline-playable
-  disabled gates, target addressing, and MediaSource id extraction.
+  disabled gates, and target addressing.
+- `DownloadMediaSelectionPolicy`: safe media/part selection, MediaBrowser MediaSource-id hint
+  extraction, and source container-extension fallback for sheet probes and backend download adapters.
 - `DownloadStartSlotPolicy`: app-level in-flight admission/recovery decision table.
 - `DownloadPausePolicy`: pure row/queue-pause routing decisions before app-side store/session
   effects.

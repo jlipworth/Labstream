@@ -49,10 +49,11 @@ extension DownloadManager {
             return
         }
 
-        let media = item.media.flatMap { $0.indices.contains(mediaIndex) ? $0[mediaIndex] : nil }
-        let part = media?.part.indices.contains(partIndex) == true ? media?.part[partIndex] : nil
+        let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
+        let media = selection.media
+        let part = selection.part
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
-        let jellyfinMediaSourceID = mediaSourceIDOverride ?? Self.jellyfinMediaSourceID(media: media, part: part)
+        let jellyfinMediaSourceID = mediaSourceIDOverride ?? selection.mediaSourceID
         var resolvedJellyfinMediaSourceID = jellyfinMediaSourceID
         var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
@@ -89,9 +90,8 @@ extension DownloadManager {
                 // #112: `.existingVersion` is a Plex-only lane (server-generated Plex Versions). It
                 // is never produced for Jellyfin, but the switch must be exhaustive — treat it as a
                 // plain original static download here.
-                let ext = part?.container ?? media?.container ?? "mp4"
-                destination = store.destinationURL(ratingKey: ratingKey,
-                                                   ext: ext.isEmpty ? "mp4" : ext)
+                let ext = DownloadMediaSelectionPolicy.containerExtension(selection: selection)
+                destination = store.destinationURL(ratingKey: ratingKey, ext: ext)
                 request = try JellyfinLibrary.downloadRequest(server: server,
                                                               token: token,
                                                               identity: identity,
