@@ -31,6 +31,17 @@ public enum DownloadRowDisplayPolicy {
         return fraction.isEstimated ? "~\(pct)" : pct
     }
 
+    public static func displayProgress(for record: DownloadRecord,
+                                       fraction: DownloadProgressDisplay.Fraction?,
+                                       serverPrepProgress: Double?) -> Double? {
+        if record.bytes == 0,
+           record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .serverPrepThenStatic,
+           let serverPrepProgress {
+            return max(0, min(serverPrepProgress, 0.999))
+        }
+        return fraction?.value
+    }
+
     public static func activeHead(lane: DownloadLane,
                                   backend: DownloadBackendKind,
                                   isServerPreparedVersion: Bool,

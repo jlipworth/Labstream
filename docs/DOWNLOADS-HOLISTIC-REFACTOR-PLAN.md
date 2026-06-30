@@ -378,6 +378,10 @@ snapshot derivation.
   live byte overlays, exact expected byte totals, and estimated transcode fallbacks.
   `DownloadManager` supplies the live facts but no longer reimplements the static-vs-estimated
   progress bar decision.
+- **Done: Slice 7k row display-progress extraction.**
+  `DownloadRowDisplayPolicy` now owns the row progress-value composition for server-prep-then-static
+  handoff rows, including the pre-byte server progress clamp below 100%. The manager supplies the
+  current server-prep progress and transfer fraction without owning that display rule.
 
 ## Target module boundaries
 
