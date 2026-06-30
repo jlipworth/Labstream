@@ -1534,16 +1534,6 @@ public final class DownloadManager {
         }
     }
 
-    static func optimizeSourcePartIDs(item: MediaItem,
-                                              fallbackItem: MediaItem,
-                                              mediaIndex: Int,
-                                              partIndex: Int) -> [Int] {
-        DownloadOptimizeSourcePolicy.sourcePartIDs(item: item,
-                                                   fallbackItem: fallbackItem,
-                                                   mediaIndex: mediaIndex,
-                                                   partIndex: partIndex)
-    }
-
     public var totalDownloadedBytes: Int {
         records.reduce(0) { $0 + $1.bytes + $1.sideAssetBytes }
     }
@@ -2267,10 +2257,6 @@ public final class DownloadManager {
                                                 mediaSourceID: mediaSourceID,
                                                 downloadLane: downloadLane,
                                                 serverPreparedVersion: serverPreparedVersion)
-    }
-    static func filePath(_ file: String, isUnder directory: String) -> Bool {
-        let normalizedDirectory = directory.hasSuffix("/") ? String(directory.dropLast()) : directory
-        return file == normalizedDirectory || file.hasPrefix(normalizedDirectory + "/")
     }
     /// Unified download fraction for a row's bar + caption (#97), so Plex/Jellyfin/Emby
     /// all present progress the same way. Returns the EXACT `Content-Length` fraction when
