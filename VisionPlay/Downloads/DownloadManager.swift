@@ -2486,54 +2486,70 @@ public final class DownloadManager {
         // the DELETE must hit the server the encoder actually runs on. If that lane is no longer
         // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
         // sweep retries once the lane returns.
-        if let playSessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey),
-           let session = appModel.backendSession(for: .emby),
-           (store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
-               .map { session.matchesPersistedServer($0) } ?? true) {
+        let releaseMetadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
+        let embySession = appModel.backendSession(for: .emby)
+        let embySessionMatchesMetadata = releaseMetadata.map { metadata in
+            embySession?.matchesPersistedServer(metadata) == true
+        }
+        let embyPlaySessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+        switch DownloadEncoderTeardownPolicy.decision(
+            backend: .emby,
+            transientPlaySessionID: embyPlaySessionId,
+            metadata: releaseMetadata,
+            sessionAvailable: embySession != nil,
+            sessionMatchesPersistedServer: embySessionMatchesMetadata
+        ) {
+        case .none:
+            break
+        case .stop(let playSessionId):
+            guard let embySession else { break }
             recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
             let service = EmbyBrowseService(appModel: appModel)
             let store = self.store
             Task {
-                if await service.stopActiveEncoding(playSessionId: playSessionId, session: session) {
+                if await service.stopActiveEncoding(playSessionId: playSessionId, session: embySession) {
                     store.clearPlaySessionID(ratingKey: ratingKey)
                 }
             }
-        } else if embyPlaySessionByRatingKey[ratingKey] == nil,
-                  let metadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata,
-                  metadata.playSessionID?.isEmpty == false,
-                  metadata.resolvedBackendKind(ratingKey: ratingKey) == .emby,
-                  let session = appModel.backendSession(for: .emby),
-                  !session.matchesPersistedServer(metadata) {
+        case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
-                "reason": .label("server_mismatch"),
+                "reason": .label(reason),
             ])
         }
-        if let playSessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey),
-           let session = appModel.backendSession(for: .jellyfin),
-           (store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
-               .map { session.matchesPersistedServer($0) } ?? true) {
+
+        let jellyfinSession = appModel.backendSession(for: .jellyfin)
+        let jellyfinSessionMatchesMetadata = releaseMetadata.map { metadata in
+            jellyfinSession?.matchesPersistedServer(metadata) == true
+        }
+        let jellyfinPlaySessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+        switch DownloadEncoderTeardownPolicy.decision(
+            backend: .jellyfin,
+            transientPlaySessionID: jellyfinPlaySessionId,
+            metadata: releaseMetadata,
+            sessionAvailable: jellyfinSession != nil,
+            sessionMatchesPersistedServer: jellyfinSessionMatchesMetadata
+        ) {
+        case .none:
+            break
+        case .stop(let playSessionId):
+            guard let jellyfinSession else { break }
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
                 "download_id": .identifier(ratingKey),
             ])
             let service = JellyfinBrowseService(appModel: appModel)
             let store = self.store
             Task {
-                if await service.stopActiveEncoding(playSessionId: playSessionId, session: session) {
+                if await service.stopActiveEncoding(playSessionId: playSessionId, session: jellyfinSession) {
                     store.clearPlaySessionID(ratingKey: ratingKey)
                 }
             }
-        } else if jellyfinPlaySessionByRatingKey[ratingKey] == nil,
-                  let metadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata,
-                  metadata.playSessionID?.isEmpty == false,
-                  metadata.resolvedBackendKind(ratingKey: ratingKey) == .jellyfin,
-                  let session = appModel.backendSession(for: .jellyfin),
-                  !session.matchesPersistedServer(metadata) {
+        case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
-                "reason": .label("server_mismatch"),
+                "reason": .label(reason),
             ])
         }
     }
