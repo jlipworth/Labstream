@@ -138,17 +138,10 @@ public final class DownloadManager {
     @ObservationIgnored private var forwardOnlyStallRestartAttempts: [String: Int] = [:]
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
 
-    private struct LiveRangeProgressSample {
-        var bytes: Int
-        var expectedBytes: Int?
-        var updatedAt: Date
-    }
-
     /// Ephemeral live Range bytes. Persisted records stay pinned to durable checkpoints so storage
     /// and Pause/Pause All accounting never claim non-resumable OS temp bytes. This overlay drives
     /// active row progress, speed, and ETA between checkpoints.
-    private var liveRangeProgress: [String: LiveRangeProgressSample] = [:]
-    private static let liveRangeProgressStaleInterval: TimeInterval = 15
+    private var liveRangeProgress: [String: DownloadLiveRangeProgressSample] = [:]
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -272,21 +265,10 @@ public final class DownloadManager {
         self.session.onRangeLiveProgress = { [weak self] ratingKey, liveBytes, expectedBytes in
             Task { @MainActor in
                 guard let self else { return }
-                let previous = self.liveRangeProgress[ratingKey]
-                // Keep the largest live count within a chunk, but allow a new chunk/checkpoint to
-                // re-baseline upward from the durable checkpoint on the first callback. If a
-                // validator/resource restart moves the durable checkpoint backwards, replace the old
-                // optimistic temp-byte sample instead of showing stale higher progress for the
-                // throttle window.
-                let bytes: Int
-                if let previous, liveBytes < previous.bytes {
-                    bytes = liveBytes
-                } else {
-                    bytes = max(liveBytes, previous?.bytes ?? 0)
-                }
-                self.liveRangeProgress[ratingKey] = LiveRangeProgressSample(
-                    bytes: bytes,
-                    expectedBytes: expectedBytes ?? previous?.expectedBytes,
+                self.liveRangeProgress[ratingKey] = DownloadLiveRangeProgressPolicy.mergedSample(
+                    liveBytes: liveBytes,
+                    expectedBytes: expectedBytes,
+                    previous: self.liveRangeProgress[ratingKey],
                     updatedAt: Date())
                 self.scheduleRefreshRecords(reason: "range_live_progress")
             }
@@ -2172,7 +2154,7 @@ public final class DownloadManager {
             )
         }
         liveRangeProgress = liveRangeProgress.filter { key, sample in
-            guard now.timeIntervalSince(sample.updatedAt) <= Self.liveRangeProgressStaleInterval else { return false }
+            guard DownloadLiveRangeProgressPolicy.isFresh(sample, now: now) else { return false }
             return StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(
                 key: key,
                 activeDownloadingKeys: activeKeys,
@@ -2816,11 +2798,11 @@ public final class DownloadManager {
     }
 
     private func liveDisplayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
-        guard record.status == .downloading || staticRangeRecovery.isCheckpointPausing(record.ratingKey),
-              let sample = liveRangeProgress[record.ratingKey],
-              now.timeIntervalSince(sample.updatedAt) <= Self.liveRangeProgressStaleInterval,
-              sample.bytes > record.bytes else { return nil }
-        return sample.bytes
+        DownloadLiveRangeProgressPolicy.liveDisplayBytes(
+            for: record,
+            sample: liveRangeProgress[record.ratingKey],
+            now: now,
+            isCheckpointPausing: staticRangeRecovery.isCheckpointPausing(record.ratingKey))
     }
 
     private func staticRangeExpectedBytes(for record: DownloadRecord) -> Int? {
