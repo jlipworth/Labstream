@@ -248,6 +248,11 @@ snapshot derivation.
   Jellyfin bitrate-transcode downloads now reuse PMSKit's tested
   `JellyfinLibrary.transcodedDownloadRequest` builder for the server-minted PlaybackInfo
   PlaySession path instead of carrying an app-layer duplicate URL/header builder.
+- **Done: Slice 5s backend retry intent extraction.**
+  `DownloadBackendRetryIntentPolicy` now owns the pure metadata-to-retry-intent mapping for
+  Jellyfin and Emby failed/paused rows: compatible-remux intent preservation, Jellyfin default
+  preset fallback for Original-quality labels, Emby server-prepared existing-version retries,
+  source override propagation, and media/part index rehydration.
 
 ## Target module boundaries
 
@@ -264,6 +269,8 @@ snapshot derivation.
   effects.
 - `DownloadDeletePolicy`: pure delete-time backend cleanup decision table for Emby convert jobs.
 - `DownloadRetryPreparationPolicy`: pure retry-entry gates before backend-specific retry dispatch.
+- `DownloadBackendRetryIntentPolicy`: pure backend metadata-to-choice retry rehydration for
+  Jellyfin and Emby rows.
 - `DownloadEncoderTeardownPolicy`: pure terminal encoder teardown/skip decision table for
   Jellyfin and Emby play sessions.
 - `DownloadResumeRetrySchedulePolicy`: pure cold-launch retry cadence and queue-paused resume
