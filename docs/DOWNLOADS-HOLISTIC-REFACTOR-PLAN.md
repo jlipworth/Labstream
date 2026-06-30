@@ -210,6 +210,9 @@ snapshot derivation.
   `DownloadLiveRangeProgressPolicy` now owns ephemeral static-range progress sample merging,
   freshness, and display-byte selection, keeping durable checkpoint accounting separate from
   optimistic URLSession temp-byte UI overlays.
+- **Done: Slice 5k terminal release policy extraction.**
+  `DownloadTerminalReleasePolicy` now owns the persisted-row predicate for releasing app-level
+  in-flight protection, including the retry-handoff failed-row sentinel that must not release early.
 
 ## Target module boundaries
 
@@ -230,6 +233,7 @@ snapshot derivation.
 - `DownloadHealthSnapshotPolicy`: pure health diagnostic counts, throttling, and field derivation.
 - `DownloadLiveRangeProgressPolicy`: pure merge/freshness/display policy for ephemeral static-range
   progress overlays.
+- `DownloadTerminalReleasePolicy`: pure terminal-row release predicate for active slots/pollers.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
