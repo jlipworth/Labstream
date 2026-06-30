@@ -518,7 +518,7 @@ public final class DownloadManager {
         guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         let pauseAction = DownloadPausePolicy.rowAction(
             status: record.status,
-            isStaticRangeRecord: Self.isStaticRangeRecord(record),
+            isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
             isTrackingTransfer: session.isTrackingTransfer(ratingKey: ratingKey)
         )
         guard pauseAction != .ignore else { return }
@@ -621,10 +621,6 @@ public final class DownloadManager {
         }
     }
 
-    private static func isStaticRangeRecord(_ record: DownloadRecord) -> Bool {
-        StaticRangeRecoveryPolicy.isStaticRangeRecord(record)
-    }
-
     private func staticRangeBackendSession(for record: DownloadRecord) -> BackendSession? {
         let kind = backendKind(for: record)
         guard let session = appModel.backendSession(for: kind) else { return nil }
@@ -636,7 +632,7 @@ public final class DownloadManager {
 
     @discardableResult
     private func deferStaticRangeRetryIfBackendUnavailable(record: DownloadRecord, reason: String) -> Bool {
-        guard Self.isStaticRangeRecord(record),
+        guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
               staticRangeBackendSession(for: record) == nil else {
             staticRangeRecovery.removePendingResume(record.ratingKey)
             return false
@@ -731,7 +727,7 @@ public final class DownloadManager {
                 staticRangeRecovery.removePendingResume(ratingKey)
                 return
             }
-            guard Self.isStaticRangeRecord(record) else {
+            guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record) else {
                 staticRangeRecovery.removePendingResume(ratingKey)
                 return
             }
@@ -753,7 +749,7 @@ public final class DownloadManager {
             staticRangeRecovery.removePendingResume(ratingKey)
             return
         }
-        guard Self.isStaticRangeRecord(record) else {
+        guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record) else {
             staticRangeRecovery.removePendingResume(ratingKey)
             return
         }
@@ -825,7 +821,7 @@ public final class DownloadManager {
         guard record.status != .complete, record.status != .unverified else { return }
         let isManualStaticResumeWhileQueuePaused = DownloadRetryPreparationPolicy.isManualStaticResumeWhileQueuePaused(
             isQueuePaused: isQueuePaused,
-            isStaticRangeRecord: Self.isStaticRangeRecord(record),
+            isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
             status: record.status
         )
         if isManualStaticResumeWhileQueuePaused {
@@ -884,7 +880,7 @@ public final class DownloadManager {
             isJellyfinRecord: Self.isJellyfinRecordKey(ratingKey),
             isEmbyRecord: Self.isEmbyRecordKey(ratingKey),
             optimizeTargetName: record.metadata?.optimizeTargetName,
-            hasIncompleteStaticPartial: Self.hasIncompleteStaticPartial(record)
+            hasIncompleteStaticPartial: DownloadRetryPolicy.shouldPromotePausedStaticPartial(record)
         ), let targetName = record.metadata?.optimizeTargetName {
             resumePausedPlexServerPrep(record: record, targetName: targetName)
             return
@@ -957,8 +953,8 @@ public final class DownloadManager {
             // chase a different optimize job and leave the user tapping repeatedly. Route back to
             // the persisted static target, preserving the partial when present and otherwise
             // redownloading the same existing Part from byte 0.
-            if Self.isStaticRangeRecord(record),
-               (Self.hasIncompleteStaticPartial(record) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
+            if StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
+               (DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) || metadata?.sourcePartID != nil || metadata?.isServerPreparedVersion == true) {
                 let resolved = self.resolveStaticRetryTarget(record: record,
                                                             fallbackMediaIndex: mediaIndex,
                                                             fallbackPartIndex: partIndex,
@@ -998,16 +994,12 @@ public final class DownloadManager {
             // This also removes any leftover invalid/partial file from the failed attempt.
             guard self.retryAttemptCanContinue(ratingKey: ratingKey) else { return }
             self.releaseInFlight(ratingKey: ratingKey)
-            if !Self.hasIncompleteStaticPartial(record) {
+            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
                 self.store.remove(ratingKey: ratingKey)
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
             self.refreshRecords()
         }
-    }
-
-    private static func hasIncompleteStaticPartial(_ record: DownloadRecord) -> Bool {
-        DownloadRetryPolicy.shouldPromotePausedStaticPartial(record)
     }
 
     private func retryRowStillPresent(ratingKey: String) -> Bool {
@@ -1114,7 +1106,7 @@ public final class DownloadManager {
                 "target": .label(targetName),
             ])
             self.releaseInFlight(ratingKey: record.ratingKey)
-            if !Self.hasIncompleteStaticPartial(record) {
+            if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
                 self.store.remove(ratingKey: record.ratingKey)
             }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
@@ -1465,7 +1457,7 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: metadata,
                                              targetName: targetName)
-            let originalPartIDs = Self.resumeOriginalPartIDs(metadata: metadata, item: currentItem)
+            let originalPartIDs = DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: currentItem)
             guard !originalPartIDs.isEmpty else {
                 throw DownloadError.optimizeFailed("No source media parts found while resuming optimize.")
             }
@@ -1568,10 +1560,6 @@ public final class DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         }
-    }
-
-    private static func resumeOriginalPartIDs(metadata: OfflineMetadata, item: MediaItem) -> Set<Int> {
-        DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: item)
     }
 
     static func optimizeSourcePartIDs(item: MediaItem,
@@ -2463,17 +2451,6 @@ public final class DownloadManager {
         }
     }
 
-    /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
-    /// targets endpoint resolves them). Phase 0 confirms the real ids.
-    static func conventionalTagID(forName name: String) -> Int {
-        DownloadPresetPolicy.conventionalPlexTagID(forName: name)
-    }
-
-    /// Best-known render settings per preset name (fallback caps; the server preset governs).
-    static func mediaSettings(forTargetName name: String) -> OptimizeRequest.MediaSettings {
-        DownloadPresetPolicy.mediaSettings(forTargetName: name)
-    }
-
     // MARK: - Poll for optimized part
 
     /// Poll the item's metadata until an optimized (extra) `Part` shows up.
@@ -2551,7 +2528,7 @@ public final class DownloadManager {
                                                    baselinePartIDs: Set<Int>,
                                                    targetName: String,
                                                    sourceHeight: Int?) -> Part? {
-        let settings = DownloadPresetPolicy.customDownloadProfile(named: targetName)?.settings ?? mediaSettings(forTargetName: targetName)
+        let settings = DownloadPresetPolicy.customDownloadProfile(named: targetName)?.settings ?? DownloadPresetPolicy.mediaSettings(forTargetName: targetName)
         let targetDimensions = settings.videoResolution
             .flatMap(DownloadResolutionLabel.dimensions(forVideoResolution:))
         return OptimizedVersionMatch.candidate(

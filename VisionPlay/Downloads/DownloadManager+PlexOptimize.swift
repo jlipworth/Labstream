@@ -340,7 +340,7 @@ extension DownloadManager {
         let originalQuality = DownloadPresetPolicy.isPlexOriginalQualityTarget(targetName)
         let custom = originalQuality ? nil : DownloadPresetPolicy.customDownloadProfile(named: targetName)
         let serverTargetName = originalQuality ? DownloadPresetPolicy.plexOriginalQualityTargetName : targetName
-        var targetTagID: Int? = custom == nil ? Self.conventionalTagID(forName: serverTargetName) : nil
+        var targetTagID: Int? = custom == nil ? DownloadPresetPolicy.conventionalPlexTagID(forName: serverTargetName) : nil
         if custom == nil,
            let targets = try? await appModel.client.send(
             OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token, identity: identity),
@@ -352,7 +352,7 @@ extension DownloadManager {
         let source = await optimizerSource(for: item, server: server, token: token, identity: identity)
 
         // 3. PUT the optimize job to the background-processing playlist.
-        let settings = custom?.settings ?? Self.mediaSettings(forTargetName: serverTargetName)
+        let settings = custom?.settings ?? DownloadPresetPolicy.mediaSettings(forTargetName: serverTargetName)
         let create = OptimizeRequest.createOnPlaylist(
             server: server, token: token, identity: identity,
             backgroundProcessingKey: bgKey, ratingKey: item.ratingKey,

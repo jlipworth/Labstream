@@ -11,13 +11,6 @@ import os
 
 extension DownloadManager {
 
-    /// Artwork reference to cache for the Offline tab's small portrait tile. For episodes,
-    /// prefer the show poster, then season poster, before the episode still/backdrop; forcing a
-    /// landscape still into the portrait row tile was visibly distorted during b8 live testing.
-    static func offlinePosterRef(for item: MediaItem) -> String? {
-        DownloadSideAssetPolicy.offlinePosterRef(for: item)
-    }
-
     /// Download + cache the item's poster locally so the offline library shows artwork
     /// without the server (D5). Best-effort: any failure leaves the row poster-less and
     /// never fails the download. Fetches via the same `/photo/:/transcode` path the
@@ -76,7 +69,7 @@ extension DownloadManager {
     /// leaves the row poster-less and never fails the download.
     func cacheJellyfinPoster(ratingKey: String, item: MediaItem, server: URL,
                                      token: String, identity: JellyfinClientIdentity) {
-        let primaryRef = Self.offlinePosterRef(for: item)
+        let primaryRef = DownloadSideAssetPolicy.offlinePosterRef(for: item)
         let request = (try? JellyfinLibrary.posterRequest(syntheticRef: primaryRef, server: server,
                                                           token: token, identity: identity))
             ?? (try? JellyfinLibrary.posterRequest(syntheticRef: item.art, server: server,
@@ -89,7 +82,7 @@ extension DownloadManager {
     /// the authenticated request.
     func cacheEmbyPoster(ratingKey: String, item: MediaItem, server: URL,
                                  token: String, identity: EmbyClientIdentity, userId: String) {
-        let primaryRef = Self.offlinePosterRef(for: item)
+        let primaryRef = DownloadSideAssetPolicy.offlinePosterRef(for: item)
         let request = (try? EmbyLibrary.posterRequest(syntheticRef: primaryRef, server: server,
                                                       token: token, identity: identity, userId: userId))
             ?? (try? EmbyLibrary.posterRequest(syntheticRef: item.art, server: server,
@@ -249,7 +242,7 @@ extension DownloadManager {
     /// query, so do not log the URL or surfaced error.
     func cachePlexBIF(ratingKey: String, item: MediaItem, mediaIndex: Int,
                               server: URL, token: String) {
-        guard let part = Self.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
+        guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: ratingKey)
         let request = TrickPlayRequest.plexBIFIndex(server: server,
                                                     token: token,
@@ -272,10 +265,6 @@ extension DownloadManager {
                 // Keep silent and never log token-bearing URLs.
             }
         }
-    }
-
-    private static func selectedPlexBIFPart(from item: MediaItem, mediaIndex: Int) -> Part? {
-        DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex)
     }
 
     /// Download + cache each chapter's image at download time so the offline Chapters menu rail

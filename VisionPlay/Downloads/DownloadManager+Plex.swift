@@ -77,7 +77,7 @@ extension DownloadManager {
         // D5/#102: cache poster-shaped artwork locally so artwork shows offline. Episodes
         // often expose a landscape still as `thumb`, which looks wrong in the Offline tab's
         // small portrait tile; prefer the show/season poster when TV hierarchy provides it.
-        cachePoster(ratingKey: ratingKey, thumb: Self.offlinePosterRef(for: item),
+        cachePoster(ratingKey: ratingKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
                     server: server, token: token)
         cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
                      server: server, token: token)

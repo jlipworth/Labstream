@@ -349,6 +349,11 @@ snapshot derivation.
   range-drop harness. Both scripts target the worktree simulator, build/install a debug app, source
   credentials only from the signed-in simulator state, support `--keep-app-running`, and capture
   redacted probe/Downloads logs under `build/probes/<backend>-download/`.
+- **Done: Slice 5z residual policy-wrapper cleanup.**
+  Removed remaining app-side pass-through wrappers for side-asset poster/BIF selection, static-range
+  detection, paused-static-partial promotion, Plex optimize source-baseline selection, and Plex
+  optimize preset fallback settings. Call sites now reference the PMSKit policy names directly, so
+  `DownloadManager` no longer re-exports pure policy helpers under coordinator-owned names.
 
 ## Target module boundaries
 
