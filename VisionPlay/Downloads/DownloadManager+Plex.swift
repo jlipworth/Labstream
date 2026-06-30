@@ -176,9 +176,14 @@ extension DownloadManager {
         cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
                            server: server, token: token)
         cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
-        beginBackgroundTransfer(ratingKey: ratingKey, backendLabel: "Plex", choiceLabel: choiceLabel,
-                                urlShape: url, expectedBytes: part.size,
-                                releaseInFlightOnFailure: false) {
+        beginBackgroundTransfer(DownloadTransferStartPlan(
+            ratingKey: ratingKey,
+            backendLabel: "Plex",
+            choiceLabel: choiceLabel,
+            urlShape: url,
+            expectedBytes: part.size,
+            releaseInFlightOnFailure: false
+        )) {
             try session.start(ratingKey: ratingKey, from: url, to: destination,
                               expectedBytes: part.size, byteRangeCheckpoint: true,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))

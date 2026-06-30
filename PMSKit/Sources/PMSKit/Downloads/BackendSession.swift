@@ -22,9 +22,7 @@ public enum DownloadBackendKind: String, Codable, Sendable, Equatable, CaseItera
     /// resolution — `OfflineMetadata.resolvedBackendKind` and any caller without stored
     /// `backendKind` (e.g. a nil-metadata row) must route through here so they never disagree.
     public init(ratingKeyPrefix ratingKey: String) {
-        if ratingKey.hasPrefix("jellyfin:") { self = .jellyfin }
-        else if ratingKey.hasPrefix("emby:") { self = .emby }
-        else { self = .plex }
+        self = DownloadRecordIdentity.backendKind(forRecordKey: ratingKey)
     }
 }
 
