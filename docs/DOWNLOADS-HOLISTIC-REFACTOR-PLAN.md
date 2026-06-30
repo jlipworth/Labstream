@@ -198,6 +198,10 @@ snapshot derivation.
   `DownloadResumeRetrySchedulePolicy` now owns the cold-launch/auth-edge retry cadence for server
   prep and static-range resume scanners, including the queue-paused rule that only persistent Emby
   convert polling should resume while the global queue gate remains paused.
+- **Done: Slice 5h download watchdog policy extraction.**
+  `DownloadWatchdogPolicy` now owns the app-level watchdog predicate/cadence for rows that need
+  periodic refreshes despite sparse URLSession callbacks: server-prep `.preparing` rows and
+  forward-only MediaBrowser streams that require stall detection.
 
 ## Target module boundaries
 
@@ -213,6 +217,8 @@ snapshot derivation.
   Jellyfin and Emby play sessions.
 - `DownloadResumeRetrySchedulePolicy`: pure cold-launch retry cadence and queue-paused resume
   scanner routing.
+- `DownloadWatchdogPolicy`: pure refresh-watchdog predicate and cadence for server-prep/forward-only
+  rows.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
