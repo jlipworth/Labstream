@@ -477,9 +477,7 @@ public final class DownloadManager {
             OptimizeRequest.mediaProcessingTargetsRequest(server: server, token: token,
                                                           identity: appModel.identity),
             as: MediaProcessingTargets.self))?.targets.map(\.name) ?? []
-        return Self.dedup(serverTargets + Self.customDownloadProfileNames)
-            .filter(Self.isVisibleDownloadPresetName)
-            .filter { !$0.isEmpty }
+        return DownloadPresetPolicy.visiblePresetNames(serverTargets: serverTargets)
     }
 
     /// Whether a download already exists (completed or in-flight) for `ratingKey`.
@@ -2529,10 +2527,6 @@ public final class DownloadManager {
     // preset's device profile + media settings when PUTting the optimize job.
     typealias CustomDownloadProfile = DownloadPresetPolicy.CustomDownloadProfile
 
-    private static var customDownloadProfileNames: [String] {
-        DownloadPresetPolicy.customDownloadProfileNames
-    }
-
     static func customDownloadProfile(named name: String) -> CustomDownloadProfile? {
         DownloadPresetPolicy.customDownloadProfile(named: name)
     }
@@ -2699,18 +2693,6 @@ public final class DownloadManager {
             if !source.isEmpty { return source }
         }
         return nil
-    }
-
-    private static func dedup(_ names: [String]) -> [String] {
-        var seen = Set<String>()
-        var result: [String] = []
-        for name in names {
-            let key = name.lowercased()
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-            result.append(name)
-        }
-        return result
     }
 
     /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
