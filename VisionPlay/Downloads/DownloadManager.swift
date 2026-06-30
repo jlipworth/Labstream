@@ -1561,28 +1561,15 @@ public final class DownloadManager {
     public func estimatedBytes(for item: MediaItem, choice: DownloadChoice,
                                mediaIndex: Int = 0, partIndex: Int = 0,
                                backend: DownloadBackendKind? = nil) -> Int? {
-        // #84: the trickplay surcharge is a Jellyfin-only sidecar. Resolve the backend explicitly
-        // when the caller is on a specific lane (the download pipeline always passes it); the
-        // default falls back to `activeBackend` for the UI sheet, which is on the active backend.
+        // Resolve the backend explicitly when the caller is on a specific lane (the download
+        // pipeline always passes it); the default falls back to `activeBackend` for the UI sheet,
+        // which is on the active backend.
         let resolvedBackend = backend ?? appModel.activeBackend.downloadBackendKind
-        let media = item.media?[safe: mediaIndex]
-        let part = media?.part[safe: partIndex]
-        let mediaBytes = DownloadStorageEstimatePolicy.estimatedMediaBytes(
-            source: DownloadPresetPolicy.storageEstimateMediaSource(for: choice),
-            sourcePartBytes: part?.size,
-            durationMs: item.duration)
-        // Add the thumbnail-cache estimate for every backend that caches one (not just Jellyfin) so
-        // the preflight doesn't under-count for Plex/Emby. Text-subtitle sidecars are small and
-        // variable, so they're accounted post-hoc from disk via `DownloadRecord.sideAssetBytes`
-        // rather than pre-estimated here. Resolve against the job's OWN backend (#84), never the
-        // active lane.
-        let chapterImageCount = item.chapters?.filter { $0.thumb?.isEmpty == false }.count ?? 0
-        let sideAssetBytes = DownloadStorageEstimatePolicy.estimatedSideAssetBytes(
-            durationMs: item.duration,
-            backend: resolvedBackend,
-            chapterImageCount: chapterImageCount)
-        return DownloadStorageEstimatePolicy.totalBytes(mediaBytes: mediaBytes,
-                                                        sideAssetBytes: sideAssetBytes)
+        return DownloadStorageEstimatePolicy.estimatedTotalBytes(for: item,
+                                                                 choice: choice,
+                                                                 backend: resolvedBackend,
+                                                                 mediaIndex: mediaIndex,
+                                                                 partIndex: partIndex)
     }
     func rejectIfOverStorageLimit(ratingKey: String, backend: String, expectedBytes: Int?) -> Bool {
         guard let message = storageLimitMessage(adding: expectedBytes) else { return false }
