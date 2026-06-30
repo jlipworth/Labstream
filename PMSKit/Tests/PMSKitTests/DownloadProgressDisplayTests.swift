@@ -77,6 +77,53 @@ struct DownloadProgressDisplayTests {
         #expect(estimated.isEstimated == true)
     }
 
+    @Test("static byte range rows prefer exact byte totals before estimated fallback")
+    func staticByteRangeRowsPreferExpectedBytes() throws {
+        let record = record(bytes: 250,
+                            progress: 0,
+                            metadata: metadata(resumeMode: .staticByteRange))
+
+        let exact = try #require(DownloadProgressDisplay.fraction(for: record,
+                                                                  staticExpectedBytes: 1_000,
+                                                                  estimatedTotalBytes: 2_000))
+        #expect(exact.value == 0.25)
+        #expect(exact.isEstimated == false)
+
+        let live = try #require(DownloadProgressDisplay.fraction(for: record,
+                                                                 displayBytes: 500,
+                                                                 staticExpectedBytes: 1_000,
+                                                                 estimatedTotalBytes: 2_000))
+        #expect(live.value == 0.5)
+        #expect(live.isEstimated == false)
+
+        let estimated = try #require(DownloadProgressDisplay.fraction(for: record,
+                                                                      staticExpectedBytes: nil,
+                                                                      estimatedTotalBytes: 2_000))
+        #expect(estimated.value == 0.125)
+        #expect(estimated.isEstimated == true)
+    }
+
+    @Test("non-static row fractions keep the generic exact and estimated rules")
+    func nonStaticRowsUseGenericFractionRules() throws {
+        let exactRecord = record(bytes: 250,
+                                 progress: 0.4,
+                                 metadata: metadata(resumeMode: .liveForwardOnly))
+        let exact = try #require(DownloadProgressDisplay.fraction(for: exactRecord,
+                                                                  staticExpectedBytes: 1_000,
+                                                                  estimatedTotalBytes: 2_000))
+        #expect(exact.value == 0.4)
+        #expect(exact.isEstimated == false)
+
+        let estimatedRecord = record(bytes: 250,
+                                     progress: 0,
+                                     metadata: metadata(resumeMode: .liveForwardOnly))
+        let estimated = try #require(DownloadProgressDisplay.fraction(for: estimatedRecord,
+                                                                      staticExpectedBytes: 1_000,
+                                                                      estimatedTotalBytes: 2_000))
+        #expect(estimated.value == 0.125)
+        #expect(estimated.isEstimated == true)
+    }
+
     // MARK: - Post-transfer finalization display state
 
     @Test("downloading at exact 100% is a transfer-finalization display state")
@@ -110,5 +157,24 @@ struct DownloadProgressDisplayTests {
         #expect(!DownloadProgressDisplay.isServerPrepFinalizing(state: "queued", progress: nil))
         #expect(!DownloadProgressDisplay.isServerPrepFinalizing(state: "transcoding", progress: 0.999))
         #expect(!DownloadProgressDisplay.isServerPrepFinalizing(state: nil, progress: nil))
+    }
+
+    private func record(bytes: Int,
+                        progress: Double,
+                        metadata: OfflineMetadata?) -> DownloadRecord {
+        DownloadRecord(ratingKey: "rk",
+                       title: "Title",
+                       localURL: URL(fileURLWithPath: "/tmp/title.mp4"),
+                       bytes: bytes,
+                       progress: progress,
+                       status: .downloading,
+                       metadata: metadata)
+    }
+
+    private func metadata(resumeMode: DownloadResumeMode) -> OfflineMetadata {
+        OfflineMetadata(ratingKey: "rk",
+                        title: "Title",
+                        type: "movie",
+                        resumeMode: resumeMode)
     }
 }

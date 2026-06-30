@@ -2243,22 +2243,11 @@ public final class DownloadManager {
     /// The selection is keyed on `record.progress`, not the backend kind, so it survives a
     /// relaunch (the in-memory `transcodeSourcedDownloads` set does not).
     public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
-        let bytes = liveDisplayBytes(for: record) ?? record.bytes
-        if record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
-           bytes > 0 {
-            if let staticExpectedBytes = liveRangeProgress[record.ratingKey]?.expectedBytes ?? staticRangeExpectedBytes(for: record) {
-                return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(staticExpectedBytes), 1.0),
-                                                        isEstimated: false)
-            }
-            if let estimatedBytes = DownloadPresetPolicy.estimatedTranscodeBytes(for: record), estimatedBytes > 0 {
-                return DownloadProgressDisplay.Fraction(value: min(Double(bytes) / Double(estimatedBytes),
-                                                                  DownloadProgressDisplay.estimatedCeiling),
-                                                        isEstimated: true)
-            }
-        }
-        return DownloadProgressDisplay.fraction(progress: record.progress,
-                                                bytes: bytes,
-                                                estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record))
+        DownloadProgressDisplay.fraction(
+            for: record,
+            displayBytes: liveDisplayBytes(for: record),
+            staticExpectedBytes: liveRangeProgress[record.ratingKey]?.expectedBytes ?? staticRangeExpectedBytes(for: record),
+            estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record))
     }
 
     private func expectedDownloadBytes(for record: DownloadRecord, liveBytes: Int? = nil) -> Int? {

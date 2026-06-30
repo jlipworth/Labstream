@@ -373,6 +373,11 @@ snapshot derivation.
   Plex, Jellyfin, Emby, and Plex optimize enqueue paths now call `DownloadOfflineMetadataBuilder`
   directly when creating durable row snapshots. `DownloadManager` no longer exposes an app-side
   metadata-builder shim, keeping row snapshot composition in PMSKit.
+- **Done: Slice 7j display-fraction composition extraction.**
+  `DownloadProgressDisplay` now owns the full row fraction selection across static byte-range rows,
+  live byte overlays, exact expected byte totals, and estimated transcode fallbacks.
+  `DownloadManager` supplies the live facts but no longer reimplements the static-vs-estimated
+  progress bar decision.
 
 ## Target module boundaries
 
