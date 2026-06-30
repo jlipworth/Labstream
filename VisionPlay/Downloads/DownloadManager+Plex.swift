@@ -64,8 +64,8 @@ extension DownloadManager {
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: optimizeTargetName,
                                             session: backendSession,
-                                            downloadLane: Self.downloadLane(for: choice),
-                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
+                                            downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
+                                            serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,

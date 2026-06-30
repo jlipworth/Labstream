@@ -63,8 +63,8 @@ extension DownloadManager {
                                             }(),
                                             session: backendSession,
                                             mediaSourceID: jellyfinMediaSourceID,
-                                            downloadLane: Self.downloadLane(for: choice),
-                                            serverPreparedVersion: Self.isServerPreparedVersion(for: choice))
+                                            downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
+                                            serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -273,7 +273,7 @@ extension DownloadManager {
         beginBackgroundTransfer(DownloadTransferStartPlan(
             ratingKey: ratingKey,
             backendLabel: "Jellyfin",
-            choiceLabel: Self.diagnosticChoiceLabel(choice),
+            choiceLabel: DownloadChoicePolicy.diagnosticChoiceLabel(choice),
             urlShape: request.url,
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true
