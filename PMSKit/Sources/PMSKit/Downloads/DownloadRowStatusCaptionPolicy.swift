@@ -77,26 +77,11 @@ public enum DownloadRowStatusCaptionPolicy {
 
     public static let serverPrepQueuedState = "queued"
 
-    /// Explicit row phase for the offline-download UI. This is deliberately UI-facing rather than
-    /// persisted: it names the currently observed phase after durable status and live coordinator
-    /// facts have been combined.
-    public enum Phase: Sendable, Equatable {
-        case failed(isRetrying: Bool)
-        case paused
-        case complete(isUnverified: Bool)
-        case transferFinalizing
-        case activeStaticZeroByteTransfer
-        case serverPrepFinalizing
-        case serverPrepProgressing
-        case serverPrepQueued
-        case waitingForBackend
-        case activeServerPrep
-        case queued
-        case activeTransfer
-        case inactiveTransfer
-    }
+    /// Compatibility alias for older call sites; the shared phase vocabulary now lives in
+    /// `DownloadJobPhase` so diagnostics and future coordinators can use the same model.
+    public typealias Phase = DownloadJobPhase
 
-    public static func phase(_ context: Context) -> Phase {
+    public static func phase(_ context: Context) -> DownloadJobPhase {
         switch context.status {
         case .failed:
             return .failed(isRetrying: context.isRetrying)

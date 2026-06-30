@@ -83,12 +83,13 @@ public enum DownloadHealthSnapshotPolicy {
                                     jellyfinKeepaliveCount: Int,
                                     forwardStallWatchCount: Int,
                                     session: DownloadHealthSessionSnapshot) -> DownloadHealthRuntimeSnapshot {
-        DownloadHealthRuntimeSnapshot(
+        let jobSnapshots = records.map(DownloadJobSnapshot.init(record:))
+        return DownloadHealthRuntimeSnapshot(
             recordCount: records.count,
-            activeRecordCount: records.filter(Self.isActiveRecord).count,
-            queuedCount: records.filter { $0.status == .queued }.count,
-            preparingCount: records.filter { $0.status == .preparing }.count,
-            downloadingCount: records.filter { $0.status == .downloading }.count,
+            activeRecordCount: jobSnapshots.filter { $0.persistedPhase.isActiveWork }.count,
+            queuedCount: jobSnapshots.filter { $0.status == .queued }.count,
+            preparingCount: jobSnapshots.filter { $0.status == .preparing }.count,
+            downloadingCount: jobSnapshots.filter { $0.status == .downloading }.count,
             activeJobCount: activeJobCount,
             retryingCount: retryingCount,
             retryHandoffCount: retryHandoffCount,
@@ -136,7 +137,4 @@ public enum DownloadHealthSnapshotPolicy {
         ]
     }
 
-    private static func isActiveRecord(_ record: DownloadRecord) -> Bool {
-        record.status == .queued || record.status == .preparing || record.status == .downloading
-    }
 }
