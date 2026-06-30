@@ -39,6 +39,12 @@ snapshot derivation.
   shared diagnostic/start-failure contract for all backend transfer handoffs. Backend files
   still resolve sources and preserve their quirks; the common handoff surface is typed for
   the next coordinator extraction.
+- **Done: Slice 3 first recovery-policy extraction.** `StaticRangeRecoveryPolicy` now owns
+  pure static byte-range recovery decisions: static-lane detection, completed-checkpoint
+  finalization eligibility, deferred-resume visible state, queue-paused manual-resume
+  gating, retry-handoff demotion, and preservation of validator/adopted-failure restart
+  counters. `DownloadManager` still performs store/session side effects, but delegates the
+  tested decisions to PMSKit.
 
 ## Target module boundaries
 
