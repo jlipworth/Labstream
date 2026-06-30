@@ -442,6 +442,11 @@ snapshot derivation.
   the bounded observation window without shutting down the simulator app afterward. The harness exits
   non-zero for route-only/no-observation runs so they cannot be mistaken for network-drop proof.
 - Current signed-in simulator evidence (2026-06-30, worktree sim only):
+  - Plex `Flight` existing-version media index 1 refreshed after the latest PMSKit snapshot/choice
+    cleanup, output `build/probes/plex-range-drop/20260630T120642Z/`, used the worktree simulator
+    with `--keep-app-running`, injected `NSURLErrorNetworkConnectionLost` at ~1 MiB, retried from
+    offset 0, appended a 64 MiB durable checkpoint, continued from offset 67,108,864, and deleted
+    the probe row after the observation window.
   - Plex `Flight` existing-version media index 1 (`mp4`), output
     `build/probes/plex-range-drop/20260630T114636Z/`, started a static range transfer, injected
     `NSURLErrorNetworkConnectionLost` at ~1 MB, retried once from durable checkpoint 0, appended
