@@ -61,7 +61,7 @@ extension DownloadManager {
                                            metadata: OfflineMetadata,
                                            session: BackendSession) async {
         let itemId = item.ratingKey
-        let ratingKey = Self.embyRecordKey(itemId)
+        let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby

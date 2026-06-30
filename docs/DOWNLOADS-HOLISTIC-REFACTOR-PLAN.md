@@ -354,6 +354,11 @@ snapshot derivation.
   detection, paused-static-partial promotion, Plex optimize source-baseline selection, and Plex
   optimize preset fallback settings. Call sites now reference the PMSKit policy names directly, so
   `DownloadManager` no longer re-exports pure policy helpers under coordinator-owned names.
+- **Done: Slice 5aa record identity/playability wrapper cleanup.**
+  Removed `DownloadManager` record-key and local-playability pass-through helpers. Detail UI,
+  download sheet, backend adapters, retry routing, and diagnostics now call `DownloadRecordIdentity`
+  and `OfflineDownloadDecision` directly, keeping backend namespacing and original-file eligibility
+  in PMSKit instead of hidden behind coordinator methods.
 
 ## Target module boundaries
 

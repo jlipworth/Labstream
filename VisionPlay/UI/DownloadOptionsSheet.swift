@@ -61,7 +61,7 @@ struct DownloadOptionsSheet: View {
     }
 
     private var existingRecord: DownloadRecord? {
-        let key = downloadManager.recordKey(for: item, backend: sheetBackend)
+        let key = DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend)
         return downloadManager.records.first { $0.ratingKey == key }
     }
 
@@ -148,7 +148,7 @@ struct DownloadOptionsSheet: View {
         let presets = fetchedPresets.isEmpty ? defaultPresets : fetchedPresets
         let media = item.media?[safe: mediaIndex]
         let part = probe.part ?? media?.part[safe: partIndex]
-        let original = (probe.direct && DownloadManager.isLocallyPlayableOriginal(part: part))
+        let original = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadPresetPolicy.resolutionLabel(for: media))
             : nil
@@ -168,7 +168,7 @@ struct DownloadOptionsSheet: View {
         let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
         let media = selection.media
         let part = selection.part
-        let originalLocallyPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
+        let originalLocallyPlayable = OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
         let original = originalLocallyPlayable
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadPresetPolicy.resolutionLabel(for: media))
@@ -843,12 +843,12 @@ struct DownloadOptionsSheet: View {
                 Text("\(Int(record.progress * 100))%")
                     .font(.caption).foregroundStyle(.secondary)
                 Button {
-                    downloadManager.pause(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
+                    downloadManager.pause(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
                     dismiss()
                 } label: { Label("Pause Download", systemImage: "pause.circle") }
             }
             Button(role: .destructive) {
-                downloadManager.delete(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
+                downloadManager.delete(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
                 dismiss()
             } label: {
                 Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
@@ -873,11 +873,11 @@ struct DownloadOptionsSheet: View {
         case .plex:
             downloadManager.retry(ratingKey: item.ratingKey)
         case .jellyfin:
-            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
+            downloadManager.retry(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
         case .emby:
             // Re-run the full Emby lane, which re-probes PlaybackInfo and re-decides original vs
             // transcode (a now-compatible file goes original). `.original` is intent-only here.
-            downloadManager.retry(ratingKey: downloadManager.recordKey(for: item, backend: sheetBackend))
+            downloadManager.retry(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
         }
     }
 
