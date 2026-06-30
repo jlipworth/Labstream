@@ -63,6 +63,7 @@ final class DownloadStore: @unchecked Sendable {
 
     private let lock = NSLock()
     private var rows: [String: Row] = [:]          // ratingKey -> Row
+    private var sideAssetByteCache: [String: (signature: [String], bytes: Int)] = [:] // guarded by `lock`
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
     private let indexURL: URL                        // baseDirectory/index.json
@@ -165,11 +166,20 @@ final class DownloadStore: @unchecked Sendable {
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Fast hot-path side-asset URL hydration. Trust safe persisted one-level relative paths and
+    /// avoid a filesystem stat. Cold playback accessors still call `resolvedDownloadAssetURL` when
+    /// they must prove the file exists before opening it.
+    private func fastResolvedDownloadAssetURL(_ relative: String?) -> URL? {
+        guard let relative, Self.isSafeOneLevelRelativePath(relative) else { return nil }
+        return baseDirectory.appendingPathComponent(relative)
+    }
+
     /// Current records, absolute URLs re-resolved against the live container.
     ///
-    /// Snapshot the rows under the lock, then do the poster `fileExists` resolution
-    /// OUTSIDE the lock — stat'ing each poster file while holding the store lock
-    /// serialized every reader behind disk I/O on this hot path.
+    /// This is a hot UI/startup path: `DownloadManager.refreshRecords()` may read it repeatedly while
+    /// SwiftUI is creating the scene. Keep hydration cheap and avoid stat'ing every poster, BIF,
+    /// trickplay tile, chapter image, and subtitle on each read; large headset libraries can carry
+    /// enough sidecars to trip the scene-create watchdog.
     var records: [DownloadRecord] {
         lock.lock()
         let snapshot = Array(rows.values)
@@ -182,13 +192,13 @@ final class DownloadStore: @unchecked Sendable {
                            progress: row.progress,
                            status: row.status,
                            metadata: row.metadata,
-                           posterURL: resolvedDownloadAssetURL(row.metadata?.posterRelativePath),
-                           plexBIFURL: resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
-                           jellyfinTrickPlayPlaylistURL: resolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
-                           chapterImageURLs: Self.resolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
-                                                                          baseDirectory: baseDirectory,
-                                                                          fileManager: fileManager),
-                           sideAssetBytes: sideAssetBytes(for: row.metadata))
+                           posterURL: fastResolvedDownloadAssetURL(row.metadata?.posterRelativePath),
+                           plexBIFURL: fastResolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath),
+                           jellyfinTrickPlayPlaylistURL: fastResolvedDownloadAssetURL(row.metadata?.jellyfinTrickPlayPlaylistRelativePath),
+                           chapterImageURLs: Self.fastResolvedChapterImageURLs(row.metadata?.chapterImageRelativePaths,
+                                                                              baseDirectory: baseDirectory),
+                           sideAssetBytes: sideAssetBytes(ratingKey: row.ratingKey,
+                                                          metadata: row.metadata))
         }
         return OfflineDownloadSort.sorted(hydrated)
     }
@@ -278,6 +288,16 @@ final class DownloadStore: @unchecked Sendable {
         return out
     }
 
+    private static func fastResolvedChapterImageURLs(_ relatives: [Int: String]?,
+                                                     baseDirectory: URL) -> [Int: URL] {
+        guard let relatives else { return [:] }
+        var out: [Int: URL] = [:]
+        for (index, relative) in relatives where isSafeOneLevelRelativePath(relative) {
+            out[index] = baseDirectory.appendingPathComponent(relative)
+        }
+        return out
+    }
+
     private static func isSafeOneLevelRelativePath(_ relative: String) -> Bool {
         !relative.isEmpty
             && !relative.contains("/")
@@ -286,8 +306,8 @@ final class DownloadStore: @unchecked Sendable {
             && relative != ".."
     }
 
-    private func sideAssetBytes(for metadata: OfflineMetadata?) -> Int {
-        guard let metadata else { return 0 }
+    private func sideAssetRelativePaths(for metadata: OfflineMetadata?) -> [String] {
+        guard let metadata else { return [] }
         var relatives: [String] = []
         relatives.append(contentsOf: [
             metadata.posterRelativePath,
@@ -297,12 +317,30 @@ final class DownloadStore: @unchecked Sendable {
         relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
         relatives.append(contentsOf: Array(metadata.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
         relatives.append(contentsOf: metadata.offlineTextSubtitles?.map(\.relativePath) ?? [])
-        return relatives.reduce(0) { total, relative in
-            guard Self.isSafeOneLevelRelativePath(relative) else { return total }
+        return relatives.filter(Self.isSafeOneLevelRelativePath).sorted()
+    }
+
+    private func sideAssetBytes(ratingKey: String, metadata: OfflineMetadata?) -> Int {
+        let signature = sideAssetRelativePaths(for: metadata)
+        guard !signature.isEmpty else { return 0 }
+
+        lock.lock()
+        if let cached = sideAssetByteCache[ratingKey], cached.signature == signature {
+            let bytes = cached.bytes
+            lock.unlock()
+            return bytes
+        }
+        lock.unlock()
+
+        let bytes = signature.reduce(0) { total, relative in
             let url = baseDirectory.appendingPathComponent(relative)
             let attrs = try? fileManager.attributesOfItem(atPath: url.path)
             return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
         }
+        lock.lock()
+        sideAssetByteCache[ratingKey] = (signature: signature, bytes: bytes)
+        lock.unlock()
+        return bytes
     }
 
     private func directoryFileSnapshots() -> [OfflineDownloadFileSnapshot] {
@@ -376,6 +414,7 @@ final class DownloadStore: @unchecked Sendable {
                                      progress: record.progress,
                                      status: record.status,
                                      metadata: metadata)
+        sideAssetByteCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
         persist()
     }
@@ -637,6 +676,7 @@ final class DownloadStore: @unchecked Sendable {
         guard meta != oldMeta else { lock.unlock(); return }
         row.metadata = meta
         rows[ratingKey] = row
+        sideAssetByteCache.removeValue(forKey: ratingKey)
         lock.unlock()
         persist()
     }
@@ -834,6 +874,7 @@ final class DownloadStore: @unchecked Sendable {
     func remove(ratingKey: String) {
         lock.lock()
         let row = rows.removeValue(forKey: ratingKey)
+        sideAssetByteCache.removeValue(forKey: ratingKey)
         lock.unlock()
         if let row {
             let url = baseDirectory.appendingPathComponent(row.relativePath)
