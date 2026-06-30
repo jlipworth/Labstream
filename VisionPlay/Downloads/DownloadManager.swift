@@ -1059,17 +1059,13 @@ public final class DownloadManager {
                                           fallbackMediaIndex: Int,
                                           fallbackPartIndex: Int,
                                           in item: MediaItem) -> (choice: DownloadChoice, mediaIndex: Int, partIndex: Int) {
-        if let partID = record.metadata?.sourcePartID {
-            for (mediaIndex, media) in (item.media ?? []).enumerated() {
-                if let partIndex = media.part.firstIndex(where: { $0.id == partID }) {
-                    let isPrimaryOriginal = mediaIndex == 0 && record.metadata?.isServerPreparedVersion != true
-                    return (isPrimaryOriginal ? .original : .existingVersion, mediaIndex, partIndex)
-                }
-            }
-        }
-        let isPrepared = record.metadata?.isServerPreparedVersion == true
-            || (record.metadata?.mediaIndex ?? 0) > 0
-        return (isPrepared ? .existingVersion : .original, fallbackMediaIndex, fallbackPartIndex)
+        let target = DownloadStaticRetryTargetPolicy.target(metadata: record.metadata,
+                                                            item: item,
+                                                            fallbackMediaIndex: fallbackMediaIndex,
+                                                            fallbackPartIndex: fallbackPartIndex)
+        return (target.intent == .original ? .original : .existingVersion,
+                target.mediaIndex,
+                target.partIndex)
     }
 
     /// Resume a paused Plex server-prep row by reattaching to its existing optimize queue item.
