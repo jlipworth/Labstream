@@ -840,26 +840,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// `/library/parts/...` downloads do not include the source ratingKey, which is why the
     /// explicit task description is required for reliable force-quit/relaunch reattach.
     private static func ratingKey(for task: URLSessionTask, knownKeys: Set<String>) -> String? {
-        if let taskDescription = task.taskDescription, knownKeys.contains(taskDescription) {
-            return taskDescription
-        }
-        guard let url = task.originalRequest?.url,
-              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        let candidates: [String]
-        if let path = comps.queryItems?.first(where: { $0.name == "path" })?.value {
-            candidates = [(path as NSString).lastPathComponent]
-        } else {
-            let parts = comps.path.split(separator: "/").map(String.init)
-            if let items = parts.firstIndex(of: "Items"), parts.indices.contains(items + 1) {
-                candidates = [parts[items + 1]]
-            } else if let videos = parts.firstIndex(of: "Videos"), parts.indices.contains(videos + 1) {
-                candidates = [parts[videos + 1]]
-            } else {
-                candidates = []
-            }
-        }
-        let expanded = candidates.flatMap { [$0, "jellyfin:\($0)"] }
-        return expanded.first { knownKeys.contains($0) }
+        BackgroundDownloadTaskIdentity.ratingKey(
+            taskDescription: task.taskDescription,
+            requestURL: task.originalRequest?.url,
+            knownKeys: knownKeys
+        )
     }
 
     /// Force the lazy background session to be created (and thus its delegate bound),
