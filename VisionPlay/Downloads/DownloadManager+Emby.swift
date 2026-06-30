@@ -62,13 +62,13 @@ extension DownloadManager {
             return
         }
 
-        let media = item.media?[safe: mediaIndex]
-        let part = media?.part[safe: partIndex]
+        let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
+        let media = selection.media
+        let part = selection.part
         let resolutionLabel = Self.displayResolutionLabel(choice: choice, chosenMedia: media)
         // Pre-decision media-source hint; the authoritative id (from PlaybackInfo) is persisted
         // onto the row after the decision is known (see below).
-        let sourceMediaSourceID = Self.embyMediaSourceID(media: media, part: part)
-        let embyMediaSourceHint = mediaSourceIDOverride ?? sourceMediaSourceID
+        let embyMediaSourceHint = mediaSourceIDOverride ?? selection.mediaSourceID
         var metadata = Self.offlineMetadata(from: item, resolutionLabel: resolutionLabel,
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
@@ -219,9 +219,9 @@ extension DownloadManager {
         do {
             switch route {
             case .original:
-                let ext = decision.container ?? part?.container ?? media?.container ?? "mp4"
-                destination = store.destinationURL(ratingKey: ratingKey,
-                                                   ext: ext.isEmpty ? "mp4" : ext)
+                let ext = decision.container.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? DownloadMediaSelectionPolicy.containerExtension(selection: selection)
+                destination = store.destinationURL(ratingKey: ratingKey, ext: ext)
                 request = try EmbyLibrary.downloadOriginalRequest(
                     server: server, token: token, identity: identity, userId: userId,
                     itemId: itemId, mediaSourceId: decision.mediaSourceId, container: ext)
@@ -300,7 +300,7 @@ extension DownloadManager {
         // negotiated download source. This mirrors Jellyfin's sidecar path without relying on the
         // server to bake subtitles into the optimized MP4.
         let subtitleMediaSourceID = mediaSourceIDOverride == nil ? decision.mediaSourceId
-            : (sourceMediaSourceID ?? decision.mediaSourceId)
+            : (selection.mediaSourceID ?? decision.mediaSourceId)
         cacheEmbyTextSubtitles(ratingKey: ratingKey, itemId: itemId,
                                mediaSourceId: subtitleMediaSourceID, part: part,
                                server: server, token: token, identity: identity, userId: userId)
@@ -349,16 +349,4 @@ extension DownloadManager {
         }
     }
 
-    /// Extract an Emby `mediaSourceId` from a `MediaItem`'s synthesized part keys
-    /// (`emby://item/{itemId}/media/{mediaSourceId}`). The authoritative id comes from the
-    /// download PlaybackInfo decision; this only seeds the PlaybackInfo `MediaSourceId` hint.
-    private static func embyMediaSourceID(media: Media?, part: Part?) -> String? {
-        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
-        for key in keys.compactMap({ $0 }) {
-            guard let marker = key.range(of: "/media/") else { continue }
-            let source = String(key[marker.upperBound...])
-            if !source.isEmpty { return source }
-        }
-        return nil
-    }
 }

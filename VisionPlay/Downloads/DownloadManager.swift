@@ -2579,16 +2579,6 @@ public final class DownloadManager {
         }
     }
 
-    static func jellyfinMediaSourceID(media: Media?, part: Part?) -> String? {
-        let keys = [part?.key] + (media?.part.map(\.key) ?? [])
-        for key in keys.compactMap({ $0 }) {
-            guard let marker = key.range(of: "/media/") else { continue }
-            let source = String(key[marker.upperBound...])
-            if !source.isEmpty { return source }
-        }
-        return nil
-    }
-
     /// Conventional Plex target tag ids (fallback only — the live server's ids win when the
     /// targets endpoint resolves them). Phase 0 confirms the real ids.
     static func conventionalTagID(forName name: String) -> Int {

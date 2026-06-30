@@ -165,14 +165,15 @@ struct DownloadOptionsSheet: View {
     }
 
     private func runJellyfinProbe() async {
-        let media = item.media?[safe: mediaIndex]
-        let part = media?.part[safe: partIndex]
+        let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
+        let media = selection.media
+        let part = selection.part
         let originalLocallyPlayable = DownloadManager.isLocallyPlayableOriginal(part: part)
         let original = originalLocallyPlayable
             ? OriginalOption(sizeBytes: part?.size,
                              resolution: DownloadManager.resolutionLabel(for: media))
             : nil
-        let mediaSourceId = DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: media, part: part)
+        let mediaSourceId = selection.mediaSourceID
         // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
         // not decide remux eligibility from the local Part alone. Ask PlaybackInfo whenever the
         // raw file is not already locally playable, then use the server's authoritative codec and
@@ -267,10 +268,11 @@ struct DownloadOptionsSheet: View {
     /// direct-play flag is optimistic and untrustworthy. On any failure we fall back to presets
     /// only (probeFailed), exactly like the Plex path.
     private func runEmbyProbe() async {
-        let media = item.media?[safe: mediaIndex]
-        let part = media?.part[safe: partIndex]
+        let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
+        let media = selection.media
+        let part = selection.part
         let presets = embyPresets
-        let mediaSourceId = DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: media, part: part)
+        let mediaSourceId = selection.mediaSourceID
         guard let server = appModel.embyServerBaseURL,
               let token = appModel.embyAccessToken,
               let userId = appModel.embyUserID else {
