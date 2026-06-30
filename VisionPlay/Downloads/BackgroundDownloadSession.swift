@@ -118,16 +118,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private static let nsurlsessiondRelativeDownloadCache = "Caches/com.apple.nsurlsessiond/Downloads/com.jlipworth.VisionPlay"
     private let lock = NSLock()
 
-    /// #169: the static byte-range lane downloads in bounded Range chunks via the background
-    /// `downloadTask` so it survives the headset coming off, appending each finished chunk into the
-    /// durable partial. The chunk size bounds the worst-case re-download after a force-quit kills an
-    /// in-flight chunk (within-chunk drops are absorbed by the background session/`nsurlsessiond`
-    /// itself). 64 MB balances checkpoint granularity on flaky links against per-chunk request
-    /// overhead on large 4K files.
+    /// #169/#190: the static byte-range lane downloads in bounded Range chunks via the
+    /// background `downloadTask`, appending each finished chunk into the durable partial.
+    /// Foreground and off-head/background chunks use the same small checkpoint size: overnight
+    /// progress should become durable frequently instead of parking multi-GB bodies in
+    /// non-durable CFNetwork temp files until EOF.
     private static let playbackValidationLimiter = DownloadPlaybackValidationLimiter()
     static let rangeChunkSize = 64 * 1_024 * 1_024
-    private let rangeChunkPlanner = RangeChunkPlanner(chunkSize: BackgroundDownloadSession.rangeChunkSize)
-    /// #169: a finished Range chunk's 64 MB append must not run on the (serial) URLSession delegate
+    static let backgroundRangeChunkSize = rangeChunkSize
+    private let rangeChunkPlanner = RangeChunkPlanner(
+        chunkSize: BackgroundDownloadSession.rangeChunkSize,
+        backgroundChunkSize: BackgroundDownloadSession.backgroundRangeChunkSize)
+    /// #169: a finished Range segment append must not run on the (serial) URLSession delegate
     /// queue, or it stalls every other download's progress/completion callbacks for the copy's
     /// duration. The delegate hop only does an O(1) rename of the OS temp into a stash; the heavy
     /// append + chunk decision run here.
@@ -469,9 +471,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     /// Called by the app-lifetime `DownloadManager` when SwiftUI scene phase changes. `.inactive`
-    /// and `.background` mean the user may be taking the headset off; in that window we trade
-    /// foreground checkpoint granularity for one long background-owned remainder task that
-    /// `nsurlsessiond` already owns before suspension. `.active` only affects future starts.
+    /// and `.background` mean the user may be taking the headset off; in that window future static
+    /// range segments switch to background-owned checkpoint chunks. `.active` only affects
+    /// future starts. Existing bounded chunks are allowed to finish and append instead of being
+    /// cancelled into a non-durable open-ended remainder.
     func noteAppScenePhase(_ phase: String) {
         let normalized = phase.lowercased()
         lock.lock()
@@ -480,24 +483,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         }
         lastAppScenePhase = normalized
-        let shouldPreferContinuous = normalized == "inactive" || normalized == "background"
-        let reason = shouldPreferContinuous ? "scene_\(normalized)" : nil
+        let shouldPreferBackgroundCheckpoint = normalized == "inactive" || normalized == "background"
+        let reason = shouldPreferBackgroundCheckpoint ? "scene_\(normalized)" : nil
         continuousRangeRemainderReason = reason
-        let candidateCount = shouldPreferContinuous
+        let candidateCount = shouldPreferBackgroundCheckpoint
             ? rangeInflight.values.filter {
-                $0.segmentKind == .boundedCheckpoint && $0.request != nil
+                Self.isDurableCheckpointSegment($0.segmentKind) && $0.request != nil
             }.count
             : 0
         lock.unlock()
 
         AppDiagnostics.record(.downloads, "downloads.range_strategy", fields: [
             "phase": .label(normalized),
-            "strategy": .label(shouldPreferContinuous ? "continuous_remainder" : "bounded_checkpoint"),
+            "strategy": .label(shouldPreferBackgroundCheckpoint ? "background_checkpoint" : "bounded_checkpoint"),
             "candidate_count": .int(candidateCount),
         ])
-
-        guard let reason else { return }
-        promoteActiveRangeChunksToContinuousRemainder(reason: reason)
     }
 
     private func rangeSegmentPreference(holdBackgroundCompletionForFirstProgress: Bool)
@@ -506,17 +506,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let sceneReason = continuousRangeRemainderReason
         lock.unlock()
         if let sceneReason {
-            return (.continuousRemainder, sceneReason)
+            return (.backgroundCheckpoint, sceneReason)
         }
         if holdBackgroundCompletionForFirstProgress {
-            return (.continuousRemainder, "background_events")
+            return (.backgroundCheckpoint, "background_events")
         }
         return (.boundedCheckpoint, nil)
     }
 
-    /// Replace currently in-flight bounded Range chunks with one open-ended remainder request from
-    /// the durable checkpoint. Any bytes already in the old OS temp are deliberately discarded; they
-    /// were not yet appended to the durable partial, so the restart point is corruption-safe.
+    /// Legacy escape hatch for replacing in-flight bounded Range chunks with one open-ended
+    /// remainder request from the durable checkpoint. The normal off-head path no longer calls this:
+    /// it keeps bounded background checkpoints so overnight progress becomes durable periodically.
     private func promoteActiveRangeChunksToContinuousRemainder(reason: String) {
         urlSession.getAllTasks { [weak self] tasks in
             guard let self else { return }
@@ -526,7 +526,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             self.lock.lock()
             let candidateIDs = self.rangeInflight.compactMap { element -> Int? in
                 let (id, entry) = element
-                guard entry.segmentKind == .boundedCheckpoint, entry.request != nil else { return nil }
+                guard Self.isDurableCheckpointSegment(entry.segmentKind), entry.request != nil else { return nil }
                 return id
             }
             for id in candidateIDs {
@@ -866,6 +866,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return expanded.first { knownKeys.contains($0) }
     }
 
+    private static func isDurableCheckpointSegment(_ kind: RangeTransferSegmentKind) -> Bool {
+        kind == .boundedCheckpoint || kind == .backgroundCheckpoint
+    }
+
     private static func segmentKind(for request: URLRequest?) -> RangeTransferSegmentKind {
         guard let rangeHeader = request?.value(forHTTPHeaderField: "Range") else {
             return .boundedCheckpoint
@@ -878,11 +882,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             .dropFirst("bytes=".count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // Treat only a single open-ended byte-range (`bytes=<offset>-`) as the #169 continuous
-        // remainder. Multi-range or closed ranges are bounded checkpoints even if their text happens
-        // to end in "-" somewhere after a comma.
-        return byteSpec.range(of: #"^\d+-$"#, options: .regularExpression) == nil
-            ? .boundedCheckpoint
-            : .continuousRemainder
+        // remainder. Multi-range or closed ranges are durable checkpoints. Closed ranges larger
+        // than the foreground chunk size are older/larger off-head checkpoint segments.
+        if byteSpec.range(of: #"^\d+-$"#, options: .regularExpression) != nil {
+            return .continuousRemainder
+        }
+        if let length = Self.closedRangeLength(byteSpec), length > Self.rangeChunkSize {
+            return .backgroundCheckpoint
+        }
+        return .boundedCheckpoint
+    }
+
+    private static func closedRangeLength(_ byteSpec: String) -> Int? {
+        guard byteSpec.range(of: #"^\d+-\d+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        let bounds = byteSpec.split(separator: "-", maxSplits: 1)
+        guard bounds.count == 2,
+              let lower = Int(bounds[0]),
+              let upper = Int(bounds[1]),
+              upper >= lower else { return nil }
+        return upper - lower + 1
     }
 
     /// Force the lazy background session to be created (and thus its delegate bound),
@@ -1158,10 +1178,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "has_offset": .bool(offset > 0),
             "expected_bytes": .bytes(expectedBytes),
             "expected_exact": .int(expectedBytes ?? -1),
-            "chunk_size": .int(Self.rangeChunkSize),
+            "chunk_size": .int(segmentKind == .backgroundCheckpoint ? Self.backgroundRangeChunkSize : Self.rangeChunkSize),
             "planned_segment_bytes": .bytes(segmentPlan.expectedSegmentBytes),
             "url_shape": .urlShape(ranged.url),
         ])
+        if segmentKind == .backgroundCheckpoint {
+            AppDiagnostics.record(.downloads, "downloads.range_background_checkpoint_start", fields: [
+                "download_id": .identifier(ratingKey),
+                "task_id": .int(task.taskIdentifier),
+                "segment_reason": .label(segmentReason ?? "unknown"),
+                "offset_bytes": .bytes(offset),
+                "offset_exact": .int(offset),
+                "expected_exact": .int(expectedBytes ?? -1),
+                "planned_segment_bytes": .bytes(segmentPlan.expectedSegmentBytes),
+            ])
+        }
         if segmentKind == .continuousRemainder {
             AppDiagnostics.record(.downloads, "downloads.range_remainder_start", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1336,7 +1367,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func pauseRangeTask(_ task: URLSessionTask, ratingKey: String) {
         lock.lock()
         if let entry = rangeInflight[task.taskIdentifier],
-           entry.segmentKind == .boundedCheckpoint {
+           Self.isDurableCheckpointSegment(entry.segmentKind) {
             gracefulRangePauseKeys.insert(ratingKey)
             lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_pause_after_checkpoint", fields: [
@@ -1860,7 +1891,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let preserveHaltedChunk = halted
             && shouldPreserveHaltedFinishedRangeChunk(ratingKey: entry.ratingKey)
         let pauseAfterCheckpoint: Bool
-        if entry.segmentKind == .boundedCheckpoint {
+        if Self.isDurableCheckpointSegment(entry.segmentKind) {
             pauseAfterCheckpoint = consumeGracefulRangePause(ratingKey: entry.ratingKey)
         } else {
             // If a continuous remainder happens to finish before the async pause/cancel callback
