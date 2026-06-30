@@ -2138,27 +2138,29 @@ public final class DownloadManager {
                 markRetryReplacementSeeded(ratingKey: record.ratingKey)
             }
         }
-        let finalizedRecoveryKeys = Set(fresh.filter { $0.status == .complete || $0.status == .unverified || $0.status == .failed }.map(\.ratingKey))
+        let finalizedRecoveryKeys = StaticRangeRefreshCleanupPolicy.finalizingTerminalKeys(records: fresh)
         staticRangeRecovery.subtractFinalizing(finalizedRecoveryKeys)
-        let manualResumeTerminalKeys = Set(fresh.filter { record in
-            if record.status == .complete || record.status == .unverified { return true }
-            if record.status == .failed,
-               retryHandoffRows.contains(record.ratingKey),
-               retryingRows.contains(record.ratingKey) {
-                return false
-            }
-            return record.status == .failed
-        }.map(\.ratingKey))
+        let manualResumeTerminalKeys = StaticRangeRefreshCleanupPolicy.manualQueueResumeTerminalKeys(
+            records: fresh,
+            retryHandoffKeys: retryHandoffRows,
+            retryingKeys: retryingRows
+        )
         staticRangeRecovery.subtractManualQueueResumes(manualResumeTerminalKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
         let pendingPauseKeys = Set(fresh.filter { staticRangeRecovery.isCheckpointPausing($0.ratingKey) }.map(\.ratingKey))
         staticRangeRecovery.keepCheckpointPauses { key in
-            guard let record = fresh.first(where: { $0.ratingKey == key }) else { return false }
-            return record.status == .downloading && session.isTrackingTransfer(ratingKey: key)
+            StaticRangeRefreshCleanupPolicy.shouldKeepCheckpointPause(
+                record: fresh.first(where: { $0.ratingKey == key }),
+                isTrackingTransfer: session.isTrackingTransfer(ratingKey: key)
+            )
         }
         liveRangeProgress = liveRangeProgress.filter { key, sample in
             guard now.timeIntervalSince(sample.updatedAt) <= Self.liveRangeProgressStaleInterval else { return false }
-            return activeKeys.contains(key) || pendingPauseKeys.contains(key)
+            return StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(
+                key: key,
+                activeDownloadingKeys: activeKeys,
+                checkpointPauseKeys: pendingPauseKeys
+            )
         }
         // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
         // cumulative byte count. The estimator owns ALL the speed/ETA math — first-emit window,

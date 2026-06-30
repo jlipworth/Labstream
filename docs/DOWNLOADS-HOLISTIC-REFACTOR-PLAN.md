@@ -178,6 +178,10 @@ snapshot derivation.
   preparing rows park immediately, static byte-range rows either checkpoint-drain or park depending
   on live URLSession ownership, opaque/live-forward rows route through URLSession, and global queue
   pause skips persistent Emby convert polling while pausing other active work.
+- **Done: Slice 3c static range refresh-cleanup policy extraction.**
+  `StaticRangeRefreshCleanupPolicy` now owns the pure refresh-time cleanup predicates for static
+  range recovery overlays: terminal finalization keys, manual queue-resume markers that must survive
+  retry handoff failed rows, checkpoint-pause liveness, and stale live range-progress overlays.
 
 ## Target module boundaries
 
@@ -206,6 +210,7 @@ snapshot derivation.
   `BackgroundOpaqueCompletionPolicy`,
   `BackgroundRangeCompletionPolicy`,
   `ServerPrepRefreshPolicy`,
+  `StaticRangeRefreshCleanupPolicy`,
   `DownloadCompletionValidation`, `DownloadRateEstimator`, aggregate stats, file inventory,
   text subtitle parsing.
 
