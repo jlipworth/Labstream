@@ -1817,14 +1817,21 @@ public final class DownloadManager {
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
         // already-converted file, so this only ever cancels an in-flight conversion).
-        if let row = store.records.first(where: { $0.ratingKey == ratingKey }),
-           row.status == .preparing,
-           let jobId = row.metadata?.embyConvertJobID,
-           let metadata = row.metadata,
-           let session = appModel.backendSession(for: .emby),
-           session.matchesPersistedServer(metadata) {
-            let server = session.baseURL
-            let token = session.token
+        let rowToDelete = store.records.first(where: { $0.ratingKey == ratingKey })
+        let embySession = appModel.backendSession(for: .emby)
+        let embySessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
+            embySession?.matchesPersistedServer(metadata) == true
+        } ?? false
+        switch DownloadDeletePolicy.embyConvertCancelDecision(
+            for: rowToDelete,
+            embySessionMatchesPersistedServer: embySessionMatchesDeletedRow
+        ) {
+        case .none:
+            break
+        case .cancel(let jobId):
+            guard let embySession else { break }
+            let server = embySession.baseURL
+            let token = embySession.token
             let identity = appModel.identity.emby
             recordDownloadDiagnostic("downloads.convert_cancel", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1836,13 +1843,11 @@ public final class DownloadManager {
                     _ = try? await URLSession.shared.data(for: req)
                 }
             }
-        } else if let row = store.records.first(where: { $0.ratingKey == ratingKey }),
-                  row.status == .preparing,
-                  let jobId = row.metadata?.embyConvertJobID {
+        case .skip(let jobId, let reason):
             recordDownloadDiagnostic("downloads.convert_cancel_skip", fields: [
                 "download_id": .identifier(ratingKey),
                 "job_id": .int(jobId),
-                "reason": .label("emby_session_mismatch_or_unavailable"),
+                "reason": .label(reason),
             ])
         }
         session.cancel(ratingKey: ratingKey)
