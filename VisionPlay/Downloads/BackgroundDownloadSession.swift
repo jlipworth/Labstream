@@ -99,7 +99,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Last range-progress diagnostic per task. This is intentionally separate from UI throttling:
     /// the off-head headset probe needs durable breadcrumbs showing whether delegate progress kept
     /// arriving, without logging every `didWriteData` callback.
-    private var lastRangeProgressDiagnostic: [Int: (time: Date, bytes: Int)] = [:]
+    private var lastRangeProgressDiagnostic: [Int: BackgroundRangeProgressDiagnosticSnapshot] = [:]
     private let maxTransientRetries = 3
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.5
@@ -679,7 +679,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         ratingKey: ratingKey,
                         request: nil,
                         destination: destination,
-                        expectedBytes: record.flatMap(Self.derivedExpectedBytes),
+                        expectedBytes: record.flatMap(BackgroundDownloadProgressPolicy.derivedExpectedBytes),
                         baseOffset: reattachPlan.candidateBaseOffset,
                         responseStatus: nil,
                         chunkBytesWritten: max(0, Int(task.countOfBytesReceived)),
@@ -1156,15 +1156,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         task.resume()
         return task.taskIdentifier
-    }
-
-    /// Recover the final-size estimate for a row adopted on relaunch (#169). `progress` was computed
-    /// as `bytes / expected`, so invert it; nil when we have no usable signal (the planner then
-    /// degrades to a single open-ended chunk and resolves completion via short-read / 416).
-    private static func derivedExpectedBytes(_ record: DownloadRecord) -> Int? {
-        guard record.bytes > 0, record.progress > 0.0001 else { return nil }
-        let expected = Int((Double(record.bytes) / min(record.progress, 1.0)).rounded())
-        return expected > 0 ? expected : nil
     }
 
     private func isRangeHalted(ratingKey: String) -> Bool {
@@ -2783,17 +2774,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                              progress: Double,
                                              firstCallback: Bool) {
         let now = Date()
-        var shouldRecord = firstCallback
         lock.lock()
-        if let last = lastRangeProgressDiagnostic[taskIdentifier] {
-            let elapsed = now.timeIntervalSince(last.time)
-            let byteDelta = totalBytes - last.bytes
-            shouldRecord = shouldRecord || elapsed >= 10 || byteDelta >= Self.rangeChunkSize
-        } else {
-            shouldRecord = true
-        }
+        let shouldRecord = BackgroundDownloadProgressPolicy.shouldRecordRangeProgress(
+            last: lastRangeProgressDiagnostic[taskIdentifier],
+            now: now,
+            totalBytes: totalBytes,
+            rangeChunkSize: Self.rangeChunkSize,
+            isFirstCallback: firstCallback
+        )
         if shouldRecord {
-            lastRangeProgressDiagnostic[taskIdentifier] = (now, totalBytes)
+            lastRangeProgressDiagnostic[taskIdentifier] = BackgroundRangeProgressDiagnosticSnapshot(
+                time: now,
+                bytes: totalBytes
+            )
         }
         lock.unlock()
 
@@ -2820,8 +2813,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let now = Date()
         lock.lock()
         let last = lastProgressNotify
-        let shouldNotify = (last.map { now.timeIntervalSince($0) >= progressNotifyInterval } ?? true)
-            || progress >= 1.0
+        let shouldNotify = BackgroundDownloadProgressPolicy.shouldNotifyProgressChange(
+            lastNotification: last,
+            now: now,
+            progress: progress,
+            interval: progressNotifyInterval
+        )
         if shouldNotify { lastProgressNotify = now }
         lock.unlock()
         if shouldNotify { onChange?() }
