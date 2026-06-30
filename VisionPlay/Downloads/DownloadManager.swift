@@ -2780,17 +2780,12 @@ public final class DownloadManager {
     }
 
     private func expectedDownloadBytes(for record: DownloadRecord, liveBytes: Int? = nil) -> Int? {
-        if let expected = liveRangeProgress[record.ratingKey]?.expectedBytes, expected > 0 {
-            return expected
-        }
-        let bytes = liveBytes ?? record.bytes
-        if record.progress > 0, bytes > 0 {
-            return Int(Double(bytes) / record.progress)
-        }
-        if let staticExpectedBytes = staticRangeExpectedBytes(for: record) {
-            return staticExpectedBytes
-        }
-        return Self.estimatedTranscodeBytes(for: record)
+        DownloadExpectedBytesPolicy.expectedDownloadBytes(
+            record: record,
+            liveExpectedBytes: liveRangeProgress[record.ratingKey]?.expectedBytes,
+            liveBytes: liveBytes,
+            staticExpectedBytes: staticRangeExpectedBytes(for: record),
+            estimatedTranscodeBytes: Self.estimatedTranscodeBytes(for: record))
     }
 
     private func liveDisplayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
@@ -2802,10 +2797,7 @@ public final class DownloadManager {
     }
 
     private func staticRangeExpectedBytes(for record: DownloadRecord) -> Int? {
-        guard record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
-              let sourcePartSize = record.metadata?.sourcePartSize,
-              sourcePartSize > 0 else { return nil }
-        return sourcePartSize
+        DownloadExpectedBytesPolicy.staticRangeExpectedBytes(for: record)
     }
 
     private func makeOfflineLibrarySnapshot(from records: [DownloadRecord]) -> OfflineLibrarySnapshot {

@@ -213,6 +213,10 @@ snapshot derivation.
 - **Done: Slice 5k terminal release policy extraction.**
   `DownloadTerminalReleasePolicy` now owns the persisted-row predicate for releasing app-level
   in-flight protection, including the retry-handoff failed-row sentinel that must not release early.
+- **Done: Slice 5l expected bytes policy extraction.**
+  `DownloadExpectedBytesPolicy` now owns expected-total selection for static range UI/ETA, preserving
+  precedence across live Content-Length, progress-derived totals, static part size, and transcode
+  estimates.
 
 ## Target module boundaries
 
@@ -234,6 +238,7 @@ snapshot derivation.
 - `DownloadLiveRangeProgressPolicy`: pure merge/freshness/display policy for ephemeral static-range
   progress overlays.
 - `DownloadTerminalReleasePolicy`: pure terminal-row release predicate for active slots/pollers.
+- `DownloadExpectedBytesPolicy`: pure expected-total byte selection for range progress and ETA.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
   - Jellyfin original/live-forward intent helpers.
