@@ -2701,48 +2701,6 @@ public final class DownloadManager {
         return nil
     }
 
-    static func jellyfinTranscodedDownloadRequest(_ server: URL,
-                                                          _ token: String,
-                                                          _ identity: JellyfinClientIdentity,
-                                                          _ itemId: String,
-                                                          _ mediaSourceId: String?,
-                                                          _ playSessionId: String,
-                                                          _ profile: JellyfinTranscodeProfile) -> URLRequest {
-        let base = server.appendingPathComponent("/Videos/\(itemId)/stream.mp4")
-        var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-        var query = [
-            URLQueryItem(name: "static", value: "false"),
-            URLQueryItem(name: "container", value: "mp4"),
-            URLQueryItem(name: "videoCodec", value: "h264"),
-            URLQueryItem(name: "audioCodec", value: "aac"),
-            URLQueryItem(name: "videoBitRate", value: String(profile.videoBitrateBps)),
-            URLQueryItem(name: "audioBitRate", value: "192000"),
-            URLQueryItem(name: "maxAudioChannels", value: "6"),
-            URLQueryItem(name: "allowVideoStreamCopy", value: "false"),
-            URLQueryItem(name: "allowAudioStreamCopy", value: "false"),
-            URLQueryItem(name: "enableAutoStreamCopy", value: "false"),
-            URLQueryItem(name: "breakOnNonKeyFrames", value: "false"),
-            URLQueryItem(name: "deviceId", value: identity.deviceId),
-            URLQueryItem(name: "playSessionId", value: playSessionId),
-        ]
-        if let mediaSourceId, !mediaSourceId.isEmpty {
-            query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
-        }
-        if let maxWidth = profile.maxWidth {
-            query.append(URLQueryItem(name: "maxWidth", value: String(maxWidth)))
-        }
-        if let maxHeight = profile.maxHeight {
-            query.append(URLQueryItem(name: "maxHeight", value: String(maxHeight)))
-        }
-        comps.queryItems = query
-        let url = comps.url!
-        var request = URLRequest(url: url)
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
-        request.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token),
-                         forHTTPHeaderField: "Authorization")
-        return request
-    }
-
     private static func dedup(_ names: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []

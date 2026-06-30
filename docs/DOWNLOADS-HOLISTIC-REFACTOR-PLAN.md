@@ -244,6 +244,10 @@ snapshot derivation.
   Original-quality aliases, custom bitrate ladder settings, visible picker filtering, offline row
   resolution labels, storage-estimate source sizing, Jellyfin transcode caps, compatible-remux size
   estimates, and Plex fallback tag/settings.
+- **Done: Slice 4d Jellyfin transcode request de-duplication.**
+  Jellyfin bitrate-transcode downloads now reuse PMSKit's tested
+  `JellyfinLibrary.transcodedDownloadRequest` builder for the server-minted PlaybackInfo
+  PlaySession path instead of carrying an app-layer duplicate URL/header builder.
 
 ## Target module boundaries
 
@@ -278,7 +282,7 @@ snapshot derivation.
 - `DownloadStorageEstimatePolicy`: pure storage preflight estimates for media bytes and sidecars.
 - Backend route planners:
   - Plex original/existing/optimize intent helpers where decisions are pure.
-  - Jellyfin original/live-forward intent helpers.
+  - Jellyfin original/live-forward intent helpers and tested stream request builders.
   - Emby route planner (already partly `EmbyDownloadRouter`).
 - `DownloadJobPhase` / `DownloadJobSnapshot` pure model for persisted vs ephemeral state.
 - Retry/recovery policy units for static-range, server-prep, and forward-only lanes.
