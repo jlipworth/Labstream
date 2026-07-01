@@ -81,4 +81,13 @@ public enum DownloadRowDisplayPolicy {
         }
         return "Requested: \(label)"
     }
+
+    public static func requestedProfileText(_ label: String?, status: DownloadStatus) -> String? {
+        switch status {
+        case .complete, .unverified:
+            return nil
+        case .queued, .preparing, .downloading, .failed, .paused:
+            return requestedProfileText(label)
+        }
+    }
 }

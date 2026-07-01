@@ -465,7 +465,8 @@ public struct OfflineLibraryView: View {
     }
 
     private func requestedProfileText(for record: DownloadRecord) -> String? {
-        DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel)
+        DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel,
+                                                      status: record.status)
     }
 
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the
