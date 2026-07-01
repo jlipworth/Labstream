@@ -78,6 +78,7 @@ extension DownloadManager {
             let existingMetadata = records.first { $0.ratingKey == ratingKey }?.metadata
             optimizeMetadata = DownloadOfflineMetadataBuilder.metadata(from: sourceItem,
                                                     resolutionLabel: refreshedResolutionLabel,
+                                                    requestedProfileLabel: metadata.requestedProfileLabel,
                                                     mediaIndex: sourceMediaIndex,
                                                     partIndex: sourcePartIndex,
                                                     optimizeTargetName: targetName,

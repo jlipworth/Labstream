@@ -11,6 +11,14 @@ struct DownloadChoicePolicyTests {
         #expect(DownloadChoicePolicy.diagnosticChoiceLabel(.optimizeCompatible) == "optimize_compatible")
     }
 
+    @Test("Requested profile labels preserve user-facing queue intent")
+    func requestedProfileLabels() {
+        #expect(DownloadChoicePolicy.requestedProfileLabel(for: .original) == "Original file")
+        #expect(DownloadChoicePolicy.requestedProfileLabel(for: .existingVersion) == "Existing server version")
+        #expect(DownloadChoicePolicy.requestedProfileLabel(for: .optimize(targetName: "4K 40 Mbps")) == "4K 40 Mbps")
+        #expect(DownloadChoicePolicy.requestedProfileLabel(for: .optimizeCompatible) == "Original quality (compatible)")
+    }
+
     @Test("Persisted lanes preserve transfer semantics")
     func lanes() {
         #expect(DownloadChoicePolicy.downloadLane(for: .original) == .original)

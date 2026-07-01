@@ -30,6 +30,22 @@ public enum DownloadChoicePolicy {
         }
     }
 
+    /// User-facing profile/quality label to persist with the row. This is the selected intent
+    /// at queue time (what the user asked the backend to make/save), not an assertion about the
+    /// final encoded file's exact dimensions or bitrate.
+    public static func requestedProfileLabel(for choice: DownloadIntentChoice) -> String {
+        switch choice {
+        case .original:
+            return "Original file"
+        case .existingVersion:
+            return "Existing server version"
+        case .optimize(let targetName):
+            return targetName
+        case .optimizeCompatible:
+            return "Original quality (compatible)"
+        }
+    }
+
     /// Persisted lane discriminator for a choice. Existing server versions are byte-for-byte static
     /// transfers and deliberately share `.original` transfer semantics; the server-prepared display
     /// flag distinguishes them from true originals.

@@ -73,4 +73,12 @@ public enum DownloadRowDisplayPolicy {
         if let resolutionLabel { parts.append(resolutionLabel) }
         return parts.joined(separator: " • ")
     }
+
+    public static func requestedProfileText(_ label: String?) -> String? {
+        guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !label.isEmpty else {
+            return nil
+        }
+        return "Requested: \(label)"
+    }
 }

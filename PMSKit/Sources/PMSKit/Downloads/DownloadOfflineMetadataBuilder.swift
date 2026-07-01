@@ -9,6 +9,7 @@ import Foundation
 public enum DownloadOfflineMetadataBuilder {
     public static func metadata(from item: MediaItem,
                                 resolutionLabel: String?,
+                                requestedProfileLabel: String? = nil,
                                 mediaIndex: Int,
                                 partIndex: Int,
                                 optimizeTargetName: String? = nil,
@@ -48,6 +49,7 @@ public enum DownloadOfflineMetadataBuilder {
                                chapters: item.chapters?.map(OfflineChapter.init),
                                markers: item.markers?.map(OfflineMarker.init),
                                resolutionLabel: resolutionLabel,
+                               requestedProfileLabel: requestedProfileLabel,
                                librarySectionID: item.librarySectionID,
                                librarySectionKey: item.librarySectionKey,
                                mediaIndex: mediaIndex,

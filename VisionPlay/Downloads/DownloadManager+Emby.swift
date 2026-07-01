@@ -30,7 +30,8 @@ extension DownloadManager {
                              mediaIndex: Int = 0,
                              partIndex: Int = 0,
                              mediaSourceIDOverride: String? = nil,
-                             deferStaticStartWhenQueuePaused: Bool = false) async {
+                             deferStaticStartWhenQueuePaused: Bool = false,
+                             requestedProfileLabelOverride: String? = nil) async {
         let itemId = item.ratingKey
         let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
         // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
@@ -70,6 +71,8 @@ extension DownloadManager {
         // onto the row after the decision is known (see below).
         let embyMediaSourceHint = mediaSourceIDOverride ?? selection.mediaSourceID
         var metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: resolutionLabel,
+                                            requestedProfileLabel: requestedProfileLabelOverride
+                                                ?? DownloadChoicePolicy.requestedProfileLabel(for: choice),
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: {
                                                 if case .optimize(let targetName) = choice { return targetName }

@@ -847,6 +847,11 @@ struct DownloadOptionsSheet: View {
                     dismiss()
                 } label: { Label("Pause Download", systemImage: "pause.circle") }
             }
+            if let requested = DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel) {
+                Text(requested)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Button(role: .destructive) {
                 downloadManager.delete(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
                 dismiss()

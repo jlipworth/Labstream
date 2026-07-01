@@ -48,6 +48,7 @@ struct DownloadOfflineMetadataBuilderTests {
     func persistsSnapshotFields() {
         let metadata = DownloadOfflineMetadataBuilder.metadata(from: item(),
                                                                resolutionLabel: "1080p",
+                                                               requestedProfileLabel: "4K 40 Mbps",
                                                                mediaIndex: 1,
                                                                partIndex: 0,
                                                                optimizeQueueTitle: "queue-title",
@@ -59,6 +60,7 @@ struct DownloadOfflineMetadataBuilderTests {
         #expect(metadata.title == "Episode Title")
         #expect(metadata.type == "episode")
         #expect(metadata.resolutionLabel == "1080p")
+        #expect(metadata.requestedProfileLabel == "4K 40 Mbps")
         #expect(metadata.mediaIndex == 1)
         #expect(metadata.partIndex == 0)
         #expect(metadata.sourcePartID == 20)

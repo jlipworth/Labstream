@@ -216,6 +216,11 @@ public struct OfflineLibraryView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let requested = requestedProfileText(for: record) {
+                    Text(requested)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if isFailed {
                     // Prefer the surfaced reason; fall back to a generic failed line so
                     // a `.failed` row reconciled at launch (no live error) still explains.
@@ -457,6 +462,10 @@ public struct OfflineLibraryView: View {
         }
         if let rating = meta.contentRating, !rating.isEmpty { parts.append(rating) }
         return parts.isEmpty ? nil : parts.joined(separator: " • ")
+    }
+
+    private func requestedProfileText(for record: DownloadRecord) -> String? {
+        DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel)
     }
 
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the

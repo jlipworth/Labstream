@@ -61,6 +61,7 @@ extension DownloadManager {
             optimizeTargetName = nil
         }
         let metadata = DownloadOfflineMetadataBuilder.metadata(from: item, resolutionLabel: resolutionLabel,
+                                            requestedProfileLabel: DownloadChoicePolicy.requestedProfileLabel(for: choice),
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: optimizeTargetName,
                                             session: backendSession,
