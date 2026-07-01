@@ -238,11 +238,25 @@ struct RailMediaCell: View {
     }
 }
 
+/// Shared sizing for Home/media-browser rails.
+///
+/// Episode rails use 16:9 stills while movie/show rails use the canonical 2:3 poster.
+/// Without reserving the same overall cell height, a TV rail collapses vertically and
+/// makes the next Emby/Jellyfin "Recently Added" rail look incorrectly spaced.
+private enum HomeRailCellMetrics {
+    static let episodeWidth: CGFloat = 252
+    static var episodeImageHeight: CGFloat { episodeWidth * 9.0 / 16.0 }
+    static let titleBlockHeight: CGFloat = 46
+    static var canonicalCellHeight: CGFloat {
+        DS.Poster.height(for: DS.Poster.railWidth) + DS.Space.sm + titleBlockHeight
+    }
+}
+
 private struct EpisodeRailCell: View {
     let item: MediaItem
 
-    private let width: CGFloat = 252
-    private var height: CGFloat { width * 9.0 / 16.0 }
+    private let width = HomeRailCellMetrics.episodeWidth
+    private var height: CGFloat { HomeRailCellMetrics.episodeImageHeight }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
@@ -263,7 +277,9 @@ private struct EpisodeRailCell: View {
                     .lineLimit(1)
             }
         }
-        .frame(width: width, alignment: .leading)
+        .frame(width: width,
+               height: HomeRailCellMetrics.canonicalCellHeight,
+               alignment: .topLeading)
     }
 
     private var episodeSubtitle: String {
