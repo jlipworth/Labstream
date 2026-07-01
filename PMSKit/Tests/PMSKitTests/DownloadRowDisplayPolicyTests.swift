@@ -108,6 +108,20 @@ struct DownloadRowDisplayPolicyTests {
         #expect(DownloadRowDisplayPolicy.requestedProfileText(nil) == nil)
     }
 
+    @Test("Requested profile text is hidden after terminal successful downloads")
+    func requestedProfileTextStatusGate() {
+        #expect(DownloadRowDisplayPolicy.requestedProfileText("Existing server version",
+                                                              status: .downloading) == "Requested: Existing server version")
+        #expect(DownloadRowDisplayPolicy.requestedProfileText("Existing server version",
+                                                              status: .paused) == "Requested: Existing server version")
+        #expect(DownloadRowDisplayPolicy.requestedProfileText("Existing server version",
+                                                              status: .failed) == "Requested: Existing server version")
+        #expect(DownloadRowDisplayPolicy.requestedProfileText("Existing server version",
+                                                              status: .complete) == nil)
+        #expect(DownloadRowDisplayPolicy.requestedProfileText("Existing server version",
+                                                              status: .unverified) == nil)
+    }
+
     private func record(bytes: Int,
                         progress: Double,
                         metadata: OfflineMetadata?) -> DownloadRecord {

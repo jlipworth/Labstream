@@ -99,12 +99,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// #169/#190: the static byte-range lane downloads in bounded Range chunks via the
     /// background `downloadTask`, appending each finished chunk into the durable partial.
-    /// Foreground and off-head/background chunks use the same small checkpoint size: overnight
-    /// progress should become durable frequently instead of parking multi-GB bodies in
-    /// non-durable CFNetwork temp files until EOF.
+    /// Foreground chunks stay small so active downloads checkpoint frequently. Off-head/background
+    /// chunks are intentionally much larger: Apple background URLSession applies a resume rate
+    /// limiter when an app wakes and then creates the next task, so fewer larger background chunks
+    /// avoid the overnight one-small-chunk-per-wake slowdown while still bounding non-durable temp
+    /// progress.
     private static let playbackValidationLimiter = DownloadPlaybackValidationLimiter()
     static let rangeChunkSize = 64 * 1_024 * 1_024
-    static let backgroundRangeChunkSize = rangeChunkSize
+    static let backgroundRangeChunkSize = 1_024 * 1_024 * 1_024
     private let rangeChunkPlanner = RangeChunkPlanner(
         chunkSize: BackgroundDownloadSession.rangeChunkSize,
         backgroundChunkSize: BackgroundDownloadSession.backgroundRangeChunkSize)

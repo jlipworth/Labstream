@@ -847,7 +847,8 @@ struct DownloadOptionsSheet: View {
                     dismiss()
                 } label: { Label("Pause Download", systemImage: "pause.circle") }
             }
-            if let requested = DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel) {
+            if let requested = DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel,
+                                                                             status: record.status) {
                 Text(requested)
                     .font(.caption)
                     .foregroundStyle(.secondary)
