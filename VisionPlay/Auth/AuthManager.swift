@@ -257,11 +257,25 @@ final class AuthManager {
 
     private func restoreEmbySession(validateReachability: Bool = true,
                                     updateState: Bool = true) async -> Bool {
-        guard loadEmbySessionSnapshot() else { return false }
-        guard validateReachability else { return true }
+        let restoreFields: [String: DiagnosticFieldValue] = [
+            "validate_reachability": .bool(validateReachability),
+            "update_state": .bool(updateState)
+        ]
+        guard loadEmbySessionSnapshot() else {
+            recordAuthDiagnostic("auth.emby.restore.missing_snapshot", fields: restoreFields)
+            return false
+        }
+        guard validateReachability else {
+            recordAuthDiagnostic("auth.emby.restore.snapshot_loaded", fields: restoreFields)
+            return true
+        }
         guard let server = appModel.embyServerBaseURL,
               let token = appModel.embyAccessToken,
-              let userID = appModel.embyUserID else { return false }
+              let userID = appModel.embyUserID else {
+            recordAuthDiagnostic("auth.emby.restore.missing_snapshot", fields: restoreFields)
+            return false
+        }
+        recordAuthDiagnostic("auth.emby.restore.start", fields: restoreFields)
         do {
             let req = try EmbyLibrary.userViewsRequest(server: server,
                                                        token: token,
@@ -276,16 +290,26 @@ final class AuthManager {
                 }
             }
             if updateState { state = .authenticated }
+            recordAuthDiagnostic("auth.emby.restore.success", fields: restoreFields)
             return true
         } catch EmbyAuthError.unauthorized {
             // Invalid/expired creds — drop the saved session and require re-login.
             signOutEmby()
             if updateState { state = .idle }
+            recordAuthDiagnostic("auth.emby.restore.unauthorized", fields: restoreFields)
             return false
         } catch {
             // Unreachable host (or other transient error) — keep the saved session so a
             // later launch with connectivity restores cleanly.
             if updateState { state = .failed("Signed in, but the Emby server could not be reached.") }
+            var fields = restoreFields
+            if case EmbyAuthError.http(let status) = error {
+                fields["status"] = .int(status)
+                recordAuthDiagnostic("auth.emby.restore.http", fields: fields)
+            } else {
+                fields.merge(authErrorFields(error)) { _, new in new }
+                recordAuthDiagnostic("auth.emby.restore.transport", fields: fields)
+            }
             return true
         }
     }
@@ -591,6 +615,7 @@ final class AuthManager {
         appModel.activeBackend = .emby
         keychain.selectedBackend = .emby
         state = .idle
+        recordAuthDiagnostic("auth.emby.login.start")
         do {
             let request = try EmbyAuth.authenticateByNameRequest(server: server,
                                                                  username: username,
@@ -612,25 +637,31 @@ final class AuthManager {
             try persistEmbyAuthentication(result, server: server)
             activeEmbyCredentialAttemptID = nil
             state = .authenticated
+            recordAuthDiagnostic("auth.emby.login.success")
         } catch EmbyAuthError.unauthorized {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
+            recordAuthDiagnostic("auth.emby.login.unauthorized")
             state = .failed("Invalid Emby username or password.")
         } catch EmbyAuthError.http(let status) {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
+            recordAuthDiagnostic("auth.emby.login.http", fields: ["status": .int(status)])
             state = .failed("Emby sign-in failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
+            recordAuthDiagnostic("auth.emby.login.failed", fields: ["reason": .string("missing_credentials")])
             state = .failed("Emby did not return a usable session.")
         } catch EmbyAuthError.secureStorageFailed {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
+            recordAuthDiagnostic("auth.emby.login.failed", fields: ["reason": .string("secure_storage")])
             state = .failed("Couldn’t securely save the Emby session.")
         } catch {
             guard activeEmbyCredentialAttemptID == attemptID else { return }
             activeEmbyCredentialAttemptID = nil
+            recordAuthDiagnostic("auth.emby.login.transport", fields: authErrorFields(error))
             state = .failed("Couldn’t reach Emby server.")
         }
     }
@@ -672,6 +703,7 @@ final class AuthManager {
         appModel.activeBackend = .emby
         keychain.selectedBackend = .emby
         state = .idle
+        recordAuthDiagnostic("auth.emby_connect.start")
 
         do {
             let data = try await embyConnectData(for: EmbyConnect.createPinRequest(identity: embyIdentity))
@@ -680,19 +712,23 @@ final class AuthManager {
             guard let code = pin.pin, !code.isEmpty else { throw EmbyAuthError.missingCredentials }
 
             guard activeEmbyConnectAttemptID == attemptID else { return }
+            recordAuthDiagnostic("auth.emby_connect.pin_created")
             state = .awaitingEmbyConnectPin(code: code)
             pollTask = Task { await pollEmbyConnectPin(pin: code, attemptID: attemptID) }
         } catch EmbyAuthError.http(let status) {
             guard activeEmbyConnectAttemptID == attemptID else { return }
             activeEmbyConnectAttemptID = nil
+            recordAuthDiagnostic("auth.emby_connect.start_http", fields: ["status": .int(status)])
             state = .failed("Emby Connect sign-in failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
             guard activeEmbyConnectAttemptID == attemptID else { return }
             activeEmbyConnectAttemptID = nil
+            recordAuthDiagnostic("auth.emby_connect.start_failed", fields: ["reason": .string("missing_pin")])
             state = .failed("Emby Connect did not return a code. Use a server URL instead.")
         } catch {
             guard activeEmbyConnectAttemptID == attemptID else { return }
             activeEmbyConnectAttemptID = nil
+            recordAuthDiagnostic("auth.emby_connect.start_transport", fields: authErrorFields(error))
             state = .failed("Couldn’t reach Emby Connect.")
         }
     }
@@ -704,11 +740,18 @@ final class AuthManager {
               let server = pending.servers.first(where: { serverChoiceID($0) == id }) else {
             // The attempt ended out from under the picker (cancel / backend switch / expiry).
             // Drop back to the chooser instead of leaving the user tapping a dead list.
+            recordAuthDiagnostic("auth.emby_connect.server_selection_stale")
             if case .awaitingEmbyServerSelection = state { state = .idle }
             return
         }
-        guard activeEmbyConnectServerSelectionID == nil else { return }
+        guard activeEmbyConnectServerSelectionID == nil else {
+            recordAuthDiagnostic("auth.emby_connect.server_selection_ignored",
+                                 fields: ["reason": .string("selection_in_progress")])
+            return
+        }
         activeEmbyConnectServerSelectionID = id
+        recordAuthDiagnostic("auth.emby_connect.server_selected",
+                             fields: ["server_count": .string(serverCountBucket(pending.servers.count))])
         defer {
             if activeEmbyConnectServerSelectionID == id {
                 activeEmbyConnectServerSelectionID = nil
@@ -721,6 +764,7 @@ final class AuthManager {
 
     private func pollEmbyConnectPin(pin: String, attemptID: UUID) async {
         let deadline = ContinuousClock.now.advanced(by: embyConnectPollTimeout)
+        var recordedTransientPollFailure = false
         while ContinuousClock.now < deadline {
             try? await Task.sleep(for: embyConnectPollInterval)
             if Task.isCancelled { return }
@@ -730,32 +774,53 @@ final class AuthManager {
                 let data = try await embyConnectData(for: EmbyConnect.pollPinRequest(pin: pin, identity: embyIdentity))
                 let status = try JSONDecoder().decode(EmbyConnectPin.self, from: data)
                 if status.isExpired {
-                    failEmbyConnect(attemptID, "Emby Connect code expired. Try again.")
+                    failEmbyConnect(attemptID,
+                                    "Emby Connect code expired. Try again.",
+                                    reason: "poll_expired")
                     return
                 }
                 guard status.isConfirmed else { continue }
+                recordAuthDiagnostic("auth.emby_connect.poll_confirmed")
                 await completeEmbyConnectAfterConfirmation(pin: pin, attemptID: attemptID)
                 return
             } catch EmbyAuthError.http(404) {
-                failEmbyConnect(attemptID, "Emby Connect code expired or was cancelled. Try again.")
+                failEmbyConnect(attemptID,
+                                "Emby Connect code expired or was cancelled. Try again.",
+                                reason: "poll_not_found",
+                                fields: ["status": .int(404)])
                 return
+            } catch EmbyAuthError.http(let status) {
+                if !recordedTransientPollFailure {
+                    recordedTransientPollFailure = true
+                    recordAuthDiagnostic("auth.emby_connect.poll_http", fields: ["status": .int(status)])
+                }
+                continue
             } catch EmbyAuthError.unauthorized {
                 // A rejected device/app won't recover by polling — fail fast instead of
                 // spinning for the full timeout.
-                failEmbyConnect(attemptID, "Emby Connect rejected this device. Try again or use a server URL.")
+                failEmbyConnect(attemptID,
+                                "Emby Connect rejected this device. Try again or use a server URL.",
+                                reason: "poll_unauthorized")
                 return
             } catch {
                 // Transient network/server errors can happen while the user is still
                 // entering the code — keep polling until the deadline.
+                if !recordedTransientPollFailure {
+                    recordedTransientPollFailure = true
+                    recordAuthDiagnostic("auth.emby_connect.poll_transport", fields: authErrorFields(error))
+                }
                 continue
             }
         }
-        failEmbyConnect(attemptID, "Emby Connect timed out. Try again or use a server URL.")
+        failEmbyConnect(attemptID,
+                        "Emby Connect timed out. Try again or use a server URL.",
+                        reason: "poll_timeout")
     }
 
     /// PIN confirmed → exchange it for a Connect token, list linked servers, then either
     /// auto-exchange (one server) or ask the user to choose (more than one).
     private func completeEmbyConnectAfterConfirmation(pin: String, attemptID: UUID) async {
+        recordAuthDiagnostic("auth.emby_connect.confirm_start")
         do {
             let authData = try await embyConnectData(for: EmbyConnect.authenticatePinRequest(pin: pin, identity: embyIdentity))
             let authResult = try JSONDecoder().decode(EmbyConnectExchangePinResult.self, from: authData)
@@ -763,13 +828,18 @@ final class AuthManager {
                   let connectToken = authResult.accessToken, !connectToken.isEmpty else {
                 throw EmbyAuthError.missingCredentials
             }
+            recordAuthDiagnostic("auth.emby_connect.confirm_authenticated")
 
             let serversData = try await embyConnectData(for: EmbyConnect.serversRequest(
                 connectUserId: connectUserId, connectToken: connectToken, identity: embyIdentity))
             let servers = try JSONDecoder().decode([EmbyConnectServer].self, from: serversData)
             guard activeEmbyConnectAttemptID == attemptID else { return }
+            recordAuthDiagnostic("auth.emby_connect.servers_listed",
+                                 fields: ["server_count": .string(serverCountBucket(servers.count))])
             guard !servers.isEmpty else {
-                failEmbyConnect(attemptID, "No Emby servers are linked to this Connect account.")
+                failEmbyConnect(attemptID,
+                                "No Emby servers are linked to this Connect account.",
+                                reason: "no_linked_servers")
                 return
             }
 
@@ -781,14 +851,24 @@ final class AuthManager {
                 // The PIN poll is finished; the attempt now waits on the user's pick.
                 pollTask = nil
                 pendingEmbyConnect = PendingEmbyConnect(connectUserId: connectUserId, servers: servers)
+                recordAuthDiagnostic("auth.emby_connect.server_selection_required",
+                                     fields: ["server_count": .string(serverCountBucket(servers.count))])
                 state = .awaitingEmbyServerSelection(servers: servers.map(serverChoice))
             }
         } catch EmbyAuthError.http(let status) {
-            failEmbyConnect(attemptID, "Emby Connect sign-in failed (HTTP \(status)).")
+            failEmbyConnect(attemptID,
+                            "Emby Connect sign-in failed (HTTP \(status)).",
+                            reason: "confirm_http",
+                            fields: ["status": .int(status)])
         } catch EmbyAuthError.missingCredentials {
-            failEmbyConnect(attemptID, "Emby Connect did not return a usable session.")
+            failEmbyConnect(attemptID,
+                            "Emby Connect did not return a usable session.",
+                            reason: "confirm_missing_credentials")
         } catch {
-            failEmbyConnect(attemptID, "Couldn’t complete Emby Connect sign-in.")
+            failEmbyConnect(attemptID,
+                            "Couldn’t complete Emby Connect sign-in.",
+                            reason: "confirm_failed",
+                            fields: authErrorFields(error))
         }
     }
 
@@ -797,16 +877,21 @@ final class AuthManager {
     private func exchangeAndPersistEmbyConnect(server: EmbyConnectServer,
                                                connectUserId: String,
                                                attemptID: UUID) async {
+        recordAuthDiagnostic("auth.emby_connect.exchange_start")
         do {
             guard let accessKey = server.accessKey, !accessKey.isEmpty else {
                 throw EmbyAuthError.missingCredentials
             }
             guard let expectedSystemID = server.systemId, !expectedSystemID.isEmpty else {
-                failEmbyConnect(attemptID, "Emby Connect did not identify the selected server. Use a server URL instead.")
+                failEmbyConnect(attemptID,
+                                "Emby Connect did not identify the selected server. Use a server URL instead.",
+                                reason: "missing_system_id")
                 return
             }
             guard let base = await resolveEmbyServerBaseURL(server, expectedSystemID: expectedSystemID) else {
-                failEmbyConnect(attemptID, "Couldn’t reach the selected Emby server.")
+                failEmbyConnect(attemptID,
+                                "Couldn’t reach the selected Emby server.",
+                                reason: "resolve_failed")
                 return
             }
             let request = try EmbyConnect.exchangeRequest(server: base,
@@ -825,14 +910,25 @@ final class AuthManager {
             pendingEmbyConnect = nil
             pollTask = nil
             state = .authenticated
+            recordAuthDiagnostic("auth.emby_connect.exchange_success")
         } catch EmbyAuthError.http(let status) {
-            failEmbyConnect(attemptID, "Emby server exchange failed (HTTP \(status)).")
+            failEmbyConnect(attemptID,
+                            "Emby server exchange failed (HTTP \(status)).",
+                            reason: "exchange_http",
+                            fields: ["status": .int(status)])
         } catch EmbyAuthError.missingCredentials {
-            failEmbyConnect(attemptID, "The Emby server did not return a usable session.")
+            failEmbyConnect(attemptID,
+                            "The Emby server did not return a usable session.",
+                            reason: "exchange_missing_credentials")
         } catch EmbyAuthError.secureStorageFailed {
-            failEmbyConnect(attemptID, "Couldn’t securely save the Emby session.")
+            failEmbyConnect(attemptID,
+                            "Couldn’t securely save the Emby session.",
+                            reason: "secure_storage")
         } catch {
-            failEmbyConnect(attemptID, "Couldn’t complete Emby sign-in with the selected server.")
+            failEmbyConnect(attemptID,
+                            "Couldn’t complete Emby sign-in with the selected server.",
+                            reason: "exchange_failed",
+                            fields: authErrorFields(error))
         }
     }
 
@@ -847,14 +943,37 @@ final class AuthManager {
     private func resolveEmbyServerBaseURL(_ server: EmbyConnectServer, expectedSystemID: String) async -> URL? {
         let localBase = embyConnectBase(server.localAddress)
         let wanBase = embyConnectBase(server.url)
+        recordAuthDiagnostic("auth.emby_connect.resolve_start", fields: [
+            "has_local": .bool(localBase != nil),
+            "has_wan": .bool(wanBase != nil)
+        ])
         // Short timeout on the LAN probe so it fails over fast when away from home; the WAN
         // probe uses the normal session so a slow internet path isn't cut off prematurely.
-        if let localBase, await embyServerIdentityMatches(localBase, expectedSystemID: expectedSystemID, session: Self.probeSession) {
+        if let localBase, await embyServerIdentityMatches(localBase,
+                                                          expectedSystemID: expectedSystemID,
+                                                          session: Self.probeSession,
+                                                          route: "local") {
+            recordAuthDiagnostic("auth.emby_connect.resolve_success", fields: ["route": .string("local")])
             return localBase
+        } else if localBase == nil {
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_skipped", fields: [
+                "route": .string("local"),
+                "reason": .string("missing_candidate")
+            ])
         }
-        if let wanBase, await embyServerIdentityMatches(wanBase, expectedSystemID: expectedSystemID, session: Self.mediaBrowserAuthSession) {
+        if let wanBase, await embyServerIdentityMatches(wanBase,
+                                                        expectedSystemID: expectedSystemID,
+                                                        session: Self.mediaBrowserAuthSession,
+                                                        route: "wan") {
+            recordAuthDiagnostic("auth.emby_connect.resolve_success", fields: ["route": .string("wan")])
             return wanBase
+        } else if wanBase == nil {
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_skipped", fields: [
+                "route": .string("wan"),
+                "reason": .string("missing_candidate")
+            ])
         }
+        recordAuthDiagnostic("auth.emby_connect.resolve_failed")
         return nil
     }
 
@@ -863,20 +982,91 @@ final class AuthManager {
         return try? EmbyConnect.apiBaseURL(forConnectAddress: address)
     }
 
-    private func embyServerIdentityMatches(_ base: URL, expectedSystemID: String, session: URLSession) async -> Bool {
-        guard let request = try? EmbyAuth.serverInfoRequest(server: base),
-              let (data, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+    private func recordAuthDiagnostic(_ name: String,
+                                      fields: [String: DiagnosticFieldValue] = [:]) {
+        AppDiagnostics.record(.auth, name, fields: fields)
+    }
+
+    private func authErrorFields(_ error: Error) -> [String: DiagnosticFieldValue] {
+        let nsError = error as NSError
+        return [
+            "error_class": .string(DiagnosticRedactor.errorClass(for: nsError)),
+            "error_domain": .string(DiagnosticRedactor.errorDomainFamily(nsError.domain)),
+            "error_code": .int(nsError.code)
+        ]
+    }
+
+    private func serverCountBucket(_ count: Int) -> String {
+        switch count {
+        case ..<1: return "none"
+        case 1: return "one"
+        case 2...4: return "multiple"
+        default: return "many"
+        }
+    }
+
+    private func embyServerIdentityMatches(_ base: URL,
+                                           expectedSystemID: String,
+                                           session: URLSession,
+                                           route: String) async -> Bool {
+        let baseFields: [String: DiagnosticFieldValue] = ["route": .string(route)]
+        guard let request = try? EmbyAuth.serverInfoRequest(server: base) else {
+            var fields = baseFields
+            fields["reason"] = .string("request_build_failed")
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_failed", fields: fields)
+            return false
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            var fields = baseFields
+            fields.merge(authErrorFields(error)) { _, new in new }
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_transport", fields: fields)
+            return false
+        }
+        guard let http = response as? HTTPURLResponse else {
+            var fields = baseFields
+            fields["reason"] = .string("non_http")
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_failed", fields: fields)
+            return false
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            var fields = baseFields
+            fields["status"] = .int(http.statusCode)
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_http", fields: fields)
             return false
         }
         // Require the probed server identity to match before we trust it with the
         // per-server access key. Missing/garbled info → reject closed.
-        guard let info = try? JSONDecoder().decode(EmbyServerInfo.self, from: data) else { return false }
-        return info.id == expectedSystemID
+        guard let info = try? JSONDecoder().decode(EmbyServerInfo.self, from: data) else {
+            var fields = baseFields
+            fields["reason"] = .string("identity_decode_failed")
+            fields["status"] = .int(http.statusCode)
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_failed", fields: fields)
+            return false
+        }
+        guard info.id == expectedSystemID else {
+            var fields = baseFields
+            fields["status"] = .int(http.statusCode)
+            recordAuthDiagnostic("auth.emby_connect.identity_probe_mismatch", fields: fields)
+            return false
+        }
+        var fields = baseFields
+        fields["status"] = .int(http.statusCode)
+        recordAuthDiagnostic("auth.emby_connect.identity_probe_success", fields: fields)
+        return true
     }
 
-    private func failEmbyConnect(_ attemptID: UUID, _ message: String) {
+    private func failEmbyConnect(_ attemptID: UUID,
+                                 _ message: String,
+                                 reason: String,
+                                 fields: [String: DiagnosticFieldValue] = [:]) {
         guard activeEmbyConnectAttemptID == attemptID else { return }
+        var diagnosticFields = fields
+        diagnosticFields["reason"] = .string(reason)
+        recordAuthDiagnostic("auth.emby_connect.failed", fields: diagnosticFields)
         activeEmbyConnectAttemptID = nil
         activeEmbyConnectServerSelectionID = nil
         pendingEmbyConnect = nil
