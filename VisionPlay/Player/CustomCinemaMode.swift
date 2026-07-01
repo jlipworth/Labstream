@@ -9,9 +9,9 @@ import SwiftUI
 /// viewer's posture preference so it can be applied consistently as different items enter Cinema.
 struct CustomCinemaScreenAdjustment: Equatable, Sendable {
     static let `default` = CustomCinemaScreenAdjustment()
-    static let reclinedPreset = CustomCinemaScreenAdjustment(pitchDegrees: 18,
-                                                            verticalDeltaMeters: 0.90,
-                                                            distanceDeltaMeters: 0)
+    static let reclinedPreset = CustomCinemaScreenAdjustment(pitchDegrees: 20,
+                                                            verticalDeltaMeters: 2.60,
+                                                            distanceDeltaMeters: -0.60)
     static let lyingDownPreset = CustomCinemaScreenAdjustment(pitchDegrees: 42,
                                                              verticalDeltaMeters: 2.80,
                                                              distanceDeltaMeters: -0.35)
