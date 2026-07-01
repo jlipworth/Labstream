@@ -932,10 +932,6 @@ private struct CinemaScreenAdjustmentView: View {
                        step: 0.05)
             }
 
-            Text("Use small nudges like a remote, or drag a slider for larger posture changes. Reclined and Lying down presets tilt the top toward you and lift the screen for deeper posture changes. Values apply immediately and are remembered for the next Cinema session.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
