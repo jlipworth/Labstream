@@ -112,11 +112,16 @@ extension DownloadManager {
                     mediaSourceId: embyMediaSourceHint,
                     maxStaticBitrate: 200_000_000)
             }
-            let data = try await embyDownloadPlaybackInfoDataWithActiveSessionRetry(
-                request: infoReq,
-                ratingKey: ratingKey,
-                phase: "download_negotiation"
-            )
+            let (data, response) = try await URLSession.shared.data(for: infoReq)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "backend": .label("Emby"),
+                    "status_code": .int(http.statusCode),
+                    "phase": .label("download_negotiation"),
+                ])
+                throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
+            }
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
             decision = try EmbyPlayback.downloadDecision(response: info,
                                                          preferredMediaSourceId: embyMediaSourceHint)
@@ -344,74 +349,6 @@ extension DownloadManager {
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: EmbyDownloadRoutePlan.usesByteRangeCheckpoint(for: route),
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
-        }
-    }
-
-    /// Fetch Emby download PlaybackInfo with the same bounded reconnect posture used by background
-    /// Range rehydration: 401/403 and transient URL errors can happen while a headset changes
-    /// networks even though the saved session is still valid. Give the active app path a couple of
-    /// delayed retries before failing the row and requiring manual backend toggles.
-    private func embyDownloadPlaybackInfoDataWithActiveSessionRetry(request: URLRequest,
-                                                                    ratingKey: String,
-                                                                    phase: String) async throws -> Data {
-        var retryCount = 0
-        while true {
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                if let http = response as? HTTPURLResponse,
-                   !(200..<300).contains(http.statusCode) {
-                    if MediaBrowserSessionRetryPolicy.shouldRetryHTTPStatus(
-                        http.statusCode,
-                        currentRetryCount: retryCount
-                    ) {
-                        retryCount += 1
-                        let delay = MediaBrowserSessionRetryPolicy.retryDelaySeconds(nextAttempt: retryCount)
-                        recordDownloadDiagnostic("downloads.playback_info_retry", fields: [
-                            "download_id": .identifier(ratingKey),
-                            "backend": .label("Emby"),
-                            "phase": .label(phase),
-                            "attempt": .int(retryCount),
-                            "max_attempts": .int(MediaBrowserSessionRetryPolicy.defaultMaxRetries),
-                            "status_code": .int(http.statusCode),
-                            "delay_ms": .int(Int(delay * 1000)),
-                        ])
-                        try await Task.sleep(for: .seconds(delay))
-                        continue
-                    }
-                    recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "backend": .label("Emby"),
-                        "status_code": .int(http.statusCode),
-                        "phase": .label(phase),
-                    ])
-                    throw DownloadError.transferFailed("PlaybackInfo HTTP \(http.statusCode)")
-                }
-                return data
-            } catch let error as DownloadError {
-                throw error
-            } catch {
-                let nsError = error as NSError
-                if MediaBrowserSessionRetryPolicy.shouldRetryURLError(
-                    domain: nsError.domain,
-                    code: nsError.code,
-                    currentRetryCount: retryCount
-                ) {
-                    retryCount += 1
-                    let delay = MediaBrowserSessionRetryPolicy.retryDelaySeconds(nextAttempt: retryCount)
-                    recordDownloadDiagnostic("downloads.playback_info_retry", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "backend": .label("Emby"),
-                        "phase": .label(phase),
-                        "attempt": .int(retryCount),
-                        "max_attempts": .int(MediaBrowserSessionRetryPolicy.defaultMaxRetries),
-                        "error": .error(error),
-                        "delay_ms": .int(Int(delay * 1000)),
-                    ])
-                    try await Task.sleep(for: .seconds(delay))
-                    continue
-                }
-                throw error
-            }
         }
     }
 

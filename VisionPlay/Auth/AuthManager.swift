@@ -263,7 +263,18 @@ final class AuthManager {
               let token = appModel.embyAccessToken,
               let userID = appModel.embyUserID else { return false }
         do {
-            try await probeEmbyReachability(server: server, token: token, userID: userID)
+            let req = try EmbyLibrary.userViewsRequest(server: server,
+                                                       token: token,
+                                                       identity: embyIdentity,
+                                                       userId: userID)
+            let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
+            if let http = response as? HTTPURLResponse {
+                switch http.statusCode {
+                case 200..<300: break
+                case 401, 403: throw EmbyAuthError.unauthorized
+                default: throw EmbyAuthError.http(http.statusCode)
+                }
+            }
             if updateState { state = .authenticated }
             return true
         } catch EmbyAuthError.unauthorized {
@@ -277,47 +288,6 @@ final class AuthManager {
             if updateState { state = .failed("Signed in, but the Emby server could not be reached.") }
             return true
         }
-    }
-
-    /// Validate the saved Emby session with a live `userViews` probe.
-    ///
-    /// Mirror Jellyfin's reconnect posture: 401/403 can appear briefly while the headset changes
-    /// networks or the reverse proxy/server session catches up. Retry those auth-like statuses a
-    /// bounded number of times before treating the token as genuinely invalid and wiping creds.
-    private func probeEmbyReachability(server: URL, token: String, userID: String) async throws {
-        var retryCount = 0
-        while true {
-            let status = try await embyUserViewsStatus(server: server, token: token, userID: userID)
-            switch status {
-            case 200..<300:
-                return
-            case 401, 403 where MediaBrowserSessionRetryPolicy.shouldRetryHTTPStatus(
-                status,
-                currentRetryCount: retryCount
-            ):
-                retryCount += 1
-                let delay = MediaBrowserSessionRetryPolicy.retryDelaySeconds(nextAttempt: retryCount)
-                NSLog("[#93] restoreEmbySession: probe returned %d; retrying active session once network/server state settles (attempt %d)",
-                      status, retryCount)
-                try await Task.sleep(for: .seconds(delay))
-                continue
-            case 401, 403:
-                throw EmbyAuthError.unauthorized
-            default:
-                throw EmbyAuthError.http(status)
-            }
-        }
-    }
-
-    /// One Emby `userViews` probe; returns the HTTP status code (or rethrows a transport error).
-    private func embyUserViewsStatus(server: URL, token: String, userID: String) async throws -> Int {
-        let req = try EmbyLibrary.userViewsRequest(server: server,
-                                                   token: token,
-                                                   identity: embyIdentity,
-                                                   userId: userID)
-        let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
-        guard let http = response as? HTTPURLResponse else { return 200 }
-        return http.statusCode
     }
 
     private func loadEmbySessionSnapshot() -> Bool {
