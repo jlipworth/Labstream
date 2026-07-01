@@ -109,6 +109,7 @@ public final class DownloadManager {
     /// checkpoint-draining pauses, queue-paused manual resumes, and one-shot restart-counter
     /// preservation.
     private var staticRangeRecovery = StaticRangeRecoveryTracker()
+    @ObservationIgnored private var unverifiedRevalidationKeys: Set<String> = []
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
@@ -217,7 +218,10 @@ public final class DownloadManager {
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
         self.session.onChange = { [weak self] in
-            Task { @MainActor in self?.scheduleRefreshRecords(reason: "session_change") }
+            Task { @MainActor in
+                self?.scheduleRefreshRecords(reason: "session_change")
+                self?.revalidateUnverifiedDownloads(reason: "session_change")
+            }
         }
         // D3: surface background-delegate failures instead of silently dropping the
         // row. Hard failures record a `.failed` status in the store and hand us the
@@ -269,6 +273,7 @@ public final class DownloadManager {
             Task { @MainActor in
                 self?.refreshRecords()
                 self?.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
+                self?.revalidateUnverifiedDownloads(reason: "launch_recovered")
                 if self?.isQueuePaused != true {
                     self?.resumePendingServerPrepDownloads()
                     self?.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
@@ -593,6 +598,7 @@ public final class DownloadManager {
             // refresh onto the next run-loop turn instead of invalidating the whole downloads list
             // synchronously during scene activation.
             scheduleRefreshRecords(reason: "scene_active")
+            revalidateUnverifiedDownloads(reason: "scene_active")
         }
     }
 
@@ -1753,8 +1759,40 @@ public final class DownloadManager {
 
 
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
+        if positionMs > 0, store.markCompleteIfUnverified(ratingKey: ratingKey) {
+            recordDownloadDiagnostic("downloads.unverified_playback_confirmed", fields: [
+                "download_id": .identifier(ratingKey),
+                "position_ms": .int(positionMs),
+                "duration_ms": .int(durationMs ?? -1),
+            ])
+        }
         store.setLocalPlaybackPosition(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)
         refreshRecords()
+    }
+
+    private func revalidateUnverifiedDownloads(reason: String) {
+        let candidates = store.records.filter { $0.status == .unverified }
+        guard !candidates.isEmpty else { return }
+        for record in candidates where !unverifiedRevalidationKeys.contains(record.ratingKey) {
+            unverifiedRevalidationKeys.insert(record.ratingKey)
+            recordDownloadDiagnostic("downloads.unverified_revalidate_start", fields: [
+                "download_id": .identifier(record.ratingKey),
+                "reason": .label(reason),
+            ])
+            let started = session.revalidateCompletedDownload(ratingKey: record.ratingKey,
+                                                              validationLabel: "unverified_\(reason)")
+            if !started {
+                unverifiedRevalidationKeys.remove(record.ratingKey)
+            } else {
+                let key = record.ratingKey
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(90))
+                    await MainActor.run {
+                        _ = self?.unverifiedRevalidationKeys.remove(key)
+                    }
+                }
+            }
+        }
     }
 
     private func clearRetryHandoff(ratingKey: String) {

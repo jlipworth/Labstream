@@ -142,6 +142,49 @@ struct BackgroundDownloadTransientRetryPolicyTests {
         ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
     }
 
+    @Test("Range move retries only for file-missing Cocoa errors on durable checkpoint chunks")
+    func rangeMoveRetryGate() {
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
+            errorDomain: NSCocoaErrorDomain,
+            errorCode: CocoaError.fileNoSuchFile.rawValue,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .retry(nextAttempt: 1))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
+            errorDomain: NSCocoaErrorDomain,
+            errorCode: CocoaError.fileNoSuchFile.rawValue,
+            hasRequest: false,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .reject(.missingRangeRequest))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
+            errorDomain: NSCocoaErrorDomain,
+            errorCode: CocoaError.fileNoSuchFile.rawValue,
+            hasRequest: true,
+            supportsDurableCheckpoint: false,
+            currentRetryCount: 0
+        ) == .reject(.unsupportedRangeSegment))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
+            errorDomain: NSCocoaErrorDomain,
+            errorCode: CocoaError.fileNoSuchFile.rawValue,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 3
+        ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
+            errorDomain: NSURLErrorDomain,
+            errorCode: NSURLErrorNetworkConnectionLost,
+            hasRequest: true,
+            supportsDurableCheckpoint: true,
+            currentRetryCount: 0
+        ) == .reject(.nonTransientError))
+    }
+
     @Test("Range HTTP rehydration is limited to auth statuses, durable checkpoints, and one attempt")
     func rangeHTTPRehydrationGate() {
         #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
