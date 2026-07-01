@@ -101,6 +101,13 @@ struct DownloadRowDisplayPolicyTests {
         #expect(caption.hasSuffix(" • 1080p"))
     }
 
+    @Test("Requested profile text trims empty labels")
+    func requestedProfileText() {
+        #expect(DownloadRowDisplayPolicy.requestedProfileText(" 4K 40 Mbps ") == "Requested: 4K 40 Mbps")
+        #expect(DownloadRowDisplayPolicy.requestedProfileText(" ") == nil)
+        #expect(DownloadRowDisplayPolicy.requestedProfileText(nil) == nil)
+    }
+
     private func record(bytes: Int,
                         progress: Double,
                         metadata: OfflineMetadata?) -> DownloadRecord {

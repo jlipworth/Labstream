@@ -60,6 +60,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.offlineTextSubtitles == nil)
         #expect(meta.markers == nil)
         #expect(meta.resolutionLabel == nil)
+        #expect(meta.requestedProfileLabel == nil)
         #expect(meta.localPlaybackPositionMs == nil)
     }
 
@@ -190,6 +191,7 @@ struct OfflineDownloadModelsTests {
             markers: [OfflineMarker(markerID: 8, type: "intro", startTimeOffset: 15_000, endTimeOffset: 75_000, isFinal: false),
                       OfflineMarker(markerID: 9, type: "credits", startTimeOffset: 3_500_000, endTimeOffset: 3_600_000, isFinal: true)],
             resolutionLabel: "1080p",
+            requestedProfileLabel: "4K 40 Mbps",
             librarySectionID: 3,
             librarySectionKey: "/library/sections/3",
             mediaIndex: 0,

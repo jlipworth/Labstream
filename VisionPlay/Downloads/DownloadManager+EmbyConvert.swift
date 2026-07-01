@@ -131,7 +131,8 @@ extension DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
-                               deferStaticStartWhenQueuePaused: true)
+                               deferStaticStartWhenQueuePaused: true,
+                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName)
             return
         }
 
@@ -161,7 +162,8 @@ extension DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
-                               deferStaticStartWhenQueuePaused: true)
+                               deferStaticStartWhenQueuePaused: true,
+                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName)
             return
         }
 
@@ -290,9 +292,12 @@ extension DownloadManager {
             ])
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
+            let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
+                .metadata?.requestedProfileLabel ?? targetName
             store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
-                               deferStaticStartWhenQueuePaused: true)
+                               deferStaticStartWhenQueuePaused: true,
+                               requestedProfileLabelOverride: requestedProfileLabel)
             return
         }
 
@@ -534,6 +539,8 @@ extension DownloadManager {
         // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
         clearOptimizeProgress(ratingKey: ratingKey)
         releaseInFlight(ratingKey: ratingKey)
+        let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
+            .metadata?.requestedProfileLabel ?? targetName
         // Remove the seeded `.preparing` row so the handoff re-seeds a fresh download row at the
         // converted source (its own size, route, container).
         store.remove(ratingKey: ratingKey)
@@ -542,7 +549,8 @@ extension DownloadManager {
         // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
         // `.optimize` reroutes). The KEPT converted file is what reuse serves next time.
         await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId,
-                           deferStaticStartWhenQueuePaused: true)
+                           deferStaticStartWhenQueuePaused: true,
+                           requestedProfileLabelOverride: requestedProfileLabel)
     }
 
     /// Enumerate the current `File` MediaSources for an Emby item (unfiltered PlaybackInfo). Used to
