@@ -762,6 +762,27 @@ final class DownloadStore: @unchecked Sendable {
         persist()
     }
 
+    /// Promote a previously byte-complete but probe-inconclusive row once a later validation or
+    /// actual local playback proves the file is usable. No-op for already-complete/active/failed rows
+    /// so callers can safely invoke this from reconnect and playback-progress paths.
+    @discardableResult
+    func markCompleteIfUnverified(ratingKey: String) -> Bool {
+        lock.lock()
+        guard var row = rows[ratingKey], row.status == .unverified else {
+            lock.unlock()
+            return false
+        }
+        row.status = .complete
+        rows[ratingKey] = row
+        lock.unlock()
+        AppDiagnostics.record(.downloads, "downloads.unverified_promoted", fields: [
+            "download_id": .identifier(ratingKey),
+            "source": .label("local_playback"),
+        ])
+        persist()
+        return true
+    }
+
     /// Reconcile persisted rows against disk at launch (D2).
     ///
     /// A row left `.queued`/`.downloading` from a previous run whose task did NOT

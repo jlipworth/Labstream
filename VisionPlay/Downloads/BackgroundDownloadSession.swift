@@ -1940,6 +1940,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
+            lock.lock()
+            retryCounts.removeValue(forKey: entry.ratingKey)
+            rangeHTTPRehydrateCounts.removeValue(forKey: entry.ratingKey)
+            lock.unlock()
             if finishedChunkDisposition == .writeThenPause {
                 let bytes = fileSize(at: entry.destination) ?? 0
                 store.updateProgress(ratingKey: entry.ratingKey,
@@ -2059,6 +2063,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Forward progress: this chunk's validator matched, so the resource is stable again — clear
             // the consecutive validator-change restart counter (#169 HIGH 1 livelock bound).
             lock.lock()
+            retryCounts.removeValue(forKey: entry.ratingKey)
             staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
             rangeHTTPRehydrateCounts.removeValue(forKey: entry.ratingKey)
             lock.unlock()
@@ -2390,6 +2395,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return true
     }
 
+    /// Re-run the same bounded local playability probe for a byte-complete row that was previously
+    /// preserved as `.unverified`. Safe to call on reconnect/scene-active; the finalization guard
+    /// coalesces duplicates and another inconclusive probe leaves the file preserved.
+    @discardableResult
+    func revalidateCompletedDownload(ratingKey: String, validationLabel: String) -> Bool {
+        guard let destination = store.localURL(for: ratingKey) else { return false }
+        let bytes = fileSize(at: destination) ?? 0
+        guard bytes > 0 else { return false }
+        AppDiagnostics.record(.downloads, "downloads.unverified_revalidate", fields: [
+            "download_id": .identifier(ratingKey),
+            "bytes": .bytes(bytes),
+            "validation": .label(validationLabel),
+        ])
+        Task { [self] in
+            await finalizeTransferredFile(ratingKey: ratingKey,
+                                          destination: destination,
+                                          bytes: bytes,
+                                          validationLabel: validationLabel)
+        }
+        return true
+    }
+
     /// The durable partial now holds the whole file: validate it through the SAME finalize pipeline as
     /// the opaque lane (HEVC `hvc1` fixup, #98 retrying probe, truncation guard, complete/unverified).
     private func finalizeRangeWhole(entry: RangeTransfer) {
@@ -2418,6 +2445,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func failRangeMove(entry: RangeTransfer, error: Error) {
+        if recoverRangeMoveFailure(entry: entry, error: error) {
+            return
+        }
         let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
             ratingKey: entry.ratingKey,
             expectedBytes: entry.expectedBytes
@@ -2431,6 +2461,92 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         onError?(entry.ratingKey, .transferFailed(
             DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer")))
         onChange?()
+    }
+
+    /// Recover "Cocoa code=4" Range chunk move/append failures by doing what the user's Retry button
+    /// would do: preserve/reset to the app-owned checkpoint and reissue/rebuild the next Range request
+    /// a bounded number of times instead of terminally failing the row.
+    private func recoverRangeMoveFailure(entry: RangeTransfer, error: Error) -> Bool {
+        let nsError = error as NSError
+        let supportsDurableCheckpoint = RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind)
+        let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
+            ratingKey: entry.ratingKey,
+            expectedBytes: entry.expectedBytes
+        )
+        lock.lock()
+        let decision = BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
+            errorDomain: nsError.domain,
+            errorCode: nsError.code,
+            hasRequest: entry.request != nil,
+            supportsDurableCheckpoint: supportsDurableCheckpoint,
+            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+        )
+        guard case .retry(let nextAttempt) = decision else {
+            lock.unlock()
+            if case .reject(.missingRangeRequest) = decision,
+               nsError.domain == NSCocoaErrorDomain,
+               nsError.code == CocoaError.fileNoSuchFile.rawValue,
+               supportsDurableCheckpoint {
+                AppDiagnostics.record(.downloads, "downloads.range_move_rehydrate", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "segment_kind": .label(entry.segmentKind.rawValue),
+                    "error": .error(error),
+                    "bytes": .bytes(durableBytes),
+                    "reason": .label("missing_request"),
+                ])
+                store.setStatus(ratingKey: entry.ratingKey, .queued)
+                onRangeRequestNeeded?(entry.ratingKey, .adoptedChunkFailed)
+                onChange?()
+                return true
+            }
+            return false
+        }
+        retryCounts[entry.ratingKey] = nextAttempt
+        lock.unlock()
+
+        guard let request = entry.request else { return false }
+        let delay = Self.rangeHTTPRetryDelay(nextAttempt: nextAttempt)
+        AppDiagnostics.record(.downloads, "downloads.range_move_retry", fields: [
+            "download_id": .identifier(entry.ratingKey),
+            "segment_kind": .label(entry.segmentKind.rawValue),
+            "attempt": .int(nextAttempt),
+            "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRangeMoveRetries),
+            "error": .error(error),
+            "bytes": .bytes(durableBytes),
+            "delay_ms": .int(Int(delay * 1000)),
+        ])
+        store.setStatus(ratingKey: entry.ratingKey, .queued)
+        rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            do {
+                let holdBackgroundCompletion = hasPendingBackgroundCompletionHandler()
+                try startRangeChunk(ratingKey: entry.ratingKey,
+                                    with: request,
+                                    to: entry.destination,
+                                    expectedBytes: entry.expectedBytes,
+                                    resetsRetryCount: false,
+                                    holdBackgroundCompletionForFirstProgress: holdBackgroundCompletion,
+                                    segmentKindOverride: entry.segmentKind,
+                                    segmentReasonOverride: "move_retry")
+                onChange?()
+            } catch {
+                if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
+                                                   error: error,
+                                                   context: "move_retry") {
+                    onChange?()
+                    return
+                }
+                AppDiagnostics.record(.downloads, "downloads.range_move_retry_failed", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "attempt": .int(nextAttempt),
+                    "error": .error(error),
+                ])
+                store.setStatus(ratingKey: entry.ratingKey, .failed)
+                onError?(entry.ratingKey, .transferFailed("Retry after a missing download chunk failed."))
+                onChange?()
+            }
+        }
+        onChange?()
+        return true
     }
 
     /// Append `source` onto the end of `destination` in bounded blocks (never loading a whole chunk

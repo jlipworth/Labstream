@@ -23,6 +23,7 @@ public enum BackgroundDownloadTransientRetryDecision: Sendable, Equatable {
 /// authenticated request still to be in memory.
 public enum BackgroundDownloadTransientRetryPolicy {
     public static let defaultMaxRetries = 3
+    public static let defaultMaxRangeMoveRetries = 3
     public static let defaultMaxRangeRehydrations = 1
 
     /// HTTP statuses where repeating the identical Range request is unlikely to help, but rebuilding
@@ -111,6 +112,29 @@ public enum BackgroundDownloadTransientRetryPolicy {
                                          maxRetries: Int = defaultMaxRetries) -> BackgroundDownloadTransientRetryDecision {
         guard transientHTTPStatusCodes.contains(statusCode) else {
             return .reject(.nonTransientHTTPStatus)
+        }
+        guard supportsDurableCheckpoint else {
+            return .reject(.unsupportedRangeSegment)
+        }
+        guard hasRequest else {
+            return .reject(.missingRangeRequest)
+        }
+        return retryBudgetDecision(currentRetryCount: currentRetryCount, maxRetries: maxRetries)
+    }
+
+    /// A finished app-managed Range chunk can occasionally report delegate completion but then fail
+    /// to move/stash/append because the temporary file or durable partial disappeared during a
+    /// headset-off/background reattach race. Treat file-missing Cocoa errors like a transient Range
+    /// chunk failure: keep the last app-owned checkpoint and rebuild/retry from there.
+    public static func rangeMoveDecision(errorDomain: String,
+                                         errorCode: Int,
+                                         hasRequest: Bool,
+                                         supportsDurableCheckpoint: Bool,
+                                         currentRetryCount: Int,
+                                         maxRetries: Int = defaultMaxRangeMoveRetries) -> BackgroundDownloadTransientRetryDecision {
+        guard errorDomain == NSCocoaErrorDomain,
+              errorCode == CocoaError.fileNoSuchFile.rawValue else {
+            return .reject(.nonTransientError)
         }
         guard supportsDurableCheckpoint else {
             return .reject(.unsupportedRangeSegment)
