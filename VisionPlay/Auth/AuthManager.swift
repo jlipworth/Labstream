@@ -182,13 +182,16 @@ final class AuthManager {
 
     private func restoreJellyfinSession(validateReachability: Bool = true,
                                         updateState: Bool = true) async -> Bool {
-        guard loadJellyfinSessionSnapshot() else { return false }
-        guard validateReachability else { return true }
-        guard let server = appModel.jellyfinServerBaseURL,
-              let token = appModel.jellyfinAccessToken,
-              let userID = appModel.jellyfinUserID else { return false }
+        guard let snapshot = readJellyfinSessionSnapshot() else { return false }
+        guard validateReachability else {
+            applyJellyfinSessionSnapshot(snapshot)
+            return true
+        }
         do {
-            try await probeJellyfinReachability(server: server, token: token, userID: userID)
+            try await probeJellyfinReachability(server: snapshot.server,
+                                                token: snapshot.token,
+                                                userID: snapshot.userID)
+            applyJellyfinSessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             return true
         } catch JellyfinAuthError.unauthorized {
@@ -198,6 +201,11 @@ final class AuthManager {
             if updateState { state = .idle }
             return false
         } catch {
+            // Preserve the keychain snapshot for a later retry, but do not leave the runtime lane
+            // looking browse-ready when the live probe did not prove the session. Otherwise
+            // ContentView/download/browse paths can act on a half-restored Jellyfin lane while the
+            // user is trying to re-authenticate on a flaky network.
+            clearRuntimeState(for: .jellyfin)
             if updateState { state = .failed("Signed in, but the Jellyfin server could not be reached.") }
             return true
         }
@@ -244,15 +252,27 @@ final class AuthManager {
     }
 
     private func loadJellyfinSessionSnapshot() -> Bool {
+        guard let snapshot = readJellyfinSessionSnapshot() else { return false }
+        applyJellyfinSessionSnapshot(snapshot)
+        return true
+    }
+
+    private func readJellyfinSessionSnapshot() -> JellyfinSessionSnapshot? {
         guard let urlString = keychain.jellyfinServerURLString,
               let server = URL(string: urlString),
               let token = keychain.jellyfinAccessToken,
-              let userID = keychain.jellyfinUserID else { return false }
-        appModel.jellyfinServerBaseURL = server
-        appModel.jellyfinAccessToken = token
-        appModel.jellyfinUserID = userID
-        appModel.jellyfinServerID = keychain.jellyfinServerID
-        return true
+              let userID = keychain.jellyfinUserID else { return nil }
+        return JellyfinSessionSnapshot(server: server,
+                                       token: token,
+                                       userID: userID,
+                                       serverID: keychain.jellyfinServerID)
+    }
+
+    private func applyJellyfinSessionSnapshot(_ snapshot: JellyfinSessionSnapshot) {
+        appModel.jellyfinServerBaseURL = snapshot.server
+        appModel.jellyfinAccessToken = snapshot.token
+        appModel.jellyfinUserID = snapshot.userID
+        appModel.jellyfinServerID = snapshot.serverID
     }
 
     private func restoreEmbySession(validateReachability: Bool = true,
@@ -261,26 +281,21 @@ final class AuthManager {
             "validate_reachability": .bool(validateReachability),
             "update_state": .bool(updateState)
         ]
-        guard loadEmbySessionSnapshot() else {
+        guard let snapshot = readEmbySessionSnapshot() else {
             recordAuthDiagnostic("auth.emby.restore.missing_snapshot", fields: restoreFields)
             return false
         }
         guard validateReachability else {
+            applyEmbySessionSnapshot(snapshot)
             recordAuthDiagnostic("auth.emby.restore.snapshot_loaded", fields: restoreFields)
             return true
         }
-        guard let server = appModel.embyServerBaseURL,
-              let token = appModel.embyAccessToken,
-              let userID = appModel.embyUserID else {
-            recordAuthDiagnostic("auth.emby.restore.missing_snapshot", fields: restoreFields)
-            return false
-        }
         recordAuthDiagnostic("auth.emby.restore.start", fields: restoreFields)
         do {
-            let req = try EmbyLibrary.userViewsRequest(server: server,
-                                                       token: token,
+            let req = try EmbyLibrary.userViewsRequest(server: snapshot.server,
+                                                       token: snapshot.token,
                                                        identity: embyIdentity,
-                                                       userId: userID)
+                                                       userId: snapshot.userID)
             let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
@@ -289,6 +304,7 @@ final class AuthManager {
                 default: throw EmbyAuthError.http(http.statusCode)
                 }
             }
+            applyEmbySessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             recordAuthDiagnostic("auth.emby.restore.success", fields: restoreFields)
             return true
@@ -300,7 +316,9 @@ final class AuthManager {
             return false
         } catch {
             // Unreachable host (or other transient error) — keep the saved session so a
-            // later launch with connectivity restores cleanly.
+            // later launch with connectivity restores cleanly, but clear the runtime lane so
+            // `isBrowseReady`/`backendSession(for:)` do not expose an unproven Emby session.
+            clearRuntimeState(for: .emby)
             if updateState { state = .failed("Signed in, but the Emby server could not be reached.") }
             var fields = restoreFields
             if case EmbyAuthError.http(let status) = error {
@@ -315,15 +333,27 @@ final class AuthManager {
     }
 
     private func loadEmbySessionSnapshot() -> Bool {
+        guard let snapshot = readEmbySessionSnapshot() else { return false }
+        applyEmbySessionSnapshot(snapshot)
+        return true
+    }
+
+    private func readEmbySessionSnapshot() -> EmbySessionSnapshot? {
         guard let urlString = keychain.embyServerURLString,
               let server = URL(string: urlString),
               let token = keychain.embyAccessToken,
-              let userID = keychain.embyUserID else { return false }
-        appModel.embyServerBaseURL = server
-        appModel.embyAccessToken = token
-        appModel.embyUserID = userID
-        appModel.embyServerID = keychain.embyServerID
-        return true
+              let userID = keychain.embyUserID else { return nil }
+        return EmbySessionSnapshot(server: server,
+                                   token: token,
+                                   userID: userID,
+                                   serverID: keychain.embyServerID)
+    }
+
+    private func applyEmbySessionSnapshot(_ snapshot: EmbySessionSnapshot) {
+        appModel.embyServerBaseURL = snapshot.server
+        appModel.embyAccessToken = snapshot.token
+        appModel.embyUserID = snapshot.userID
+        appModel.embyServerID = snapshot.serverID
     }
 
     /// Start a fresh login. Creates TWO PINs (#16): a non-strong one whose
@@ -1409,6 +1439,20 @@ final class AuthManager {
 private struct PendingEmbyConnect {
     let connectUserId: String
     let servers: [EmbyConnectServer]
+}
+
+private struct JellyfinSessionSnapshot {
+    let server: URL
+    let token: String
+    let userID: String
+    let serverID: String?
+}
+
+private struct EmbySessionSnapshot {
+    let server: URL
+    let token: String
+    let userID: String
+    let serverID: String?
 }
 
 private enum JellyfinAuthError: Error {
