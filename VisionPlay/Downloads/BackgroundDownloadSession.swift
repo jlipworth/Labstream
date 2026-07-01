@@ -3150,6 +3150,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.unlock()
 
         downloadLog.error("range-http-rehydrate ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) status=\(statusCode, privacy: .public) bytes=\(durableBytes, privacy: .public)")
+        let delay = Self.rangeHTTPRetryDelay(nextAttempt: nextAttempt)
         AppDiagnostics.record(.downloads, "downloads.range_http_rehydrate", fields: [
             "download_id": .identifier(entry.ratingKey),
             "segment_kind": .label(entry.segmentKind.rawValue),
@@ -3157,11 +3158,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRangeRehydrations),
             "status_code": .int(statusCode),
             "bytes": .bytes(durableBytes),
+            "delay_ms": .int(Int(delay * 1000)),
         ])
         // Persist active intent before the callback so a kill during backend rehydration still leaves
         // a queued static-range row with its durable partial as the checkpoint.
         store.setStatus(ratingKey: entry.ratingKey, .queued)
-        onRangeRequestNeeded?(entry.ratingKey, .serverAuthorizationRejected)
+        rangeRetryQueue.asyncAfter(deadline: .now() + delay) { [self] in
+            onRangeRequestNeeded?(entry.ratingKey, .serverAuthorizationRejected)
+            onChange?()
+        }
         onChange?()
         return true
     }

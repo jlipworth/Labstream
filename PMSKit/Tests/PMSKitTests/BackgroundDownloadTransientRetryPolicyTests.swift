@@ -185,7 +185,7 @@ struct BackgroundDownloadTransientRetryPolicyTests {
         ) == .reject(.nonTransientError))
     }
 
-    @Test("Range HTTP rehydration is limited to auth statuses, durable checkpoints, and one attempt")
+    @Test("Range HTTP rehydration is limited to auth statuses, durable checkpoints, and bounded attempts")
     func rangeHTTPRehydrationGate() {
         #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
             statusCode: 403,
@@ -215,7 +215,19 @@ struct BackgroundDownloadTransientRetryPolicyTests {
             statusCode: 403,
             supportsDurableCheckpoint: true,
             currentRehydrationCount: 1
-        ) == .reject(.retryBudgetExhausted(nextAttempt: 2, maxRetries: 1)))
+        ) == .retry(nextAttempt: 2))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 403,
+            supportsDurableCheckpoint: true,
+            currentRehydrationCount: 2
+        ) == .retry(nextAttempt: 3))
+
+        #expect(BackgroundDownloadTransientRetryPolicy.rangeRehydrationDecision(
+            statusCode: 403,
+            supportsDurableCheckpoint: true,
+            currentRehydrationCount: 3
+        ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
     }
 
     @Test("Transient HTTP status set covers the proxy and origin-unavailable statuses used by downloads")

@@ -24,7 +24,7 @@ public enum BackgroundDownloadTransientRetryDecision: Sendable, Equatable {
 public enum BackgroundDownloadTransientRetryPolicy {
     public static let defaultMaxRetries = 3
     public static let defaultMaxRangeMoveRetries = 3
-    public static let defaultMaxRangeRehydrations = 1
+    public static let defaultMaxRangeRehydrations = 3
 
     /// HTTP statuses where repeating the identical Range request is unlikely to help, but rebuilding
     /// the backend/playback negotiation can mint a fresh authorized static-file request.
