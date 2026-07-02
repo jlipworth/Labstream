@@ -29,8 +29,12 @@ enum DetailPlaybackLauncher {
     static func openJellyfin(item: MediaItem,
                              appModel: AppModel,
                              maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen<JellyfinRemotePlayback> {
+        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item)
         let result = try await JellyfinBrowseService(appModel: appModel)
-            .playbackOpen(item: item, maxVideoBitrateKbps: maxVideoBitrateKbps)
+            .playbackOpen(item: item,
+                          maxVideoBitrateKbps: maxVideoBitrateKbps,
+                          audioStreamIndex: selection.audioStreamIndex,
+                          subtitleStreamIndex: selection.subtitleStreamIndex)
         return DetailRemotePlaybackOpen(
             playback: JellyfinRemotePlayback(url: result.url,
                                              headers: result.requiredHTTPHeaders,
@@ -87,6 +91,10 @@ enum DetailPlaybackLauncher {
                                                              appModel: appModel,
                                                              request: request)
                            },
+                           initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
+                               .preferredAudioStreamIndex(for: item),
+                           initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
+                               .subtitleStreamIndex(),
                            maxVideoBitrateKbps: maxVideoBitrateKbps,
                            qualityDefaultsKey: qualityDefaultsKey)
     }

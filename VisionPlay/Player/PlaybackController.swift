@@ -722,6 +722,8 @@ final class PlaybackController {
          mediaBrowserProgressSession: MediaBrowserPlaybackProgressSession? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
          remoteStreamReopener: RemoteStreamReopener? = nil,
+         initialAudioStreamIndex: Int? = nil,
+         initialSubtitleStreamIndex: Int? = nil,
          maxVideoBitrateKbps: Int = 0,
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
@@ -754,6 +756,8 @@ final class PlaybackController {
         self.initialResumeMsOverride = nil
         self.chapters = item.chapters ?? []
         self.speedState.speed = self.playbackSpeed
+        self.audioStreamIDOverride = initialAudioStreamIndex
+        self.subtitleStreamIndexOverride = initialSubtitleStreamIndex
     }
 
     // MARK: - Lifecycle
@@ -913,17 +917,22 @@ final class PlaybackController {
     /// accessor (the synchronous `mediaSelectionGroup(forMediaCharacteristic:)` is
     /// deprecated on visionOS).
     func loadSubtitleTracks() async -> (tracks: [SubtitleTrack], selectedID: Int)? {
-        guard let playerItem = player.currentItem else { return nil }
         if localFile != nil, !offlineTextSubtitles.isEmpty {
             return await loadOfflineSubtitleTracks()
         }
+        if supportsMetadataSubtitleSelection {
+            // Backend-resolved MediaBrowser streams (Jellyfin/Emby) need subtitle picks to be
+            // carried into PlaybackInfo/HLS reopens as SubtitleStreamIndex. Keep this independent
+            // of player.currentItem so the menu does not flash "No subtitle tracks" while a
+            // subtitle pick rebuilds/swaps the AVPlayerItem.
+            return loadMetadataSubtitleTracks()
+        }
+
+        guard let playerItem = player.currentItem else { return nil }
         let asset = playerItem.asset
         guard let group = try? await asset.loadMediaSelectionGroup(for: .legible),
               !group.options.isEmpty else {
-            // No soft renditions in the HLS (e.g. Emby, which never embeds subtitle renditions in
-            // its transcode manifest). Fall back to part metadata + a stream reopen so the menu
-            // still populates and a chosen track is server-burned-in.
-            return loadMetadataSubtitleTracks()
+            return nil
         }
 
         // "Off" is always offered first. It maps to deselecting the group entirely.
@@ -1041,9 +1050,12 @@ final class PlaybackController {
         let streams = part.subtitleStreams
         guard !streams.isEmpty else { return nil }
 
-        // "Off" first. Playback opens with no subtitle, so "Off" is the default until the user
-        // picks one (or carries the live override after a switch this session).
-        var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1, displayName: "Off", option: nil)]
+        // "Off" first. Carry Jellyfin's explicit off sentinel through the same backend-reopen
+        // path as real subtitle streams; nil would mean "omit" and can inherit server defaults.
+        var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1,
+                                                     displayName: "Off",
+                                                     option: nil,
+                                                     streamIndex: MediaBrowserPlaybackPreferencePolicy.subtitleOffStreamIndex)]
         var seenCounts: [String: Int] = [:]
         for (index, stream) in streams.enumerated() {
             var label = stream.displayTitle
@@ -1057,7 +1069,9 @@ final class PlaybackController {
             tracks.append(SubtitleTrack(id: stream.id, displayName: label, option: nil, streamIndex: stream.id))
         }
 
-        let selectedID = subtitleStreamIndexOverride ?? -1
+        let selectedID = subtitleStreamIndexOverride
+            ?? MediaBrowserPlaybackPreferencePolicy.subtitleStreamIndex()
+            ?? -1
         return (tracks, selectedID)
     }
 
@@ -1199,7 +1213,38 @@ final class PlaybackController {
         }
         guard let playerItem = player.currentItem else { return }
 
-        // Soft path (Plex/Jellyfin): the HLS carries legible renditions, so switching is an instant
+        // Metadata burn-in/reopen path (Jellyfin/Emby): these backend-resolved streams need the
+        // chosen SubtitleStreamIndex in PlaybackInfo/HLS. Do this before the AVFoundation soft path
+        // because Jellyfin may expose a legible group whose local selection is ineffective.
+        if supportsMetadataSubtitleSelection {
+            if let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
+               !group.options.isEmpty {
+                // Avoid leaving a stale local soft selection active while the backend stream is
+                // rebuilt, especially for the explicit Off row.
+                playerItem.select(nil, in: group)
+            }
+            guard track.streamIndex != subtitleStreamIndexOverride else {
+                persistMetadataSubtitlePreference(for: track)
+                didApplySavedSubtitle = true
+                return
+            }
+            subtitleStreamIndexOverride = track.streamIndex
+            persistMetadataSubtitlePreference(for: track)
+            didApplySavedSubtitle = true
+
+            let resumeMs = currentResumeMs
+            restartAtCurrentPosition(offsetMs: resumeMs,
+                                     bitrateKbps: maxVideoBitrateKbps,
+                                     resetFinalTarget: true,
+                                     resetAdaptive: false,
+                                     clearError: false,
+                                     removeObservers: true,
+                                     swapRecoveryClient: false,
+                                     preferShortRemoteHLSBuffer: false)
+            return
+        }
+
+        // Soft path (Plex): the HLS carries legible renditions, so switching is an instant
         // AVMediaSelection — no reload.
         if let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
            !group.options.isEmpty {
@@ -1211,25 +1256,6 @@ final class PlaybackController {
             didApplySavedSubtitle = true
             return
         }
-
-        // Metadata burn-in path (Emby): no legible renditions exist, so the only way to render a
-        // subtitle is to reopen the stream with the chosen `SubtitleStreamIndex` (server burns it
-        // in). The "Off" row (streamIndex nil) reopens with no subtitle.
-        guard supportsMetadataSubtitleSelection else { return }
-        guard track.streamIndex != subtitleStreamIndexOverride else { return }
-        subtitleStreamIndexOverride = track.streamIndex
-        persistMetadataSubtitlePreference(for: track)
-        didApplySavedSubtitle = true
-
-        let resumeMs = currentResumeMs
-        restartAtCurrentPosition(offsetMs: resumeMs,
-                                 bitrateKbps: maxVideoBitrateKbps,
-                                 resetFinalTarget: true,
-                                 resetAdaptive: false,
-                                 clearError: false,
-                                 removeObservers: true,
-                                 swapRecoveryClient: false,
-                                 preferShortRemoteHLSBuffer: false)
     }
 
     /// Persist a metadata-driven subtitle choice (Emby burn-in path) so the language preference
@@ -1440,6 +1466,17 @@ final class PlaybackController {
                                      languageCode: sourceAudio.languageCode,
                                      language: sourceAudio.language,
                                      preferredLanguage: preferredAudio)
+    }
+
+    private func effectiveRemoteAudioStreamIndex() -> Int? {
+        audioStreamIDOverride
+            ?? MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(for: item,
+                                                                             mediaIndex: mediaIndex)
+    }
+
+    private func effectiveRemoteSubtitleStreamIndex() -> Int? {
+        subtitleStreamIndexOverride
+            ?? MediaBrowserPlaybackPreferencePolicy.subtitleStreamIndex()
     }
 
     private func sourcePartForCurrentMedia() -> Part? {
@@ -3824,8 +3861,8 @@ final class PlaybackController {
             do {
                 let request = RemoteStreamReopenRequest(offsetMs: offsetMs,
                                                         bitrateKbps: bitrateKbps,
-                                                        audioStreamIndex: audioStreamIDOverride,
-                                                        subtitleStreamIndex: subtitleStreamIndexOverride)
+                                                        audioStreamIndex: effectiveRemoteAudioStreamIndex(),
+                                                        subtitleStreamIndex: effectiveRemoteSubtitleStreamIndex())
                 let reopened = try await remoteStreamReopener(request)
                 guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
                     capturedGeneration: generation,
