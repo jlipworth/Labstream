@@ -26,9 +26,9 @@ func authArtifactWriterExcludesPersistedFilesFromBackup() throws {
     try CredentialArtifactStorage.writeAuthArtifact(data, to: url)
 
     #expect(try Data(contentsOf: url) == data)
+    #if canImport(Darwin)
     let values = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
     #expect(values.isExcludedFromBackup == true)
-    #if canImport(Darwin)
     if CredentialArtifactStorage.supportsFileProtectionAttributes {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let protection = try #require(attributes[.protectionKey] as? FileProtectionType)
@@ -47,9 +47,9 @@ func credentialFallbackWriterUsesCompleteProtection() throws {
     let url = directory.appendingPathComponent("secret")
     try CredentialArtifactStorage.writeCredentialFallback(Data("secret".utf8), to: url)
 
+    #if canImport(Darwin)
     let values = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
     #expect(values.isExcludedFromBackup == true)
-    #if canImport(Darwin)
     if CredentialArtifactStorage.supportsFileProtectionAttributes {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let protection = try #require(attributes[.protectionKey] as? FileProtectionType)
