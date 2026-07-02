@@ -192,6 +192,7 @@ struct OfflineDownloadModelsTests {
                       OfflineMarker(markerID: 9, type: "credits", startTimeOffset: 3_500_000, endTimeOffset: 3_600_000, isFinal: true)],
             resolutionLabel: "1080p",
             requestedProfileLabel: "4K 40 Mbps",
+            downloadBitrateKbps: 40_000,
             librarySectionID: 3,
             librarySectionKey: "/library/sections/3",
             mediaIndex: 0,

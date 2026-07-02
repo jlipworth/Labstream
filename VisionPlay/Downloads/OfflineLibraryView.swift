@@ -216,8 +216,8 @@ public struct OfflineLibraryView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let requested = requestedProfileText(for: record) {
-                    Text(requested)
+                if let bitrate = downloadBitrateText(for: record) {
+                    Text(bitrate)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -464,9 +464,9 @@ public struct OfflineLibraryView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " • ")
     }
 
-    private func requestedProfileText(for record: DownloadRecord) -> String? {
-        DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel,
-                                                      status: record.status)
+    private func downloadBitrateText(for record: DownloadRecord) -> String? {
+        DownloadRowDisplayPolicy.downloadBitrateText(kbps: record.metadata?.downloadBitrateKbps,
+                                                     requestedProfileLabel: record.metadata?.requestedProfileLabel)
     }
 
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the

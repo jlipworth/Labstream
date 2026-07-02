@@ -74,6 +74,23 @@ public enum DownloadRowDisplayPolicy {
         return parts.joined(separator: " • ")
     }
 
+    public static func bitrateText(kbps: Int?) -> String? {
+        guard let kbps, kbps > 0 else { return nil }
+        if kbps < 1_000 { return "\(kbps) Kbps" }
+        return String(format: "%.1f Mbps", Double(kbps) / 1_000)
+    }
+
+    public static func downloadBitrateText(kbps: Int?, requestedProfileLabel: String? = nil) -> String? {
+        if let bitrate = bitrateText(kbps: kbps) {
+            return "Bitrate: \(bitrate)"
+        }
+        if let inferred = inferredBitrateKbps(from: requestedProfileLabel),
+           let bitrate = bitrateText(kbps: inferred) {
+            return "Bitrate: \(bitrate)"
+        }
+        return nil
+    }
+
     public static func requestedProfileText(_ label: String?) -> String? {
         guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines),
               !label.isEmpty else {
@@ -89,5 +106,17 @@ public enum DownloadRowDisplayPolicy {
         case .queued, .preparing, .downloading, .failed, .paused:
             return requestedProfileText(label)
         }
+    }
+
+    private static func inferredBitrateKbps(from label: String?) -> Int? {
+        guard let label else { return nil }
+        let pattern = #"(?i)(\d+(?:\.\d+)?)\s*mbps"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(label.startIndex..<label.endIndex, in: label)
+        guard let match = regex.firstMatch(in: label, range: range),
+              match.numberOfRanges >= 2,
+              let valueRange = Range(match.range(at: 1), in: label),
+              let mbps = Double(label[valueRange]) else { return nil }
+        return Int((mbps * 1_000).rounded())
     }
 }

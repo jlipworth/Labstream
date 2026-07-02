@@ -122,6 +122,18 @@ struct DownloadRowDisplayPolicyTests {
                                                               status: .unverified) == nil)
     }
 
+    @Test("Download bitrate text prefers persisted bitrate and can infer Mbps presets")
+    func downloadBitrateText() {
+        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: 40_000,
+                                                             requestedProfileLabel: "Existing server version") == "Bitrate: 40.0 Mbps")
+        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: nil,
+                                                             requestedProfileLabel: "1080p 8 Mbps") == "Bitrate: 8.0 Mbps")
+        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: nil,
+                                                             requestedProfileLabel: "480p 1.5 Mbps") == "Bitrate: 1.5 Mbps")
+        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: nil,
+                                                             requestedProfileLabel: "Existing server version") == nil)
+    }
+
     private func record(bytes: Int,
                         progress: Double,
                         metadata: OfflineMetadata?) -> DownloadRecord {
