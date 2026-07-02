@@ -356,6 +356,11 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// intent ("Requested: 4K 40 Mbps") separately from `resolutionLabel`, which may describe the
     /// final downloaded file or source media after backend-specific conversion/reuse behavior.
     public var requestedProfileLabel: String?
+    /// Best bitrate to display for this saved row, in kbps. Static/original/existing-version rows
+    /// use the selected source file's container bitrate; bitrate-capped transcode rows use the
+    /// requested target cap. This gives completed downloads a compact, comparable label even when
+    /// the profile name was only "Existing server version".
+    public var downloadBitrateKbps: Int?
     public var librarySectionID: Int?
     public var librarySectionKey: String?
     public var mediaIndex: Int?
@@ -483,6 +488,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 markers: [OfflineMarker]? = nil,
                 resolutionLabel: String? = nil,
                 requestedProfileLabel: String? = nil,
+                downloadBitrateKbps: Int? = nil,
                 librarySectionID: Int? = nil,
                 librarySectionKey: String? = nil,
                 mediaIndex: Int? = nil,
@@ -537,6 +543,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.markers = markers
         self.resolutionLabel = resolutionLabel
         self.requestedProfileLabel = requestedProfileLabel
+        self.downloadBitrateKbps = downloadBitrateKbps
         self.librarySectionID = librarySectionID
         self.librarySectionKey = librarySectionKey
         self.mediaIndex = mediaIndex
@@ -595,6 +602,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         markers = try c.decodeIfPresent([OfflineMarker].self, forKey: .markers)
         resolutionLabel = try c.decodeIfPresent(String.self, forKey: .resolutionLabel)
         requestedProfileLabel = try c.decodeIfPresent(String.self, forKey: .requestedProfileLabel)
+        downloadBitrateKbps = try c.decodeIfPresent(Int.self, forKey: .downloadBitrateKbps)
         librarySectionID = try c.decodeIfPresent(Int.self, forKey: .librarySectionID)
         librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
         mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
@@ -660,6 +668,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         if requestedProfileLabel == nil {
             requestedProfileLabel = previous.requestedProfileLabel
+        }
+        if downloadBitrateKbps == nil {
+            downloadBitrateKbps = previous.downloadBitrateKbps
         }
     }
 

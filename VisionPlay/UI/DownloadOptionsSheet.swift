@@ -847,9 +847,9 @@ struct DownloadOptionsSheet: View {
                     dismiss()
                 } label: { Label("Pause Download", systemImage: "pause.circle") }
             }
-            if let requested = DownloadRowDisplayPolicy.requestedProfileText(record.metadata?.requestedProfileLabel,
-                                                                             status: record.status) {
-                Text(requested)
+            if let bitrate = DownloadRowDisplayPolicy.downloadBitrateText(kbps: record.metadata?.downloadBitrateKbps,
+                                                                           requestedProfileLabel: record.metadata?.requestedProfileLabel) {
+                Text(bitrate)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -25,6 +25,9 @@ public enum DownloadOfflineMetadataBuilder {
         let resumeMode = DownloadResumeMode.resolved(backend: session.kind,
                                                      lane: lane,
                                                      optimizeTargetName: optimizeTargetName)
+        let displayBitrateKbps = downloadBitrateKbps(sourceMedia: sourceMedia,
+                                                     lane: lane,
+                                                     optimizeTargetName: optimizeTargetName)
         return OfflineMetadata(ratingKey: item.ratingKey,
                                key: item.key,
                                title: item.title,
@@ -50,6 +53,7 @@ public enum DownloadOfflineMetadataBuilder {
                                markers: item.markers?.map(OfflineMarker.init),
                                resolutionLabel: resolutionLabel,
                                requestedProfileLabel: requestedProfileLabel,
+                               downloadBitrateKbps: displayBitrateKbps,
                                librarySectionID: item.librarySectionID,
                                librarySectionKey: item.librarySectionKey,
                                mediaIndex: mediaIndex,
@@ -68,5 +72,38 @@ public enum DownloadOfflineMetadataBuilder {
                                downloadLane: downloadLane,
                                resumeMode: resumeMode,
                                serverPreparedVersion: serverPreparedVersion ? true : nil)
+    }
+
+    private static func downloadBitrateKbps(sourceMedia: Media?,
+                                            lane: DownloadLane,
+                                            optimizeTargetName: String?) -> Int? {
+        guard lane == .optimize,
+              let targetName = optimizeTargetName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !targetName.isEmpty else {
+            return sourceMedia?.bitrate
+        }
+        if let profile = DownloadPresetPolicy.customDownloadProfile(named: targetName),
+           let kbps = profile.settings.maxVideoBitrateKbps {
+            return kbps
+        }
+        switch targetName.lowercased() {
+        case "optimized for mobile":
+            return 2_000
+        case "original quality", "original video quality":
+            return sourceMedia?.bitrate
+        default:
+            return inferredBitrateKbps(from: targetName)
+        }
+    }
+
+    private static func inferredBitrateKbps(from label: String) -> Int? {
+        let pattern = #"(?i)(\d+(?:\.\d+)?)\s*mbps"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(label.startIndex..<label.endIndex, in: label)
+        guard let match = regex.firstMatch(in: label, range: range),
+              match.numberOfRanges >= 2,
+              let valueRange = Range(match.range(at: 1), in: label),
+              let mbps = Double(label[valueRange]) else { return nil }
+        return Int((mbps * 1_000).rounded())
     }
 }

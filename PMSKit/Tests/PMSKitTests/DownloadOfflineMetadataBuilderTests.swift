@@ -23,10 +23,10 @@ struct DownloadOfflineMetadataBuilderTests {
                   thumb: "thumb",
                   art: "art",
                   media: [
-                    Media(id: 1, width: 3840, height: 2160, part: [
+                    Media(id: 1, bitrate: 68_000, width: 3840, height: 2160, part: [
                         Part(id: 10, key: "/part/10", size: 1_000),
                     ]),
-                    Media(id: 2, width: 1920, height: 1080, part: [
+                    Media(id: 2, bitrate: 12_000, width: 1920, height: 1080, part: [
                         Part(id: 20, key: "/part/20", size: 2_000),
                     ]),
                   ],
@@ -61,6 +61,7 @@ struct DownloadOfflineMetadataBuilderTests {
         #expect(metadata.type == "episode")
         #expect(metadata.resolutionLabel == "1080p")
         #expect(metadata.requestedProfileLabel == "4K 40 Mbps")
+        #expect(metadata.downloadBitrateKbps == 12_000)
         #expect(metadata.mediaIndex == 1)
         #expect(metadata.partIndex == 0)
         #expect(metadata.sourcePartID == 20)
@@ -88,6 +89,17 @@ struct DownloadOfflineMetadataBuilderTests {
                                                                                         token: "redacted"))
         #expect(optimized.downloadLane == nil)
         #expect(optimized.resumeMode == .serverPrepThenStatic)
+        #expect(optimized.downloadBitrateKbps == 4_000)
+
+        let originalQuality = DownloadOfflineMetadataBuilder.metadata(from: item(),
+                                                                      resolutionLabel: nil,
+                                                                      mediaIndex: 0,
+                                                                      partIndex: 0,
+                                                                      optimizeTargetName: "Original video quality",
+                                                                      session: BackendSession(kind: .plex,
+                                                                                              baseURL: URL(string: "https://plex.example")!,
+                                                                                              token: "redacted"))
+        #expect(originalQuality.downloadBitrateKbps == 68_000)
 
         let original = DownloadOfflineMetadataBuilder.metadata(from: item(),
                                                                resolutionLabel: nil,
@@ -97,6 +109,7 @@ struct DownloadOfflineMetadataBuilderTests {
                                                                session: session)
         #expect(original.downloadLane == nil)
         #expect(original.resumeMode == .staticByteRange)
+        #expect(original.downloadBitrateKbps == 68_000)
     }
 
     @Test("Explicit MediaBrowser compatible lane persists live forward-only resume mode")
