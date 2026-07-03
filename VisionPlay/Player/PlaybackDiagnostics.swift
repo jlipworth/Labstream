@@ -26,6 +26,25 @@ final class PlaybackDiagnostics {
     var audioCodec: String = "—"
     /// Source container (e.g. "mkv"), from the chosen `Media`.
     var container: String = "—"
+    /// Friendly video format row, e.g. "HEVC" (#195). Falls back to the raw codec.
+    var videoFormatText: String = "—"
+    /// Friendly audio format row, e.g. "Dolby Digital Plus (E-AC-3) 5.1" (#195).
+    var audioFormatText: String = "—"
+    /// Source HDR row, e.g. "Dolby Vision P8 (HDR10 fallback)"; nil hides the row (#195).
+    var sourceHDRLabel: String?
+    /// Source HDR format for tone-map inference; mirrors `sourceHDRLabel`. (#195)
+    var sourceHDRFormat: VideoHDRFormat?
+    /// Runtime AVFoundation HDR facts, e.g. "HDR · PQ · eligible"; nil until probed (#195).
+    var runtimeHDRLabel: String?
+
+    /// Server-side tone-map inference for the Output row (#195): when the server is
+    /// re-encoding an HDR source, Plex/Jellyfin/Emby tone-map to SDR in their default
+    /// transcode paths. This is an inference from decision + source metadata, so it is
+    /// worded as probable rather than stated as fact.
+    var outputHDRHint: String? {
+        guard isTranscoding, let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
+        return "SDR tone-map likely (server transcode)"
+    }
     /// Source media bitrate (kbps), when PMS exposes it on the chosen Media row.
     var sourceBitrateKbps: Int = 0
     /// Whether PMS decided to transcode (vs direct play / direct stream).
@@ -222,6 +241,25 @@ final class PlaybackDiagnostics {
         if summary.bitrateKbps > 0 || !overwriteOnlyKnownValues {
             sourceBitrateKbps = summary.bitrateKbps
         }
+        if let videoText = AVFormatLabels.videoDisplayName(codec: summary.videoCodec, hdr: nil) {
+            videoFormatText = videoText
+        } else if !overwriteOnlyKnownValues {
+            videoFormatText = "—"
+        }
+        if let audioText = AVFormatLabels.audioDisplayName(codec: summary.audioCodec,
+                                                           channels: summary.audioChannels,
+                                                           profile: summary.audioProfile) {
+            audioFormatText = audioText
+        } else if !overwriteOnlyKnownValues {
+            audioFormatText = "—"
+        }
+        if let hdr = summary.hdr {
+            sourceHDRLabel = hdr.displayLabel
+            sourceHDRFormat = hdr.format
+        } else if !overwriteOnlyKnownValues {
+            sourceHDRLabel = nil
+            sourceHDRFormat = nil
+        }
     }
 
     /// A concise, human-readable decision string for the Stats panel.
@@ -258,6 +296,7 @@ final class PlaybackDiagnostics {
     private var lastObservedProgressUptime: TimeInterval?
 
     private func resetDynamicAccessLogFacts() {
+        runtimeHDRLabel = nil
         observedBitrateKbps = 0
         observedBitrateState = .unavailable
         indicatedBitrateKbps = 0

@@ -427,3 +427,32 @@ file-size math.
 Adaptive upshift logic may use Observed as an extra headroom check only while the access-log event is
 actively advancing. Stale/idle Observed samples are treated as missing so a healthy full buffer does
 not block an upshift or produce a false bandwidth warning.
+
+## HDR / Dolby Vision facts and Stats rows (GH #195)
+
+Verified visionOS/AVFoundation findings (simulator probe on visionOS 26.5, 2026-07-03; see
+issue #195 for source links):
+
+- `AVPlayer.eligibleForHDRPlayback` is the supported capability check on visionOS 26; the
+  older `AVPlayer.availableHDRModes` is deprecated there and its bitset only distinguishes
+  HLG / HDR10 / Dolby Vision. **There is no HDR10+ AVPlayer mode bit** — HDR10+ can only be
+  identified from backend/source metadata, so Stats labels it as a *source* format and never
+  claims AVPlayer renders the dynamic metadata.
+- Apple documents automatic DV 8.4 handling via AVPlayer/AVPlayerLayer on HDR-capable
+  devices, and AVP specs list Dolby Vision, HDR10, HLG. Per-profile/container combinations
+  (DV5, DV7, MKV remuxes) still need sample-specific validation before any direct-play
+  policy change — `DeviceProfile` deliberately stays conservative.
+- Runtime detection: `asset.loadTracks(withMediaCharacteristic: .containsHDRVideo)` plus the
+  video track's `CMFormatDescription` transfer-function extension (PQ / HLG). For HLS,
+  format descriptions are empty until segments load, so `PlaybackHDRProbe` is retried from
+  the diagnostics tick until it sees real format descriptions.
+
+Stats rows added for #195: **Video**/**Audio** show friendly format names
+(`AVFormatLabels`: "HEVC", "Dolby Digital Plus (E-AC-3) Atmos 5.1", "DTS-HD MA 7.1"),
+**HDR** shows the backend-classified source format (`VideoHDRMetadata.displayLabel`, e.g.
+"Dolby Vision P8 (HDR10 fallback)", "HDR10 · PQ · BT.2020 · 10-bit"), **Runtime HDR** shows
+the AVFoundation probe ("HDR · PQ · eligible"), and **Output** shows an SDR tone-map
+*inference* when the server is transcoding an HDR source (worded as "likely" — none of the
+three backends state tone-mapping per-session explicitly). Classification precedence lives
+in `VideoHDRMetadata.classify`: DV > HDR10+ > PQ > HLG > coarse "HDR" range > positive SDR
+evidence > nil (row hidden). Bit depth alone is never treated as HDR evidence.

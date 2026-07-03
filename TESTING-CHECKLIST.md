@@ -132,6 +132,23 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 
 ## B. Player features
 
+- [ ] **HDR/DV Stats rows (GH #195)** — per backend (Plex / Jellyfin / Emby) and per sample,
+      open Stats for Nerds and check: Video/Audio rows show friendly names ("HEVC",
+      "Dolby Digital Plus (E-AC-3) 5.1", "DTS-HD MA 7.1"); the HDR row matches the source;
+      Runtime HDR appears once segments load; Output shows "SDR tone-map likely" only on
+      HDR-source transcodes. Sample matrix (direct play AND forced low-quality transcode each):
+  - [ ] SDR H.264/HEVC baseline — no HDR row, no Output hint, bitrate/mode rows unregressed.
+  - [ ] HDR10 HEVC Main10 (PQ/BT.2020/10-bit) — HDR row "HDR10 · PQ · BT.2020 · 10-bit";
+        Runtime HDR "HDR · PQ · eligible" on direct; transcode adds the Output hint.
+  - [ ] HLG HEVC — HDR row says HLG, not HDR10.
+  - [ ] Dolby Vision P8.1/8.4 (HDR10 or HLG fallback) — HDR row "Dolby Vision P8 (… fallback)".
+  - [ ] Dolby Vision P5 — HDR row "Dolby Vision P5 (no fallback)"; treat forced transcode as
+        risky (no fallback layer), especially on Emby.
+  - [ ] HDR10+ sample — HDR row "HDR10+ …" from backend metadata only; Runtime HDR may still
+        say PQ (AVPlayer exposes no HDR10+ mode — do not expect an HDR10+ runtime claim).
+      Visual HDR quality claims need the physical Vision Pro; the simulator pass only covers
+      metadata/labels. Exported diagnostics gain `source_hdr`, `runtime_hdr`, `output_hdr_hint`
+      — verify no URLs/tokens/titles appear in the export.
 - [x] **Subtitle language names** ✅ verified — Subtitles tab lists the muxed renditions by name
       ("CC (SDH)") plus Off, selection applies live. (Only the PMS-selected tracks are muxed into
       the stream, so the list is short by design.) Cross-session persistence not yet re-checked.

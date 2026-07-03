@@ -76,7 +76,26 @@ extension PlaybackController {
             "dropped_frames": .int(diagnostics.droppedFrames),
             "is_transcoding": .bool(diagnostics.isTranscoding),
             "decision_summary": .text(diagnostics.decisionText),
-        ]
+        ].merging(hdrSnapshotFields()) { current, _ in current }
+    }
+
+    /// HDR facts for exported snapshots (#195): source classification, runtime probe
+    /// label, and the tone-map inference. Labels only — never URLs/tokens/titles.
+    private func hdrSnapshotFields() -> [String: DiagnosticFieldValue] {
+        var fields: [String: DiagnosticFieldValue] = [:]
+        if let sourceHDR = diagnostics.sourceHDRLabel {
+            fields["source_hdr_detail"] = .label(sourceHDR)
+        }
+        if let format = diagnostics.sourceHDRFormat {
+            fields["source_hdr"] = .label(format.rawValue)
+        }
+        if let runtime = diagnostics.runtimeHDRLabel {
+            fields["runtime_hdr"] = .label(runtime)
+        }
+        if let hint = diagnostics.outputHDRHint {
+            fields["output_hdr_hint"] = .label(hint)
+        }
+        return fields
     }
 
     static func timeControlStatusLabel(_ status: AVPlayer.TimeControlStatus) -> String {
