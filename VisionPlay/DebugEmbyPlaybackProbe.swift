@@ -73,10 +73,12 @@ enum DebugEmbyPlaybackProbe {
 
             try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: 45)
             log.notice("probe.initial_playing position_ms=\(playback.currentResumeMs, privacy: .public)")
+            await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "emby-initial", log: log)
 
             playback.performUserSeek(toMs: seekMs)
             try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: 45)
             try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, log: log)
+            await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "emby-postseek", log: log)
 
             log.notice("probe.pass position_ms=\(playback.currentResumeMs, privacy: .public) failed=\(playback.playbackError.isFailed, privacy: .public)")
             AppDiagnostics.record(.playback, "probe.emby.pass", fields: [
