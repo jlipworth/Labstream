@@ -2026,7 +2026,8 @@ final class PlaybackController {
                                          partIndex: 0,
                                          burnSubtitleStreamID: burnSubtitleStreamID,
                                          startOffsetSeconds: offsetSeconds,
-                                         forceTranscode: dvGuardReason != nil)
+                                         forceTranscode: dvGuardReason != nil,
+                                         advertiseDolbyVision: DolbyVisionGuard.experimentalSignallingEnabled)
         let directPlayStartKey = Self.directPlayStartRejectionKey(metadataKey: metadataKey,
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: 0)

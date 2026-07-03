@@ -44,6 +44,9 @@ public struct TranscodeRequest: Sendable, Equatable {
     /// on the production lanes) so PMS must fully transcode — and tone-map — the video
     /// instead of copy-remuxing a stream AVPlayer cannot decode.
     public let forceTranscode: Bool
+    /// GH #196 spike (a): advertise Dolby Vision MP4 direct-play in the profile Extra.
+    /// Experimental, default false; the base profile name stays "Generic" either way.
+    public let advertiseDolbyVision: Bool
 
     public init(server: URL,
                 token: String,
@@ -57,7 +60,8 @@ public struct TranscodeRequest: Sendable, Equatable {
                 partIndex: Int,
                 burnSubtitleStreamID: Int? = nil,
                 startOffsetSeconds: Int? = nil,
-                forceTranscode: Bool = false) {
+                forceTranscode: Bool = false,
+                advertiseDolbyVision: Bool = false) {
         self.server = server
         self.token = token
         self.identity = identity
@@ -71,12 +75,14 @@ public struct TranscodeRequest: Sendable, Equatable {
         self.burnSubtitleStreamID = burnSubtitleStreamID
         self.startOffsetSeconds = startOffsetSeconds
         self.forceTranscode = forceTranscode
+        self.advertiseDolbyVision = advertiseDolbyVision
     }
 
     /// The device profile advertised to PMS for this request.
     public var deviceProfile: DeviceProfile {
         DeviceProfile.visionOS(maxVideoBitrateKbps: maxVideoBitrateKbps,
-                               maxAudioBitrateKbps: maxAudioBitrateKbps)
+                               maxAudioBitrateKbps: maxAudioBitrateKbps,
+                               advertiseDolbyVision: advertiseDolbyVision)
     }
 
     public static func resolutionCap(forBitrateKbps kbps: Int) -> String? {
@@ -249,7 +255,8 @@ public struct TranscodeRequest: Sendable, Equatable {
         // Advertise the direct-play-capable profile only on this path.
         items.removeAll { $0.name == "X-Plex-Client-Profile-Extra" }
         let probeProfile = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps,
-                                                                 maxAudioBitrateKbps: maxAudioBitrateKbps)
+                                                                 maxAudioBitrateKbps: maxAudioBitrateKbps,
+                                                                 advertiseDolbyVision: advertiseDolbyVision)
         items.append(.init(name: "X-Plex-Client-Profile-Extra", value: probeProfile.clientProfileExtra))
         return items
     }
