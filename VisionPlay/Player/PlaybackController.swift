@@ -2188,6 +2188,42 @@ final class PlaybackController {
         let assetOptions: [String: Any] = [
             "AVURLAssetHTTPHeaderFieldsKey": PlexHeaders.media(identity: identity, token: token),
         ]
+
+        // GH #196 spike (b): with the experimental DV-signalling setting on and a DV P8
+        // source, route the Plex HLS session through the loopback proxy so the master
+        // playlist gains SUPPLEMENTAL-CODECS/VIDEO-RANGE. Failure falls back to the direct
+        // URL — this lane must never be worse than today.
+        if let injection = DolbyVisionGuard.playlistInjection(for: item, mediaIndex: mediaIndex) {
+            let proxy = MediaSessionProxy(dolbyVisionInjection: injection,
+                                          extraUpstreamHeaders: PlexHeaders.media(identity: identity,
+                                                                                  token: token))
+            do {
+                let handle = try await proxy.standUpLoopback(forStream: streamURL)
+                guard !Task.isCancelled, generation == playbackGeneration else {
+                    await proxy.stop(generation: handle.generation)
+                    return
+                }
+                if let oldProxy = remoteHLSProxy, let oldGeneration = remoteHLSProxyGeneration {
+                    await oldProxy.stop(generation: oldGeneration)
+                }
+                remoteHLSProxy = proxy
+                remoteHLSProxyGeneration = handle.generation
+                streamURL = handle.localURL
+                recordPlaybackDiagnostic("playback.dv_injection_proxy_open", fields: [
+                    "supplemental_codecs": .label(injection.supplementalCodecs),
+                    "video_range": .label(injection.videoRange),
+                ])
+                NSLog("PlaybackController: DV signalling injection active (%@ / %@) (#196)",
+                      injection.supplementalCodecs, injection.videoRange)
+            } catch {
+                recordPlaybackDiagnostic("playback.dv_injection_proxy_failed", fields: [
+                    "error": .error(error),
+                ])
+                NSLog("PlaybackController: DV injection proxy failed, using direct URL (%@)",
+                      Self.safeErrorSummary(error))
+            }
+        }
+
         let asset = AVURLAsset(url: streamURL, options: assetOptions)
         let playerItem = AVPlayerItem(asset: asset)
         guard !Task.isCancelled, generation == playbackGeneration else { return }

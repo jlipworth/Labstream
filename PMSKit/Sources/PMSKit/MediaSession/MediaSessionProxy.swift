@@ -13,6 +13,11 @@ public actor MediaSessionProxy {
     private let rebuildUpstream: @Sendable () -> Void
     private let strippedPlaylistQueryItemNames: Set<String>
     private let injectedPlaylistStartTimeOffsetSeconds: Double?
+    /// GH #196 spike (b): DV attributes injected into master playlists (experimental gate).
+    private let dolbyVisionInjection: MediaSessionDolbyVisionInjection?
+    /// Extra headers applied to every upstream fetch (Plex media-plane requests can 400
+    /// without the X-Plex identity header set — see PlaybackController's asset options).
+    private let extraUpstreamHeaders: [String: String]
     private var connection: UpstreamConnection?
     private var current: MediaSessionHandle?
 
@@ -28,6 +33,8 @@ public actor MediaSessionProxy {
                 trustDelegate: URLSessionDelegate? = nil,
                 strippedPlaylistQueryItemNames: Set<String> = [],
                 injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
+                dolbyVisionInjection: MediaSessionDolbyVisionInjection? = nil,
+                extraUpstreamHeaders: [String: String] = [:],
                 now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         // A box so `rebuild` can swap the session that `fetch` reads (the one thing
         // AVFoundation's own media-plane pool won't do — guarantee a fresh socket).
@@ -37,6 +44,8 @@ public actor MediaSessionProxy {
         self.rebuildUpstream = { box.rebuild() }
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
+        self.dolbyVisionInjection = dolbyVisionInjection
+        self.extraUpstreamHeaders = extraUpstreamHeaders
         _ = now
     }
 
@@ -45,11 +54,15 @@ public actor MediaSessionProxy {
     init(upstreamFetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse),
          strippedPlaylistQueryItemNames: Set<String> = [],
          injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
+         dolbyVisionInjection: MediaSessionDolbyVisionInjection? = nil,
+         extraUpstreamHeaders: [String: String] = [:],
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.upstreamFetch = upstreamFetch
         self.rebuildUpstream = {}
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
+        self.dolbyVisionInjection = dolbyVisionInjection
+        self.extraUpstreamHeaders = extraUpstreamHeaders
         _ = now
     }
 
@@ -83,8 +96,9 @@ public actor MediaSessionProxy {
         let rewriterBox = RewriterBox()
         let port: Int
         do {
-            port = try await origin.start { [mapper, conn, rewriterBox] head in
-                await Self.serve(head, mapper: mapper, connection: conn, rewriter: rewriterBox.value)
+            port = try await origin.start { [mapper, conn, rewriterBox, extraUpstreamHeaders] head in
+                await Self.serve(head, mapper: mapper, connection: conn, rewriter: rewriterBox.value,
+                                 extraHeaders: extraUpstreamHeaders)
             }
         } catch {
             origin.stop()
@@ -106,7 +120,8 @@ public actor MediaSessionProxy {
         rewriterBox.set(PlaylistRewriter(upstreamBase: upstreamBase,
                                          loopbackBase: loopbackBase,
                                          strippedQueryItemNames: strippedPlaylistQueryItemNames,
-                                         injectedStartTimeOffsetSeconds: injectedPlaylistStartTimeOffsetSeconds))
+                                         injectedStartTimeOffsetSeconds: injectedPlaylistStartTimeOffsetSeconds,
+                                         dolbyVisionInjection: dolbyVisionInjection))
 
         generationCounter += 1
         let handle = MediaSessionHandle(localURL: localURL, generation: generationCounter)
@@ -144,7 +159,8 @@ public actor MediaSessionProxy {
     private static func serve(_ head: HTTPRequestHead,
                               mapper: UpstreamURLMapper,
                               connection: UpstreamConnection,
-                              rewriter: PlaylistRewriter?) async -> HTTPResponse {
+                              rewriter: PlaylistRewriter?,
+                              extraHeaders: [String: String] = [:]) async -> HTTPResponse {
         guard let upstreamURL = mapper.upstreamURL(forTarget: head.target) else {
             return HTTPResponse(status: 400, reason: "Bad Request", headers: [], body: Data())
         }
@@ -153,6 +169,10 @@ public actor MediaSessionProxy {
         // Forward the request headers AVKit relies on (Range drives HLS byte-range segments).
         for name in ["Range", "Accept", "Accept-Encoding", "User-Agent"] {
             if let v = head.value(for: name) { req.setValue(v, forHTTPHeaderField: name) }
+        }
+        // Identity headers for upstreams that require them (Plex media plane).
+        for (name, value) in extraHeaders {
+            req.setValue(value, forHTTPHeaderField: name)
         }
         do {
             let (data, resp) = try await connection.send(req)
