@@ -751,9 +751,52 @@ public struct Stream: Decodable, Sendable, Identifiable {
     public let channels: Int?
     /// Free-form track title, when present.
     public let title: String?
+    /// Codec profile, e.g. "main 10" (video) or "ma" (DTS-HD MA audio). (#195)
+    public let profile: String?
+    /// Video bit depth (8/10/12), video tracks only. (#195)
+    public let bitDepth: Int?
+    /// Color primaries, e.g. "bt2020". (#195)
+    public let colorPrimaries: String?
+    /// Color range, e.g. "tv". (#195)
+    public let colorRange: String?
+    /// Color matrix/space, e.g. "bt2020nc". (#195)
+    public let colorSpace: String?
+    /// Transfer characteristics, e.g. "smpte2084" (PQ) or "arib-std-b67" (HLG). (#195)
+    public let colorTrc: String?
+    /// Dolby Vision facts as PMS reports them. Some endpoints emit these as 1/0 or
+    /// "1"/"0" rather than booleans, so the boolean ones decode leniently. (#195)
+    public let doviPresent: Bool?
+    public let doviProfile: Int?
+    public let doviLevel: Int?
+    public let doviBLCompatID: Int?
+    public let doviBLPresent: Bool?
+    public let doviELPresent: Bool?
+    public let doviRPUPresent: Bool?
 
     /// Strongly-typed kind, or `nil` for an unrecognised `streamType`.
     public var kind: StreamType? { StreamType(rawValue: streamType) }
+
+    /// Normalized HDR classification for video tracks; `nil` for audio/subtitle tracks
+    /// or when PMS supplied no color/DV facts. (#195)
+    public var hdrMetadata: VideoHDRMetadata? {
+        guard kind == .video else { return nil }
+        let dovi: VideoDolbyVisionInfo? = (doviPresent == true || doviProfile != nil)
+            ? VideoDolbyVisionInfo(profile: doviProfile,
+                                   level: doviLevel,
+                                   blCompatibilityID: doviBLCompatID,
+                                   rpuPresent: doviRPUPresent,
+                                   elPresent: doviELPresent,
+                                   blPresent: doviBLPresent)
+            : nil
+        return VideoHDRMetadata.classify(colorTransfer: colorTrc,
+                                         colorPrimaries: colorPrimaries,
+                                         colorSpace: colorSpace,
+                                         colorRange: colorRange,
+                                         bitDepth: bitDepth,
+                                         dolbyVision: dovi,
+                                         hdr10PlusPresent: nil,
+                                         rangeDescribesHDR: nil)
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -771,6 +814,19 @@ public struct Stream: Decodable, Sendable, Identifiable {
         case forced
         case channels
         case title
+        case profile
+        case bitDepth
+        case colorPrimaries
+        case colorRange
+        case colorSpace
+        case colorTrc
+        case doviPresent = "DOVIPresent"
+        case doviProfile = "DOVIProfile"
+        case doviLevel = "DOVILevel"
+        case doviBLCompatID = "DOVIBLCompatID"
+        case doviBLPresent = "DOVIBLPresent"
+        case doviELPresent = "DOVIELPresent"
+        case doviRPUPresent = "DOVIRPUPresent"
     }
 
     public init(from decoder: Decoder) throws {
@@ -790,6 +846,35 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.forced = try c.decodeIfPresent(Bool.self, forKey: .forced)
         self.channels = try c.decodeIfPresent(Int.self, forKey: .channels)
         self.title = try c.decodeIfPresent(String.self, forKey: .title)
+        self.profile = try c.decodeIfPresent(String.self, forKey: .profile)
+        self.bitDepth = try c.decodeIfPresent(Int.self, forKey: .bitDepth)
+        self.colorPrimaries = try c.decodeIfPresent(String.self, forKey: .colorPrimaries)
+        self.colorRange = try c.decodeIfPresent(String.self, forKey: .colorRange)
+        self.colorSpace = try c.decodeIfPresent(String.self, forKey: .colorSpace)
+        self.colorTrc = try c.decodeIfPresent(String.self, forKey: .colorTrc)
+        self.doviPresent = Self.decodeLenientBool(c, .doviPresent)
+        self.doviProfile = try c.decodeIfPresent(Int.self, forKey: .doviProfile)
+        self.doviLevel = try c.decodeIfPresent(Int.self, forKey: .doviLevel)
+        self.doviBLCompatID = try c.decodeIfPresent(Int.self, forKey: .doviBLCompatID)
+        self.doviBLPresent = Self.decodeLenientBool(c, .doviBLPresent)
+        self.doviELPresent = Self.decodeLenientBool(c, .doviELPresent)
+        self.doviRPUPresent = Self.decodeLenientBool(c, .doviRPUPresent)
+    }
+
+    /// PMS is inconsistent about boolean attributes across endpoints/serializers:
+    /// `true`, `1`, and `"1"` all occur in the wild. Absent or unparseable → `nil`.
+    private static func decodeLenientBool(_ c: KeyedDecodingContainer<CodingKeys>,
+                                          _ key: CodingKeys) -> Bool? {
+        if let b = try? c.decodeIfPresent(Bool.self, forKey: key) { return b }
+        if let i = try? c.decodeIfPresent(Int.self, forKey: key) { return i != 0 }
+        if let s = try? c.decodeIfPresent(String.self, forKey: key) {
+            switch s.lowercased() {
+            case "1", "true", "yes": return true
+            case "0", "false", "no": return false
+            default: return nil
+            }
+        }
+        return nil
     }
 
     public init(id: Int,
@@ -806,7 +891,20 @@ public struct Stream: Decodable, Sendable, Identifiable {
                 isDefault: Bool? = nil,
                 forced: Bool? = nil,
                 channels: Int? = nil,
-                title: String? = nil) {
+                title: String? = nil,
+                profile: String? = nil,
+                bitDepth: Int? = nil,
+                colorPrimaries: String? = nil,
+                colorRange: String? = nil,
+                colorSpace: String? = nil,
+                colorTrc: String? = nil,
+                doviPresent: Bool? = nil,
+                doviProfile: Int? = nil,
+                doviLevel: Int? = nil,
+                doviBLCompatID: Int? = nil,
+                doviBLPresent: Bool? = nil,
+                doviELPresent: Bool? = nil,
+                doviRPUPresent: Bool? = nil) {
         self.id = id
         self.streamType = streamType
         self.index = index
@@ -822,8 +920,25 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.forced = forced
         self.channels = channels
         self.title = title
+        self.profile = profile
+        self.bitDepth = bitDepth
+        self.colorPrimaries = colorPrimaries
+        self.colorRange = colorRange
+        self.colorSpace = colorSpace
+        self.colorTrc = colorTrc
+        self.doviPresent = doviPresent
+        self.doviProfile = doviProfile
+        self.doviLevel = doviLevel
+        self.doviBLCompatID = doviBLCompatID
+        self.doviBLPresent = doviBLPresent
+        self.doviELPresent = doviELPresent
+        self.doviRPUPresent = doviRPUPresent
     }
 }
+
+/// Disambiguates the Plex `Stream` model in files that also import Foundation
+/// (whose `Stream` class otherwise wins the type lookup). (#195)
+public typealias PlexStream = Stream
 
 // MARK: - Hubs (`/hubs`, `/hubs/search`)
 
