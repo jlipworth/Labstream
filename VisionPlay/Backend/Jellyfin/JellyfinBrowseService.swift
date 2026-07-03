@@ -247,7 +247,8 @@ struct JellyfinBrowseService {
                                                            maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                            audioStreamIndex: audioStreamIndex,
                                                            subtitleStreamIndex: subtitleStreamIndex,
-                                                           forcePlaybackTranscode: forceTranscode)
+                                                           forcePlaybackTranscode: forceTranscode,
+                                                           advertiseDolbyVision: DolbyVisionGuard.experimentalSignallingEnabled)
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
         return try JellyfinPlayback.resolveStream(response: info,
                                                   server: context.server,

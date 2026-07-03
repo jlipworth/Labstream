@@ -227,7 +227,8 @@ public enum JellyfinPlayback {
                                            maxStreamingBitrate: Int,
                                            audioStreamIndex: Int? = nil,
                                            subtitleStreamIndex: Int? = nil,
-                                           forcePlaybackTranscode: Bool = false) throws -> URLRequest {
+                                           forcePlaybackTranscode: Bool = false,
+                                           advertiseDolbyVision: Bool = false) throws -> URLRequest {
         let url = try jellyfinURL(server: server, path: "/Items/\(itemId)/PlaybackInfo")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -248,7 +249,8 @@ public enum JellyfinPlayback {
             "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": true,
-            "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate),
+            "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
+                                                   advertiseDolbyVision: advertiseDolbyVision),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
         if let startTimeTicks { body["StartTimeTicks"] = startTimeTicks }
@@ -607,8 +609,9 @@ public enum JellyfinPlayback {
             sources.first
     }
 
-    static func visionOSDeviceProfile(maxStreamingBitrate: Int) -> [String: Any] {
-        [
+    static func visionOSDeviceProfile(maxStreamingBitrate: Int,
+                                      advertiseDolbyVision: Bool = false) -> [String: Any] {
+        var profile: [String: Any] = [
             "Name": "VisionPlay",
             "MaxStreamingBitrate": maxStreamingBitrate,
             "DirectPlayProfiles": [
@@ -629,7 +632,29 @@ public enum JellyfinPlayback {
                 ],
             ],
         ]
+        if advertiseDolbyVision {
+            profile["CodecProfiles"] = dolbyVisionCodecProfiles
+        }
+        return profile
     }
+
+    /// GH #196 spike (a): declaring supported `VideoRangeType`s including the DOVI* values
+    /// is the signal Jellyfin uses to keep `dvcC`/RPU boxes on remux instead of stripping
+    /// them (the Swiftfin finding). Experimental, default-off, device-unverified.
+    static var dolbyVisionCodecProfiles: [[String: Any]] { [
+        [
+            "Type": "Video",
+            "Codec": "hevc",
+            "Conditions": [
+                [
+                    "Condition": "EqualsAny",
+                    "Property": "VideoRangeType",
+                    "Value": "SDR|HDR10|HLG|HDR10Plus|DOVI|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR|DOVIWithHDR10Plus",
+                    "IsRequired": false,
+                ],
+            ],
+        ],
+    ] }
 
     static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
         [

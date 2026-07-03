@@ -42,6 +42,9 @@ struct SettingsView: View {
     @AppStorage(PlaybackPreferences.Keys.skipIntroMode) private var skipIntroModeRaw = PlaybackPreferences.SkipMode.manual.rawValue
     @AppStorage(PlaybackPreferences.Keys.skipCreditsMode) private var skipCreditsModeRaw = PlaybackPreferences.SkipMode.manual.rawValue
     @AppStorage(PlaybackPreferences.Keys.adaptiveBitrateEnabled) private var adaptiveBitrateEnabled = PlaybackPreferences.defaultAdaptiveBitrateEnabled
+    // GH #196: advertises Dolby Vision to servers (dvh1 direct play, DOVI range types) and
+    // defers the DV P5 tone-map guard. Default off until device-verified.
+    @AppStorage(PlaybackPreferences.Keys.experimentalDVSignalling) private var experimentalDVSignalling = false
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
     @AppStorage(PlaybackPreferences.Keys.prioritizeQuickDownloads) private var prioritizeQuickDownloads = PlaybackPreferences.defaultPrioritizeQuickDownloads
@@ -157,6 +160,10 @@ struct SettingsView: View {
 
             Toggle(isOn: $adaptiveBitrateEnabled) {
                 Label("Adaptive Bitrate", systemImage: "arrow.up.arrow.down.circle")
+            }
+
+            Toggle(isOn: $experimentalDVSignalling) {
+                Label("Dolby Vision Signalling (Experimental)", systemImage: "sparkles.tv")
             }
 
             Toggle(isOn: Binding(

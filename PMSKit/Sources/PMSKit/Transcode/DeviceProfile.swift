@@ -23,14 +23,25 @@ public struct DeviceProfile: Sendable, Equatable {
     /// low/mid quality ladder rungs, audio bitrate.
     /// - Parameter maxVideoBitrateKbps: hard cap on transcoded video bitrate, in kbps.
     /// - Parameter maxAudioBitrateKbps: optional cap on transcoded audio bitrate, in kbps.
+    /// GH #196 spike (a): the Dolby Vision direct-play directive appended when the
+    /// experimental DV-signalling setting is on. MP4-family only (DV MP4s carry real
+    /// `dvh1`/`dvhe` sample entries); default-off so the shipping profile is unchanged.
+    /// Device-unverified — see issue #196 for the pending headset matrix.
+    static let dolbyVisionDirectPlayDirective =
+        "add-direct-play-profile(type=videoProfile&container=mp4,m4v,mov&videoCodec=hevc&videoProfile=dvhe.05,dvhe.08,dvh1.05,dvh1.08&audioCodec=aac,ac3,eac3)"
+
     public static func visionOS(maxVideoBitrateKbps: Int,
-                                maxAudioBitrateKbps: Int? = nil) -> DeviceProfile {
+                                maxAudioBitrateKbps: Int? = nil,
+                                advertiseDolbyVision: Bool = false) -> DeviceProfile {
         // HEVC over HLS must use the fMP4 (mp4) container; H.264 works in both ts and mp4.
         var directives = [
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=ts&videoCodec=h264&audioCodec=aac,ac3)",
             "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value=\(maxVideoBitrateKbps))",
         ]
+        if advertiseDolbyVision {
+            directives.insert(dolbyVisionDirectPlayDirective, at: 0)
+        }
         if let maxAudioBitrateKbps {
             directives.append("add-limitation(scope=audioCodec&scopeName=*&type=upperBound&name=audio.bitrate&value=\(maxAudioBitrateKbps))")
         }
@@ -53,13 +64,17 @@ public struct DeviceProfile: Sendable, Equatable {
     /// - Parameter maxVideoBitrateKbps: hard cap on video bitrate, in kbps; `isRequired=true`.
     /// - Parameter maxAudioBitrateKbps: optional cap on audio bitrate, in kbps.
     public static func visionOSDirectPlayProbe(maxVideoBitrateKbps: Int,
-                                               maxAudioBitrateKbps: Int? = nil) -> DeviceProfile {
+                                               maxAudioBitrateKbps: Int? = nil,
+                                               advertiseDolbyVision: Bool = false) -> DeviceProfile {
         var directives = [
             "add-direct-play-profile(type=videoProfile&container=mp4,m4v,mov&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=ts&videoCodec=h264&audioCodec=aac,ac3)",
             "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value=\(maxVideoBitrateKbps)&isRequired=true)",
         ]
+        if advertiseDolbyVision {
+            directives.insert(dolbyVisionDirectPlayDirective, at: 0)
+        }
         if let maxAudioBitrateKbps {
             directives.append("add-limitation(scope=audioCodec&scopeName=*&type=upperBound&name=audio.bitrate&value=\(maxAudioBitrateKbps))")
         }

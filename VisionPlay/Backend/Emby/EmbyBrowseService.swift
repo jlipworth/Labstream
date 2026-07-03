@@ -252,7 +252,8 @@ struct EmbyBrowseService {
                                                        maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                        audioStreamIndex: audioStreamIndex,
                                                        subtitleStreamIndex: subtitleStreamIndex,
-                                                       forcePlaybackTranscode: forceTranscode)
+                                                       forcePlaybackTranscode: forceTranscode,
+                                                       advertiseDolbyVision: DolbyVisionGuard.experimentalSignallingEnabled)
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
         return try EmbyPlayback.resolveStream(response: info,
                                               server: context.server,

@@ -254,7 +254,8 @@ public enum EmbyPlayback {
                                            maxStreamingBitrate: Int,
                                            audioStreamIndex: Int? = nil,
                                            subtitleStreamIndex: Int? = nil,
-                                           forcePlaybackTranscode: Bool = false) throws -> URLRequest {
+                                           forcePlaybackTranscode: Bool = false,
+                                           advertiseDolbyVision: Bool = false) throws -> URLRequest {
         let url = try embyURL(server: server,
                               path: "/Items/\(itemId)/PlaybackInfo",
                               queryItems: [URLQueryItem(name: "UserId", value: userId)])
@@ -276,7 +277,8 @@ public enum EmbyPlayback {
             "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": false,
-            "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate),
+            "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
+                                                   advertiseDolbyVision: advertiseDolbyVision),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
         if let startTimeTicks { body["StartTimeTicks"] = startTimeTicks }
@@ -737,8 +739,9 @@ public enum EmbyPlayback {
         }
     }
 
-    static func visionOSDeviceProfile(maxStreamingBitrate: Int) -> [String: Any] {
-        [
+    static func visionOSDeviceProfile(maxStreamingBitrate: Int,
+                                      advertiseDolbyVision: Bool = false) -> [String: Any] {
+        var profile: [String: Any] = [
             "Name": "VisionPlay",
             "MaxStreamingBitrate": maxStreamingBitrate,
             "DirectPlayProfiles": [
@@ -777,6 +780,13 @@ public enum EmbyPlayback {
                 ["Format": "dvbsub", "Method": "Encode"],
             ],
         ]
+        if advertiseDolbyVision {
+            // GH #196 spike (a): mirror Jellyfin's DOVI-range advertising. Emby's DeviceProfile
+            // schema tolerates the same CodecProfiles shape (unknown conditions are ignored).
+            // Experimental, default-off, device-unverified.
+            profile["CodecProfiles"] = JellyfinPlayback.dolbyVisionCodecProfiles
+        }
+        return profile
     }
 
     /// DOWNLOAD-ONLY device profile.
