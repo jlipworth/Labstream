@@ -605,6 +605,7 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         let saysDV = dvProfile != nil
             || rangeType?.hasPrefix("dovi") == true
             || extType?.contains("dolbyvision") == true
+            || videoRange?.caseInsensitiveCompare("DolbyVision") == .orderedSame
         var dovi: VideoDolbyVisionInfo?
         if saysDV {
             // When numeric DV facts are missing, synthesize the base-layer compatibility
@@ -618,12 +619,24 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
                 default: break
                 }
             }
-            // Emby encodes the profile in ExtendedVideoSubType, e.g. "DolbyVisionProfile5".
+            // Emby encodes profile in ExtendedVideoSubType. Live wire shapes (probe
+            // 2026-07-03): "DoviProfile5", "DoviProfile76", "DoviProfile81" — for the
+            // two-digit forms the digits are <profile><bl-compat-id> (7.6 / 8.1 style),
+            // NOT a two-digit profile number.
             var profileNumber = dvProfile
             if profileNumber == nil,
                let sub = extendedVideoSubType?.lowercased(),
-               let digits = sub.split(separator: "profile").last.flatMap({ Int($0.prefix(while: \.isNumber)) }) {
-                profileNumber = digits
+               let digits = sub.split(separator: "profile").last.map({ String($0.prefix(while: \.isNumber)) }),
+               !digits.isEmpty {
+                if digits.count == 2,
+                   let first = digits.first?.wholeNumberValue,
+                   let second = digits.last?.wholeNumberValue,
+                   (4...9).contains(first) {
+                    profileNumber = first
+                    if compat == nil { compat = second }
+                } else {
+                    profileNumber = Int(digits)
+                }
             }
             dovi = VideoDolbyVisionInfo(profile: profileNumber,
                                         level: dvLevel,
