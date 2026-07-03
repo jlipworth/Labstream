@@ -40,6 +40,10 @@ public struct TranscodeRequest: Sendable, Equatable {
     /// (which times out the deep segment and stalls the load). This is how official
     /// Plex clients resume. Streaming-only; the download URL strips it.
     public let startOffsetSeconds: Int?
+    /// GH #196 DV P5 guard: when true, `directStream=0` is sent (directPlay is already 0
+    /// on the production lanes) so PMS must fully transcode — and tone-map — the video
+    /// instead of copy-remuxing a stream AVPlayer cannot decode.
+    public let forceTranscode: Bool
 
     public init(server: URL,
                 token: String,
@@ -52,7 +56,8 @@ public struct TranscodeRequest: Sendable, Equatable {
                 mediaIndex: Int,
                 partIndex: Int,
                 burnSubtitleStreamID: Int? = nil,
-                startOffsetSeconds: Int? = nil) {
+                startOffsetSeconds: Int? = nil,
+                forceTranscode: Bool = false) {
         self.server = server
         self.token = token
         self.identity = identity
@@ -65,6 +70,7 @@ public struct TranscodeRequest: Sendable, Equatable {
         self.partIndex = partIndex
         self.burnSubtitleStreamID = burnSubtitleStreamID
         self.startOffsetSeconds = startOffsetSeconds
+        self.forceTranscode = forceTranscode
     }
 
     /// The device profile advertised to PMS for this request.
@@ -105,7 +111,7 @@ public struct TranscodeRequest: Sendable, Equatable {
             .init(name: "maxVideoBitrate", value: String(maxVideoBitrateKbps)),
             .init(name: "videoQuality", value: "100"),
             .init(name: "directPlay", value: "0"),
-            .init(name: "directStream", value: "1"),
+            .init(name: "directStream", value: forceTranscode ? "0" : "1"),
             .init(name: "audioBoost", value: "100"),
             .init(name: "mediaIndex", value: String(mediaIndex)),
             // partIndex is its own index — do NOT tie it to mediaIndex.
