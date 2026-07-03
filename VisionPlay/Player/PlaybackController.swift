@@ -299,6 +299,14 @@ final class PlaybackController {
     /// doomed start on every seek/reopen until the viewer explicitly changes quality.
     private var rejectedDirectPlayStartKeys: Set<String> = []
 
+    /// GH #196 startup-deadline auto-retry (one-shot). When AVFoundation abandons the sole
+    /// copy-lane variant because the first segments missed its hard startup deadlines
+    /// (-12889/-16830 → -12880), a single warm rebuild — same session, transcoder NOT
+    /// stopped, segments from the failed attempt already on disk — almost always succeeds.
+    /// Reset once real playback is observed, so a genuinely dead stream still surfaces
+    /// Retry to the user after one silent attempt.
+    private var startupDeadlineRetryAttempted = false
+
     /// Client-driven ABR state machine (#29). True ABR is a server HLS ladder; when Plex/Jellyfin
     /// hands us one concrete stream instead, this policy approximates adaptive playback by
     /// reopening at bounded rungs after sustained stall/down and sustained healthy playback/up.
@@ -536,6 +544,7 @@ final class PlaybackController {
     private var seekStreamKind: RemoteSeekModePolicy.StreamKind {
         RemoteSeekModePolicy.streamKind(isLocalFile: localFile != nil,
                                         isPlexStreaming: isStreaming,
+                                        isPlexVideoCopyLane: maxVideoBitrateKbps <= 0,
                                         hasRemoteStream: remoteStreamURL != nil,
                                         mediaBrowserPlayMethod: remotePlayMethod)
     }
@@ -1964,6 +1973,16 @@ final class PlaybackController {
             ])
             await stopPreviousTranscode(server: server, token: token)
             guard !Task.isCancelled, generation == playbackGeneration else { return }
+            // GH #196: detach the now-dead item immediately. A zombie item whose session was
+            // just stopped keeps 404-retrying its segments — and, observed live on a seek
+            // rebuild, its pending media request (at the OLD playhead) lands on the RESTARTED
+            // session and yanks the fresh transcoder to that offset, so the new session's
+            // first segments never appear and the rebuild dies on startup deadlines. Once the
+            // transcode is stopped the old item can only ever 404; cut its network now.
+            if player.currentItem != nil {
+                removeObservers()
+                player.replaceCurrentItem(with: nil)
+            }
         }
         let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
 
@@ -1979,7 +1998,20 @@ final class PlaybackController {
         // waiting on a segment the transcoder hasn't reached yet.
         let resumeMs = resumeOffsetMsOverride ?? item.viewOffset
 
-        let offsetSeconds: Int? = if let resumeMs, resumeMs > 0 { resumeMs / 1000 } else { nil }
+        // GH #196: on the copy lane (Direct Play / Maximum) the `offset=` start param is
+        // actively harmful — PMS emits `#EXT-X-START:TIME-OFFSET` and AVPlayer was observed
+        // live decoding a single frame at the offset then abandoning the sole variant
+        // (-12880). Start the copy session at 0 and resume via the client-side seek
+        // fallback in the readyToPlay handler instead. Capped transcode rungs keep offset
+        // priming: there the transcoder runs at ~realtime, so without priming a deep
+        // client seek stalls waiting on a segment the transcoder hasn't reached yet.
+        let offsetSeconds: Int? = if maxVideoBitrateKbps <= 0 {
+            nil
+        } else if let resumeMs, resumeMs > 0 {
+            resumeMs / 1000
+        } else {
+            nil
+        }
         let burnSubtitleStreamID = selectedBurnSubtitleStreamIDForCurrentPreferences()
 
         // #118: PMS ignores the `subtitles=burn`/`subtitleStreamID` query params on the
@@ -2192,6 +2224,28 @@ final class PlaybackController {
             selectedFields.merge(decisionDiagnosticFields(decision)) { _, new in new }
         }
         recordPlaybackDiagnostic("playback.stream_selected", fields: selectedFields)
+
+        // GH #196 copy-lane startup hardening: on Direct Play / Maximum the PMS session emits
+        // 10s / tens-of-MB fMP4 segments in a single-variant playlist, and on a cold session
+        // the transcoder only starts once the child playlist is fetched — so AVPlayer's hard
+        // startup deadlines (-12889/-16830) can fire before the first segment exists, and with
+        // one variant the miss is terminal (-12880). Warm the session ourselves: fetch the
+        // playlists (starting the transcoder) and wait until PMS actually serves the init
+        // header + first segment byte before attaching AVPlayer. Soft-fail: on timeout we
+        // attach anyway and the error-log auto-retry below is the backstop.
+        if maxVideoBitrateKbps <= 0 {
+            let prewarm = await PlexHLSPrewarmer.prewarm(
+                startURL: streamURL,
+                headers: PlexHeaders.media(identity: identity, token: token))
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
+            recordTranscodeDiagnostic("transcode.prewarm", fields: [
+                "outcome": .label(prewarm.outcome.rawValue),
+                "elapsed_ms": .int(Int(prewarm.elapsedSeconds * 1000)),
+                "polls": .int(prewarm.polls),
+            ])
+            NSLog("PlaybackController: copy-lane prewarm %@ after %.1fs (%d polls) (#196)",
+                  prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
+        }
 
         // Plex Universal HLS can rely on the X-Plex identity headers in addition to the
         // token-bearing query string. In particular the Generic profile path that lets PMS
@@ -2879,6 +2933,42 @@ final class PlaybackController {
             }
         })
 
+        // GH #196: AVFoundation's startup-deadline abandonments never flip `item.status` —
+        // the item sits at `.unknown` forever while the error LOG records the real story
+        // (-12889/-16830 per media file, then terminal -12880 once the only variant is
+        // removed). Watch the error log directly: every event is persisted for diagnosis,
+        // and the terminal -12880 triggers the one-shot warm retry / accurate failure
+        // surface instead of waiting out the stall watchdog with a misleading message.
+        observers.storeNotification(NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.newErrorLogEntryNotification,
+            object: playerItem,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                guard let event = playerItem.errorLog()?.events.last else { return }
+                self.recordPlaybackDiagnostic("playback.error_log_event", fields: [
+                    "error_log_status_code": .int(event.errorStatusCode),
+                    "error_log_domain": .label(event.errorDomain),
+                    "error_log_comment": .text(event.errorComment),
+                ])
+                NSLog("PlaybackController: item error log %d (%@) %@",
+                      event.errorStatusCode, event.errorDomain, event.errorComment ?? "-")
+                // Several entries can be appended before ONE notification posts (seen live:
+                // -12880 then -15628 in the same batch), so scan the log rather than trusting
+                // `events.last` to be the terminal code.
+                let sawVariantsRemoved = (playerItem.errorLog()?.events ?? [])
+                    .contains { $0.errorStatusCode == HLSStartupDeadlinePolicy.variantsRemovedCode }
+                guard sawVariantsRemoved,
+                      self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else {
+                    return
+                }
+                self.handleStartupVariantAbandonment(playerItem)
+            }
+        })
+
         // Final-target rebuild recovery (#33 reset): `timeJumpedNotification` is the only
         // in-process signal of a user seek on visionOS. In-buffer jumps stay native;
         // out-of-buffer jumps are debounced and rebuilt once at the settled target.
@@ -3043,6 +3133,9 @@ final class PlaybackController {
             self.armStallWatchdog()
         } else if status == .playing {
             self.hasObservedPlayback = true
+            // Real playback re-arms the GH #196 one-shot startup-deadline retry for any
+            // later cold restart (quality change, deep seek rebuild).
+            self.startupDeadlineRetryAttempted = false
             self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
             self.playbackStartupSpan = nil
             self.cancelStallWatchdog()
@@ -3755,12 +3848,30 @@ final class PlaybackController {
                   Self.safeErrorSummary(underlying))
             surfaceFailure(underlying)
         } else {
+            // GH #196: a "stall with no item error" is often not a stall at all — the item
+            // error LOG (never `item.error` on this path) records AVFoundation abandoning
+            // the copy lane's only variant after its hard startup deadlines
+            // (-12889/-16830 → -12880). Surface the real story (and try the one-shot warm
+            // retry) instead of the misleading capacity hint.
+            let deadlineCodes = Self.startupDeadlineCodes(in: current)
+            if let lastEvent = current.errorLog()?.events.last {
+                fields["error_log_status_code"] = .int(lastEvent.errorStatusCode)
+                fields["error_log_domain"] = .label(lastEvent.errorDomain)
+                fields["error_log_comment"] = .text(lastEvent.errorComment)
+            }
+            if !deadlineCodes.isEmpty, attemptStartupDeadlineRetry(codes: deadlineCodes,
+                                                                   trigger: "stall_watchdog") {
+                return
+            }
             if maxVideoBitrateKbps <= 0 {
                 fields["failure_hint"] = .label("direct_play_capacity_or_player_limit")
             }
             recordPlaybackDiagnostic("playback.stall_watchdog_fired", fields: fields)
             let message: String
-            if maxVideoBitrateKbps <= 0 {
+            if !deadlineCodes.isEmpty {
+                message = HLSStartupDeadlinePolicy.failureMessage(errorLogCodes: deadlineCodes)
+                NSLog("PlaybackController: stall watchdog found startup-deadline error log; surfacing deadline failure (#196)")
+            } else if maxVideoBitrateKbps <= 0 {
                 message = "Direct Play / Maximum stalled before playback could start. The stream may be above this network or player path's capacity. Tap Retry, or choose a transcoded/lower quality."
                 NSLog("PlaybackController: Direct Play / Maximum stalled with no item error; surfacing capacity hint")
             } else {
@@ -3771,6 +3882,76 @@ final class PlaybackController {
                 domain: "VisionPlay.Playback", code: -1001,
                 userInfo: [NSLocalizedDescriptionKey: message]))
         }
+    }
+
+    // MARK: - Startup-deadline recovery (GH #196)
+
+    /// The startup-deadline CoreMedia codes recorded in the item's error log, oldest-first.
+    private static func startupDeadlineCodes(in playerItem: AVPlayerItem) -> [Int] {
+        (playerItem.errorLog()?.events ?? [])
+            .map(\.errorStatusCode)
+            .filter(HLSStartupDeadlinePolicy.isStartupDeadlineCode)
+    }
+
+    /// One-shot retry after AVFoundation abandoned the stream on its startup deadlines.
+    /// Plex lane: rebuild against the SAME session — transcoder deliberately NOT stopped —
+    /// because the failed attempt already made PMS write the first segments, so the retry
+    /// starts against media that now exists. MediaBrowser (Emby/Jellyfin) lane: renegotiate
+    /// via the backend reopener at the current playhead (their sessions are re-minted per
+    /// PlaybackInfo, so a fresh negotiation IS the retry). Returns true when launched.
+    private func attemptStartupDeadlineRetry(codes: [Int], trigger: String) -> Bool {
+        guard !startupDeadlineRetryAttempted else { return false }
+        let codesLabel = codes.map(String.init).joined(separator: ",")
+        if remoteStreamReopener != nil {
+            startupDeadlineRetryAttempted = true
+            let resumeMs = currentResumeMs
+            recordPlaybackDiagnostic("playback.startup_deadline_retry", fields: [
+                "trigger": .label(trigger),
+                "lane": .label("remote_reopen"),
+                "error_log_codes": .text(codesLabel),
+                "resume": .millisecondsBucket(resumeMs),
+            ])
+            NSLog("PlaybackController: startup deadlines missed (%@); reopening remote stream once (#196)",
+                  codesLabel)
+            finalTargetRebuildPolicy.reset()
+            reopenRemoteStream(offsetMs: resumeMs, bitrateKbps: maxVideoBitrateKbps)
+            return true
+        }
+        guard isStreaming, remoteStreamURL == nil else { return false }
+        startupDeadlineRetryAttempted = true
+        let resumeMs = currentResumeMs
+        recordPlaybackDiagnostic("playback.startup_deadline_retry", fields: [
+            "trigger": .label(trigger),
+            "lane": .label("plex_warm_session"),
+            "error_log_codes": .text(codesLabel),
+            "resume": .millisecondsBucket(resumeMs),
+        ])
+        NSLog("PlaybackController: startup deadlines missed (%@); retrying once against the warm session (#196)",
+              codesLabel)
+        finalTargetRebuildPolicy.reset()
+        removeObservers()
+        // The abandoned item is dead weight; detach it so nothing it still requests can
+        // disturb the warm session the retry is about to reuse.
+        player.replaceCurrentItem(with: nil)
+        beginStreaming(resumeOffsetMsOverride: resumeMs, stoppingPreviousTranscode: false)
+        return true
+    }
+
+    /// Terminal `-12880` seen in the error log: the only variant was removed, so the item will
+    /// never recover (nor flip `item.status`) on its own. Retry warm once, else surface an
+    /// accurate failure now instead of letting the stall watchdog time out into a generic hint.
+    private func handleStartupVariantAbandonment(_ playerItem: AVPlayerItem) {
+        guard !playbackError.isFailed else { return }
+        let codes = Self.startupDeadlineCodes(in: playerItem)
+        if attemptStartupDeadlineRetry(codes: codes, trigger: "error_log") { return }
+        var fields = runtimeSnapshotFields()
+        fields["error_log_codes"] = .text(codes.map(String.init).joined(separator: ","))
+        recordPlaybackDiagnostic("playback.startup_deadline_failure", fields: fields)
+        NSLog("PlaybackController: variant abandoned after startup deadlines and retry exhausted; surfacing failure (#196)")
+        surfaceFailure(NSError(
+            domain: "VisionPlay.Playback",
+            code: HLSStartupDeadlinePolicy.variantsRemovedCode,
+            userInfo: [NSLocalizedDescriptionKey: HLSStartupDeadlinePolicy.failureMessage(errorLogCodes: codes)]))
     }
 
     private func currentStallProgressSignature() -> StallProgressSignature {
