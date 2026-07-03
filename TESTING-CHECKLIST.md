@@ -146,6 +146,10 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
         risky (no fallback layer), especially on Emby.
   - [ ] HDR10+ sample — HDR row "HDR10+ …" from backend metadata only; Runtime HDR may still
         say PQ (AVPlayer exposes no HDR10+ mode — do not expect an HDR10+ runtime claim).
+        NOTE: only Jellyfin can signal HDR10+ (and DV+HDR10+ combos, shown as
+        "… + HDR10+"); on Plex/Emby the same file legitimately shows plain HDR10/DV.
+        No HLG content exists in the current libraries — the HLG row is unit-test-covered
+        only until a sample is sourced.
       Visual HDR quality claims need the physical Vision Pro; the simulator pass only covers
       metadata/labels. Exported diagnostics gain `source_hdr`, `runtime_hdr`, `output_hdr_hint`
       — verify no URLs/tokens/titles appear in the export.

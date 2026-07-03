@@ -447,6 +447,26 @@ issue #195 for source links):
   format descriptions are empty until segments load, so `PlaybackHDRProbe` is retried from
   the diagnostics tick until it sees real format descriptions.
 
+Backend signalling capabilities, verified against live servers with ffprobe ground truth on
+the shared media volume (server-side survey, 2026-07-03; all three backends indexed the same
+files, so one ffprobe per file arbitrated all three):
+
+- **Jellyfin is the authoritative server-side classifier.** Its `VideoRangeType` enum
+  matched ffprobe on every sample, including combined types (`DOVIWithEL`,
+  `DOVIWithHDR10Plus`, `DOVIWithELHDR10Plus`, `HDR10Plus`), and it exposes numeric
+  DV profile/level/compat plus `Hdr10PlusPresentFlag`.
+- **Plex exposes full DOVI fields but has NO HDR10+ indicator at all** — an HDR10+ file is
+  indistinguishable from plain HDR10 in PMS metadata, and a DV+HDR10+ file reports only DV.
+- **Emby exposes no numeric DV fields and no HDR10+ flag** — only `VideoRange`
+  ("SDR"/"HDR 10"/"DolbyVision") and `ExtendedVideoType/SubType`, where the subtype string
+  `DoviProfileNN` encodes profile+compat as two digits (`DoviProfile50` = P5 compat 0,
+  `DoviProfile76` = P7 compat 6, `DoviProfile81` = P8 compat 1). HDR10+ files collapse to
+  "HDR 10" / plain DolbyVision.
+- **DV Profile 5 files may carry no `color_transfer` tag at all** (IPTPQc2 is signalled via
+  the DOVI config record), so DV detection must never require a PQ transfer tag.
+- Consequence for Stats: an "HDR10" label on Plex/Emby may really be HDR10+ — only Jellyfin
+  (or bitstream inspection) can tell. The classifier deliberately does not guess.
+
 Stats rows added for #195: **Video**/**Audio** show friendly format names
 (`AVFormatLabels`: "HEVC", "Dolby Digital Plus (E-AC-3) Atmos 5.1", "DTS-HD MA 7.1"),
 **HDR** shows the backend-classified source format (`VideoHDRMetadata.displayLabel`, e.g.

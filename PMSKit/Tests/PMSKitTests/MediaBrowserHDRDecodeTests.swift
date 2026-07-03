@@ -106,6 +106,46 @@ struct MediaBrowserHDRDecodeTests {
         #expect(p5.hdrMetadata?.displayLabel == "Dolby Vision P5")
     }
 
+    @Test func jellyfinCombinedRangeTypesFromLiveServer() throws {
+        // Real Jellyfin wire shapes (server-side survey 2026-07-03): VideoRangeType is a
+        // single enum covering the whole matrix, including DV-with-EL and DV+HDR10+ combos.
+        let dvEL = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"ColorTransfer":"smpte2084",
+         "VideoRange":"HDR","VideoRangeType":"DOVIWithEL","DvProfile":7,"DvBlSignalCompatibilityId":6,
+         "ElPresentFlag":1,"RpuPresentFlag":1,"BlPresentFlag":1,"Hdr10PlusPresentFlag":false}
+        """)
+        #expect(dvEL.hdrMetadata?.displayLabel == "Dolby Vision P7 (HDR10 fallback)")
+        #expect(dvEL.hdrMetadata?.dolbyVision?.elPresent == true)
+
+        let dvPlus = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"ColorTransfer":"smpte2084",
+         "VideoRange":"HDR","VideoRangeType":"DOVIWithHDR10Plus","DvProfile":8,
+         "DvBlSignalCompatibilityId":1,"Hdr10PlusPresentFlag":true}
+        """)
+        #expect(dvPlus.hdrMetadata?.format == .dolbyVision)
+        #expect(dvPlus.hdrMetadata?.hdr10PlusPresent == true)
+        #expect(dvPlus.hdrMetadata?.displayLabel == "Dolby Vision P8 (HDR10 fallback) + HDR10+")
+
+        let dvELPlus = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"ColorTransfer":"smpte2084",
+         "VideoRange":"HDR","VideoRangeType":"DOVIWithELHDR10Plus","DvProfile":7,
+         "DvBlSignalCompatibilityId":6,"Hdr10PlusPresentFlag":true}
+        """)
+        #expect(dvELPlus.hdrMetadata?.format == .dolbyVision)
+        #expect(dvELPlus.hdrMetadata?.hdr10PlusPresent == true)
+    }
+
+    @Test func embyDoviProfile50FromLiveServer() throws {
+        // Real Emby shape for DV Profile 5: "DoviProfile50" (profile 5, compat 0 — no
+        // HDR10 base layer). Also: the file may carry NO color_transfer tag at all
+        // (DV5 IPTPQc2 signals via the DOVI record), so DV must not key off transfer.
+        let p5 = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"VideoRange":"DolbyVision",
+         "ExtendedVideoType":"DolbyVision","ExtendedVideoSubType":"DoviProfile50"}
+        """)
+        #expect(p5.hdrMetadata?.displayLabel == "Dolby Vision P5 (no fallback)")
+    }
+
     @Test func embyDolbyVisionRangeAloneIsDVEvidence() throws {
         let stream = try decodeMediaStream("""
         {"Index":0,"Type":"Video","Codec":"hevc","VideoRange":"DolbyVision"}
