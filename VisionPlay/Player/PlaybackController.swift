@@ -249,6 +249,11 @@ final class PlaybackController {
     /// overlay if the stall outlasts `stallTimeoutSeconds`, turning a dead-end into a recoverable
     /// state. Cancelled the moment playback genuinely resumes (`.playing`).
     private lazy var stallWatchdogObservers = PlayerObserverBag()
+    /// GH #196: non-nil when the DV P5 guard forced this session onto a tone-map transcode.
+    /// Drives the first-frame watchdog and the Stats decision suffix.
+    private var dvGuardReason: String?
+    private lazy var dvGuardWatchdogObservers = PlayerObserverBag()
+    private var dvGuardProgressBaseline: StallProgressSignature?
     private var reconnectWatchdogTask: Task<Void, Never>?
     private var reconnectInProgress = false
     private var hasObservedPlayback = false
@@ -763,6 +768,12 @@ final class PlaybackController {
         self.speedState.speed = self.playbackSpeed
         self.audioStreamIDOverride = initialAudioStreamIndex
         self.subtitleStreamIndexOverride = initialSubtitleStreamIndex
+        // GH #196: the Jellyfin/Emby browse services enforce the same verdict on the
+        // PlaybackInfo request; recompute it here so the controller can arm the
+        // first-frame watchdog and label the Stats decision.
+        if case .forceToneMapTranscode(let reason) = DolbyVisionGuard.verdict(for: item) {
+            self.dvGuardReason = reason
+        }
     }
 
     // MARK: - Lifecycle
@@ -1995,6 +2006,16 @@ final class PlaybackController {
             }
         }
 
+        // GH #196 DV P5 guard: a fallback-less DV stream must not travel a copy lane
+        // (unguarded live result on Plex: decoder-not-found, no picture at all).
+        if case .forceToneMapTranscode(let reason) = DolbyVisionGuard.verdict(for: item,
+                                                                              mediaIndex: mediaIndex) {
+            dvGuardReason = reason
+            NSLog("PlaybackController: DV P5 guard forcing tone-map transcode (%@)", reason)
+        } else {
+            dvGuardReason = nil
+        }
+
         let transcode = TranscodeRequest(server: server,
                                          token: token,
                                          identity: identity,
@@ -2004,7 +2025,8 @@ final class PlaybackController {
                                          mediaIndex: mediaIndex,
                                          partIndex: 0,
                                          burnSubtitleStreamID: burnSubtitleStreamID,
-                                         startOffsetSeconds: offsetSeconds)
+                                         startOffsetSeconds: offsetSeconds,
+                                         forceTranscode: dvGuardReason != nil)
         let directPlayStartKey = Self.directPlayStartRejectionKey(metadataKey: metadataKey,
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: 0)
@@ -2020,6 +2042,7 @@ final class PlaybackController {
             "subtitle_auto_select": .label(UserDefaults.standard.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? SubtitleAutoSelectMode.manual.rawValue),
             "subtitle_burn_mode": .label(UserDefaults.standard.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? SubtitleBurnMode.automatic.rawValue),
             "burning_subtitles": .bool(burnSubtitleStreamID != nil),
+            "dv_guard": .bool(dvGuardReason != nil),
         ]
         requestFields.merge(sourceDiagnosticFields()) { _, new in new }
         recordPlaybackDiagnostic("playback.start_streaming", fields: requestFields)
@@ -2044,6 +2067,7 @@ final class PlaybackController {
         // toggle or pre-flight bandwidth gate (#31 superseded).
         if maxVideoBitrateKbps <= 0,
            !skipDirectPlayProbe,
+           dvGuardReason == nil,
            burnSubtitleStreamID == nil,
            !rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
             do {
@@ -2555,6 +2579,13 @@ final class PlaybackController {
         playbackError.clear()
         offlineSubtitleOverlay.set(nil)
         updateTransportStatus()
+        // GH #196: when the DV P5 guard forced this session onto a tone-map transcode,
+        // label the decision and start the first-frame deadline.
+        diagnostics.dvGuardReason = dvGuardReason
+        cancelDVGuardWatchdog()
+        if dvGuardReason != nil {
+            armDVGuardWatchdog()
+        }
         // Clear any active Skip affordance for the (re)loaded item. The skip RANGES are
         // unchanged across a Quality reload (same `item`), so we only reset the live UI
         // state here; the new fine-grained observer will re-derive the active marker.
@@ -2964,6 +2995,7 @@ final class PlaybackController {
             self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
             self.playbackStartupSpan = nil
             self.cancelStallWatchdog()
+            self.cancelDVGuardWatchdog()
             // Real playback = the failure is over. Clear any surfaced error so its
             // Retry/Close affordance can't linger over playing video: a stall we
             // surfaced (handleStallTimeout pauses + sets the error) sometimes recovers
@@ -2981,6 +3013,7 @@ final class PlaybackController {
         // Cancel the stall watchdog so a stale timer can't fire across a reload / Retry /
         // teardown and surface an error against a freshly-loaded item.
         cancelStallWatchdog()
+        cancelDVGuardWatchdog()
         // Drop any armed final-target rebuild so a debounced timer can't fire against a freshly-loaded item.
         cancelPendingFinalTargetRebuild()
         // Clear any lingering spinner state across a reload/teardown so it can't get stuck on.
@@ -3558,6 +3591,58 @@ final class PlaybackController {
         }
         RunLoop.main.add(timer, forMode: .common)
         stallWatchdogObservers.storeTimer(timer)
+    }
+
+    // MARK: - DV guard first-frame watchdog (GH #196)
+
+    /// Arm the first-frame deadline for a DV-P5-guard-forced transcode. Jellyfin's own P5
+    /// tone-map stalled server-side in live testing (segments never arrived, SEGPUMP -12889
+    /// retry loop), so "force a transcode" alone can strand the viewer on a spinner. If real
+    /// playback isn't observed within the deadline, surface a DV-specific failure.
+    private func armDVGuardWatchdog() {
+        guard dvGuardWatchdogObservers.isEmpty, !playbackError.isFailed else { return }
+        dvGuardProgressBaseline = currentStallProgressSignature()
+        recordPlaybackDiagnostic("playback.dv_guard_watchdog_armed", fields: [
+            "timeout_seconds": .int(Int(DolbyVisionGuard.firstFrameTimeoutSeconds)),
+        ])
+        let timer = Timer(timeInterval: DolbyVisionGuard.firstFrameTimeoutSeconds,
+                          repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleDVGuardTimeout()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dvGuardWatchdogObservers.storeTimer(timer)
+    }
+
+    private func cancelDVGuardWatchdog() {
+        dvGuardWatchdogObservers.reset()
+        dvGuardProgressBaseline = nil
+    }
+
+    private func handleDVGuardTimeout() {
+        let baseline = dvGuardProgressBaseline
+        dvGuardWatchdogObservers.reset()
+        dvGuardProgressBaseline = nil
+        // Any observed real playback cancels this watchdog at the `.playing` transition,
+        // so firing means the forced transcode never produced a first frame.
+        guard !playbackError.isFailed, !hasObservedPlayback else { return }
+        // A slow-but-working tone-map prime (Emby re-priming a 4K transcode at a deep
+        // offset was seen taking >20s live) keeps bytes flowing; only a wedged server
+        // (the Jellyfin SEGPUMP no-segments loop) shows zero transport progress. Defer
+        // while progress is being made rather than false-failing a working transcode.
+        if stallMadeTransportProgress(since: baseline) {
+            recordPlaybackDiagnostic("playback.dv_guard_watchdog_deferred")
+            armDVGuardWatchdog()
+            return
+        }
+        var fields = runtimeSnapshotFields()
+        fields["dv_guard"] = .bool(true)
+        recordPlaybackDiagnostic("playback.dv_guard_watchdog_fired", fields: fields)
+        NSLog("PlaybackController: DV guard first-frame deadline expired, surfacing failure (#196)")
+        surfaceFailure(NSError(domain: "VisionPlay.Playback",
+                               code: -196,
+                               userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage]))
     }
 
     /// Cancel the stall watchdog (genuine resume, teardown, or retry).

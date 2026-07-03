@@ -232,6 +232,16 @@ struct EmbyBrowseService {
         let context = try context()
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
+        // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
+        // Emby is the backend where the unguarded failure is a SILENT black screen.
+        let dvVerdict = DolbyVisionGuard.verdict(for: item)
+        let forceTranscode: Bool
+        if case .forceToneMapTranscode(let reason) = dvVerdict {
+            forceTranscode = true
+            NSLog("EmbyBrowseService: forcing tone-map transcode (%@)", reason)
+        } else {
+            forceTranscode = false
+        }
         // DIVERGENCE: Emby PlaybackInfo needs UserId in BOTH query and body.
         let req = try EmbyPlayback.playbackInfoRequest(server: context.server,
                                                        token: context.token,
@@ -241,7 +251,8 @@ struct EmbyBrowseService {
                                                        startTimeTicks: startTicks,
                                                        maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                        audioStreamIndex: audioStreamIndex,
-                                                       subtitleStreamIndex: subtitleStreamIndex)
+                                                       subtitleStreamIndex: subtitleStreamIndex,
+                                                       forcePlaybackTranscode: forceTranscode)
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
         return try EmbyPlayback.resolveStream(response: info,
                                               server: context.server,
