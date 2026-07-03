@@ -118,8 +118,11 @@ public struct VideoHDRMetadata: Sendable, Equatable {
                                 dolbyVision: VideoDolbyVisionInfo?,
                                 hdr10PlusPresent: Bool?,
                                 rangeDescribesHDR: Bool?) -> VideoHDRMetadata? {
+        // A non-nil `dolbyVision` is itself the DV verdict: callers only construct one
+        // when the backend positively signalled DV (DOVIPresent, DvProfile, a DOVI*
+        // range type, …), even if every individual field inside it is unknown.
         let format: VideoHDRFormat
-        if let dolbyVision, dolbyVision.profile != nil || dolbyVision.rpuPresent == true {
+        if dolbyVision != nil {
             format = .dolbyVision
         } else if hdr10PlusPresent == true {
             format = .hdr10Plus

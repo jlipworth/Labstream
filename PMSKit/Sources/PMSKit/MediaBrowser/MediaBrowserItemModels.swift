@@ -495,6 +495,27 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
     public let title: String?
     public let width: Int?
     public let height: Int?
+    /// Codec profile string, e.g. "Dolby TrueHD + Dolby Atmos" (audio) or "Main 10". (#195)
+    public let profile: String?
+    /// HDR/color facts (#195). Jellyfin sends `VideoRange`/`VideoRangeType` plus optional
+    /// Dv*/color fields; Emby sends `ExtendedVideoType`/`ExtendedVideoSubType`. All lenient.
+    public let bitDepth: Int?
+    public let colorRange: String?
+    public let colorSpace: String?
+    public let colorTransfer: String?
+    public let colorPrimaries: String?
+    public let videoRange: String?
+    public let videoRangeType: String?
+    public let videoDoViTitle: String?
+    public let dvProfile: Int?
+    public let dvLevel: Int?
+    public let dvBlSignalCompatibilityId: Int?
+    public let rpuPresentFlag: Int?
+    public let elPresentFlag: Int?
+    public let blPresentFlag: Int?
+    public let hdr10PlusPresentFlag: Bool?
+    public let extendedVideoType: String?
+    public let extendedVideoSubType: String?
 
     enum CodingKeys: String, CodingKey {
         case index = "Index"
@@ -510,6 +531,24 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         case title = "Title"
         case width = "Width"
         case height = "Height"
+        case profile = "Profile"
+        case bitDepth = "BitDepth"
+        case colorRange = "ColorRange"
+        case colorSpace = "ColorSpace"
+        case colorTransfer = "ColorTransfer"
+        case colorPrimaries = "ColorPrimaries"
+        case videoRange = "VideoRange"
+        case videoRangeType = "VideoRangeType"
+        case videoDoViTitle = "VideoDoViTitle"
+        case dvProfile = "DvProfile"
+        case dvLevel = "DvLevel"
+        case dvBlSignalCompatibilityId = "DvBlSignalCompatibilityId"
+        case rpuPresentFlag = "RpuPresentFlag"
+        case elPresentFlag = "ElPresentFlag"
+        case blPresentFlag = "BlPresentFlag"
+        case hdr10PlusPresentFlag = "Hdr10PlusPresentFlag"
+        case extendedVideoType = "ExtendedVideoType"
+        case extendedVideoSubType = "ExtendedVideoSubType"
     }
 
     public init(from decoder: Decoder) throws {
@@ -527,6 +566,98 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         title = try c.decodeIfPresent(String.self, forKey: .title)
         width = try c.decodeIfPresent(Int.self, forKey: .width)
         height = try c.decodeIfPresent(Int.self, forKey: .height)
+        profile = try c.decodeIfPresent(String.self, forKey: .profile)
+        bitDepth = try c.decodeIfPresent(Int.self, forKey: .bitDepth)
+        colorRange = try c.decodeIfPresent(String.self, forKey: .colorRange)
+        colorSpace = try c.decodeIfPresent(String.self, forKey: .colorSpace)
+        colorTransfer = try c.decodeIfPresent(String.self, forKey: .colorTransfer)
+        colorPrimaries = try c.decodeIfPresent(String.self, forKey: .colorPrimaries)
+        videoRange = try c.decodeIfPresent(String.self, forKey: .videoRange)
+        videoRangeType = try c.decodeIfPresent(String.self, forKey: .videoRangeType)
+        videoDoViTitle = try c.decodeIfPresent(String.self, forKey: .videoDoViTitle)
+        dvProfile = try c.decodeIfPresent(Int.self, forKey: .dvProfile)
+        dvLevel = try c.decodeIfPresent(Int.self, forKey: .dvLevel)
+        dvBlSignalCompatibilityId = try c.decodeIfPresent(Int.self, forKey: .dvBlSignalCompatibilityId)
+        rpuPresentFlag = try c.decodeIfPresent(Int.self, forKey: .rpuPresentFlag)
+        elPresentFlag = try c.decodeIfPresent(Int.self, forKey: .elPresentFlag)
+        blPresentFlag = try c.decodeIfPresent(Int.self, forKey: .blPresentFlag)
+        // Jellyfin models this as a bool; be lenient about 1/0 just in case.
+        if let b = try? c.decodeIfPresent(Bool.self, forKey: .hdr10PlusPresentFlag) {
+            hdr10PlusPresentFlag = b
+        } else if let i = try? c.decodeIfPresent(Int.self, forKey: .hdr10PlusPresentFlag) {
+            hdr10PlusPresentFlag = i != 0
+        } else {
+            hdr10PlusPresentFlag = nil
+        }
+        extendedVideoType = try c.decodeIfPresent(String.self, forKey: .extendedVideoType)
+        extendedVideoSubType = try c.decodeIfPresent(String.self, forKey: .extendedVideoSubType)
+    }
+
+    /// Normalized HDR classification (#195). Video streams only. Precedence:
+    /// explicit DV facts / DOVI range type / Emby DolbyVision extended type, then
+    /// HDR10+ (flag, range type, or extended type), then transfer function, then the
+    /// coarse `VideoRange` verdict.
+    public var hdrMetadata: VideoHDRMetadata? {
+        guard type?.caseInsensitiveCompare("Video") == .orderedSame else { return nil }
+        let rangeType = videoRangeType?.lowercased()
+        let extType = extendedVideoType?.lowercased()
+
+        let saysDV = dvProfile != nil
+            || rangeType?.hasPrefix("dovi") == true
+            || extType?.contains("dolbyvision") == true
+        var dovi: VideoDolbyVisionInfo?
+        if saysDV {
+            // When numeric DV facts are missing, synthesize the base-layer compatibility
+            // from Jellyfin's "DOVIWith<fallback>" range type so the fallback label survives.
+            var compat = dvBlSignalCompatibilityId
+            if compat == nil, let rangeType {
+                switch rangeType {
+                case "doviwithhdr10": compat = 1
+                case "doviwithsdr": compat = 2
+                case "doviwithhlg": compat = 4
+                default: break
+                }
+            }
+            // Emby encodes the profile in ExtendedVideoSubType, e.g. "DolbyVisionProfile5".
+            var profileNumber = dvProfile
+            if profileNumber == nil,
+               let sub = extendedVideoSubType?.lowercased(),
+               let digits = sub.split(separator: "profile").last.flatMap({ Int($0.prefix(while: \.isNumber)) }) {
+                profileNumber = digits
+            }
+            dovi = VideoDolbyVisionInfo(profile: profileNumber,
+                                        level: dvLevel,
+                                        blCompatibilityID: compat,
+                                        rpuPresent: rpuPresentFlag.map { $0 != 0 },
+                                        elPresent: elPresentFlag.map { $0 != 0 },
+                                        blPresent: blPresentFlag.map { $0 != 0 })
+        }
+
+        let saysHDR10Plus = hdr10PlusPresentFlag == true
+            || rangeType == "hdr10plus"
+            || extType?.contains("hdr10plus") == true
+
+        // Emby "HdrHlg" / Jellyfin "HLG" range types when the transfer field is absent.
+        var transfer = colorTransfer
+        if transfer == nil {
+            if rangeType == "hlg" || extType?.contains("hlg") == true { transfer = "hlg" }
+            else if rangeType == "hdr10" || extType?.contains("hdr10") == true { transfer = "smpte2084" }
+        }
+
+        let rangeDescribesHDR: Bool? = switch videoRange?.lowercased() {
+        case "hdr": true
+        case "sdr": false
+        default: nil
+        }
+
+        return VideoHDRMetadata.classify(colorTransfer: transfer,
+                                         colorPrimaries: colorPrimaries,
+                                         colorSpace: colorSpace,
+                                         colorRange: colorRange,
+                                         bitDepth: bitDepth,
+                                         dolbyVision: dovi,
+                                         hdr10PlusPresent: saysHDR10Plus ? true : nil,
+                                         rangeDescribesHDR: rangeDescribesHDR)
     }
 
     func toCanonicalStream(fallbackID: Int) -> Stream? {

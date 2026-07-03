@@ -19,19 +19,27 @@ public struct EmbyPlaybackSourceMetadata: Sendable, Equatable {
     public let bitrate: Int?
     public let videoCodec: String?
     public let audioCodec: String?
+    /// Source HDR facts from the selected video stream, when the server exposed any. (#195)
+    public let hdr: VideoHDRMetadata?
+    /// Audio codec profile of the selected audio stream, e.g. "DTS-HD MA". (#195)
+    public let audioProfile: String?
 
     public init(container: String? = nil,
                 width: Int? = nil,
                 height: Int? = nil,
                 bitrate: Int? = nil,
                 videoCodec: String? = nil,
-                audioCodec: String? = nil) {
+                audioCodec: String? = nil,
+                hdr: VideoHDRMetadata? = nil,
+                audioProfile: String? = nil) {
         self.container = container
         self.width = width
         self.height = height
         self.bitrate = bitrate
         self.videoCodec = videoCodec
         self.audioCodec = audioCodec
+        self.hdr = hdr
+        self.audioProfile = audioProfile
     }
 }
 
@@ -188,7 +196,9 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
             height: height ?? video?.height,
             bitrate: bitrate.map { $0 / 1_000 },
             videoCodec: videoCodec ?? video?.codec,
-            audioCodec: audioStreamIndex == nil ? (audioCodec ?? audio?.codec) : (audio?.codec ?? audioCodec))
+            audioCodec: audioStreamIndex == nil ? (audioCodec ?? audio?.codec) : (audio?.codec ?? audioCodec),
+            hdr: video?.hdrMetadata,
+            audioProfile: audio?.profile)
     }
 
     var playbackSourceMetadata: EmbyPlaybackSourceMetadata {
