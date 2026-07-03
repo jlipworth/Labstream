@@ -69,6 +69,9 @@ public struct VideoHDRMetadata: Sendable, Equatable {
             var name = "Dolby Vision"
             if let profile = dolbyVision?.profile { name += " P\(profile)" }
             if let fallback = dolbyVision?.fallbackName { name += " (\(fallback))" }
+            // DV and HDR10+ dynamic metadata can coexist in one file (Jellyfin's
+            // DOVIWithHDR10Plus / DOVIWithELHDR10Plus range types); surface both.
+            if hdr10PlusPresent == true { name += " + HDR10+" }
             return name
         case .hdr10, .hdr10Plus:
             var parts = [format == .hdr10Plus ? "HDR10+" : "HDR10"]
