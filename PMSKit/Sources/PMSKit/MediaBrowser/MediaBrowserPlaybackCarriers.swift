@@ -37,19 +37,27 @@ public struct MediaBrowserPlaybackSourceMetadata: Sendable, Equatable {
     public let bitrate: Int?
     public let videoCodec: String?
     public let audioCodec: String?
+    /// Source HDR facts from the selected video stream, when the server exposed any. (#195)
+    public let hdr: VideoHDRMetadata?
+    /// Audio codec profile of the selected audio stream, e.g. "Dolby TrueHD + Dolby Atmos". (#195)
+    public let audioProfile: String?
 
     public init(container: String? = nil,
                 width: Int? = nil,
                 height: Int? = nil,
                 bitrate: Int? = nil,
                 videoCodec: String? = nil,
-                audioCodec: String? = nil) {
+                audioCodec: String? = nil,
+                hdr: VideoHDRMetadata? = nil,
+                audioProfile: String? = nil) {
         self.container = container
         self.width = width
         self.height = height
         self.bitrate = bitrate
         self.videoCodec = videoCodec
         self.audioCodec = audioCodec
+        self.hdr = hdr
+        self.audioProfile = audioProfile
     }
 
     public init(_ source: JellyfinPlaybackSourceMetadata) {
@@ -58,7 +66,9 @@ public struct MediaBrowserPlaybackSourceMetadata: Sendable, Equatable {
                   height: source.height,
                   bitrate: source.bitrate,
                   videoCodec: source.videoCodec,
-                  audioCodec: source.audioCodec)
+                  audioCodec: source.audioCodec,
+                  hdr: source.hdr,
+                  audioProfile: source.audioProfile)
     }
 
     public init(_ source: EmbyPlaybackSourceMetadata) {
@@ -67,7 +77,9 @@ public struct MediaBrowserPlaybackSourceMetadata: Sendable, Equatable {
                   height: source.height,
                   bitrate: source.bitrate,
                   videoCodec: source.videoCodec,
-                  audioCodec: source.audioCodec)
+                  audioCodec: source.audioCodec,
+                  hdr: source.hdr,
+                  audioProfile: source.audioProfile)
     }
 }
 
