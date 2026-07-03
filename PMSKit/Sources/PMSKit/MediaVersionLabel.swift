@@ -28,6 +28,11 @@ public enum MediaVersionLabel {
         var specs: [String] = []
         if let resolution = resolutionLabel(for: media) { specs.append(resolution) }
         if let codec = media.videoCodec?.uppercased(), !codec.isEmpty { specs.append(codec) }
+        // HDR/DV badge (#195): "DV P8" / "HDR10" / "HDR10+" / "HLG". SDR is the
+        // unlabeled default, so only non-SDR classifications earn a chip.
+        if let hdr = media.part.first?.videoStreams.first?.hdrMetadata, hdr.format != .sdr {
+            specs.append(hdr.shortLabel)
+        }
         if let audio = media.audioCodec?.uppercased(), !audio.isEmpty { specs.append(audio) }
         if let bitrate = media.bitrate, bitrate > 0 {
             specs.append(String(format: "%.1f Mbps", Double(bitrate) / 1_000))
