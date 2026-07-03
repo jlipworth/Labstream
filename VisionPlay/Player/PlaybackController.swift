@@ -2735,7 +2735,7 @@ final class PlaybackController {
         Task { @MainActor [weak self] in
             let result = await PlaybackHDRProbe.probe(playerItem: item, eligibleForHDRPlayback: eligible)
             guard let self, self.player.currentItem === item else { return }
-            self.diagnostics.runtimeHDRLabel = result.label
+            self.diagnostics.applyRuntimeHDRProbe(result)
             self.hdrProbeConclusive = result.sawVideoFormatDescriptions
         }
     }

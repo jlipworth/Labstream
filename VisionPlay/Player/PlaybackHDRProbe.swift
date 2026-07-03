@@ -18,14 +18,10 @@ struct PlaybackHDRProbeResult: Equatable {
     /// items often have none until segments load, so an inconclusive probe should be
     /// retried rather than displayed as "SDR".
     var sawVideoFormatDescriptions: Bool
-
-    /// Compact Stats row, e.g. "HDR · PQ · eligible" or "SDR · eligible".
-    var label: String {
-        var parts = [containsHDRVideo ? "HDR" : "SDR"]
-        if let transferFunction { parts.append(transferFunction) }
-        parts.append(eligibleForHDRPlayback ? "eligible" : "not eligible")
-        return parts.joined(separator: " · ")
-    }
+    /// FourCC of the first video format description (e.g. "hvc1", "avc1"), when segments
+    /// have loaded. Lets Stats detect a server VIDEO COPY on Jellyfin/Emby "transcode"
+    /// sessions: a remux delivers the source codec, a re-encode delivers h264 (GH #196).
+    var videoCodecFourCC: String?
 }
 
 enum PlaybackHDRProbe {
@@ -43,9 +39,13 @@ enum PlaybackHDRProbe {
 
         var transfer: String?
         var sawFormats = false
+        var codecFourCC: String?
         for track in videoTracks {
             guard let formats = try? await track.load(.formatDescriptions), !formats.isEmpty else { continue }
             sawFormats = true
+            if codecFourCC == nil, let first = formats.first {
+                codecFourCC = fourCCString(CMFormatDescriptionGetMediaSubType(first))
+            }
             for format in formats {
                 if let name = transferFunctionName(format) {
                     transfer = name
@@ -58,7 +58,15 @@ enum PlaybackHDRProbe {
         return PlaybackHDRProbeResult(containsHDRVideo: !hdrTracks.isEmpty,
                                       transferFunction: transfer,
                                       eligibleForHDRPlayback: eligibleForHDRPlayback,
-                                      sawVideoFormatDescriptions: sawFormats)
+                                      sawVideoFormatDescriptions: sawFormats,
+                                      videoCodecFourCC: codecFourCC)
+    }
+
+    private static func fourCCString(_ code: FourCharCode) -> String? {
+        let bytes: [UInt8] = [UInt8((code >> 24) & 0xFF), UInt8((code >> 16) & 0xFF),
+                              UInt8((code >> 8) & 0xFF), UInt8(code & 0xFF)]
+        guard bytes.allSatisfy({ (0x20...0x7E).contains($0) }) else { return nil }
+        return String(bytes: bytes, encoding: .ascii)
     }
 
     private static func transferFunctionName(_ format: CMFormatDescription) -> String? {

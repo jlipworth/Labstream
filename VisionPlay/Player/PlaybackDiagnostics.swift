@@ -34,37 +34,82 @@ final class PlaybackDiagnostics {
     var sourceHDRLabel: String?
     /// Source HDR format for tone-map inference; mirrors `sourceHDRLabel`. (#195)
     var sourceHDRFormat: VideoHDRFormat?
-    /// Runtime AVFoundation HDR facts, e.g. "HDR · PQ · eligible"; nil until probed (#195).
-    var runtimeHDRLabel: String?
+    /// Runtime AVFoundation HDR facts, published only once the probe has seen real video
+    /// format descriptions (#195/#196 panel rework). Before segments load HLS items expose
+    /// nothing, and a premature "SDR" reading is exactly the confusion the old
+    /// "Runtime HDR: SDR · eligible" row caused while a stream was still buffering.
+    private(set) var runtimeContainsHDR: Bool?
+    private(set) var runtimeTransferFunction: String?
+    private(set) var runtimeVideoCodecFourCC: String?
+    /// Display capability (`AVPlayer.eligibleForHDRPlayback`); recorded even when the
+    /// stream probe is inconclusive.
+    private(set) var runtimeEligibleForHDR: Bool?
 
-    /// Server-side tone-map inference for the Output row (#195): when the server is
-    /// re-encoding an HDR source, Plex/Jellyfin/Emby tone-map to SDR in their default
-    /// transcode paths. This is an inference from decision + source metadata, so it is
-    /// worded as probable rather than stated as fact.
-    var outputHDRHint: String? {
-        guard isTranscoding, let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
-        return "SDR tone-map likely (server transcode)"
-    }
     /// GH #196: true when the experimental DV-signalling lane is active for this session
     /// (playlist injection proxy or dvh1 direct play under the experimental setting).
     var dvSignallingActive: Bool = false
+
+    /// Whether this session came from a Jellyfin/Emby PlaybackInfo lane, where a
+    /// "Transcoding" verdict may still VIDEO-COPY (remux) — the server decides per-stream
+    /// at ffmpeg spawn time, so only the runtime codec can tell (GH #196 panel rework).
+    private var isMediaBrowserLane = false
+
+    /// True once the runtime probe proves the "transcode" session actually copies the
+    /// video stream (runtime codec family == source codec family).
+    private var runtimeShowsVideoCopy: Bool {
+        guard let fourCC = runtimeVideoCodecFourCC else { return false }
+        let source = videoCodec.lowercased()
+        switch fourCC.lowercased() {
+        case "hvc1", "hev1", "dvh1", "dvhe": return source == "hevc" || source == "h265"
+        case "avc1", "avc3": return source == "h264" || source == "avc"
+        default: return false
+        }
+    }
+
     /// GH #196: what is actually reaching the display, distinct from the source
-    /// classification. Shown whenever the source is HDR/DV; nil hides the row.
+    /// classification. Runtime truth wins once segments have loaded; before that, only
+    /// verdicts we are certain of are shown (guard-forced tone-map, copy-lane
+    /// passthrough). Nil hides the row.
     var renderedLabel: String? {
         guard let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
-        if isTranscoding || dvGuardReason != nil {
+        let suffix = runtimeEligibleForHDR == false ? " · display not HDR-eligible" : ""
+        // Runtime truth: segments are loaded and AVFoundation told us what it sees.
+        if let runtimeContainsHDR {
+            if runtimeContainsHDR {
+                let label: String
+                if sourceHDRFormat == .dolbyVision {
+                    label = dvSignallingActive
+                        ? "Dolby Vision (signalled — unverified)"
+                        : "HDR10 fallback (base layer)"
+                } else {
+                    switch sourceHDRFormat {
+                    case .hdr10Plus: label = "HDR10+"
+                    case .hlg: label = "HLG"
+                    default: label = "HDR10"
+                    }
+                }
+                return label + suffix
+            }
+            return "SDR (server tone-map)" + suffix
+        }
+        // Pre-runtime predictions — only where the lane makes the outcome certain.
+        if dvGuardReason != nil {
             return "SDR (server tone-map)"
         }
+        if isTranscoding {
+            // Jellyfin/Emby "transcode" may still remux the video; don't guess.
+            return nil
+        }
         if sourceHDRFormat == .dolbyVision {
-            return dvSignallingActive
+            return (dvSignallingActive
                 ? "Dolby Vision (signalled — unverified)"
-                : "HDR10 fallback (base layer)"
+                : "HDR10 fallback (base layer)") + suffix
         }
         // Non-DV HDR on a copy lane: the in-bitstream metadata survives the remux.
         switch sourceHDRFormat {
-        case .hdr10Plus: return "HDR10+"
-        case .hlg: return "HLG"
-        default: return "HDR10"
+        case .hdr10Plus: return "HDR10+" + suffix
+        case .hlg: return "HLG" + suffix
+        default: return "HDR10" + suffix
         }
     }
     /// Source media bitrate (kbps), when PMS exposes it on the chosen Media row.
@@ -191,6 +236,7 @@ final class PlaybackDiagnostics {
                      server: URL?,
                      targetBitrateKbps: Int) {
         resetDynamicAccessLogFacts()
+        isMediaBrowserLane = false
         applySourceSummary(PlaybackSourceSummary.plex(item: item, mediaIndex: mediaIndex))
         if let decision {
             if decision.playsWholeFileDirectly {
@@ -231,6 +277,7 @@ final class PlaybackDiagnostics {
         if let summary = PlaybackSourceSummary.mediaBrowser(source) {
             applySourceSummary(summary, overwriteOnlyKnownValues: true)
         }
+        isMediaBrowserLane = true
         switch playMethod {
         case .directPlay:
             isTranscoding = false
@@ -244,6 +291,22 @@ final class PlaybackDiagnostics {
             isTranscoding = true
             modeText = "Transcoding"
             decisionText = "transcode"
+        }
+    }
+
+    /// Publish the runtime HDR/codec probe (#195, reworked #196). Eligibility is always
+    /// recorded; stream facts only when the probe actually saw format descriptions.
+    /// On a Jellyfin/Emby "transcode" session, a runtime codec matching the source proves
+    /// the server is remuxing (video copy) — upgrade the Mode/Decision rows accordingly.
+    func applyRuntimeHDRProbe(_ result: PlaybackHDRProbeResult) {
+        runtimeEligibleForHDR = result.eligibleForHDRPlayback
+        guard result.sawVideoFormatDescriptions else { return }
+        runtimeContainsHDR = result.containsHDRVideo
+        runtimeTransferFunction = result.transferFunction
+        runtimeVideoCodecFourCC = result.videoCodecFourCC
+        if isMediaBrowserLane, isTranscoding, runtimeShowsVideoCopy {
+            modeText = "Remuxing"
+            decisionText = "video copy · audio transcode"
         }
     }
 
@@ -327,7 +390,10 @@ final class PlaybackDiagnostics {
     private var lastObservedProgressUptime: TimeInterval?
 
     private func resetDynamicAccessLogFacts() {
-        runtimeHDRLabel = nil
+        runtimeContainsHDR = nil
+        runtimeTransferFunction = nil
+        runtimeVideoCodecFourCC = nil
+        runtimeEligibleForHDR = nil
         observedBitrateKbps = 0
         observedBitrateState = .unavailable
         indicatedBitrateKbps = 0

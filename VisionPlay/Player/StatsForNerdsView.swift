@@ -45,14 +45,11 @@ struct StatsForNerdsView: View {
                 if let hdrLabel = diagnostics.sourceHDRLabel {
                     row("HDR", hdrLabel, wraps: true)
                 }
-                if let runtimeHDR = diagnostics.runtimeHDRLabel {
-                    row("Runtime HDR", runtimeHDR, wraps: true)
-                }
+                // One row for what actually reaches the display (#196 panel rework):
+                // the old Runtime HDR / Output rows restated (and sometimes contradicted)
+                // this — runtime truth now feeds Rendered directly.
                 if let rendered = diagnostics.renderedLabel {
                     row("Rendered", rendered, wraps: true)
-                }
-                if let outputHint = diagnostics.outputHDRHint {
-                    row("Output", outputHint, wraps: true)
                 }
                 row("Audio", diagnostics.audioFormatText)
                 Divider().gridCellUnsizedAxes(.horizontal)
