@@ -16,6 +16,12 @@ struct PlaybackSourceSummary: Equatable {
     var partIndex: Int = 0
     var subtitleMode: String = "none"
     var audioChannels: Int?
+    /// Source HDR classification from backend stream metadata (#195). Nil when the
+    /// backend exposed no color/DV facts for the video stream.
+    var hdr: VideoHDRMetadata?
+    /// Audio codec profile string (Plex `profile` / MediaBrowser `Profile`), used to
+    /// distinguish DTS-HD MA / DTS:X / Atmos in the Stats audio row (#195).
+    var audioProfile: String?
 
     var statsResolution: String? {
         guard let width, let height else { return nil }
@@ -45,6 +51,10 @@ struct PlaybackSourceSummary: Equatable {
         if let audioChannels {
             fields["source_audio_channels"] = .int(audioChannels)
         }
+        if let hdr {
+            fields["source_hdr"] = .label(hdr.format.rawValue)
+            fields["source_hdr_detail"] = .label(hdr.displayLabel)
+        }
         return fields
     }
 
@@ -64,7 +74,9 @@ struct PlaybackSourceSummary: Equatable {
             durationMs: media?.duration ?? item.duration,
             partIndex: 0,
             subtitleMode: (part?.subtitleStreams.isEmpty == false) ? "available" : "none",
-            audioChannels: part?.audioStreams.first?.channels
+            audioChannels: part?.audioStreams.first?.channels,
+            hdr: part?.videoStreams.first?.hdrMetadata,
+            audioProfile: part?.audioStreams.first?.profile
         )
     }
 
@@ -80,7 +92,9 @@ struct PlaybackSourceSummary: Equatable {
             durationMs: nil,
             partIndex: 0,
             subtitleMode: "none",
-            audioChannels: nil
+            audioChannels: nil,
+            hdr: source.hdr,
+            audioProfile: source.audioProfile
         )
     }
 }

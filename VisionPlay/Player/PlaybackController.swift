@@ -355,6 +355,11 @@ final class PlaybackController {
     /// `AVPlayerItem`) re-applies the preference to the new legible group.
     private var didApplySavedSubtitle = false
 
+    /// True once the runtime HDR probe (#195) saw real video format descriptions for the
+    /// current item. HLS items expose no format descriptions until segments load, so an
+    /// inconclusive readyToPlay-time probe is retried from the diagnostics tick.
+    private var hdrProbeConclusive = false
+
     /// One-shot guard so the saved-audio-language auto-select runs once per item (#3). Reset in
     /// `load(_:)` alongside `didApplySavedSubtitle` so a Quality reload re-applies the preference
     /// to the new audible group.
@@ -2539,6 +2544,7 @@ final class PlaybackController {
         timeline.isReadyForReporting = false
         didApplySavedSubtitle = false
         didApplyAudioPreference = false
+        hdrProbeConclusive = false
         pendingResumeMs = resumeOffsetMs
         // Echo baseline: the resume seek's own `timeJumpedNotification` lands at this offset;
         // suppress nearby jumps so a rebuild does not immediately schedule another rebuild.
@@ -2621,6 +2627,7 @@ final class PlaybackController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.diagnostics.sample(player: self.player)
+                self.runHDRProbeIfNeeded()
                 self.maintainForwardBufferTarget()
                 self.maybeAdaptBitrateAfterHealthyPlayback()
                 self.maybeRecordDiagnosticSnapshot()
@@ -2628,6 +2635,20 @@ final class PlaybackController {
         }
         RunLoop.main.add(timer, forMode: .common)
         diagnosticsObservers.storeTimer(timer)
+    }
+
+    /// Run the runtime HDR probe (#195) for the current item and publish the result to
+    /// Stats. Fired on `.readyToPlay` and retried from the 1s diagnostics tick until the
+    /// probe sees real format descriptions — HLS items expose none until segments load.
+    private func runHDRProbeIfNeeded() {
+        guard !hdrProbeConclusive, let item = player.currentItem else { return }
+        let eligible = AVPlayer.eligibleForHDRPlayback
+        Task { @MainActor [weak self] in
+            let result = await PlaybackHDRProbe.probe(playerItem: item, eligibleForHDRPlayback: eligible)
+            guard let self, self.player.currentItem === item else { return }
+            self.diagnostics.runtimeHDRLabel = result.label
+            self.hdrProbeConclusive = result.sawVideoFormatDescriptions
+        }
     }
 
     private func maintainForwardBufferTarget() {

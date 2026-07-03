@@ -41,8 +41,17 @@ struct StatsForNerdsView: View {
                     row("Decision", diagnostics.decisionText, wraps: true)
                 }
                 row("Source", "\(diagnostics.sourceResolution) · \(diagnostics.container)")
-                row("Video", diagnostics.videoCodec)
-                row("Audio", diagnostics.audioCodec)
+                row("Video", diagnostics.videoFormatText)
+                if let hdrLabel = diagnostics.sourceHDRLabel {
+                    row("HDR", hdrLabel, wraps: true)
+                }
+                if let runtimeHDR = diagnostics.runtimeHDRLabel {
+                    row("Runtime HDR", runtimeHDR, wraps: true)
+                }
+                if let outputHint = diagnostics.outputHDRHint {
+                    row("Output", outputHint, wraps: true)
+                }
+                row("Audio", diagnostics.audioFormatText)
                 Divider().gridCellUnsizedAxes(.horizontal)
                 row("Target", diagnostics.targetBitrateLabel)
                 row("Observed", diagnostics.observedBitrateLabel)
