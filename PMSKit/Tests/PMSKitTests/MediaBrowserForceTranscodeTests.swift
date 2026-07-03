@@ -65,3 +65,27 @@ struct MediaBrowserForceTranscodeTests {
         #expect(body["AllowVideoStreamCopy"] as? Bool == true)
     }
 }
+
+extension MediaBrowserForceTranscodeTests {
+    /// GH #196 retest: an explicit subtitles-Off (-1 sentinel) must also drop the in-manifest
+    /// subtitle renditions, or AVFoundation re-shows forced/default renditions after select(nil).
+    @Test func jellyfinSubtitlesOffDropsManifestRenditions() throws {
+        let offReq = try JellyfinPlayback.playbackInfoRequest(
+            server: jfServer, token: "token-abc", identity: jfIdentity,
+            itemId: "movie-1", userId: "user-1", maxStreamingBitrate: 8_000_000,
+            subtitleStreamIndex: -1)
+        let offBody = try bodyJSON(offReq)
+        let offProfile = try #require(offBody["DeviceProfile"] as? [String: Any])
+        let offTranscoding = try #require(offProfile["TranscodingProfiles"] as? [[String: Any]])
+        #expect(offTranscoding.first?["EnableSubtitlesInManifest"] as? Bool == false)
+
+        let defaultReq = try JellyfinPlayback.playbackInfoRequest(
+            server: jfServer, token: "token-abc", identity: jfIdentity,
+            itemId: "movie-1", userId: "user-1", maxStreamingBitrate: 8_000_000,
+            subtitleStreamIndex: 3)
+        let defaultBody = try bodyJSON(defaultReq)
+        let defaultProfile = try #require(defaultBody["DeviceProfile"] as? [String: Any])
+        let defaultTranscoding = try #require(defaultProfile["TranscodingProfiles"] as? [[String: Any]])
+        #expect(defaultTranscoding.first?["EnableSubtitlesInManifest"] as? Bool == true)
+    }
+}
