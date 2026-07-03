@@ -13,6 +13,11 @@ struct RemoteSeekModePolicyTests {
                                                 hasRemoteStream: false,
                                                 mediaBrowserPlayMethod: nil) == .plexStreamingHLS)
         #expect(RemoteSeekModePolicy.streamKind(isLocalFile: false,
+                                                isPlexStreaming: true,
+                                                isPlexVideoCopyLane: true,
+                                                hasRemoteStream: false,
+                                                mediaBrowserPlayMethod: nil) == .plexStreamingCopyHLS)
+        #expect(RemoteSeekModePolicy.streamKind(isLocalFile: false,
                                                 isPlexStreaming: false,
                                                 hasRemoteStream: true,
                                                 mediaBrowserPlayMethod: .directPlay) == .mediaBrowserDirectOrStatic)
@@ -34,6 +39,7 @@ struct RemoteSeekModePolicyTests {
         let kinds: [RemoteSeekModePolicy.StreamKind] = [
             .localFile,
             .plexStreamingHLS,
+            .plexStreamingCopyHLS,
             .mediaBrowserDirectOrStatic,
             .mediaBrowserServerEncodedHLS,
             .otherRemote,
@@ -51,6 +57,10 @@ struct RemoteSeekModePolicyTests {
         #expect(RemoteSeekModePolicy.seekMode(streamKind: .mediaBrowserServerEncodedHLS,
                                               targetIsWithinLoadedRange: false) == .reopenStreamAtTarget)
 
+        // GH #196: the Plex video-copy lane seeks natively even out of buffer — its VOD
+        // playlist lets PMS jump the transcoder on request; a reopen breaks the session.
+        #expect(RemoteSeekModePolicy.seekMode(streamKind: .plexStreamingCopyHLS,
+                                              targetIsWithinLoadedRange: false) == .nativeAVPlayerSeek)
         #expect(RemoteSeekModePolicy.seekMode(streamKind: .localFile,
                                               targetIsWithinLoadedRange: false) == .nativeAVPlayerSeek)
         #expect(RemoteSeekModePolicy.seekMode(streamKind: .mediaBrowserDirectOrStatic,

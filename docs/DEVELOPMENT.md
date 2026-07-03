@@ -455,6 +455,46 @@ link):
   app deliberately never converts an explicit "Direct Play / Maximum" choice into a capped
   transcode (see the stall-watchdog rationale in `PlaybackController`).
 
+## Plex copy-lane startup deadlines: why Original quality "never loaded" (GH #196)
+
+Root-caused live (2026-07-03) with a bare-AVPlayer raw-URL probe against a real PMS over
+Cloudflare (~50–57 Mbps link, 62.7 Mbps 4K HEVC video-copy stream):
+
+- **AVFoundation enforces hard per-media-file startup deadlines**: `-12889` "No response
+  for media file in 10s" and `-16830` "Media file not received in 20s". On a miss it
+  *removes the variant*. The Plex video-copy session playlist has exactly ONE variant
+  (10 s / 67–80 MB fMP4 segments, `EXT-X-MAP` init header), so a miss is terminal:
+  `-12880` "Can not proceed after removing variants". Playback dies permanently instead of
+  buffering — this, not bandwidth or DV signalling, was the #196 "never loads".
+- **The failure never flips `item.status`.** The item sits at `.unknown` with `rate=1`
+  forever; the truth lands only in `AVPlayerItem.errorLog()`. Symptom in app logs is the
+  looping MediaToolbox `err=-12174` at `AVAssetInspectorLoader`. The app's old surface was
+  the misleading "capacity hint" from the stall watchdog. Multiple error-log entries can be
+  appended before ONE `newErrorLogEntryNotification` posts (seen live: `-12880` + `-15628`
+  in a single batch), so handlers must scan the log, not read `events.last`.
+- **Cold sessions lose the race under server load.** PMS starts the session transcoder only
+  when the *child* playlist is fetched, and session files 404 until written (idle server:
+  header + seg0 at ~+3 s). `PlexHLSPrewarmer` therefore fetches master+child and polls the
+  init header + first segment byte BEFORE attaching AVPlayer; a one-shot auto-retry on
+  `-12880` (same session, transcoder NOT stopped — the failed attempt's segments are the
+  retry's head start) is the backstop, and the MediaBrowser lanes reuse the backend
+  reopener for the same one-shot.
+- **`offset=` is actively harmful on the copy lane.** PMS emits
+  `#EXT-X-START:TIME-OFFSET`; AVPlayer was observed decoding a single frame at the offset
+  and then abandoning the sole variant. The copy lane now starts sessions at 0 and resumes
+  via the client-side seek fallback — PMS jumps the session transcoder to whichever segment
+  the player requests (proven live, both directions).
+- **Never rebuild the copy-lane session for a seek.** Killing and immediately re-minting
+  the same `session` id left the fresh session header-less for 20 s+ and then HTTP-400'd
+  the restart; worse, the not-yet-detached old item's pending media request landed on the
+  restarted session and yanked its transcoder to the stale playhead (fixed by detaching the
+  item whenever its transcode session is stopped). Out-of-buffer seeks on the copy lane are
+  now NATIVE (`RemoteSeekModePolicy.plexStreamingCopyHLS`): the session playlist is full
+  VOD, so AVPlayer just requests the target segment and PMS jumps. Deep seeks still
+  re-download 2–3 huge segments (~10 s each at link speed) before playback resumes — that
+  is buffering, not failure; the deadline auto-retry covers the case where AVFoundation
+  gives up mid-jump.
+
 ## HDR / Dolby Vision facts and Stats rows (GH #195)
 
 Verified visionOS/AVFoundation findings (simulator probe on visionOS 26.5, 2026-07-03; see
