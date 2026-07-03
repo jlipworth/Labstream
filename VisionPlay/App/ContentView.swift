@@ -81,6 +81,7 @@ struct ContentView: View {
 
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
+            await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugPlexDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
             await DebugEmbyDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
             await DebugJellyfinDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
