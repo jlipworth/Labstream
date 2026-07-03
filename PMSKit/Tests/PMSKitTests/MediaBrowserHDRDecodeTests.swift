@@ -82,6 +82,37 @@ struct MediaBrowserHDRDecodeTests {
         #expect(hlg.hdrMetadata?.format == .hlg)
     }
 
+    @Test func embyDoviProfileSubtypesFromLiveWireShape() throws {
+        // Real Emby wire shape (live probe 2026-07-03): VideoRange="DolbyVision",
+        // ExtendedVideoSubType="DoviProfile76"/"DoviProfile81" — the two digits are
+        // profile + BL-compatibility id, NOT a two-digit profile number.
+        let p76 = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"ColorTransfer":"smpte2084",
+         "VideoRange":"DolbyVision","ExtendedVideoType":"DolbyVision","ExtendedVideoSubType":"DoviProfile76"}
+        """)
+        #expect(p76.hdrMetadata?.format == .dolbyVision)
+        #expect(p76.hdrMetadata?.displayLabel == "Dolby Vision P7 (HDR10 fallback)")
+
+        let p81 = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"ColorTransfer":"smpte2084",
+         "VideoRange":"DolbyVision","ExtendedVideoType":"DolbyVision","ExtendedVideoSubType":"DoviProfile81"}
+        """)
+        #expect(p81.hdrMetadata?.displayLabel == "Dolby Vision P8 (HDR10 fallback)")
+
+        let p5 = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","VideoRange":"DolbyVision",
+         "ExtendedVideoType":"DolbyVision","ExtendedVideoSubType":"DoviProfile5"}
+        """)
+        #expect(p5.hdrMetadata?.displayLabel == "Dolby Vision P5")
+    }
+
+    @Test func embyDolbyVisionRangeAloneIsDVEvidence() throws {
+        let stream = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","VideoRange":"DolbyVision"}
+        """)
+        #expect(stream.hdrMetadata?.format == .dolbyVision)
+    }
+
     @Test func sdrAndLegacyStreams() throws {
         let sdr = try decodeMediaStream("""
         {"Index":0,"Type":"Video","Codec":"h264","VideoRange":"SDR","VideoRangeType":"SDR","BitDepth":8}
