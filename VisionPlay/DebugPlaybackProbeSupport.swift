@@ -18,6 +18,12 @@ enum DebugPlaybackProbeSupport {
         let bitrateKbps: Int
         let seekMs: Int
         let postSeekHoldSeconds: Int
+        /// How long the player may sit in `.waitingToPlayAtSpecifiedRate` (buffering) before
+        /// the probe calls it a stall. A starved high-bitrate stream is expected to buffer for
+        /// long stretches yet still make progress, so probes that only care about eventual
+        /// correctness should raise this via `--vp-probe-stall-tolerance-seconds`.
+        let stallToleranceSeconds: Int
+        let playableTimeoutSeconds: Int
     }
 
     static func withTemporaryDiagnosticsEnabled(_ operation: () async -> Void) async {
@@ -35,7 +41,9 @@ enum DebugPlaybackProbeSupport {
             query: query,
             bitrateKbps: intValue(after: "--vp-probe-bitrate-kbps", in: arguments) ?? defaultBitrateKbps,
             seekMs: intValue(after: "--vp-probe-seek-ms", in: arguments) ?? 16 * 60 * 1000,
-            postSeekHoldSeconds: intValue(after: "--vp-probe-post-seek-hold-seconds", in: arguments) ?? 20
+            postSeekHoldSeconds: intValue(after: "--vp-probe-post-seek-hold-seconds", in: arguments) ?? 20,
+            stallToleranceSeconds: intValue(after: "--vp-probe-stall-tolerance-seconds", in: arguments) ?? 20,
+            playableTimeoutSeconds: intValue(after: "--vp-probe-playable-timeout-seconds", in: arguments) ?? 45
         )
     }
 
@@ -79,8 +87,14 @@ enum DebugPlaybackProbeSupport {
 
     static func holdWithPlaybackProgress(_ controller: PlaybackController,
                                          seconds: Int,
+                                         stallToleranceSeconds: Int = 20,
                                          log: Logger) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        let start = ContinuousClock.now
+        // Buffering time doesn't count against the hold goal: the window is the requested
+        // hold plus the full buffering budget, and success requires the same advancement as
+        // before once at least `seconds` have elapsed.
+        let deadline = start.advanced(by: .seconds(seconds + max(0, stallToleranceSeconds - 20)))
+        let requiredAdvanceMs = min(3_000, max(1_000, seconds * 500))
         var initialPositionMs: Int?
         var lastPositionMs = rawPlayerPositionMs(controller)
         var bestPositionMs = lastPositionMs
@@ -107,17 +121,54 @@ enum DebugPlaybackProbeSupport {
             } else {
                 consecutiveWaitingSamples = 0
             }
-            if consecutiveWaitingSamples >= 20 {
+            if consecutiveWaitingSamples >= stallToleranceSeconds {
                 throw ProbeError.playbackStalled(bestPositionMs - (initialPositionMs ?? lastPositionMs),
                                                  "player remained waiting during hold")
+            }
+            if start.duration(to: ContinuousClock.now) >= .seconds(seconds),
+               bestPositionMs - (initialPositionMs ?? lastPositionMs) >= requiredAdvanceMs,
+               movingSamples >= 3 {
+                return
             }
             try await Task.sleep(for: .seconds(1))
         }
         let baselineMs = initialPositionMs ?? lastPositionMs
         let advancedMs = bestPositionMs - baselineMs
-        guard advancedMs >= min(3_000, max(1_000, seconds * 500)), movingSamples >= 3 else {
+        guard advancedMs >= requiredAdvanceMs, movingSamples >= 3 else {
             throw ProbeError.playbackStalled(advancedMs, "playhead did not advance enough")
         }
+    }
+
+    /// Logs the video format descriptions AVPlayer actually engaged (codec fourCC + transfer
+    /// function). This is the runtime truth for whether DV signalling was accepted: a `dvh1`
+    /// or `dvhe` subtype means the Dolby Vision decode path is active, `hvc1`/`hev1` means
+    /// the player fell back to the plain HEVC/HDR10 representation.
+    static func logActiveVideoFormat(_ controller: PlaybackController, phase: String, log: Logger) async {
+        guard let item = controller.player.currentItem else {
+            log.notice("probe.video_format phase=\(phase, privacy: .public) status=no_item")
+            return
+        }
+        var logged = 0
+        for track in item.tracks {
+            guard let assetTrack = track.assetTrack,
+                  let descriptions = try? await assetTrack.load(.formatDescriptions) else { continue }
+            for description in descriptions where CMFormatDescriptionGetMediaType(description) == kCMMediaType_Video {
+                let codec = fourCC(CMFormatDescriptionGetMediaSubType(description))
+                let transfer = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String) ?? "unknown"
+                log.notice("probe.video_format phase=\(phase, privacy: .public) codec=\(codec, privacy: .public) transfer=\(transfer, privacy: .public) enabled=\(track.isEnabled, privacy: .public)")
+                logged += 1
+            }
+        }
+        if logged == 0 {
+            log.notice("probe.video_format phase=\(phase, privacy: .public) status=no_video_format_descriptions")
+        }
+    }
+
+    private static func fourCC(_ code: FourCharCode) -> String {
+        let bytes = [UInt8((code >> 24) & 0xFF), UInt8((code >> 16) & 0xFF),
+                     UInt8((code >> 8) & 0xFF), UInt8(code & 0xFF)]
+        let text = String(bytes: bytes, encoding: .ascii) ?? ""
+        return text.allSatisfy { $0.isASCII && !$0.isNewline } && !text.isEmpty ? text : String(code)
     }
 
     /// The argument immediately following `flag`, or nil if `flag` is absent or last.

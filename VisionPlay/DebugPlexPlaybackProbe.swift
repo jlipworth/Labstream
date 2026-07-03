@@ -48,10 +48,20 @@ enum DebugPlexPlaybackProbe {
 
         guard appModel.activeBackend == .plex,
               appModel.isBrowseReady,
-              let server = appModel.serverBaseURL,
+              let restoredServer = appModel.serverBaseURL,
               let token = appModel.serverToken else {
             log.error("probe.fail reason=not_plex_or_not_ready")
             return
+        }
+        // `--vp-probe-server-url` swaps the transport endpoint (e.g. a kubectl port-forward
+        // on localhost) while keeping the restored token/session — for testing playback over
+        // an unproxied path without re-authenticating.
+        let server: URL
+        if let overrideURL = DebugPlaybackProbeSupport.value(after: "--vp-probe-server-url", in: arguments).flatMap(URL.init(string:)) {
+            server = overrideURL
+            log.notice("probe.server_override active=true")
+        } else {
+            server = restoredServer
         }
 
         var controller: PlaybackController?
@@ -71,13 +81,15 @@ enum DebugPlexPlaybackProbe {
             controller = playback
             playback.start()
 
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: 45)
+            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: options.playableTimeoutSeconds)
             log.notice("probe.initial_playing position_ms=\(playback.currentResumeMs, privacy: .public)")
+            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "initial", log: log)
             await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "plex-initial", log: log)
 
             playback.performUserSeek(toMs: seekMs)
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: 45)
-            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, log: log)
+            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: options.playableTimeoutSeconds)
+            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, stallToleranceSeconds: options.stallToleranceSeconds, log: log)
+            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "post_seek", log: log)
             await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "plex-postseek", log: log)
 
             log.notice("probe.pass position_ms=\(playback.currentResumeMs, privacy: .public) failed=\(playback.playbackError.isFailed, privacy: .public)")

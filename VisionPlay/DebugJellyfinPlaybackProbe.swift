@@ -67,13 +67,15 @@ enum DebugJellyfinPlaybackProbe {
             controller = playback
             playback.start()
 
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: 45)
+            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: options.playableTimeoutSeconds)
             log.notice("probe.initial_playing position_ms=\(playback.currentResumeMs, privacy: .public)")
+            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "initial", log: log)
             await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "jellyfin-initial", log: log)
 
             playback.performUserSeek(toMs: seekMs)
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: 45)
-            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, log: log)
+            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: options.playableTimeoutSeconds)
+            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, stallToleranceSeconds: options.stallToleranceSeconds, log: log)
+            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "post_seek", log: log)
             await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "jellyfin-postseek", log: log)
 
             log.notice("probe.pass position_ms=\(playback.currentResumeMs, privacy: .public) failed=\(playback.playbackError.isFailed, privacy: .public)")
