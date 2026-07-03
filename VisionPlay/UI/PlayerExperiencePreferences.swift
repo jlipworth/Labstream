@@ -16,6 +16,10 @@ enum PlaybackPreferences {
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
         static let prioritizeQuickDownloads = "prioritizeQuickDownloads"
         static let systemMediaSuggestionsEnabled = "systemMediaSuggestionsEnabled"
+        // GH #196: experimental Dolby Vision signalling (dvh1 profile advertising + HLS
+        // playlist injection). Default false; nothing DV-signalled ships default-on until
+        // device-verified. Also defers the DV P5 tone-map guard when enabled.
+        static let experimentalDVSignalling = "experimentalDVSignalling"
 
         // Audio/subtitle language + subtitle-handling keys (formerly the separate
         // `PlaybackPreferenceKeys` namespace). Raw strings preserved exactly so existing

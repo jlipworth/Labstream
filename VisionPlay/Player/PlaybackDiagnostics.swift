@@ -56,6 +56,15 @@ final class PlaybackDiagnostics {
     var modeText: String = "Direct"
     /// Human-readable PMS decision text, when provided.
     var decisionText: String = "—"
+    /// GH #196: non-nil when the DV P5 guard forced this session onto a tone-map transcode
+    /// (e.g. "DV P5 guard (no fallback layer)"). Suffixes the Stats Decision row.
+    var dvGuardReason: String?
+    /// Decision row text with the DV-guard reason appended when the guard fired.
+    var decisionDisplayText: String {
+        guard let dvGuardReason else { return decisionText }
+        return decisionText == "—" ? "video transcode · \(dvGuardReason)"
+                                   : "\(decisionText) · \(dvGuardReason)"
+    }
     /// The host:port we are streaming from (no token, ever).
     var connectionHost: String = "—"
     /// True when AVFoundation is reading through the app's loopback HLS proxy. In that mode

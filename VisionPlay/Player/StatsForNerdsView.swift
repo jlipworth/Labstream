@@ -37,8 +37,8 @@ struct StatsForNerdsView: View {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                 row("Connection", diagnostics.connectionHost)
                 row("Mode", diagnostics.modeText)
-                if diagnostics.decisionText != "—" {
-                    row("Decision", diagnostics.decisionText, wraps: true)
+                if diagnostics.decisionText != "—" || diagnostics.dvGuardReason != nil {
+                    row("Decision", diagnostics.decisionDisplayText, wraps: true)
                 }
                 row("Source", "\(diagnostics.sourceResolution) · \(diagnostics.container)")
                 row("Video", diagnostics.videoFormatText)

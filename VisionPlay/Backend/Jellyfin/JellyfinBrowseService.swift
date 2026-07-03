@@ -229,6 +229,15 @@ struct JellyfinBrowseService {
         let context = try context()
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
+        // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
+        let dvVerdict = DolbyVisionGuard.verdict(for: item)
+        let forceTranscode: Bool
+        if case .forceToneMapTranscode(let reason) = dvVerdict {
+            forceTranscode = true
+            NSLog("JellyfinBrowseService: forcing tone-map transcode (%@)", reason)
+        } else {
+            forceTranscode = false
+        }
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,
                                                            identity: jellyfinIdentity,
@@ -237,7 +246,8 @@ struct JellyfinBrowseService {
                                                            startTimeTicks: startTicks,
                                                            maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                            audioStreamIndex: audioStreamIndex,
-                                                           subtitleStreamIndex: subtitleStreamIndex)
+                                                           subtitleStreamIndex: subtitleStreamIndex,
+                                                           forcePlaybackTranscode: forceTranscode)
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
         return try JellyfinPlayback.resolveStream(response: info,
                                                   server: context.server,
