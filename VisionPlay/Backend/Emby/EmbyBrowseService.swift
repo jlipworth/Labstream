@@ -233,13 +233,22 @@ struct EmbyBrowseService {
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
-        // Emby is the backend where the unguarded failure is a SILENT black screen.
-        let dvVerdict = DolbyVisionGuard.verdict(for: item)
+        // Emby is the backend where the unguarded failure is a SILENT black screen — and its
+        // transcoder cannot tone-map an untagged P5 input either (no tonemap filter in the
+        // ffmpeg graph; the "successful" transcode bakes in green/purple tint). Owner call:
+        // block P5 on Emby outright rather than play garbage.
+        let dvVerdict = DolbyVisionGuard.verdict(for: item, serverToneMapsUntaggedDV: false)
         let forceTranscode: Bool
-        if case .forceToneMapTranscode(let reason) = dvVerdict {
+        switch dvVerdict {
+        case .blockPlayback(let reason):
+            NSLog("EmbyBrowseService: blocking playback (%@)", reason)
+            throw NSError(domain: "VisionPlay.Playback",
+                          code: -196,
+                          userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage])
+        case .forceToneMapTranscode(let reason):
             forceTranscode = true
             NSLog("EmbyBrowseService: forcing tone-map transcode (%@)", reason)
-        } else {
+        case .allowCopyLanes:
             forceTranscode = false
         }
         // DIVERGENCE: Emby PlaybackInfo needs UserId in BOTH query and body.
@@ -253,7 +262,7 @@ struct EmbyBrowseService {
                                                        audioStreamIndex: audioStreamIndex,
                                                        subtitleStreamIndex: subtitleStreamIndex,
                                                        forcePlaybackTranscode: forceTranscode,
-                                                       advertiseDolbyVision: DolbyVisionGuard.experimentalSignallingEnabled)
+                                                       advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
         return try EmbyPlayback.resolveStream(response: info,
                                               server: context.server,

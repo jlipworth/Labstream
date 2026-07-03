@@ -399,6 +399,13 @@ struct SkeletonRails: View {
 
 /// Map a thrown error (often `PlexError`) to a short user-facing string.
 func friendlyMessage(_ error: Error) -> String {
+    // VisionPlay-authored playback messages (e.g. the DV P5 guard block, GH #196) are
+    // already user-safe — surface them verbatim instead of redacting to a code.
+    let nsError = error as NSError
+    if nsError.domain == "VisionPlay.Playback",
+       let message = nsError.userInfo[NSLocalizedDescriptionKey] as? String {
+        return message
+    }
     if let plex = error as? PlexError {
         switch plex {
         case .unauthorized: return "Your session expired. Please sign in again."

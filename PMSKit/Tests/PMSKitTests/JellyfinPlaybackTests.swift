@@ -47,6 +47,8 @@ struct JellyfinPlaybackTests {
         let hlsProfile = try #require(transcodeProfiles.first)
         #expect(hlsProfile["Container"] as? String == "ts")
         #expect(hlsProfile["Protocol"] as? String == "hls")
+        // h264 first (encode target); hevc enables MKV HEVC video-copy remux (GH #196).
+        #expect(hlsProfile["VideoCodec"] as? String == "h264,hevc")
         #expect(hlsProfile["AudioCodec"] as? String == "aac")
         #expect(hlsProfile["BreakOnNonKeyFrames"] as? Bool == false)
     }

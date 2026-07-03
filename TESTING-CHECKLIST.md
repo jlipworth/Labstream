@@ -132,10 +132,16 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 
 ## B. Player features
 
-- [ ] **DV P5 guard (GH #196)** — the DV P5 sample at Original quality on each backend:
-  Decision row shows "· DV P5 guard (no fallback layer)", playback is a tone-mapped SDR
-  transcode (Rendered row: "SDR (server tone-map)"), and no black screen / decoder error.
-  If the server never produces video, a DV-specific error appears within ~20-40 s.
+- [ ] **DV P5 guard (GH #196)** — the DV P5 sample at Original quality:
+  - Plex/Jellyfin: Decision row shows "· DV P5 guard (no fallback layer)", playback is a
+    tone-mapped SDR transcode (Rendered row: "SDR (server tone-map)"), no black screen /
+    decoder error. If the server never produces video (or refuses the tone-map, e.g. a
+    GPU-less PMS), the DV-specific error appears within ~20-40 s.
+  - Emby: playback is BLOCKED up front with the DV-specific error (its transcoder cannot
+    tone-map untagged P5 — a forced transcode bakes in green/purple tint).
+- [ ] **MKV HEVC video-copy remux (GH #196 retest)** — a 4K HEVC MKV remux (non-P5) on
+  Jellyfin and Emby at Original: server remuxes (video copy, not an h264 re-encode —
+  server ffmpeg command shows video copy, no encoder), HDR preserved, playback starts.
 - [ ] **Experimental DV signalling toggle (GH #196)** — Settings shows "Dolby Vision
   Signalling (Experimental)", default OFF; with it OFF nothing changes anywhere. (ON-state
   validation is device-gated; see issue #196.)

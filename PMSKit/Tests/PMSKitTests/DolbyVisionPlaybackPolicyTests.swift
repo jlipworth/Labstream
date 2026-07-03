@@ -78,6 +78,37 @@ struct DolbyVisionPlaybackPolicyTests {
             == .allowCopyLanes)
     }
 
+    @Test func p5BlocksWhenServerCannotToneMap() {
+        // Emby policy (GH #196 owner call): its transcoder never tone-maps untagged P5, so
+        // the "successful" forced transcode bakes in green/purple — refuse to open instead.
+        let verdict = DolbyVisionPlaybackPolicy.verdict(
+            for: dvMetadata(profile: 5, blCompatibilityID: 0),
+            experimentalDVSignallingEnabled: false,
+            serverToneMapsUntaggedDV: false)
+        guard case .blockPlayback(let reason) = verdict else {
+            Issue.record("expected blockPlayback, got \(verdict)")
+            return
+        }
+        #expect(reason.contains("P5"))
+    }
+
+    @Test func p7StillAllowsCopyWhenServerCannotToneMap() {
+        // The no-tone-map flag only changes the P5 outcome; fallback-bearing DV is untouched.
+        let verdict = DolbyVisionPlaybackPolicy.verdict(
+            for: dvMetadata(profile: 7, blCompatibilityID: 6),
+            experimentalDVSignallingEnabled: false,
+            serverToneMapsUntaggedDV: false)
+        #expect(verdict == .allowCopyLanes)
+    }
+
+    @Test func experimentalSignallingAlsoDefersTheBlock() {
+        let verdict = DolbyVisionPlaybackPolicy.verdict(
+            for: dvMetadata(profile: 5, blCompatibilityID: 0),
+            experimentalDVSignallingEnabled: true,
+            serverToneMapsUntaggedDV: false)
+        #expect(verdict == .allowCopyLanes)
+    }
+
     @Test func experimentalSignallingDefersTheGuard() {
         // User opted into the DV lane; the guard must not force a transcode it would contradict.
         let verdict = DolbyVisionPlaybackPolicy.verdict(

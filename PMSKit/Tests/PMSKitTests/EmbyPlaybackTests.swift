@@ -50,6 +50,10 @@ struct EmbyPlaybackTests {
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "VisionPlay")
         #expect(profile["MaxStreamingBitrate"] as? Int == 8_000_000)
+        let transcodeProfiles = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
+        let hlsProfile = try #require(transcodeProfiles.first)
+        // h264 first (encode target); hevc enables MKV HEVC video-copy remux (GH #196).
+        #expect(hlsProfile["VideoCodec"] as? String == "h264,hevc")
     }
 
     @Test func resolveStreamPrefersTranscodingURLPrependsBaseAndKeepsApiKeyWithNoAuthHeader() throws {

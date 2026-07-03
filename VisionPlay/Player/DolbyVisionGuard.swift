@@ -18,11 +18,26 @@ enum DolbyVisionGuard {
 
     /// Verdict for a canonical item (any backend — Jellyfin/Emby items are bridged into
     /// canonical `Stream`s with DV facts since #195). `mediaIndex` selects the version being
-    /// played; out-of-range falls back to the first media.
-    static func verdict(for item: MediaItem, mediaIndex: Int = 0) -> DolbyVisionPlaybackVerdict {
+    /// played; out-of-range falls back to the first media. Pass
+    /// `serverToneMapsUntaggedDV: false` for backends (Emby) whose transcoder cannot
+    /// tone-map untagged P5 — the guard then blocks with `failureMessage` instead of
+    /// forcing a transcode that bakes in garbage colors.
+    static func verdict(for item: MediaItem,
+                        mediaIndex: Int = 0,
+                        serverToneMapsUntaggedDV: Bool = true) -> DolbyVisionPlaybackVerdict {
         DolbyVisionPlaybackPolicy.verdict(
             for: hdrMetadata(for: item, mediaIndex: mediaIndex),
-            experimentalDVSignallingEnabled: experimentalSignallingEnabled)
+            experimentalDVSignallingEnabled: experimentalSignallingEnabled,
+            serverToneMapsUntaggedDV: serverToneMapsUntaggedDV)
+    }
+
+    /// GH #196 retest: only advertise DV capability to a server when this exact item is a
+    /// signalling-eligible P8 (the injection lane). Advertising on every play while the
+    /// toggle is on broke unrelated titles live: a DV P7 MKV that direct-played fine had
+    /// its PMS start.m3u8 400 with the DV direct-play directive present, derailing it into
+    /// a CPU transcode.
+    static func shouldAdvertiseDolbyVision(for item: MediaItem, mediaIndex: Int = 0) -> Bool {
+        playlistInjection(for: item, mediaIndex: mediaIndex) != nil
     }
 
     /// GH #196 spike (b): the HLS DV injection for this item's stream, or nil when the
