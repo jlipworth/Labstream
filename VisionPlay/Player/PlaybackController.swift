@@ -2571,8 +2571,15 @@ final class PlaybackController {
         // wedge first-frame resume.
         let preferShortRemoteHLSBuffer = preferShortRemoteHLSBufferForNextLoad
         preferShortRemoteHLSBufferForNextLoad = false
+        // Plex lanes (Direct Play / Direct Stream included) are start.m3u8 transcode-session
+        // playlists — EVENT-style, so AVPlayer treats them as live-ish and refuses to load
+        // while paused unless the live-streaming-while-paused flag is on. Classify by the
+        // item's actual URL so those sessions get the same treatment as JF/Emby transcodes;
+        // progressive/static lanes (JF/Emby direct, offline files) stay plain VOD. (#195)
+        let itemStreamURL = (playerItem.asset as? AVURLAsset)?.url
         let bufferingConfig = PlaybackBufferingPolicy.configuration(
-            isRemoteServerEncodedHLS: isRemoteTranscode,
+            isRemoteServerEncodedHLS: isRemoteTranscode
+                || PlaybackBufferingPolicy.isServerEncodedHLSPlaylist(url: itemStreamURL),
             preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer)
         configureAdaptiveBitratePolicy(usesShortRemoteBuffer: bufferingConfig.usesShortRemoteHLSBuffer)
         activeForwardBufferTargetSeconds = bufferingConfig.preferredForwardBufferSeconds
