@@ -79,6 +79,7 @@ struct ContentView: View {
                 await authManager.switchBackend(backend)
             }
 
+            await DebugRawURLPlaybackProbe.runIfRequested()
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
