@@ -30,6 +30,16 @@ public enum PlaybackBufferingPolicy {
     /// Recovery/reopen target for explicit out-of-buffer remote-HLS seeks.
     public static let remoteHLSSeekReopenForwardBufferSeconds: Double = 12
 
+    /// True when the stream URL is a server-encoded HLS playlist (`.m3u8`). Plex serves ALL
+    /// playback — Direct Play / Direct Stream included — as a `start.m3u8` transcode-session
+    /// playlist, which has no `EXT-X-ENDLIST` while the session runs, so AVPlayer treats it as
+    /// live-ish and stops loading while paused unless
+    /// `canUseNetworkResourcesForLiveStreamingWhilePaused` is set. Jellyfin/Emby direct lanes
+    /// are progressive file URLs (true VOD) and correctly return false here. (#195 live test)
+    public static func isServerEncodedHLSPlaylist(url: URL?) -> Bool {
+        url?.pathExtension.lowercased() == "m3u8"
+    }
+
     public static func configuration(isRemoteServerEncodedHLS: Bool,
                                      preferShortRemoteHLSBuffer: Bool) -> PlaybackBufferingConfiguration {
         let usesShortRemoteHLSBuffer = isRemoteServerEncodedHLS && preferShortRemoteHLSBuffer
