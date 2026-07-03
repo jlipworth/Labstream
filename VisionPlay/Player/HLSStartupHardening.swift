@@ -14,7 +14,7 @@ import Foundation
 ///  - `HLSStartupDeadlinePolicy`: classify the CoreMedia error-log codes so the controller
 ///    can auto-retry once (segments written during the failed attempt make the retry warm)
 ///    and surface an accurate message instead of a generic capacity hint.
-///  - `PlexHLSPrewarmer`: fetch master + child playlist (which starts the transcoder) and
+///  - `HLSSessionPrewarmer`: fetch master + child playlist (which starts the transcoder) and
 ///    poll the init header / first segment until PMS actually has bytes, BEFORE AVPlayer
 ///    attaches — so AVPlayer's deadlines start with media already on disk.
 enum HLSStartupDeadlinePolicy {
@@ -43,7 +43,7 @@ enum HLSStartupDeadlinePolicy {
 /// polls the `#EXT-X-MAP` init header and the first media segment until the server serves
 /// them. All failures are soft — the caller proceeds to AVPlayer regardless; the prewarm
 /// only buys head start, never gates playback.
-enum PlexHLSPrewarmer {
+enum HLSSessionPrewarmer {
     struct Result {
         enum Outcome: String {
             case ready              // header (and first-segment first byte) confirmed served
