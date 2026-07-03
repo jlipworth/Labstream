@@ -250,7 +250,8 @@ public enum JellyfinPlayback {
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": true,
             "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
-                                                   advertiseDolbyVision: advertiseDolbyVision),
+                                                   advertiseDolbyVision: advertiseDolbyVision,
+                                                   subtitlesInManifest: subtitleStreamIndex != -1),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
         if let startTimeTicks { body["StartTimeTicks"] = startTimeTicks }
@@ -610,7 +611,13 @@ public enum JellyfinPlayback {
     }
 
     static func visionOSDeviceProfile(maxStreamingBitrate: Int,
-                                      advertiseDolbyVision: Bool = false) -> [String: Any] {
+                                      advertiseDolbyVision: Bool = false,
+                                      subtitlesInManifest: Bool = true) -> [String: Any] {
+        // subtitlesInManifest: when the user explicitly chose subtitles OFF (the -1 sentinel),
+        // drop the in-manifest WebVTT renditions entirely. AVFoundation displays FORCED/default
+        // legible renditions matching the audio language even after `select(nil, in: group)`,
+        // so a transcode manifest carrying a forced/default subtitle rendition re-shows
+        // subtitles the user turned off (seen live on a forced+default track, GH #196 retest).
         var profile: [String: Any] = [
             "Name": "VisionPlay",
             "MaxStreamingBitrate": maxStreamingBitrate,
@@ -628,7 +635,7 @@ public enum JellyfinPlayback {
                     "Context": "Streaming",
                     "MinSegments": 2,
                     "BreakOnNonKeyFrames": false,
-                    "EnableSubtitlesInManifest": true,
+                    "EnableSubtitlesInManifest": subtitlesInManifest,
                 ],
             ],
         ]

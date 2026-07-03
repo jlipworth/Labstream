@@ -2155,6 +2155,17 @@ final class PlaybackController {
                     recordTranscodeDiagnostic("transcode.unsupported", fields: decisionDiagnosticFields(response))
                     NSLog("PlaybackController: transcode decision unsupported code=%@",
                           response.generalDecisionCode.map(String.init) ?? "nil")
+                    // GH #196: a DV-P5-guarded session with an unsupported decision means PMS
+                    // refuses the tone-map ("DoVi (Profile 5) color space is not supported" —
+                    // its software pipeline can't convert IPTPQc2). The follow-up start.m3u8
+                    // would 400 into an opaque -1008; fail fast with the DV message instead.
+                    if dvGuardReason != nil {
+                        NSLog("PlaybackController: PMS refused DV P5 tone-map, surfacing DV error (#196)")
+                        surfaceFailure(NSError(domain: "VisionPlay.Playback",
+                                               code: -196,
+                                               userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage]))
+                        return
+                    }
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
