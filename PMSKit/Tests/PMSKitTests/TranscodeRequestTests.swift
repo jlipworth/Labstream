@@ -542,3 +542,28 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(r.partDecision == "transcode")
     #expect(r.savesVideoEncode == false)
 }
+
+// MARK: - Forced transcode (GH #196 DV P5 guard)
+
+@Test func forceTranscodeDisablesDirectStream() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0,
+                               forceTranscode: true)
+    for url in [req.decisionURL(), req.startM3U8URL()] {
+        let q = queryItems(url)
+        func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
+        #expect(v("directPlay") == "0")
+        #expect(v("directStream") == "0")
+    }
+}
+
+@Test func forceTranscodeDefaultKeepsDirectStream() {
+    let req = TranscodeRequest(server: server, token: "tok", identity: id,
+                               metadataKey: "/library/metadata/101",
+                               maxVideoBitrateKbps: 8000, sessionID: "S",
+                               mediaIndex: 0, partIndex: 0)
+    let q = queryItems(req.startM3U8URL())
+    #expect(q.first { $0.name == "directStream" }?.value == "1")
+}
