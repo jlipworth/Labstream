@@ -503,3 +503,48 @@ the AVFoundation probe ("HDR · PQ · eligible"), and **Output** shows an SDR to
 three backends state tone-mapping per-session explicitly). Classification precedence lives
 in `VideoHDRMetadata.classify`: DV > HDR10+ > PQ > HLG > coarse "HDR" range > positive SDR
 evidence > nil (row hidden). Bit depth alone is never treated as HDR evidence.
+
+## DV Profile 5 guard and experimental DV signalling (GH #196)
+
+Live failure matrix that motivated the guard (DV P5 / IPTPQc2 / BL-compat 0 sample at
+Original quality, video-copy lanes, 2026-07): **Plex** → client decoder-not-found
+(`VT-DS -12906`, surfaced as -11833); **Jellyfin** → progressive lane rejects the samples
+(-12864), then the server's own HLS transcode fallback stalls (SEGPUMP -12889 retry loop,
+no segments); **Emby** → *silent black screen*, no error at all. P5 has no
+backwards-compatible base layer, so once a remux strips DV signalling nothing recoverable
+reaches the decoder. P7/P8 on the same lanes render their HDR10 base layer correctly.
+
+**The guard (default-on):** `DolbyVisionPlaybackPolicy` (PMSKit) forces a server tone-map
+transcode when DV is present with `blCompatibilityID == 0` (or profile 5 with unknown
+compat). Enforcement is per backend: Plex sends `directStream=0` (`TranscodeRequest
+.forceTranscode`); Jellyfin/Emby PlaybackInfo sends `EnableDirectPlay/EnableDirectStream/
+AllowVideoStreamCopy = false` (audio copy stays allowed). Verified live on Emby via
+`DebugEmbyPlaybackProbe`: the black-screen P5 title plays through the forced transcode.
+Because Jellyfin's own P5 tone-map stalled live, the guard pairs with a **first-frame
+watchdog** (20 s, transport-progress-deferred like the stall watchdog — Emby re-priming a
+deep-seek transcode legitimately exceeds 20 s) that surfaces a DV-specific error instead
+of a spinner. Stats: the Decision row gains "· DV P5 guard (no fallback layer)", and a
+**Rendered** row distinguishes "SDR (server tone-map)" / "HDR10 fallback (base layer)" /
+"Dolby Vision (signalled — unverified)" from the source classification.
+
+**Experimental DV signalling (default-OFF Settings toggle):** two gated spikes, both
+device-UNVERIFIED (no headset pass yet — do not enable by default):
+- *dvh1 advertising*: Plex profile-Extra gains a DV MP4 direct-play directive (base name
+  stays `Generic` — hard constraint); Jellyfin/Emby DeviceProfiles gain a `VideoRangeType`
+  CodecProfile including the DOVI* values (the signal that stops Jellyfin stripping
+  `dvcC`/RPUs on remux — Swiftfin finding).
+- *HLS playlist injection*: `PlaylistRewriter` can append `SUPPLEMENTAL-CODECS`/
+  `VIDEO-RANGE` to master-playlist variant lines
+  (`MediaSessionDolbyVisionInjection.forDolbyVision`, deliberately narrow: DV **P8 only**,
+  compat 1/6 → `db1p`+PQ, compat 4 → `db4h`+HLG; P5/P7/unknown never inject). With the
+  toggle on and a DV P8 Plex source, `PlaybackController` routes `start.m3u8` through the
+  loopback proxy (with X-Plex identity headers on upstream fetches) to apply it.
+- The toggle also **defers the P5 guard** (an opted-in DV lane may make P5 playable).
+
+**Open verification gates (tracked in #196):** (1) whether Plex remux segments actually
+retain in-band RPU NALs — signalling DV that segments don't carry would itself cause broken
+rendering, so injection stays debug-gated until a kubectl/ffprobe check of a live session
+confirms it; (2) the physical-headset matrix ({P5, P7.6, P8.1} × backends) for true-DV
+rendering. Emby forced-transcode note: an out-of-buffer deep seek re-primes the server
+transcode and can hold `waitingToPlayAtSpecifiedRate` well past 20 s before resuming —
+that is server prime latency, not a client bug.
