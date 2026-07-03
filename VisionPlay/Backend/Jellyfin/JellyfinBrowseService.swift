@@ -230,6 +230,8 @@ struct JellyfinBrowseService {
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
+        // Jellyfin's transcoder detects untagged P5 and tone-maps properly (setparams +
+        // tonemap_cuda, kubectl-verified), so the forced-transcode lane is the right one here.
         let dvVerdict = DolbyVisionGuard.verdict(for: item)
         let forceTranscode: Bool
         if case .forceToneMapTranscode(let reason) = dvVerdict {
@@ -248,7 +250,7 @@ struct JellyfinBrowseService {
                                                            audioStreamIndex: audioStreamIndex,
                                                            subtitleStreamIndex: subtitleStreamIndex,
                                                            forcePlaybackTranscode: forceTranscode,
-                                                           advertiseDolbyVision: DolbyVisionGuard.experimentalSignallingEnabled)
+                                                           advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
         return try JellyfinPlayback.resolveStream(response: info,
                                                   server: context.server,

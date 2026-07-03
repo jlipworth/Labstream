@@ -753,7 +753,10 @@ public enum EmbyPlayback {
                     "Type": "Video",
                     "Container": "ts",
                     "Protocol": "hls",
-                    "VideoCodec": "h264",
+                    // h264 first (encode target); hevc enables VIDEO COPY of HEVC MKV
+                    // remuxes instead of a source-bitrate h264 re-encode. See the matching
+                    // comment in JellyfinPlayback.visionOSDeviceProfile (GH #196 retest).
+                    "VideoCodec": "h264,hevc",
                     "AudioCodec": "aac,ac3",
                     "Context": "Streaming",
                     "MinSegments": 2,

@@ -517,9 +517,14 @@ reaches the decoder. P7/P8 on the same lanes render their HDR10 base layer corre
 **The guard (default-on):** `DolbyVisionPlaybackPolicy` (PMSKit) forces a server tone-map
 transcode when DV is present with `blCompatibilityID == 0` (or profile 5 with unknown
 compat). Enforcement is per backend: Plex sends `directStream=0` (`TranscodeRequest
-.forceTranscode`); Jellyfin/Emby PlaybackInfo sends `EnableDirectPlay/EnableDirectStream/
-AllowVideoStreamCopy = false` (audio copy stays allowed). Verified live on Emby via
-`DebugEmbyPlaybackProbe`: the black-screen P5 title plays through the forced transcode.
+.forceTranscode`); Jellyfin PlaybackInfo sends `EnableDirectPlay/EnableDirectStream/
+AllowVideoStreamCopy = false` (audio copy stays allowed). **Emby blocks P5 outright**
+(`serverToneMapsUntaggedDV: false` → `.blockPlayback`, surfaced as the DV error before
+PlaybackInfo is even sent): kubectl-verified, Emby's ffmpeg graph applies no tonemap
+filter to an untagged P5 input — the "successful" forced transcode decodes IPTPQc2 as
+YCbCr and bakes green/purple tint into the H.264 output, undetectable client-side. P5 is
+untagged by nature, so this is structural, not a server-config issue. Jellyfin, by
+contrast, tone-maps untagged P5 correctly (`setparams=…smpte2084…,tonemap_cuda=…bt2390`).
 Because Jellyfin's own P5 tone-map stalled live, the guard pairs with a **first-frame
 watchdog** (20 s, transport-progress-deferred like the stall watchdog — Emby re-priming a
 deep-seek transcode legitimately exceeds 20 s) that surfaces a DV-specific error instead
@@ -540,6 +545,19 @@ device-UNVERIFIED (no headset pass yet — do not enable by default):
   toggle on and a DV P8 Plex source, `PlaybackController` routes `start.m3u8` through the
   loopback proxy (with X-Plex identity headers on upstream fetches) to apply it.
 - The toggle also **defers the P5 guard** (an opted-in DV lane may make P5 playable).
+- **Advertising is per-item, not per-session** (live regression, 2026-07-03): with the
+  toggle on, advertising DV on *every* play broke an unrelated DV P7 MKV on Plex — the
+  decision said "Direct play OK" but `start.m3u8` 400'd with the DV direct-play directive
+  present, derailing a previously-working direct-stream title into a GPU-less CPU
+  transcode. `DolbyVisionGuard.shouldAdvertiseDolbyVision(for:)` therefore gates the
+  advertising to items whose stream is actually injection-eligible (DV P8, compat 1/4/6).
+
+**MKV HEVC remux lane (same retest):** the Jellyfin/Emby *streaming* TranscodingProfile
+now advertises `VideoCodec: "h264,hevc"` — h264 first so it stays the encode target, hevc
+so the server may VIDEO-COPY HEVC sources whose container blocks direct play (4K MKV
+remuxes). Without it every such title re-encoded to h264 at source bitrate; live, both
+servers encoded fine (JF 8.5x, Emby 5.2x) but the ~20 MB/3 s segments starved AVPlayer
+through the proxied ingress into -12889 before the first byte arrived.
 
 **Open verification gates (tracked in #196):** (1) whether Plex remux segments actually
 retain in-band RPU NALs — signalling DV that segments don't carry would itself cause broken

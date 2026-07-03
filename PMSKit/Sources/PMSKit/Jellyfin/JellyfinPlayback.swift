@@ -630,7 +630,12 @@ public enum JellyfinPlayback {
                     "Type": "Video",
                     "Container": "ts",
                     "Protocol": "hls",
-                    "VideoCodec": "h264",
+                    // h264 first: it stays the encode target when a real transcode is
+                    // needed. hevc's presence is what permits VIDEO COPY (remux) of HEVC
+                    // sources in non-direct-play containers (MKV remuxes) — without it
+                    // every 4K HEVC MKV re-encodes to h264 at source bitrate, which live
+                    // testing showed starving AVPlayer into -12889 (GH #196 retest).
+                    "VideoCodec": "h264,hevc",
                     "AudioCodec": "aac",
                     "Context": "Streaming",
                     "MinSegments": 2,

@@ -6,6 +6,9 @@ import Foundation
 public enum DolbyVisionPlaybackVerdict: Sendable, Equatable {
     case allowCopyLanes
     case forceToneMapTranscode(reason: String)
+    /// The server cannot tone-map an untagged P5 stream at all, so a forced transcode
+    /// would "succeed" with IPTPQc2-as-YCbCr garbage colors. Refuse to open playback.
+    case blockPlayback(reason: String)
 }
 
 /// The DV Profile 5 safety guard (GH #196).
@@ -23,16 +26,21 @@ public enum DolbyVisionPlaybackPolicy {
     ///   experimental DV signalling lane, the guard defers — that lane's whole point is
     ///   delivering P5 with its DV signalling intact, so forcing a transcode here would
     ///   contradict it.
+    /// - Parameter serverToneMapsUntaggedDV: whether this backend's transcoder detects and
+    ///   tone-maps a P5 input that carries no container color tags (P5's normal shape).
+    ///   Jellyfin does (explicit `setparams` + `tonemap_cuda`); Emby does not — it encodes
+    ///   the IPTPQc2 signal as plain YCbCr, baking green/purple tint into the output
+    ///   (kubectl-verified 2026-07). When false, the P5 guard blocks instead of forcing.
     public static func verdict(for hdr: VideoHDRMetadata?,
-                               experimentalDVSignallingEnabled: Bool) -> DolbyVisionPlaybackVerdict {
+                               experimentalDVSignallingEnabled: Bool,
+                               serverToneMapsUntaggedDV: Bool = true) -> DolbyVisionPlaybackVerdict {
         guard !experimentalDVSignallingEnabled,
               let dv = hdr?.dolbyVision else { return .allowCopyLanes }
-        if dv.blCompatibilityID == 0 {
-            return .forceToneMapTranscode(reason: "DV P5 guard (no fallback layer)")
-        }
-        if dv.profile == 5, dv.blCompatibilityID == nil {
-            return .forceToneMapTranscode(reason: "DV P5 guard (no fallback layer)")
-        }
-        return .allowCopyLanes
+        let noFallbackLayer = dv.blCompatibilityID == 0 ||
+            (dv.profile == 5 && dv.blCompatibilityID == nil)
+        guard noFallbackLayer else { return .allowCopyLanes }
+        return serverToneMapsUntaggedDV
+            ? .forceToneMapTranscode(reason: "DV P5 guard (no fallback layer)")
+            : .blockPlayback(reason: "DV P5 guard (server cannot tone-map P5)")
     }
 }
