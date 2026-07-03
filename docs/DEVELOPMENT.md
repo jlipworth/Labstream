@@ -428,6 +428,33 @@ Adaptive upshift logic may use Observed as an extra headroom check only while th
 actively advancing. Stale/idle Observed samples are treated as missing so a healthy full buffer does
 not block an upshift or produce a false bandwidth warning.
 
+## Plex HLS sessions are live-ish: paused pre-buffering and the buffer "staircase"
+
+Verified live (2026-07-03, during #195 testing on a 62.7 Mbps Direct Stream over a ~10 Mbps
+link):
+
+- **Every Plex playback lane — Direct Play / Direct Stream included — is a `start.m3u8`
+  transcode-session playlist**, and while the server session runs the playlist has no
+  `EXT-X-ENDLIST`. AVPlayer therefore classifies it as live-ish and **stops loading entirely
+  while paused** unless `AVPlayerItem.canUseNetworkResourcesForLiveStreamingWhilePaused` is
+  set. `PlaybackBufferingPolicy` originally set that flag only for Jellyfin/Emby transcodes
+  (`isRemoteTranscode`), so on Plex, pause-to-buffer loaded nothing and Stats showed Buffer
+  ahead pinned at 0.0 s forever. Fixed by classifying the loaded URL itself
+  (`PlaybackBufferingPolicy.isServerEncodedHLSPlaylist`): any `.m3u8` item gets the flag.
+  Jellyfin/Emby direct play/stream are progressive `/Videos/{id}/stream.{container}` URLs —
+  true VOD, unaffected.
+- **Buffer ahead climbs as a staircase, not a ramp.** `loadedTimeRanges` only advances when a
+  whole HLS segment completes, and a ~6 s segment of a 62.7 Mbps stream is ~40–47 MB — tens of
+  seconds per segment on a slow link. Expect a long initial 0.0 s stretch, then +6 s jumps.
+  This is inherent segment granularity, not a stall; the Observed row showing active
+  throughput is the "it's actually downloading" tell.
+- **A single-variant playlist cannot adapt.** Plex Direct Stream copies the video, so the
+  session playlist has exactly one rendition; MediaToolbox logs "Try to switch down …
+  currentAlternateBitrate 62723000/62723000/62723000" with nowhere to go. When the link is
+  slower than the source bitrate, only a capped-quality transcode can play smoothly, and the
+  app deliberately never converts an explicit "Direct Play / Maximum" choice into a capped
+  transcode (see the stall-watchdog rationale in `PlaybackController`).
+
 ## HDR / Dolby Vision facts and Stats rows (GH #195)
 
 Verified visionOS/AVFoundation findings (simulator probe on visionOS 26.5, 2026-07-03; see
