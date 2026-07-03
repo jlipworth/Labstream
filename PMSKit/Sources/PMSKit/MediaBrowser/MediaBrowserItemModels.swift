@@ -675,6 +675,19 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
 
     func toCanonicalStream(fallbackID: Int) -> Stream? {
         guard let streamType else { return nil }
+        // Bridge the HDR classification, not just the raw fields: DTO-only evidence
+        // (VideoRangeType "DOVIWith…", Emby ExtendedVideoType/SubType, Hdr10PlusPresentFlag)
+        // has no canonical `Stream` column, so translate it into the canonical DV/HDR10+
+        // fields — the classified result must be identical on both sides of the bridge. (#195)
+        let hdr = hdrMetadata
+        var transfer = colorTransfer
+        if transfer == nil {
+            switch hdr?.format {
+            case .hdr10: transfer = "smpte2084"
+            case .hlg: transfer = "arib-std-b67"
+            default: break
+            }
+        }
         return Stream(id: index ?? fallbackID,
                       streamType: streamType.rawValue,
                       index: index,
@@ -689,7 +702,21 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
                       isDefault: isDefault,
                       forced: isForced,
                       channels: channels,
-                      title: title)
+                      title: title,
+                      profile: profile,
+                      bitDepth: bitDepth,
+                      colorPrimaries: colorPrimaries,
+                      colorRange: colorRange,
+                      colorSpace: colorSpace,
+                      colorTrc: transfer,
+                      doviPresent: hdr?.format == .dolbyVision ? true : nil,
+                      doviProfile: hdr?.dolbyVision?.profile,
+                      doviLevel: hdr?.dolbyVision?.level,
+                      doviBLCompatID: hdr?.dolbyVision?.blCompatibilityID,
+                      doviBLPresent: hdr?.dolbyVision?.blPresent,
+                      doviELPresent: hdr?.dolbyVision?.elPresent,
+                      doviRPUPresent: hdr?.dolbyVision?.rpuPresent,
+                      hdr10PlusPresent: hdr?.format == .hdr10Plus ? true : nil)
     }
 
     private var streamType: StreamType? {

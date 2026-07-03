@@ -132,6 +132,44 @@ struct MediaBrowserHDRDecodeTests {
     }
 }
 
+@Suite("MediaBrowser canonical stream HDR bridging")
+struct MediaBrowserCanonicalHDRTests {
+
+    @Test func canonicalStreamPreservesDVClassification() throws {
+        let dto = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","BitDepth":10,"ColorTransfer":"smpte2084",
+         "ColorPrimaries":"bt2020","VideoRange":"HDR","VideoRangeType":"DOVIWithHDR10",
+         "DvProfile":8,"DvLevel":6,"DvBlSignalCompatibilityId":1}
+        """)
+        let canonical = try #require(dto.toCanonicalStream(fallbackID: 1))
+        #expect(canonical.hdrMetadata?.format == .dolbyVision)
+        #expect(canonical.hdrMetadata?.displayLabel == dto.hdrMetadata?.displayLabel)
+    }
+
+    @Test func canonicalStreamPreservesHDR10PlusAndEmbySubtypeDV() throws {
+        let plus = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","ColorTransfer":"smpte2084","Hdr10PlusPresentFlag":true}
+        """)
+        #expect(plus.toCanonicalStream(fallbackID: 1)?.hdrMetadata?.format == .hdr10Plus)
+
+        // Emby subtype-only DV (live wire shape) must survive the canonical bridge even
+        // though the canonical Stream has no ExtendedVideoType field.
+        let emby = try decodeMediaStream("""
+        {"Index":0,"Type":"Video","Codec":"hevc","VideoRange":"DolbyVision",
+         "ExtendedVideoType":"DolbyVision","ExtendedVideoSubType":"DoviProfile76"}
+        """)
+        let canonical = try #require(emby.toCanonicalStream(fallbackID: 1))
+        #expect(canonical.hdrMetadata?.displayLabel == "Dolby Vision P7 (HDR10 fallback)")
+    }
+
+    @Test func canonicalStreamCarriesAudioProfile() throws {
+        let audio = try decodeMediaStream("""
+        {"Index":1,"Type":"Audio","Codec":"dts","Channels":8,"Profile":"DTS-HD MA"}
+        """)
+        #expect(audio.toCanonicalStream(fallbackID: 1)?.profile == "DTS-HD MA")
+    }
+}
+
 @Suite("MediaBrowser HDR carrier propagation")
 struct MediaBrowserHDRCarrierTests {
 

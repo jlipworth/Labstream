@@ -772,6 +772,11 @@ public struct Stream: Decodable, Sendable, Identifiable {
     public let doviBLPresent: Bool?
     public let doviELPresent: Bool?
     public let doviRPUPresent: Bool?
+    /// HDR10+ presence. PMS exposes no such attribute today, so Plex decoding always
+    /// leaves this nil; the MediaBrowser→canonical bridge sets it from Jellyfin's
+    /// `Hdr10PlusPresentFlag` / Emby's `ExtendedVideoType` so the classification
+    /// survives `toCanonicalStream`. (#195)
+    public let hdr10PlusPresent: Bool?
 
     /// Strongly-typed kind, or `nil` for an unrecognised `streamType`.
     public var kind: StreamType? { StreamType(rawValue: streamType) }
@@ -794,7 +799,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
                                          colorRange: colorRange,
                                          bitDepth: bitDepth,
                                          dolbyVision: dovi,
-                                         hdr10PlusPresent: nil,
+                                         hdr10PlusPresent: hdr10PlusPresent,
                                          rangeDescribesHDR: nil)
     }
 
@@ -859,6 +864,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.doviBLPresent = Self.decodeLenientBool(c, .doviBLPresent)
         self.doviELPresent = Self.decodeLenientBool(c, .doviELPresent)
         self.doviRPUPresent = Self.decodeLenientBool(c, .doviRPUPresent)
+        self.hdr10PlusPresent = nil // no PMS attribute; set only via the MediaBrowser bridge
     }
 
     /// PMS is inconsistent about boolean attributes across endpoints/serializers:
@@ -904,7 +910,8 @@ public struct Stream: Decodable, Sendable, Identifiable {
                 doviBLCompatID: Int? = nil,
                 doviBLPresent: Bool? = nil,
                 doviELPresent: Bool? = nil,
-                doviRPUPresent: Bool? = nil) {
+                doviRPUPresent: Bool? = nil,
+                hdr10PlusPresent: Bool? = nil) {
         self.id = id
         self.streamType = streamType
         self.index = index
@@ -933,6 +940,7 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.doviBLPresent = doviBLPresent
         self.doviELPresent = doviELPresent
         self.doviRPUPresent = doviRPUPresent
+        self.hdr10PlusPresent = hdr10PlusPresent
     }
 }
 
