@@ -48,6 +48,9 @@ struct StatsForNerdsView: View {
                 if let runtimeHDR = diagnostics.runtimeHDRLabel {
                     row("Runtime HDR", runtimeHDR, wraps: true)
                 }
+                if let rendered = diagnostics.renderedLabel {
+                    row("Rendered", rendered, wraps: true)
+                }
                 if let outputHint = diagnostics.outputHDRHint {
                     row("Output", outputHint, wraps: true)
                 }

@@ -45,6 +45,28 @@ final class PlaybackDiagnostics {
         guard isTranscoding, let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
         return "SDR tone-map likely (server transcode)"
     }
+    /// GH #196: true when the experimental DV-signalling lane is active for this session
+    /// (playlist injection proxy or dvh1 direct play under the experimental setting).
+    var dvSignallingActive: Bool = false
+    /// GH #196: what is actually reaching the display, distinct from the source
+    /// classification. Shown whenever the source is HDR/DV; nil hides the row.
+    var renderedLabel: String? {
+        guard let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
+        if isTranscoding || dvGuardReason != nil {
+            return "SDR (server tone-map)"
+        }
+        if sourceHDRFormat == .dolbyVision {
+            return dvSignallingActive
+                ? "Dolby Vision (signalled — unverified)"
+                : "HDR10 fallback (base layer)"
+        }
+        // Non-DV HDR on a copy lane: the in-bitstream metadata survives the remux.
+        switch sourceHDRFormat {
+        case .hdr10Plus: return "HDR10+"
+        case .hlg: return "HLG"
+        default: return "HDR10"
+        }
+    }
     /// Source media bitrate (kbps), when PMS exposes it on the chosen Media row.
     var sourceBitrateKbps: Int = 0
     /// Whether PMS decided to transcode (vs direct play / direct stream).

@@ -132,6 +132,13 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 
 ## B. Player features
 
+- [ ] **DV P5 guard (GH #196)** — the DV P5 sample at Original quality on each backend:
+  Decision row shows "· DV P5 guard (no fallback layer)", playback is a tone-mapped SDR
+  transcode (Rendered row: "SDR (server tone-map)"), and no black screen / decoder error.
+  If the server never produces video, a DV-specific error appears within ~20-40 s.
+- [ ] **Experimental DV signalling toggle (GH #196)** — Settings shows "Dolby Vision
+  Signalling (Experimental)", default OFF; with it OFF nothing changes anywhere. (ON-state
+  validation is device-gated; see issue #196.)
 - [ ] **HDR/DV Stats rows (GH #195)** — per backend (Plex / Jellyfin / Emby) and per sample,
       open Stats for Nerds and check: Video/Audio rows show friendly names ("HEVC",
       "Dolby Digital Plus (E-AC-3) 5.1", "DTS-HD MA 7.1"); the HDR row matches the source;

@@ -2015,6 +2015,7 @@ final class PlaybackController {
         } else {
             dvGuardReason = nil
         }
+        diagnostics.dvSignallingActive = false
 
         let transcode = TranscodeRequest(server: server,
                                          token: token,
@@ -2209,6 +2210,7 @@ final class PlaybackController {
                 remoteHLSProxy = proxy
                 remoteHLSProxyGeneration = handle.generation
                 streamURL = handle.localURL
+                diagnostics.dvSignallingActive = true
                 recordPlaybackDiagnostic("playback.dv_injection_proxy_open", fields: [
                     "supplemental_codecs": .label(injection.supplementalCodecs),
                     "video_range": .label(injection.videoRange),
