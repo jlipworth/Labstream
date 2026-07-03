@@ -1820,6 +1820,11 @@ final class PlaybackController {
     /// native `AVPlayer.seek` for buffered/local/static-range targets and reserves server reopen for
     /// out-of-buffer HLS streams whose segment window cannot satisfy a deep target.
     func performUserSeek(toMs targetMs: Int) {
+        // Fresh user intent re-arms the GH #196 one-shot startup-deadline retry. It must
+        // NOT re-arm on transient `.playing` (a retried item plays briefly at 0 before its
+        // resume seek, which turned the one-shot into a hidden retry loop live: three
+        // silent rebuilds off a single seek on a contended server before the probe gave up).
+        startupDeadlineRetryAttempted = false
         let clamped = max(0, targetMs)
         let target = CMTime(value: CMTimeValue(clamped), timescale: 1000)
         let seconds = Double(clamped) / 1000
@@ -2234,7 +2239,7 @@ final class PlaybackController {
         // header + first segment byte before attaching AVPlayer. Soft-fail: on timeout we
         // attach anyway and the error-log auto-retry below is the backstop.
         if maxVideoBitrateKbps <= 0 {
-            let prewarm = await PlexHLSPrewarmer.prewarm(
+            let prewarm = await HLSSessionPrewarmer.prewarm(
                 startURL: streamURL,
                 headers: PlexHeaders.media(identity: identity, token: token))
             guard !Task.isCancelled, generation == playbackGeneration else { return }
@@ -2402,6 +2407,7 @@ final class PlaybackController {
         playbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
             guard let playableURL = await self.playableRemoteStreamURL(url,
+                                                                       headers: headers,
                                                                        resumeOffsetMs: resumeOffsetMs,
                                                                        playMethod: playMethod,
                                                                        generation: generation),
@@ -2416,6 +2422,7 @@ final class PlaybackController {
     }
 
     private func playableRemoteStreamURL(_ url: URL,
+                                         headers: [String: String],
                                          resumeOffsetMs: Int?,
                                          playMethod: MediaBrowserPlayMethod?,
                                          generation: Int) async -> URL? {
@@ -2424,6 +2431,30 @@ final class PlaybackController {
               let resumeOffsetMs, resumeOffsetMs > 0,
               let primedURL = jellyfinHLSURL(url, startTimeTicks: resumeOffsetMs * 10_000)
         else { return url }
+
+        // GH #196: same startup-deadline hazard as the Plex copy lane, MediaBrowser flavor —
+        // a deep-offset reopen makes the server restart its transcoder at the target, and
+        // Emby was observed live serving NOTHING for the first media file within
+        // AVFoundation's deadline (-12889 "No response for media file in 6s"), repeatedly.
+        // Fetching the playlists starts the transcoder and polling the first segment holds
+        // the attach until media exists. Soft-fail: on timeout we attach anyway and the
+        // one-shot deadline retry is the backstop. Budget is deliberately short: Emby serves
+        // within ~1-2s once its transcoder starts, while Jellyfin never satisfies the poll
+        // (its ticks-primed playlist names segments it mints only on demand — verified live:
+        // prewarm timed out yet playback resumed fine) — so a long budget would only add
+        // latency to every JF deep seek.
+        let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
+                                                        headers: headers,
+                                                        budgetSeconds: 8)
+        guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
+            "outcome": .label(prewarm.outcome.rawValue),
+            "elapsed_ms": .int(Int(prewarm.elapsedSeconds * 1000)),
+            "polls": .int(prewarm.polls),
+            "target": .millisecondsBucket(resumeOffsetMs),
+        ])
+        NSLog("PlaybackController: remote transcode prewarm %@ after %.1fs (%d polls) (#196)",
+              prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
 
         let proxy = MediaSessionProxy(strippedPlaylistQueryItemNames: ["starttimeticks"],
                                       injectedPlaylistStartTimeOffsetSeconds: Double(resumeOffsetMs) / 1000.0)
@@ -3133,9 +3164,6 @@ final class PlaybackController {
             self.armStallWatchdog()
         } else if status == .playing {
             self.hasObservedPlayback = true
-            // Real playback re-arms the GH #196 one-shot startup-deadline retry for any
-            // later cold restart (quality change, deep seek rebuild).
-            self.startupDeadlineRetryAttempted = false
             self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
             self.playbackStartupSpan = nil
             self.cancelStallWatchdog()
@@ -3626,6 +3654,22 @@ final class PlaybackController {
         // don't surface over it. `suppressDirectPlayProbe` stays set until that rebuild's
         // `startStreaming` consumes it, well before any new item could fail.
         if suppressDirectPlayProbe { return }
+        // GH #196: startup-deadline failures also arrive HERE on the MediaBrowser lanes —
+        // there the item genuinely flips `.failed` with the CoreMedia code (seen live: an
+        // Emby transcode reopen at a deep offset died with -12889 "No response for media
+        // file in 6s"). Same one-shot recovery as the error-log path: retry once (backend
+        // reopen / warm Plex session), then surface normally. Still no retry LOOP — the
+        // one-shot only re-arms after real playback is observed.
+        var deadlineCodes = playerItem.map(Self.startupDeadlineCodes(in:)) ?? []
+        if let code = (error as NSError?)?.code,
+           HLSStartupDeadlinePolicy.isStartupDeadlineCode(code),
+           !deadlineCodes.contains(code) {
+            deadlineCodes.append(code)
+        }
+        if !deadlineCodes.isEmpty,
+           attemptStartupDeadlineRetry(codes: deadlineCodes, trigger: source.rawValue) {
+            return
+        }
         var fields = contextFields
         fields["error"] = .error(error)
         fields["failure_source"] = .label(source.rawValue)
@@ -4157,6 +4201,9 @@ final class PlaybackController {
                                           preferShortRemoteHLSBuffer: Bool) {
         if resetFinalTarget { finalTargetRebuildPolicy.reset() }
         if resetAdaptive { adaptiveBitratePolicy.reset() }
+        // User-driven restart (Retry, quality/audio change, ABR step): re-arm the GH #196
+        // one-shot startup-deadline retry for the fresh stream.
+        startupDeadlineRetryAttempted = false
         if clearError {
             playbackError.clear()
             updateTransportStatus()
@@ -4218,6 +4265,7 @@ final class PlaybackController {
                 }
                 let nextPlayMethod = reopened.playMethod ?? self.remotePlayMethod
                 guard let playableURL = await self.playableRemoteStreamURL(reopened.url,
+                                                                           headers: reopened.headers,
                                                                            resumeOffsetMs: offsetMs,
                                                                            playMethod: nextPlayMethod,
                                                                            generation: generation),

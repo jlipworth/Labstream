@@ -495,6 +495,21 @@ Cloudflare (~50–57 Mbps link, 62.7 Mbps 4K HEVC video-copy stream):
   is buffering, not failure; the deadline auto-retry covers the case where AVFoundation
   gives up mid-jump.
 
+- **MediaBrowser lanes hit the same deadlines, with the item actually flipping `.failed`.**
+  An Emby transcode reopened at a deep offset died live with `-12889` "No response for
+  media file in 6s" (the deadline scales with target duration), surfaced via
+  `item.status == .failed` rather than the silent-`.unknown` Plex shape. The same
+  `HLSSessionPrewarmer` on the ticks-primed reopen URL fixed it (~1.3 s to ready).
+  Jellyfin never satisfies the prewarm poll (its ticks-primed playlist names segments it
+  mints only on demand) yet plays fine — hence the short 8 s remote budget: Emby gets its
+  head start, Jellyfin pays bounded latency.
+- **The one-shot retry must re-arm on user INTENT, not on `.playing`.** A retried item
+  plays briefly at 0 before its resume seek, so re-arming on `.playing` turned the
+  one-shot into a hidden retry loop (three silent rebuilds off a single seek on a
+  contended server). Re-arm in `performUserSeek` and `restartAtCurrentPosition` only; on
+  a link genuinely slower than the stream the second `-12880` surfaces the accurate
+  deadline failure with Retry.
+
 ## HDR / Dolby Vision facts and Stats rows (GH #195)
 
 Verified visionOS/AVFoundation findings (simulator probe on visionOS 26.5, 2026-07-03; see
