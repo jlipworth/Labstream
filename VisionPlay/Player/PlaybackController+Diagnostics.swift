@@ -89,11 +89,20 @@ extension PlaybackController {
         if let format = diagnostics.sourceHDRFormat {
             fields["source_hdr"] = .label(format.rawValue)
         }
-        if let runtime = diagnostics.runtimeHDRLabel {
-            fields["runtime_hdr"] = .label(runtime)
+        if let runtimeHDR = diagnostics.runtimeContainsHDR {
+            fields["runtime_hdr"] = .label(runtimeHDR ? "hdr" : "sdr")
         }
-        if let hint = diagnostics.outputHDRHint {
-            fields["output_hdr_hint"] = .label(hint)
+        if let transfer = diagnostics.runtimeTransferFunction {
+            fields["runtime_transfer"] = .label(transfer)
+        }
+        if let fourCC = diagnostics.runtimeVideoCodecFourCC {
+            fields["runtime_video_codec"] = .label(fourCC)
+        }
+        if let eligible = diagnostics.runtimeEligibleForHDR {
+            fields["hdr_eligible"] = .bool(eligible)
+        }
+        if let rendered = diagnostics.renderedLabel {
+            fields["rendered"] = .label(rendered)
         }
         return fields
     }
