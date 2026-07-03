@@ -253,7 +253,8 @@ public enum EmbyPlayback {
                                            startTimeTicks: Int? = nil,
                                            maxStreamingBitrate: Int,
                                            audioStreamIndex: Int? = nil,
-                                           subtitleStreamIndex: Int? = nil) throws -> URLRequest {
+                                           subtitleStreamIndex: Int? = nil,
+                                           forcePlaybackTranscode: Bool = false) throws -> URLRequest {
         let url = try embyURL(server: server,
                               path: "/Items/\(itemId)/PlaybackInfo",
                               queryItems: [URLQueryItem(name: "UserId", value: userId)])
@@ -263,13 +264,16 @@ public enum EmbyPlayback {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
 
+        // forcePlaybackTranscode (GH #196 DV P5 guard): close every lane that would copy
+        // the video bitstream so the server must mint a tone-mapped video transcode.
+        // Audio copy stays permitted — only the video samples are the hazard.
         var body: [String: Any] = [
             "UserId": userId,
             "MaxStreamingBitrate": maxStreamingBitrate,
-            "EnableDirectPlay": true,
-            "EnableDirectStream": true,
+            "EnableDirectPlay": !forcePlaybackTranscode,
+            "EnableDirectStream": !forcePlaybackTranscode,
             "EnableTranscoding": true,
-            "AllowVideoStreamCopy": true,
+            "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": false,
             "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate),

@@ -226,7 +226,8 @@ public enum JellyfinPlayback {
                                            startTimeTicks: Int? = nil,
                                            maxStreamingBitrate: Int,
                                            audioStreamIndex: Int? = nil,
-                                           subtitleStreamIndex: Int? = nil) throws -> URLRequest {
+                                           subtitleStreamIndex: Int? = nil,
+                                           forcePlaybackTranscode: Bool = false) throws -> URLRequest {
         let url = try jellyfinURL(server: server, path: "/Items/\(itemId)/PlaybackInfo")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -235,13 +236,16 @@ public enum JellyfinPlayback {
         req.setValue(JellyfinAuth.authorizationHeader(identity: identity, token: token),
                      forHTTPHeaderField: "Authorization")
 
+        // forcePlaybackTranscode (GH #196 DV P5 guard): close every lane that would copy
+        // the video bitstream so the server must mint a tone-mapped video transcode.
+        // Audio copy stays permitted — only the video samples are the hazard.
         var body: [String: Any] = [
             "UserId": userId,
             "MaxStreamingBitrate": maxStreamingBitrate,
-            "EnableDirectPlay": true,
-            "EnableDirectStream": true,
+            "EnableDirectPlay": !forcePlaybackTranscode,
+            "EnableDirectStream": !forcePlaybackTranscode,
             "EnableTranscoding": true,
-            "AllowVideoStreamCopy": true,
+            "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": true,
             "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate),
