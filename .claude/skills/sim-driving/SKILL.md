@@ -5,19 +5,32 @@ description: Drive the visionOS simulator hands-free — synthetic clicks, scree
 
 # Driving the visionOS simulator
 
-> **⛔ STATUS: NOT USABLE right now (user decision, 2026-06-10).** Clicks proved too
-> unreliable — repeated misses/swallowed clicks even with correct coordinates — and the
-> mouse takeover disrupts the user. Do NOT use the click helper for testing; the user
-> drives all simulator interaction. The passive parts (screenshots, log reading,
-> crop-to-measure) remain fine and expected. Revisit only if the user asks.
+> **STATUS: bounded harness only (reopened 2026-07-04).** Free-form synthetic clicking
+> is still not allowed: it caused misses/swallowed clicks and mouse takeover. Synthetic
+> clicks may be used only through repo scenarios such as `scripts/agent-sim-run.sh`, which
+> open/activate Simulator, capture before/after screenshots/video/logs, write `run.json`,
+> stop on no UI delta, and shut the worktree simulator down by default. If the required
+> auth/simulator state is missing, stop and ask the user to fix it rather than inventing
+> credentials or silently falling back to a different state.
 
-Claude can exercise the app's UI itself: screenshot → locate target → synthetic click →
-screenshot/logs to verify. Use this for anything reachable by tap — including the
-EXPANDED cinema scene's SYSTEM chrome (tab strip, transport, Close pill): clicks are
-real gaze+pinch input, so they work there (verified live; it's only *app-process*
-overlays that the expanded scene never receives). Still hand off to the user for
-gaze-hover effects (a real cursor hover ≠ gaze highlight rendering in all cases) and
-pinch-drag gestures.
+Within a bounded scenario, an agent may exercise reachable tap targets with the loop:
+screenshot/crop → locate target → synthetic click → screenshot/logs to verify. Keep this
+for small, deterministic steps. Hand off to the user for auth setup, gaze-hover effects
+(a real cursor hover ≠ gaze highlight rendering in all cases), pinch-drag gestures, or
+any flow where the harness cannot prove the UI changed.
+
+## Repo scenario harness
+
+Prefer the bounded harness over ad hoc clicks:
+
+```sh
+scripts/agent-sim-run.sh launch-home-passive
+scripts/agent-sim-run.sh click-login-jellyfin-tab
+```
+
+The harness resolves the worktree simulator via `scripts/worktree-sim.sh id`, records
+artifacts under `artifacts/agent-sim-runs/`, and shuts the simulator down unless
+`--keep-booted` is passed. Use scenario artifacts for issue comments and debugging notes.
 
 ## The click helper
 
@@ -38,8 +51,9 @@ AppleScript `System Events → click at` does NOT work (no real CGEvents). Cavea
 
 ## If the Simulator window is missing
 
-The device can stay booted with its window closed (`window 1 … Invalid index`).
-`open -a Simulator` does NOT reopen it. Reopen via the menu:
+The device can stay booted with its window closed (`window 1 … Invalid index`). First try
+`open -a Simulator` plus activation, as the harness does. If that still does not expose a
+window, reopen via the menu:
 
 ```applescript
 tell application "System Events" to tell process "Simulator"
