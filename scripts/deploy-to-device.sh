@@ -24,11 +24,15 @@
 # Env overrides (rarely needed):
 #   VP_DEVICE_ID=<uuid>        target device (default: the single visionOS device found)
 #   VP_DEVELOPMENT_TEAM=<id>   signing team  (default: OU of the Apple Development cert)
+#   VP_REFRESH_SHORT_DEV_PROFILES=0
+#                              opt out of deleting stale/short-lived matching
+#                              development profiles before build.
 #
 set -euo pipefail
 
 BUNDLE_ID="com.jlipworth.VisionPlay"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE_HELPER="$REPO/scripts/provisioning-profile-info.py"
 cd "$REPO"
 
 LAUNCH=0
@@ -45,6 +49,7 @@ for arg in "$@"; do
 done
 
 die() { echo "deploy-to-device: $*" >&2; exit 1; }
+[ -x "$PROFILE_HELPER" ] || die "missing helper: $PROFILE_HELPER"
 
 mask_id() {
   local value="$1"
@@ -97,6 +102,21 @@ fi
   See the deploy-to-device skill for the full signing-account setup."
 echo "team:    $(mask_id "$TEAM")"
 
+# If this Mac previously used free/personal-team provisioning, Xcode may keep
+# re-embedding the same 7-day development profile until it expires. That is how
+# a daily-deployed app can still become "not available" on a trip. Before a dev
+# deploy, remove only matching short-lived/expired development profiles from
+# Xcode's profile caches so -allowProvisioningUpdates must fetch/create a fresh
+# profile. Paid-team development profiles are usually long-lived and are left
+# alone.
+if [ "${VP_REFRESH_SHORT_DEV_PROFILES:-1}" != "0" ]; then
+  "$PROFILE_HELPER" prune \
+    --bundle-id "$BUNDLE_ID" \
+    --team "$TEAM" \
+    --kind development \
+    --short-ttl-days 14 || true
+fi
+
 # --- Build (signed, device slice) ----------------------------------------------
 # LINK-SKIP guard (see CLAUDE.md): delete the device .app first so a skipped Ld step
 # can't leave us installing a stale binary.
@@ -109,6 +129,7 @@ if [ "$BUILD" -eq 1 ]; then
     -destination "platform=visionOS,id=$DEVICE_ID" \
     -configuration Debug \
     -allowProvisioningUpdates \
+    -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$TEAM" \
     build >/tmp/vp-device-build.log 2>&1 \
     || { tail -25 /tmp/vp-device-build.log | redact_stream >&2; die "build failed (full log: /tmp/vp-device-build.log)"; }
@@ -122,6 +143,24 @@ APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-"*/Build
 SIGNED_TEAM=$(codesign -dvvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)
 [ "$SIGNED_TEAM" = "$TEAM" ] || echo "  ⚠️  built app TeamIdentifier=$(mask_id "$SIGNED_TEAM") (expected $(mask_id "$TEAM"))"
 echo "app:     $APP  (team $(mask_id "$SIGNED_TEAM"))"
+
+# Surface the embedded profile lifetime.
+if [ -f "$APP/embedded.mobileprovision" ]; then
+  eval "$("$PROFILE_HELPER" summary --format env "$APP/embedded.mobileprovision")"
+  echo "profile: profile_expires=$PROFILE_EXPIRATION time_to_live_days=$PROFILE_TIME_TO_LIVE_DAYS get_task_allow=$PROFILE_GET_TASK_ALLOW remaining_hours=$PROFILE_REMAINING_HOURS remaining_days=$PROFILE_REMAINING_DAYS"
+  if [ -n "$PROFILE_TIME_TO_LIVE_DAYS" ] && [ "$PROFILE_TIME_TO_LIVE_DAYS" -le 14 ]; then
+    echo "  ⚠️  short-lived development profile; reinstalling before expiry usually does not roll the date forward."
+    echo "     For travel/offline use, prefer scripts/deploy-ad-hoc-to-device.sh or TestFlight/App Store."
+    if [ -n "$PROFILE_REMAINING_HOURS" ] && [ "$PROFILE_REMAINING_HOURS" -lt 144 ]; then
+      echo "  ❌ refusing to install a short-lived profile with <6 days remaining."
+      echo "     Re-run with VP_REFRESH_SHORT_DEV_PROFILES=1, check Xcode account signing,"
+      echo "     or use Ad Hoc/TestFlight for travel."
+      exit 1
+    fi
+  elif [ -n "$PROFILE_REMAINING_HOURS" ] && [ "$PROFILE_REMAINING_HOURS" -lt 72 ]; then
+    echo "  ⚠️  provisioning profile expires soon; regenerate/reinstall before relying on it offline."
+  fi
+fi
 
 # --- Install over Wi-Fi ---------------------------------------------------------
 echo "installing to device…"
