@@ -1,14 +1,14 @@
-# VisionPlay docs
+# Labstream docs
 
-VisionPlay is a native Apple Vision Pro media client for Plex, Jellyfin, and Emby. It is currently distributed as source for local builds; App Store/TestFlight distribution is not available today.
+Labstream is a native Apple Vision Pro media client for Plex, Jellyfin, and Emby. It is currently distributed as source for local builds; App Store/TestFlight distribution is not available today.
 
-This site is split into user help, human-developer onboarding, and current architecture notes. Historical research and generated implementation plans are intentionally kept out of the published docs navigation. The source repository is public at [github.com/jlipworth/VisionPlay](https://github.com/jlipworth/VisionPlay).
+This site is split into user help, human-developer onboarding, and current architecture notes. Historical research and generated implementation plans are intentionally kept out of the published docs navigation. The source repository is public at [github.com/jlipworth/Labstream](https://github.com/jlipworth/Labstream).
 
 ## For users
 
 - [Support & troubleshooting](support.md) — requirements, first-run steps, common playback/sign-in questions, and how to get help.
 - [Report a bug](REPORTING-BUGS.md) — how to capture, preview, and share a redacted diagnostic report.
-- [Privacy Policy](privacy.md) — what stays on your device and what VisionPlay sends to your selected media backend.
+- [Privacy Policy](privacy.md) — what stays on your device and what Labstream sends to your selected media backend.
 - [License Exception](app-store-exception.md) — GPLv3 plus the Apple distribution permission used by this project.
 
 ## For contributors

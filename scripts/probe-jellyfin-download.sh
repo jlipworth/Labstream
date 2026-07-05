@@ -13,8 +13,8 @@ Usage: scripts/probe-jellyfin-download.sh (--query TEXT | --rating-key ITEM_ID) 
 Required selector (or env):
   --query TEXT                      Resolve a Jellyfin item by search/title.
   --rating-key ITEM_ID              Resolve a Jellyfin item by item id.
-  VISIONPLAY_PROBE_QUERY            Env alternative for --query.
-  VISIONPLAY_PROBE_RATING_KEY       Env alternative for --rating-key.
+  LABSTREAM_PROBE_QUERY            Env alternative for --query.
+  LABSTREAM_PROBE_RATING_KEY       Env alternative for --rating-key.
 
 Options:
   --start-download                  Start the original/static download lane (default).
@@ -23,7 +23,7 @@ Options:
   --drop-after-bytes N              Enable DEBUG range-drop URLProtocol for static range downloads.
   --observe-seconds N               Observation window inside the app (default: env or 60).
   --keep-record                     Leave the probe download row in the app.
-  --keep-app-running                Do not terminate VisionPlay after the observation window.
+  --keep-app-running                Do not terminate Labstream after the observation window.
   --skip-build                      Reuse the existing DerivedData app.
   --no-install                      Reuse the already installed app.
   -h, --help                        Show this help.
@@ -36,14 +36,14 @@ USAGE
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 cd "$repo_root"
 
-query=${VISIONPLAY_PROBE_QUERY:-}
-rating_key=${VISIONPLAY_PROBE_RATING_KEY:-}
-observe_seconds=${VISIONPLAY_PROBE_OBSERVE_SECONDS:-60}
-preset=${VISIONPLAY_PROBE_PRESET:-1080p 8 Mbps}
+query=${LABSTREAM_PROBE_QUERY:-}
+rating_key=${LABSTREAM_PROBE_RATING_KEY:-}
+observe_seconds=${LABSTREAM_PROBE_OBSERVE_SECONDS:-60}
+preset=${LABSTREAM_PROBE_PRESET:-1080p 8 Mbps}
 start_mode=download
-drop_after=${VISIONPLAY_PROBE_DROP_AFTER_BYTES:-}
-keep_record=${VISIONPLAY_PROBE_KEEP_RECORD:-0}
-keep_app_running=${VISIONPLAY_PROBE_KEEP_APP_RUNNING:-0}
+drop_after=${LABSTREAM_PROBE_DROP_AFTER_BYTES:-}
+keep_record=${LABSTREAM_PROBE_KEEP_RECORD:-0}
+keep_app_running=${LABSTREAM_PROBE_KEEP_APP_RUNNING:-0}
 skip_build=0
 no_install=0
 
@@ -67,7 +67,7 @@ done
 
 is_positive_int() { [[ ${1:-} =~ ^[1-9][0-9]*$ ]]; }
 if [[ -z "$query" && -z "$rating_key" ]]; then
-  echo "ERROR: provide --query/--rating-key or VISIONPLAY_PROBE_QUERY/VISIONPLAY_PROBE_RATING_KEY." >&2
+  echo "ERROR: provide --query/--rating-key or LABSTREAM_PROBE_QUERY/LABSTREAM_PROBE_RATING_KEY." >&2
   exit 2
 fi
 if ! is_positive_int "$observe_seconds"; then
@@ -80,9 +80,9 @@ if [[ -n "$drop_after" ]] && ! is_positive_int "$drop_after"; then
 fi
 
 simid=${SIMID:-$(scripts/worktree-sim.sh id)}
-derived_data=${VISIONPLAY_PROBE_DERIVED_DATA:-build/DerivedData/JellyfinDownloadProbe}
+derived_data=${LABSTREAM_PROBE_DERIVED_DATA:-build/DerivedData/JellyfinDownloadProbe}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-out_dir=${VISIONPLAY_PROBE_OUTPUT_DIR:-build/probes/jellyfin-download/$timestamp}
+out_dir=${LABSTREAM_PROBE_OUTPUT_DIR:-build/probes/jellyfin-download/$timestamp}
 mkdir -p "$out_dir"
 out_dir=$(cd "$out_dir" && pwd -P)
 
@@ -109,10 +109,10 @@ xcrun simctl boot "$simid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
 
 if [[ $skip_build -eq 0 ]]; then
-  printf '==> Building VisionPlay (log: %s)\n' "$build_log"
+  printf '==> Building Labstream (log: %s)\n' "$build_log"
   scripts/xcodebuild-versioned.sh \
-    -project VisionPlay.xcodeproj \
-    -scheme VisionPlay \
+    -project Labstream.xcodeproj \
+    -scheme Labstream \
     -configuration Debug \
     -destination "platform=visionOS Simulator,id=$simid" \
     -derivedDataPath "$derived_data" \
@@ -120,12 +120,12 @@ if [[ $skip_build -eq 0 ]]; then
     build >"$build_log" 2>&1
 fi
 
-app_path="$derived_data/Build/Products/Debug-xrsimulator/VisionPlay.app"
+app_path="$derived_data/Build/Products/Debug-xrsimulator/Labstream.app"
 if [[ ! -d "$app_path" ]]; then
-  app_path=$(find "$derived_data/Build/Products" -path '*/VisionPlay.app' -type d -print -quit 2>/dev/null || true)
+  app_path=$(find "$derived_data/Build/Products" -path '*/Labstream.app' -type d -print -quit 2>/dev/null || true)
 fi
 if [[ -z "$app_path" || ! -d "$app_path" ]]; then
-  echo "ERROR: could not find built VisionPlay.app under $derived_data" >&2
+  echo "ERROR: could not find built Labstream.app under $derived_data" >&2
   exit 1
 fi
 
@@ -151,7 +151,7 @@ if [[ $keep_record == "1" || $keep_record == "true" || $keep_record == "yes" ]];
   probe_args+=(--vp-probe-keep-record)
 fi
 
-timeout_seconds=${VISIONPLAY_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + 70))}
+timeout_seconds=${LABSTREAM_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + 70))}
 printf '==> Capturing app logs for ~%ss (unified: %s)\n' "$timeout_seconds" "$log_file"
 predicate='subsystem == "com.jlipworth.VisionPlay" AND (category == "JellyfinDownloadProbe" OR category == "Downloads")'
 xcrun simctl spawn "$simid" log stream --style compact --level debug --predicate "$predicate" >"$log_file" 2>&1 &
@@ -170,7 +170,7 @@ xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr
 
 sleep "$timeout_seconds"
 if [[ $keep_app_running == "1" || $keep_app_running == "true" || $keep_app_running == "yes" ]]; then
-  printf '==> Leaving VisionPlay running in simulator %s\n' "$simid"
+  printf '==> Leaving Labstream running in simulator %s\n' "$simid"
 else
   xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
 fi

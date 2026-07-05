@@ -1,6 +1,6 @@
 ---
 name: sim-driving
-description: Drive the visionOS simulator hands-free — synthetic clicks, screenshots, coordinate mapping, and log reading for live-testing VisionPlay without asking the user to interact.
+description: Drive the visionOS simulator hands-free — synthetic clicks, screenshots, coordinate mapping, and log reading for live-testing Labstream without asking the user to interact.
 ---
 
 # Driving the visionOS simulator
@@ -96,8 +96,8 @@ then Read the crop (rendered ~1:1) and refine the center.
 
 ```sh
 SIMID=$(scripts/worktree-sim.sh id)
-xcrun simctl io "$SIMID" screenshot /tmp/visionplay-test.png   # then Read it
-xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"'
+xcrun simctl io "$SIMID" screenshot /tmp/labstream-test.png   # then Read it
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"'
 ```
 
 After a click, sleep ~2s before screenshotting (navigation/animation settles). If a click

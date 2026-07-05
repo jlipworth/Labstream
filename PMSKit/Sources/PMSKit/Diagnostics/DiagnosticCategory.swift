@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stable categories used by VisionPlay's opt-in diagnostic report.
+/// Stable categories used by Labstream's opt-in diagnostic report.
 ///
 /// Keep these raw values human-readable and durable: they are written into user-exported
 /// reports and are intentionally broader than implementation file names.

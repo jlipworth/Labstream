@@ -87,10 +87,10 @@ there — the headless limitation above is macOS-CLI only. To exercise real play
 playhead advance, seek-restart, stall) without UI tapping, use the launch-arg-driven
 **in-process debug probes** that already exist per backend:
 
-- `VisionPlay/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
-- `VisionPlay/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
-- `VisionPlay/DebugPlexDownloadProbe.swift` → `--vp-probe-plex-download` (downloads, not playback)
-- `VisionPlay/DebugEmbyDownloadProbe.swift` → `--vp-probe-emby-download` (add `--vp-probe-start-download` to actually transfer + observe + delete)
+- `Labstream/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
+- `Labstream/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
+- `Labstream/DebugPlexDownloadProbe.swift` → `--vp-probe-plex-download` (downloads, not playback)
+- `Labstream/DebugEmbyDownloadProbe.swift` → `--vp-probe-emby-download` (add `--vp-probe-start-download` to actually transfer + observe + delete)
 
 ⚠️ **The simulator download probe catches what the headless probe cannot.** The headless
 `LiveEmbyDownloadProbe` originally only GET the static *original* and so missed that the
@@ -116,14 +116,14 @@ the probe does not authenticate):
 # 1. Guarded build + install (see CLAUDE.md link-skip / stale-process traps)
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 # 2. Launch with the probe flag (launch args go AFTER the bundle id). Optional overrides:
 #    --vp-probe-query "<title>"  --vp-probe-bitrate-kbps N  --vp-probe-seek-ms N
 xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null
 xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay --vp-probe-emby-playback --vp-probe-query "Some Movie"
 # 3. Read the probe's own log lines (probe.start / probe.item_resolved / probe.progress / probe.pass|fail)
-xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "VisionPlay"' | grep -iE 'EmbyProbe|probe\.'
+xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "Labstream"' | grep -iE 'EmbyProbe|probe\.'
 ```
 
 To add a probe for a new backend, mirror `DebugEmbyPlaybackProbe.swift` (swap the browse

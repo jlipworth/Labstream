@@ -9,7 +9,7 @@ import Testing
 @Suite("Emby Connect PIN")
 struct EmbyConnectTests {
     private let identity = EmbyClientIdentity(
-        client: "VisionPlay",
+        client: "Labstream",
         device: "Apple Vision Pro",
         deviceId: "device-123",
         version: "1.0")
@@ -17,7 +17,7 @@ struct EmbyConnectTests {
     // MARK: X-Application
 
     @Test func xApplicationHeaderIsClientSlashVersion() {
-        #expect(EmbyConnect.xApplication(identity) == "VisionPlay/1.0")
+        #expect(EmbyConnect.xApplication(identity) == "Labstream/1.0")
     }
 
     // MARK: Cloud request builders
@@ -27,7 +27,7 @@ struct EmbyConnectTests {
 
         #expect(request.httpMethod == "POST")
         #expect(request.url == URL(string: "https://connect.emby.media/service/pin?deviceId=device-123"))
-        #expect(request.value(forHTTPHeaderField: "X-Application") == "VisionPlay/1.0")
+        #expect(request.value(forHTTPHeaderField: "X-Application") == "Labstream/1.0")
         #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
         // Cloud PIN endpoints carry no Emby/Connect token.
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == nil)
@@ -39,7 +39,7 @@ struct EmbyConnectTests {
 
         #expect(request.httpMethod == "GET")
         #expect(request.url == URL(string: "https://connect.emby.media/service/pin?deviceId=device-123&pin=73494"))
-        #expect(request.value(forHTTPHeaderField: "X-Application") == "VisionPlay/1.0")
+        #expect(request.value(forHTTPHeaderField: "X-Application") == "Labstream/1.0")
         #expect(request.value(forHTTPHeaderField: "X-Connect-UserToken") == nil)
     }
 
@@ -48,7 +48,7 @@ struct EmbyConnectTests {
 
         #expect(request.httpMethod == "POST")
         #expect(request.url == URL(string: "https://connect.emby.media/service/pin/authenticate"))
-        #expect(request.value(forHTTPHeaderField: "X-Application") == "VisionPlay/1.0")
+        #expect(request.value(forHTTPHeaderField: "X-Application") == "Labstream/1.0")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/x-www-form-urlencoded")
 
         let body = try #require(request.httpBody.flatMap { String(data: $0, encoding: .utf8) })
@@ -63,7 +63,7 @@ struct EmbyConnectTests {
 
         #expect(request.httpMethod == "GET")
         #expect(request.url == URL(string: "https://connect.emby.media/service/servers?userId=connect-user-1"))
-        #expect(request.value(forHTTPHeaderField: "X-Application") == "VisionPlay/1.0")
+        #expect(request.value(forHTTPHeaderField: "X-Application") == "Labstream/1.0")
         #expect(request.value(forHTTPHeaderField: "X-Connect-UserToken") == "ctoken-abc")
     }
 

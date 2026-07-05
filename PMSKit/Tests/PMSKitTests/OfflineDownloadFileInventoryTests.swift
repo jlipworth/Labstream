@@ -76,10 +76,10 @@ struct OfflineDownloadFileInventoryTests {
                                                        inFlightRelativePaths: ["plex_1.mp4"])
 
         #expect(audit.orphanCandidates.isEmpty)
-        #expect(OfflineDownloadFileInventory.isVisionPlayOwnedDownloadFilename("plex_1.resume"))
-        #expect(OfflineDownloadFileInventory.isVisionPlayOwnedDownloadFilename("plex_1.sub-2.srt"))
-        #expect(!OfflineDownloadFileInventory.isVisionPlayOwnedDownloadFilename("index.json"))
-        #expect(!OfflineDownloadFileInventory.isVisionPlayOwnedDownloadFilename("../escape.mp4"))
-        #expect(!OfflineDownloadFileInventory.isVisionPlayOwnedDownloadFilename("unowned.tmp"))
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.resume"))
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.sub-2.srt"))
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("index.json"))
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("../escape.mp4"))
+        #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("unowned.tmp"))
     }
 }

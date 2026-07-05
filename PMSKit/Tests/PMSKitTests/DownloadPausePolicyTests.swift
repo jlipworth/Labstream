@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download pause policy")
 struct DownloadPausePolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-pause-policy.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-pause-policy.mp4")
 
     private func record(status: DownloadStatus,
                         backend: DownloadBackendKind = .plex,

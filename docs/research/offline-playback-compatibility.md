@@ -1,9 +1,9 @@
 # Offline playback compatibility on Apple Vision Pro
 
-Status: active research for [#167](https://github.com/jlipworth/VisionPlay/issues/167).  
+Status: active research for [#167](https://github.com/jlipworth/Labstream/issues/167).
 Last reviewed: 2026-06-27.
 
-This note documents the compatibility checks VisionPlay applies before, during, and after an offline download. The important distinction is:
+This note documents the compatibility checks Labstream applies before, during, and after an offline download. The important distinction is:
 
 - **Source-item checks** decide which route to request from Plex/Jellyfin/Emby.
 - **Final-artifact checks** decide whether the actual file that landed on disk is usable for offline AVFoundation playback.
@@ -16,14 +16,14 @@ Official Apple references used for this pass:
 
 - Apple Vision Pro technical specifications list video playback support for **HEVC**, **MV-HEVC**, **H.264**, and HDR formats including **Dolby Vision**, **HDR10**, and **HLG**: <https://support.apple.com/kb/SP911?locale=en_US>.
 - The same Apple Vision Pro specs list audio playback support including **AAC**, **MP3**, **Apple Lossless**, **FLAC**, **Dolby Digital**, **Dolby Digital Plus**, and **Dolby Atmos**: <https://support.apple.com/kb/SP911?locale=en_US>.
-- VisionPlay's final-file check uses AVFoundation's `AVURLAsset` / `AVPlayerItem` local playback path, not server streaming success, as the compatibility proof for the downloaded file: `VisionPlay/Downloads/BackgroundDownloadSession.swift`.
+- Labstream's final-file check uses AVFoundation's `AVURLAsset` / `AVPlayerItem` local playback path, not server streaming success, as the compatibility proof for the downloaded file: `Labstream/Downloads/BackgroundDownloadSession.swift`.
 
-What this means for VisionPlay:
+What this means for Labstream:
 
 - H.264 and HEVC are safe video targets for MP4-family offline files.
 - AAC is the safest broad audio output target. AC-3/E-AC-3 can be compatible, but server/device variation means the app still treats the final AVFoundation probe as authoritative.
 - MKV, raw streaming playlists, and opaque live transcode streams are not treated as durable offline artifacts. They must be remuxed/transcoded into a static local file.
-- HEVC in MP4-family containers can still fail if the track uses an `hev1` sample entry where AVFoundation expects `hvc1`; VisionPlay runs the post-download HEVC tag fixup before playback validation.
+- HEVC in MP4-family containers can still fail if the track uses an `hev1` sample entry where AVFoundation expects `hvc1`; Labstream runs the post-download HEVC tag fixup before playback validation.
 
 ## Current source-route decision path
 

@@ -22,10 +22,10 @@
 	<!-- Internal build traceability: defaults to "dev" from build settings, and
 	     agent/CI builds can override with `scripts/build-version-args.sh` without
 	     rewriting project files. -->
-	<key>VisionPlayBuildSlug</key>
-	<string>$(VISIONPLAY_BUILD_SLUG)</string>
-	<key>VisionPlayBuildDateUTC</key>
-	<string>$(VISIONPLAY_BUILD_DATE_UTC)</string>
+	<key>LabstreamBuildSlug</key>
+	<string>$(LABSTREAM_BUILD_SLUG)</string>
+	<key>LabstreamBuildDateUTC</key>
+	<string>$(LABSTREAM_BUILD_DATE_UTC)</string>
 
 	<!-- Export compliance (#appstore): the app uses only standard HTTPS/TLS
 	     (exempt encryption), so declare non-exempt encryption = NO. This skips
@@ -38,7 +38,7 @@
 	     triggers the system Local Network prompt even over HTTPS. Plex's
 	     *.plex.direct hostnames can also resolve to LAN/WAN IPs. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>VisionPlay connects to your Plex, Jellyfin, or Emby media server on your local network to browse and play your library.</string>
+	<string>Labstream connects to your Plex, Jellyfin, or Emby media server on your local network to browse and play your library.</string>
 
 	<!-- App Transport Security (#33): the media-session proxy fronts PMS behind an
 	     app-owned loopback origin, so AVFoundation loads the stream from

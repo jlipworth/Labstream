@@ -1,6 +1,6 @@
 # Backends
 
-VisionPlay supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but Jellyfin and Emby have real sign-in, browse, playback, music, progress, and watched-state lanes. Emby playback and Emby Connect wire shapes have been live-validated; headset breadth still varies by feature. The original Emby planning map is historical context only: [`archive/research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md).
+Labstream supports Plex, Jellyfin, and Emby as selectable backends. Plex remains the default path for existing installs, but Jellyfin and Emby have real sign-in, browse, playback, music, progress, and watched-state lanes. Emby playback and Emby Connect wire shapes have been live-validated; headset breadth still varies by feature. The original Emby planning map is historical context only: [`archive/research/17-emby-backend-support.md`](https://github.com/jlipworth/Labstream/blob/main/docs/archive/research/17-emby-backend-support.md).
 
 Downloads/offline behavior is intentionally out of scope for this backend overview.
 
@@ -68,4 +68,4 @@ Jellyfin and Emby each keep their own browse/auth/playback services and public P
 
 Only behavior that is implemented and live-validated against a real Emby server should be described as Emby-proven. Emby Connect PIN request/exchange shape is implemented and live-verified, including server identity checks before exchanging a Connect access key, but in-headset UX validation should still be called out separately when relevant.
 
-LAN discovery remains unimplemented. Keep [`archive/research/17-emby-backend-support.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/17-emby-backend-support.md) as historical planning context, not current capability truth.
+LAN discovery remains unimplemented. Keep [`archive/research/17-emby-backend-support.md`](https://github.com/jlipworth/Labstream/blob/main/docs/archive/research/17-emby-backend-support.md) as historical planning context, not current capability truth.

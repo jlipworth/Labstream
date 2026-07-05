@@ -3,12 +3,12 @@ import Testing
 
 @Test func headersIncludeRequiredPlexFields() {
     let id = ClientIdentity(clientIdentifier: "ABC-123",
-                            product: "VisionPlay",
+                            product: "Labstream",
                             version: "0.1.0",
                             deviceName: "Vision Pro")
     let h = PlexHeaders.standard(identity: id, token: "tok")
     #expect(h["X-Plex-Client-Identifier"] == "ABC-123")
-    #expect(h["X-Plex-Product"] == "VisionPlay")
+    #expect(h["X-Plex-Product"] == "Labstream")
     #expect(h["X-Plex-Version"] == "0.1.0")
     #expect(h["X-Plex-Platform"] == "visionOS")
     #expect(h["X-Plex-Device-Name"] == "Vision Pro")

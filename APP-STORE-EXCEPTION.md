@@ -2,9 +2,9 @@
 
 Copyright (C) 2026 Jonathan Lipworth
 
-VisionPlay is licensed under the GNU General Public License v3.0 (see
-[`LICENSE`](https://github.com/jlipworth/VisionPlay/blob/main/LICENSE)). For code to which I hold copyright, I grant the following
-**additional permission** under section 7 of that license. Contributions are accepted only on the understanding that this same additional permission applies to the contributed work as part of VisionPlay. This permission does
+Labstream is licensed under the GNU General Public License v3.0 (see
+[`LICENSE`](https://github.com/jlipworth/Labstream/blob/main/LICENSE)). For code to which I hold copyright, I grant the following
+**additional permission** under section 7 of that license. Contributions are accepted only on the understanding that this same additional permission applies to the contributed work as part of Labstream. This permission does
 **not** weaken copyleft: the complete corresponding source of any distributed
 version must still be made available under the GPLv3.
 

@@ -98,7 +98,7 @@ final class DiagnosticLoggingTests: XCTestCase {
             "full_url": .text("https://example.com/library/metadata/1?X-Plex-Token=anothersecret")
         ])
 
-        let context = DiagnosticReportContext(product: "VisionPlay",
+        let context = DiagnosticReportContext(product: "Labstream",
                                               appVersion: "1.0",
                                               appBuild: "42",
                                               operatingSystem: "visionOS 26.5",
@@ -118,7 +118,7 @@ final class DiagnosticLoggingTests: XCTestCase {
                                                      events: store.snapshot(),
                                                      generatedAt: Date(timeIntervalSince1970: 1_700_000_010))
 
-        XCTAssertTrue(report.contains("VisionPlay Diagnostic Report"))
+        XCTAssertTrue(report.contains("Labstream Diagnostic Report"))
         XCTAssertTrue(report.contains("Diagnostic logging enabled: yes"))
         XCTAssertTrue(report.contains("Adaptive Bitrate: disabled"))
         XCTAssertTrue(report.contains("Downloads"))
@@ -160,7 +160,7 @@ final class DiagnosticLoggingTests: XCTestCase {
                                                 "source_bitrate_kbps": .int(42_000),
                                              ])
         let report = DiagnosticReportRenderer.render(
-            context: DiagnosticReportContext(product: "VisionPlay",
+            context: DiagnosticReportContext(product: "Labstream",
                                              appVersion: "1.0",
                                              appBuild: "42",
                                              operatingSystem: "visionOS 26.5",
@@ -223,7 +223,7 @@ final class DiagnosticLoggingTests: XCTestCase {
 
         // First, prove the renderer/redactor would leak it verbatim if handed the raw name —
         // this is the failure the call-site fix prevents.
-        let leaky = DiagnosticReportContext(product: "VisionPlay",
+        let leaky = DiagnosticReportContext(product: "Labstream",
                                             appVersion: "1.0",
                                             appBuild: "42",
                                             operatingSystem: "visionOS 26.5",
@@ -237,7 +237,7 @@ final class DiagnosticLoggingTests: XCTestCase {
                       "redact() is not expected to scrub a dotless personal name; the call-site must sanitize")
 
         // The fixed call-site emits only the product + version, never the user's server name.
-        let sanitized = DiagnosticReportContext(product: "VisionPlay",
+        let sanitized = DiagnosticReportContext(product: "Labstream",
                                                 appVersion: "1.0",
                                                 appBuild: "42",
                                                 operatingSystem: "visionOS 26.5",
@@ -423,8 +423,8 @@ final class DiagnosticLoggingTests: XCTestCase {
     }
 
     func testDiagnosticReportArtifactFilenamesAreStable() {
-        XCTAssertEqual(DiagnosticReportArtifactMetadata.exportFilename, "VisionPlay-Diagnostic-Report")
-        XCTAssertEqual(DiagnosticReportArtifactMetadata.feedbackFilename, "VisionPlay-Feedback.txt")
+        XCTAssertEqual(DiagnosticReportArtifactMetadata.exportFilename, "Labstream-Diagnostic-Report")
+        XCTAssertEqual(DiagnosticReportArtifactMetadata.feedbackFilename, "Labstream-Feedback.txt")
         XCTAssertTrue(DiagnosticReportArtifactMetadata.feedbackFilename.hasSuffix(".txt"))
     }
 

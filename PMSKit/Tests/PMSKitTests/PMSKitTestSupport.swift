@@ -8,19 +8,19 @@ import Testing
 enum TestFixtures {
     static let plexServer = URL(string: "https://192.0.2.10:32400")!
     static let plexIdentity = ClientIdentity(clientIdentifier: "CID",
-                                             product: "VisionPlay",
+                                             product: "Labstream",
                                              version: "0.1.0",
                                              deviceName: "AVP")
 
     static let jellyfinServer = URL(string: "https://jellyfin.example.test/base")!
     static let jellyfinImageServer = URL(string: "https://jf.example.test/jellyfin")!
-    static let jellyfinIdentity = JellyfinClientIdentity(client: "VisionPlay",
+    static let jellyfinIdentity = JellyfinClientIdentity(client: "Labstream",
                                                          device: "Apple Vision Pro",
                                                          deviceId: "device-123",
                                                          version: "0.1.0")
 
     static let embyServer = URL(string: "https://emby.example.test/emby")!
-    static let embyIdentity = EmbyClientIdentity(client: "VisionPlay",
+    static let embyIdentity = EmbyClientIdentity(client: "Labstream",
                                                  device: "Apple Vision Pro",
                                                  deviceId: "device-123",
                                                  version: "0.1.0")

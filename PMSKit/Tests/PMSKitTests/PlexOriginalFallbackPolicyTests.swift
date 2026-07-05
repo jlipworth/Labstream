@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Plex original fallback policy")
 struct PlexOriginalFallbackPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-plex-fallback.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-plex-fallback.mp4")
 
     @Test("Fallback requires a true Plex original row with no transcode or prep ownership and a Plex session")
     func eligibility() {

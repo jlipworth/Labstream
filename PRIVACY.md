@@ -1,19 +1,19 @@
-# VisionPlay — Privacy Policy
+# Labstream — Privacy Policy
 
 _Last updated: 2026-07-05_
 
-VisionPlay is a personal media client for Apple Vision Pro that connects to a
+Labstream is a personal media client for Apple Vision Pro that connects to a
 Plex Media Server, Jellyfin server, or Emby server **that you choose and
 control**. It is designed to collect as little as possible.
 
-## What VisionPlay does not do
+## What Labstream does not do
 
 - **No data is collected by or sent to the developer.** There is no analytics,
   no developer-operated telemetry pipeline, no crash reporting to the developer,
   and no advertising.
-- **No tracking.** VisionPlay does not track you across apps or websites and
+- **No tracking.** Labstream does not track you across apps or websites and
   contains no third-party tracking SDKs.
-- **No developer servers.** VisionPlay communicates only with the media backend
+- **No developer servers.** Labstream communicates only with the media backend
   you configure. Plex sign-in uses Plex (`plex.tv`) plus the Plex Media Server
   you select; Jellyfin mode talks to the Jellyfin server URL you enter; Emby
   mode uses Emby Connect (`emby.media`) for PIN sign-in when selected and then
@@ -29,20 +29,20 @@ control**. It is designed to collect as little as possible.
 - **Playback preferences and resume positions** are stored locally
   (UserDefaults) and, where applicable, reported to your selected media server as
   that backend's normal playback-state/progress feature.
-- **Offline downloads** you choose to make are stored in VisionPlay's private app
+- **Offline downloads** you choose to make are stored in Labstream's private app
   container on your device and can be deleted from within the app or by removing
   the app.
 - **Spotlight, Siri, and Shortcuts media suggestions** can expose browsed media
   titles and summaries to Apple system surfaces on your device. You can turn this
   off in Settings with **Show Media in Spotlight & Siri**; turning it off stops
-  new Spotlight indexing, clears VisionPlay's Spotlight index, and removes media
-  title entity results from VisionPlay's Shortcuts/App Intents queries.
+  new Spotlight indexing, clears Labstream's Spotlight index, and removes media
+  title entity results from Labstream's Shortcuts/App Intents queries.
 - **Opt-in diagnostic logs** are off by default. If you enable diagnostic logging
-  in Settings, VisionPlay keeps recent app events in bounded local storage so you
+  in Settings, Labstream keeps recent app events in bounded local storage so you
   can copy, export, or share a bug-report summary after reproducing a problem.
   This diagnostic report is user-initiated only and is not uploaded automatically.
 - **Passive MetricKit crash/hang summaries** may be delivered by visionOS after a
-  bad run and stored locally in a small bounded list. VisionPlay keeps only
+  bad run and stored locally in a small bounded list. Labstream keeps only
   redacted summary fields for inclusion in a report you explicitly preview/copy/
   export; these summaries are not uploaded automatically and are separate from
   opt-in event logging.
@@ -50,7 +50,7 @@ control**. It is designed to collect as little as possible.
 ## Diagnostic reports
 
 When you tap **Send feedback to developer**, **Copy diagnostic report**, or
-**Export diagnostic report file**, VisionPlay includes safe app/server
+**Export diagnostic report file**, Labstream includes safe app/server
 product/version information, backend name, connection scheme, selected quality
 settings, Adaptive Bitrate state when available, a recent playback snapshot when
 available, passive redacted MetricKit summaries when present, and recent redacted
@@ -71,28 +71,28 @@ choose to paste, attach, or share it somewhere.
 
 ## Data shared with Plex, Jellyfin, and Emby
 
-When you sign in and stream with Plex, VisionPlay talks to Plex and to your
+When you sign in and stream with Plex, Labstream talks to Plex and to your
 server for account sign-in, library browsing, playback, and playback-state
 reporting. That interaction is governed by **Plex's own privacy policy**
 (<https://www.plex.tv/about/privacy-legal/>), not by the developer of
-VisionPlay.
+Labstream.
 
-When you use Jellyfin, VisionPlay talks directly to the Jellyfin server URL you
+When you use Jellyfin, Labstream talks directly to the Jellyfin server URL you
 configure. That server is controlled by you or your server administrator.
 
-When you use Emby, VisionPlay can use Emby Connect for PIN sign-in and then talks
+When you use Emby, Labstream can use Emby Connect for PIN sign-in and then talks
 to the Emby server URL you select or enter. Emby Connect and your Emby server are
 controlled by Emby Media or your server administrator, not by the developer of
-VisionPlay.
+Labstream.
 
 ## Children
 
-VisionPlay is not directed at children and collects no personal information.
+Labstream is not directed at children and collects no personal information.
 
 ## Contact
 
 Questions about privacy: open an issue at
-<https://github.com/jlipworth/VisionPlay/issues>.
+<https://github.com/jlipworth/Labstream/issues>.
 
 ## Changes
 

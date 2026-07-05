@@ -2,13 +2,13 @@
 
 Downloads must produce a static local file. The app should not treat a live streaming transcode as a durable offline transfer.
 
-For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/offline-playback-compatibility.md).
+For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](https://github.com/jlipworth/Labstream/blob/main/docs/research/offline-playback-compatibility.md).
 
 ## Module boundaries after the holistic refactor
 
 The downloads module is now split by responsibility rather than by one giant manager file:
 
-- **Coordinator:** `VisionPlay/Downloads/DownloadManager.swift` owns the main-actor queue, runtime state dictionaries, retry/resume scanners, and the published offline-library snapshot. It should adapt live facts, not re-implement pure route/caption/storage decisions.
+- **Coordinator:** `Labstream/Downloads/DownloadManager.swift` owns the main-actor queue, runtime state dictionaries, retry/resume scanners, and the published offline-library snapshot. It should adapt live facts, not re-implement pure route/caption/storage decisions.
 - **Backend lanes:** `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`, and `+EmbyConvert.swift` keep backend-specific request construction, server-prep polling, active-encoding cleanup, and handoff behavior explicit. Do not collapse these into a wide backend protocol unless a future change proves the concrete steps are actually identical.
 - **Transfer engine:** `BackgroundDownloadSession` owns URLSession task registries, static byte-range task adoption, checkpoint appends, final-file validation, transient retries, and background completion callbacks. The transfer layer delegates pure HTTP/range/retry/finalization decisions to PMSKit policies.
 - **Persistence:** `DownloadStore` owns the versioned `index.json` envelope, row-by-row resilient decode, file reconciliation, side-asset byte accounting, and app-container deletes.
@@ -212,7 +212,7 @@ sequenceDiagram
 
 - Static original transfers are network-bound and can reconnect/retry as file downloads.
 - Plex optimizer jobs have two phases: server preparation, then static rendered-part download. Server-prep state is represented separately so the UI can say “Preparing on server…” and poll progress where possible.
-- Jellyfin compatible downloads and Emby compatible-remux/transcode paths can be live-forward encoder streams rather than durable server-prep jobs. When those paths are canceled, fail, or complete, VisionPlay sends active-encoding cleanup for the download play session where the backend exposes it. Emby convert-then-download is different: it is server prepare followed by a static existing-version transfer.
+- Jellyfin compatible downloads and Emby compatible-remux/transcode paths can be live-forward encoder streams rather than durable server-prep jobs. When those paths are canceled, fail, or complete, Labstream sends active-encoding cleanup for the download play session where the backend exposes it. Emby convert-then-download is different: it is server prepare followed by a static existing-version transfer.
 - Failed items keep metadata so retry can re-probe and choose the correct current route.
 - Canceled/deleted downloads should clean up local files and app-owned queue state; Plex optimizer cleanup must avoid deleting protected/current jobs.
 

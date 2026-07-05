@@ -3,7 +3,7 @@ import Foundation
 @testable import PMSKit
 
 private let server = URL(string: "https://192.0.2.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
+private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
                                version: "0.1.0", deviceName: "AVP")
 
 @Test func backgroundProcessingRequestTargetsType42Playlists() {
@@ -181,7 +181,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "VisionPlay",
     let protected: Set<String> = ["In Flight [VisionPlay bbbb2222]"]
     let stale = q.staleItemIDs(marker: "[VisionPlay ", protectedTitles: protected)
     // Deletes our two abandoned items; never the protected in-flight one, never the
-    // non-VisionPlay job (no marker).
+    // non-Labstream job (no marker).
     #expect(Set(stale) == ["1", "4"])
 }
 

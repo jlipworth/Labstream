@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize VisionPlay issue #42 performance span logs.
+"""Summarize Labstream issue #42 performance span logs.
 
 Usage examples:
 

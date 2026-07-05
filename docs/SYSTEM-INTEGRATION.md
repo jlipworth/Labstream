@@ -33,7 +33,7 @@ sequenceDiagram
 
 ## App Intents
 
-VisionPlay exposes intents for:
+Labstream exposes intents for:
 
 - Play Media
 - Open Media
@@ -41,7 +41,7 @@ VisionPlay exposes intents for:
 
 The currently shipped media-title intents are Plex-scoped: entity suggestions/search/identifier resolution use the Plex browse context and refuse non-Plex backend-scoped IDs rather than resolving them against whichever backend is active. Resolved routes still push the normal detail/player paths. Signed-out or not-ready states should return a clear failure instead of partially opening UI.
 
-The media-title entity queries used by Siri/Shortcuts are controlled by Settings → Playback → **Show Media in Spotlight & Siri**. Turning the control off stops VisionPlay's media-title App Intents entity queries, including suggestions and saved media-title parameters; explicit no-parameter actions such as Continue Watching can still run only after the user invokes them and the app can reach the signed-in Plex session.
+The media-title entity queries used by Siri/Shortcuts are controlled by Settings → Playback → **Show Media in Spotlight & Siri**. Turning the control off stops Labstream's media-title App Intents entity queries, including suggestions and saved media-title parameters; explicit no-parameter actions such as Continue Watching can still run only after the user invokes them and the app can reach the signed-in Plex session.
 
 ## Spotlight
 
@@ -51,7 +51,7 @@ Spotlight indexing is best effort:
 - namespace identifiers by Plex server today; the parser already accepts a versioned backend-scoped shape for future non-Plex routes
 - avoid thumbnails and sensitive server/title-adjacent metadata beyond what the system result requires
 - delete the app’s index on sign-out and from the Settings maintenance action
-- respect Settings → Playback → **Show Media in Spotlight & Siri**; turning it off stops new indexing and clears VisionPlay's Spotlight domain
+- respect Settings → Playback → **Show Media in Spotlight & Siri**; turning it off stops new indexing and clears Labstream's Spotlight domain
 
 Spotlight hits open the app and navigate to the detail page. Current Spotlight indexing is Plex-only; non-Plex backend-scoped identifiers are parsed defensively but not indexed or routable yet. Spotlight hits do not autoplay unless explicitly routed through a play intent.
 

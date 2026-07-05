@@ -1,8 +1,8 @@
-site_name: VisionPlay
+site_name: Labstream
 site_description: Native Apple Vision Pro client for your own Plex, Jellyfin, or Emby server.
-site_url: https://jlipworth.github.io/VisionPlay/
-repo_url: https://github.com/jlipworth/VisionPlay
-repo_name: jlipworth/VisionPlay
+site_url: https://jlipworth.github.io/Labstream/
+repo_url: https://github.com/jlipworth/Labstream
+repo_name: jlipworth/Labstream
 docs_dir: docs
 copyright: Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
 
@@ -41,7 +41,7 @@ exclude_docs: |
 
 nav:
   - Home: index.md
-  - Using VisionPlay:
+  - Using Labstream:
       - Support & Troubleshooting: support.md
       - Report a bug: REPORTING-BUGS.md
       - Privacy Policy: privacy.md

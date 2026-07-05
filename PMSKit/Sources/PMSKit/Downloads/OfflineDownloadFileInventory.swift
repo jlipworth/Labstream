@@ -73,7 +73,7 @@ public enum OfflineDownloadFileInventory {
         let unreferenced = files.filter { !referencedRelativePaths.contains($0.relativePath) }
         let candidates = unreferenced.filter {
             !inFlightRelativePaths.contains($0.relativePath)
-                && isVisionPlayOwnedDownloadFilename($0.relativePath)
+                && isLabstreamOwnedDownloadFilename($0.relativePath)
         }
         return OfflineDownloadStorageAudit(referencedRelativePaths: referencedRelativePaths,
                                            referencedBytes: referencedBytes,
@@ -82,7 +82,7 @@ public enum OfflineDownloadFileInventory {
                                            orphanCandidates: candidates)
     }
 
-    public static func isVisionPlayOwnedDownloadFilename(_ relativePath: String) -> Bool {
+    public static func isLabstreamOwnedDownloadFilename(_ relativePath: String) -> Bool {
         guard isOneLevelRelativePath(relativePath), relativePath != indexFilename else { return false }
         let mediaExtensions = ["avi", "m4v", "mkv", "mov", "mp4", "ts", "webm"]
         let subtitleExtensions = ["srt", "vtt"]

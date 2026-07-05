@@ -1,4 +1,4 @@
-# VisionPlay
+# Labstream
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Platform: visionOS 26](https://img.shields.io/badge/Platform-visionOS%2026-black.svg)](https://developer.apple.com/visionos/)
@@ -45,8 +45,8 @@ that choose between raw originals and compatible server-rendered copies.
 ## Project structure
 
 ```
-VisionPlay/
-├── VisionPlay/            # visionOS app (SwiftUI)
+Labstream/
+├── Labstream/            # visionOS app (SwiftUI)
 │   ├── App/              # app entry + session state
 │   ├── Auth/             # Plex/Jellyfin/Emby auth + Keychain
 │   ├── Backend/          # backend service lanes and shared browse helpers
@@ -64,7 +64,7 @@ VisionPlay/
 
 ## Build & run
 
-This is a **source-first local-build** project today. The app identity is **VisionPlay** and the
+This is a **source-first local-build** project today. The app identity is **Labstream** and the
 development bundle identifier is `com.jlipworth.VisionPlay`. It runs from Xcode on a visionOS 26.x
 simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
 expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
@@ -75,7 +75,7 @@ Build the app (visionOS 26.x simulator, unsigned):
 ```bash
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -96,7 +96,7 @@ Local validation before handing off:
 ```bash
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 (cd PMSKit && swift test)
@@ -109,13 +109,13 @@ macOS-runner CI job is added. A future App Store/TestFlight pass can add distrib
 entitlements review, screenshots, privacy metadata, and store-specific release automation later; it
 is intentionally not part of today's local-build setup.
 
-See the published docs site at <https://jlipworth.github.io/VisionPlay/>. Contributor workflow lives in [`CONTRIBUTING.md`](https://github.com/jlipworth/VisionPlay/blob/main/CONTRIBUTING.md), and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) covers install/launch, logging, and the platform
+See the published docs site at <https://jlipworth.github.io/Labstream/>. Contributor workflow lives in [`CONTRIBUTING.md`](https://github.com/jlipworth/Labstream/blob/main/CONTRIBUTING.md), and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) covers install/launch, logging, and the platform
 gotchas worth knowing before changing the player or transcode code. Current architecture docs start at
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), with focused notes for
 [`playback`](docs/PLAYBACK-ARCHITECTURE.md), [`backends`](docs/BACKENDS.md),
 [`downloads/offline`](docs/DOWNLOADS-OFFLINE.md), [`persistence`](docs/PERSISTENCE.md),
 [`diagnostics/privacy`](docs/DIAGNOSTICS-PRIVACY.md), [`system integration`](docs/SYSTEM-INTEGRATION.md),
-[`testing`](docs/TESTING-STRATEGY.md), and the [`scripts catalog`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/README.md).
+[`testing`](docs/TESTING-STRATEGY.md), and the [`scripts catalog`](https://github.com/jlipworth/Labstream/blob/main/scripts/README.md).
 
 On first launch, choose Plex, Jellyfin, or Emby and sign in to your server. A plain simulator/device
 upgrade install usually preserves the app container; deleting the app, erasing the simulator, or installing
@@ -123,16 +123,16 @@ over the App Store build starts with fresh app state and requires sign-in again.
 
 ## Docs
 
-Current architecture and operating guidance lives in the top-level files under [`docs/`](docs/). Active research for not-yet-implemented work lives in [`docs/research/`](https://github.com/jlipworth/VisionPlay/tree/main/docs/research); promote only proven behavior from research into the current docs. Historical design research, completed implementation plans, and superseded review snapshots live in [`docs/archive/`](https://github.com/jlipworth/VisionPlay/tree/main/docs/archive). Archived files are context only; they are not the current source of truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
+Current architecture and operating guidance lives in the top-level files under [`docs/`](docs/). Active research for not-yet-implemented work lives in [`docs/research/`](https://github.com/jlipworth/Labstream/tree/main/docs/research); promote only proven behavior from research into the current docs. Historical design research, completed implementation plans, and superseded review snapshots live in [`docs/archive/`](https://github.com/jlipworth/Labstream/tree/main/docs/archive). Archived files are context only; they are not the current source of truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](https://github.com/jlipworth/VisionPlay/blob/main/LICENSE) for the
+This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](https://github.com/jlipworth/Labstream/blob/main/LICENSE) for the
 full text.
 
 There is no App Store build today; the project carries a GPLv3 **section 7 additional permission**
 to preserve that option for future Apple App Store / TestFlight distribution. It
-applies — see [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/VisionPlay/blob/main/APP-STORE-EXCEPTION.md). It resolves the well-known
+applies — see [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/Labstream/blob/main/APP-STORE-EXCEPTION.md). It resolves the well-known
 GPL-vs-App-Store conflict while keeping copyleft intact: distributed modified versions must still
 provide corresponding source under GPLv3.
 

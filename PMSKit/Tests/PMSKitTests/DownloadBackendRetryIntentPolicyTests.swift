@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download backend retry intent policy")
 struct DownloadBackendRetryIntentPolicyTests {
-    private let localURL = URL(fileURLWithPath: "/tmp/visionplay-retry-intent.mp4")
+    private let localURL = URL(fileURLWithPath: "/tmp/labstream-retry-intent.mp4")
 
     @Test("Jellyfin retry preserves persisted target, compatible lane, original metadata, and fallback default")
     func jellyfinIntent() {

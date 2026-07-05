@@ -1,4 +1,4 @@
-# VisionPlay — agent notes (Codex)
+# Labstream — agent notes (Codex)
 
 Project-specific guidance also lives in `CLAUDE.md`; read it for the full build/test
 loop and hard constraints. This file mirrors the points that matter most for Codex.
@@ -34,8 +34,8 @@ scripts/headset-evidence.sh
 
 This is read-only: it does not install, launch, delete, or mutate the headset. It writes a
 local bundle under `build/headset-evidence/` with `devicectl` JSON/log artifacts, bounded
-app-container listings, known VisionPlay diagnostic files when present, and
-`VisionPlay/Downloads/index.json` when available. Treat the bundle as private; redact
+app-container listings, known Labstream diagnostic files when present, and the legacy
+`VisionPlay/Downloads/index.json` app-support path when available. Treat the bundle as private; redact
 device IDs, server details, media names, item IDs, tokens, and playSession IDs before any
 public GitHub text.
 

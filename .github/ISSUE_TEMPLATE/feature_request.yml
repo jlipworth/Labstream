@@ -1,15 +1,15 @@
 name: Feature request
-description: Suggest an enhancement or new capability for VisionPlay.
+description: Suggest an enhancement or new capability for Labstream.
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the idea! VisionPlay is a personal-use visionOS client for your own
+        Thanks for the idea! Labstream is a personal-use visionOS client for your own
         Plex / Jellyfin / Emby server, so requests that fit that scope are most likely
         to land. For broader discussion or questions, consider
-        [Discussions](https://github.com/jlipworth/VisionPlay/discussions) instead.
+        [Discussions](https://github.com/jlipworth/Labstream/discussions) instead.
   - type: textarea
     id: problem
     attributes:
@@ -22,7 +22,7 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: What would you like VisionPlay to do?
+      description: What would you like Labstream to do?
     validations:
       required: true
   - type: dropdown

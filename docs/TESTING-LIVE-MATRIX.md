@@ -1,6 +1,6 @@
 # Live-server test matrix
 
-This is the **design + coverage map** for live-server integration testing of VisionPlay against a
+This is the **design + coverage map** for live-server integration testing of Labstream against a
 real media server (Plex first; Jellyfin/Emby as the parallel lanes mature). It answers three
 questions:
 
@@ -10,7 +10,7 @@ questions:
 3. **How** to wire the live tests into CI (see the companion
    [`TESTING-LIVE-REQUIREMENTS.md`](TESTING-LIVE-REQUIREMENTS.md)).
 
-It is the automated counterpart to the manual [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/VisionPlay/blob/main/TESTING-CHECKLIST.md):
+It is the automated counterpart to the manual [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md):
 the checklist is the human headset/sim pass and issue trail; this matrix is the structure the
 automated + live-probe coverage is built against. Where a row is currently a manual-only check,
 that is called out so the gap is explicit rather than silent. The strategy framing
@@ -87,8 +87,8 @@ on-device behavior (does AVPlayer render the burned pixels?) stays device-only.
 
 The **★ row is the representative end-to-end proof for #75**: a real nuance — "does the server
 actually apply a burned subtitle?" — that no mock can catch, asserted at the live-wire layer. See
-[`LiveSubtitleBurnProbeTests.swift`](https://github.com/jlipworth/VisionPlay/blob/main/PMSKit/Tests/PMSKitTests/LiveSubtitleBurnProbeTests.swift)
-and [`scripts/live-subtitle-burn-probe.sh`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/live-subtitle-burn-probe.sh).
+[`LiveSubtitleBurnProbeTests.swift`](https://github.com/jlipworth/Labstream/blob/main/PMSKit/Tests/PMSKitTests/LiveSubtitleBurnProbeTests.swift)
+and [`scripts/live-subtitle-burn-probe.sh`](https://github.com/jlipworth/Labstream/blob/main/scripts/live-subtitle-burn-probe.sh).
 
 ## 5. Profiles (device profile / quality-profile application)
 
@@ -99,7 +99,7 @@ and [`scripts/live-subtitle-burn-probe.sh`](https://github.com/jlipworth/VisionP
 | Direct-play probe profile vs. production profile | `CompatibleRemuxEligibilityTests` | `LiveDecisionProbe` (both profiles, same item) | Checklist B |
 | HEVC tag fixup / remux eligibility | `HEVCTagFixupTests`, `CompatibleRemuxEligibilityTests` | `LiveSegmentProbe` (fMP4 vs TS sniff) | Checklist B |
 
-> **Note on "profiles".** VisionPlay has no *user account* profile switcher (it is a single-user
+> **Note on "profiles".** Labstream has no *user account* profile switcher (it is a single-user
 > client); "profile" here means the **device/quality profile** advertised to the server, which is
 > what determines whether a title direct-plays, remuxes, or transcodes. The #75 "profiles not
 > loading/switching/applying" nuance maps onto *quality-profile application*, covered by the

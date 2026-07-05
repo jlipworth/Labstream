@@ -30,7 +30,7 @@ struct LiveHDRMetadataProbeTests {
     // MARK: Plex
 
     @Test func plexVideoStreamsClassify() async throws {
-        guard let cfg = LiveProbeConfig(deviceName: "VisionPlay HDR Probe") else {
+        guard let cfg = LiveProbeConfig(deviceName: "Labstream HDR Probe") else {
             print(">>> LIVE [plex-hdr] skipped: PLEX_LIVE_SERVER / PLEX_LIVE_TOKEN not set")
             return
         }

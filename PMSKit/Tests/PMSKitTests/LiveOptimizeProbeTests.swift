@@ -42,7 +42,7 @@ struct LiveOptimizeProbeTests {
             self.base = base
             self.metadataKey = metadataKey
             self.ratingKey = (metadataKey as NSString).lastPathComponent
-            self.title = env["PLEX_LIVE_TITLE"] ?? "VisionPlay Probe Optimize"
+            self.title = env["PLEX_LIVE_TITLE"] ?? "Labstream Probe Optimize"
         }
     }
 

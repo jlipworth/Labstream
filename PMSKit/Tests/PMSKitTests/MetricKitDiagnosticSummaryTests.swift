@@ -52,7 +52,7 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
     }
 
     func testCallStackFramesAreCappedAndRedacted() {
-        let frames = (0..<20).map { "VisionPlay frame\($0) /path/to/user/build/VisionPlay.app/bin" }
+        let frames = (0..<20).map { "Labstream frame\($0) /path/to/user/build/Labstream.app/bin" }
         let input = MetricKitDiagnosticInput(kind: .crash, callStackFrames: frames)
         let summary = MetricKitDiagnosticSummarizer.summarize(input)
         XCTAssertEqual(summary.topFrames.count, MetricKitDiagnosticSummarizer.maxFrames)
@@ -79,13 +79,13 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
             kind: .crash,
             timestamp: fixedDate,
             headline: "EXC_BAD_ACCESS (SIGSEGV)",
-            topFrames: ["VisionPlay playFoo", "UIKit sendEvent"]
+            topFrames: ["Labstream playFoo", "UIKit sendEvent"]
         )
         let lines = MetricKitDiagnosticSummarizer.reportSection(for: [summary])
         XCTAssertEqual(lines[0], "Recent crashes/hangs (MetricKit, redacted, on-device)")
         XCTAssertTrue(lines[1].contains("Crash at"))
         XCTAssertTrue(lines[1].contains("EXC_BAD_ACCESS (SIGSEGV)"))
-        XCTAssertEqual(lines[2], "    VisionPlay playFoo")
+        XCTAssertEqual(lines[2], "    Labstream playFoo")
         XCTAssertEqual(lines[3], "    UIKit sendEvent")
     }
 
@@ -107,7 +107,7 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
 
     func testReportRendererIncludesMetricKitSection() {
         let context = DiagnosticReportContext(
-            product: "VisionPlay",
+            product: "Labstream",
             appVersion: "1.2.0",
             appBuild: "1",
             operatingSystem: "visionOS 26.0",
@@ -120,7 +120,7 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
             kind: .crash,
             timestamp: fixedDate,
             headline: "EXC_BAD_ACCESS (SIGSEGV)",
-            topFrames: ["VisionPlay playFoo"]
+            topFrames: ["Labstream playFoo"]
         )
         let report = DiagnosticReportRenderer.render(
             context: context,
@@ -129,6 +129,6 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
         )
         XCTAssertTrue(report.contains("Recent crashes/hangs (MetricKit, redacted, on-device)"))
         XCTAssertTrue(report.contains("EXC_BAD_ACCESS (SIGSEGV)"))
-        XCTAssertTrue(report.contains("VisionPlay playFoo"))
+        XCTAssertTrue(report.contains("Labstream playFoo"))
     }
 }

@@ -8,7 +8,7 @@ import Foundation
 @Suite("Emby convert job (request layer)")
 struct EmbyConvertJobTests {
     private let identity = EmbyClientIdentity(
-        client: "VisionPlay", device: "Vision Pro", deviceId: "device-placeholder", version: "1.0")
+        client: "Labstream", device: "Vision Pro", deviceId: "device-placeholder", version: "1.0")
     private let server = URL(string: "https://emby.example.internal")!
     private let token = "token-placeholder"
     private let userId = "user-placeholder"

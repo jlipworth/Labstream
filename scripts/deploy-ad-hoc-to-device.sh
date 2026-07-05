@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build, export, and install a distribution-signed Ad Hoc VisionPlay build.
+# Build, export, and install a distribution-signed Ad Hoc Labstream build.
 #
 # This is for "take it on a plane" installs where a 7-day free/development
 # provisioning profile is not acceptable. It uses an Apple Distribution
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 BUNDLE_ID="com.jlipworth.VisionPlay"
-APP_NAME="VisionPlay"
+APP_NAME="Labstream"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_HELPER="$REPO/scripts/provisioning-profile-info.py"
 
@@ -196,8 +196,8 @@ while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-versio
 
 echo "archiving Release visionOS app with Apple Distribution signing…"
 xcodebuild "${VERSION_ARGS[@]}" \
-  -project VisionPlay.xcodeproj \
-  -scheme VisionPlay \
+  -project Labstream.xcodeproj \
+  -scheme Labstream \
   -configuration Release \
   -destination "generic/platform=visionOS" \
   -archivePath "$ARCHIVE_PATH" \

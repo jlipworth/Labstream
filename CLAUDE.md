@@ -1,6 +1,6 @@
-# VisionPlay (VisionPlay) — Claude Code notes
+# Labstream (Labstream) — Claude Code notes
 
-visionOS Plex client. App code in `VisionPlay/`, networking/model layer in `PMSKit/`
+visionOS Plex client. App code in `Labstream/`, networking/model layer in `PMSKit/`
 (local Swift package with its own tests). Design rationale and hard-won AVKit findings
 live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the player.
 
@@ -24,20 +24,20 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # `dwarfdump --uuid`, and even a full clean rebuild reuses it. So a cross-build UUID
 # comparison CANNOT detect a stale binary, and grepping the binary for a changed string
 # is unreliable (Swift literal storage). The only thing that proves the Ld step ran is a
-# FULL clean-DerivedData build (`rm -rf …/DerivedData/VisionPlay-*`) with exit 0 — there
+# FULL clean-DerivedData build (`rm -rf …/DerivedData/Labstream-*`) with exit 0 — there
 # is no incremental link to skip — plus a fresh product mtime. The UUID diff below is
 # still valid for ONE thing: confirming the INSTALLED copy == the copy you just built
 # (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
 # the source.
-rm -rf $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+rm -rf $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 
 # Install + relaunch on this worktree's simulator (upgrade in place — login survives).
-# Multiple stale VisionPlay-* DerivedData dirs exist — always pick the newest, and use
+# Multiple stale Labstream-* DerivedData dirs exist — always pick the newest, and use
 # /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay; xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
 
@@ -65,7 +65,7 @@ Headset must show available/paired — "unavailable" usually means asleep/off-ne
 Wake it, put it on the SAME Wi-Fi as this Mac, enable Developer Mode
 (Settings > Privacy & Security > Developer Mode), and trust this Mac. The script derives
 the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
-deletes the stale `Debug-xros/VisionPlay.app` product before building, and stamps the
+deletes the stale `Debug-xros/Labstream.app` product before building, and stamps the
 internal Build ID via `scripts/build-version-args.sh`.
 
 ⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
@@ -93,19 +93,19 @@ half of the live-testing workflow — do NOT ask the user to do it):
 ```sh
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 # install guard (see STALE-PROCESS trap): installed UUID must match the build you just made.
 # NOTE: LC_UUID is deterministic here (see DETERMINISTIC LC_UUID above), so this proves
 # install==build, NOT that the binary is newer than your source edit — a clean build is what
 # proves the latter. dwarfdump prints full paths (which differ), so compare only the UUID token.
-B=$(xcrun dwarfdump --uuid "$APP/VisionPlay" | awk '{print $2}')
-I=$(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app)/VisionPlay" | awk '{print $2}')
+B=$(xcrun dwarfdump --uuid "$APP/Labstream" | awk '{print $2}')
+I=$(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay app)/Labstream" | awk '{print $2}')
 [ "$B" = "$I" ] && echo UUID_MATCH || echo "UUID_MISMATCH built=$B installed=$I"
 xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
-xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "VisionPlay"' | tail -120
-xcrun simctl io "$SIMID" screenshot /tmp/visionplay-smoke.png   # then Read it
+xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "Labstream"' | tail -120
+xcrun simctl io "$SIMID" screenshot /tmp/labstream-smoke.png   # then Read it
 ```
 
 Confirm: the process stays alive (no crash/`.ips`, no `fatalError`/assertion), the log is
@@ -198,10 +198,10 @@ or log dumps:
 SIMID=$(scripts/worktree-sim.sh id)
 
 # Claude takes its own screenshots after the user interacts
-xcrun simctl io "$SIMID" screenshot /tmp/visionplay-test.png   # then Read the PNG
+xcrun simctl io "$SIMID" screenshot /tmp/labstream-test.png   # then Read the PNG
 
 # Claude reads app logs itself (NSLog instrumentation shows up here)
-xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"'
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"'
 ```
 
 ⚠️ STALE-PROCESS TRAP (bit us live): a running copy of the app can survive

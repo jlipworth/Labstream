@@ -73,7 +73,7 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
     }
 }
 
-/// Pure helpers for VisionPlay system-entry routing (App Intents and Spotlight).
+/// Pure helpers for Labstream system-entry routing (App Intents and Spotlight).
 /// Kept in PMSKit so identifier parsing and one-shot autoplay behavior have unit coverage
 /// without depending on SwiftUI/AppIntents/CoreSpotlight.
 public enum MediaSearchIdentifier {

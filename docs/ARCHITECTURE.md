@@ -1,10 +1,10 @@
-# VisionPlay architecture
+# Labstream architecture
 
-VisionPlay is a native visionOS app with a deliberately small app shell, backend-specific service lanes, and a pure Swift package (`PMSKit`) for request builders, models, and policy state machines.
+Labstream is a native visionOS app with a deliberately small app shell, backend-specific service lanes, and a pure Swift package (`PMSKit`) for request builders, models, and policy state machines.
 
 ## Ownership map
 
-- `VisionPlay.App` creates and wires the app-lifetime objects: `AppModel`, `AuthManager`, `DownloadManager`, `MusicPlayerController`, launch bootstrap state, and the Cinema/theater session stores.
+- `Labstream.App` creates and wires the app-lifetime objects: `AppModel`, `AuthManager`, `DownloadManager`, `MusicPlayerController`, launch bootstrap state, and the Cinema/theater session stores.
 - `ContentView` is the main-window root that switches between restore, login, and browse UI using those app-owned objects.
 - `AppModel` owns backend/session selection and browse-ready state. It does not own the player, downloads, or auth controller.
 - `AuthManager` owns sign-in, restore, sign-out, selected server credentials, and Keychain persistence.

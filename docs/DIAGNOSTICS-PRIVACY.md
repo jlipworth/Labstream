@@ -1,6 +1,6 @@
 # Diagnostics and privacy
 
-VisionPlay diagnostics are for user-initiated debugging, not analytics.
+Labstream diagnostics are for user-initiated debugging, not analytics.
 
 ## Contract
 
@@ -9,7 +9,7 @@ VisionPlay diagnostics are for user-initiated debugging, not analytics.
 - Reports are copied, exported, or shared only when the user taps a report action.
 - No diagnostic report is uploaded by the app.
 - Reports must omit or redact tokens, client identifiers, hostnames/IP addresses, full URLs, usernames, library paths, filenames, and media titles.
-- Passive MetricKit crash/hang summaries are a separate local-only channel: visionOS may deliver them after a bad run, VisionPlay stores only a small bounded list of redacted summaries, and they surface only in a user-previewed/copied/exported report.
+- Passive MetricKit crash/hang summaries are a separate local-only channel: visionOS may deliver them after a bad run, Labstream stores only a small bounded list of redacted summaries, and they surface only in a user-previewed/copied/exported report.
 - Free-form feedback prose is best-effort scrubbed and previewed, but a bare media title or personal detail can look like ordinary text. UI and docs must tell the user to review/edit the preview before sharing.
 
 ## Typed fields
@@ -60,4 +60,4 @@ It must not include the user’s Plex server name, Jellyfin/Emby server URL, raw
 
 ## Profiling
 
-Committed profiling baselines should be small, manually reviewed, and privacy-safe. Use backend/scenario names without titles or server names. See [`PROFILING.md`](PROFILING.md) and [`profiling/baselines/README.md`](https://github.com/jlipworth/VisionPlay/blob/main/docs/profiling/baselines/README.md).
+Committed profiling baselines should be small, manually reviewed, and privacy-safe. Use backend/scenario names without titles or server names. See [`PROFILING.md`](PROFILING.md) and [`profiling/baselines/README.md`](https://github.com/jlipworth/Labstream/blob/main/docs/profiling/baselines/README.md).

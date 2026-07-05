@@ -21,7 +21,7 @@ class ToolingHardeningTests(unittest.TestCase):
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "Tooling Test"], cwd=root, check=True)
             (root / "scripts").mkdir()
-            (root / "VisionPlay").mkdir()
+            (root / "Labstream").mkdir()
             yield root
 
     def copy_script(self, root: Path, name: str):
@@ -37,14 +37,14 @@ class ToolingHardeningTests(unittest.TestCase):
     def test_build_version_args_marks_untracked_app_source_dirty(self):
         with self.make_repo() as root:
             self.copy_script(root, "build-version-args.sh")
-            (root / "VisionPlay" / "Existing.swift").write_text("// baseline\n")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
             self.commit_all(root)
 
             clean = subprocess.check_output(["scripts/build-version-args.sh"], cwd=root, text=True)
-            self.assertIn("VISIONPLAY_BUILD_SLUG=", clean)
+            self.assertIn("LABSTREAM_BUILD_SLUG=", clean)
             self.assertIn("-clean", clean)
 
-            (root / "VisionPlay" / "NewView.swift").write_text("// untracked but build-relevant\n")
+            (root / "Labstream" / "NewView.swift").write_text("// untracked but build-relevant\n")
             dirty = subprocess.check_output(["scripts/build-version-args.sh"], cwd=root, text=True)
             self.assertIn("-dirty", dirty)
 
@@ -56,17 +56,17 @@ class ToolingHardeningTests(unittest.TestCase):
             args_file = root / "xcodebuild-args.txt"
             (fakebin / "xcodebuild").write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {args_file}\n")
             (fakebin / "xcodebuild").chmod(0o755)
-            (root / "VisionPlay" / "Existing.swift").write_text("// baseline\n")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
             self.commit_all(root)
 
-            asset_dir = root / "VisionPlay" / "Assets.xcassets" / "New.imageset"
+            asset_dir = root / "Labstream" / "Assets.xcassets" / "New.imageset"
             asset_dir.mkdir(parents=True)
             (asset_dir / "Contents.json").write_text("{}\n")
             env = os.environ.copy()
             env["PATH"] = f"{fakebin}:{env['PATH']}"
-            subprocess.run(["scripts/xcodebuild-versioned.sh", "-project", "VisionPlay.xcodeproj"], cwd=root, env=env, check=True)
+            subprocess.run(["scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj"], cwd=root, env=env, check=True)
             args = (root / "xcodebuild-args.txt").read_text()
-            self.assertRegex(args, r"VISIONPLAY_BUILD_SLUG=.*-dirty")
+            self.assertRegex(args, r"LABSTREAM_BUILD_SLUG=.*-dirty")
 
     def test_ci_hygiene_rejects_pbx_file_reference_churn(self):
         with self.make_repo() as root:
@@ -75,14 +75,14 @@ class ToolingHardeningTests(unittest.TestCase):
             (root / "docs").mkdir()
             (root / "docs" / "DEVELOPMENT.md").write_text("Development notes\n")
             (root / "Signing.xcconfig").write_text("// template\n")
-            pbx = root / "VisionPlay.xcodeproj" / "project.pbxproj"
+            pbx = root / "Labstream.xcodeproj" / "project.pbxproj"
             pbx.parent.mkdir()
             pbx.write_text("".join([
                 "// !$*UTF8*$!\n",
                 "{\n",
                 "\tobjects = {\n",
                 "\t/* Begin PBXFileReference section */\n",
-                "\t\tAA0000000000000000000005 /* VisionPlay.app */ = {isa = PBXFileReference; path = VisionPlay.app; };\n",
+                "\t\tAA0000000000000000000005 /* Labstream.app */ = {isa = PBXFileReference; path = Labstream.app; };\n",
                 "\t/* End PBXFileReference section */\n",
                 "\t};\n",
                 "}\n",
@@ -101,7 +101,7 @@ class ToolingHardeningTests(unittest.TestCase):
         with self.make_repo() as root:
             self.copy_script(root, "worktree-sim.sh")
             (root / ".simid").write_text("GOLDEN-0000-0000-0000-000000000000\n")
-            (root / "VisionPlay" / "Existing.swift").write_text("// baseline\n")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
             self.commit_all(root)
             with tempfile.TemporaryDirectory(prefix=f"{root.name}-linked-", dir=root.parent) as linked_tmp:
                 linked = Path(linked_tmp)
@@ -155,7 +155,7 @@ class ToolingHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             home = tmp_root / "home"
-            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "VisionPlay-TEST" / "Build" / "Products" / "Debug-xros" / "VisionPlay.app"
+            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
             app.mkdir(parents=True)
             fakebin = tmp_root / "fakebin"
             fakebin.mkdir()
@@ -202,7 +202,7 @@ class ToolingHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             home = tmp_root / "home"
-            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "VisionPlay-TEST" / "Build" / "Products" / "Debug-xros" / "VisionPlay.app"
+            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
             fakebin = tmp_root / "fakebin"
             fakebin.mkdir()
             args_file = tmp_root / "xcodebuild-args.txt"
@@ -240,8 +240,8 @@ class ToolingHardeningTests(unittest.TestCase):
 
             subprocess.run([str(REPO / "scripts" / "deploy-to-device.sh")], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             args = args_file.read_text()
-            self.assertIn("VISIONPLAY_BUILD_SLUG=", args)
-            self.assertIn("VISIONPLAY_BUILD_DATE_UTC=", args)
+            self.assertIn("LABSTREAM_BUILD_SLUG=", args)
+            self.assertIn("LABSTREAM_BUILD_DATE_UTC=", args)
             self.assertIn("DEVELOPMENT_TEAM=TEAMID1234", args)
 
 

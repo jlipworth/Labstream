@@ -2,7 +2,7 @@ import Foundation
 
 /// Pure server-safety policy for final-target player rebuilds.
 ///
-/// VisionPlay records many seek targets while AVKit/user scrubbing is noisy, but PMS must only
+/// Labstream records many seek targets while AVKit/user scrubbing is noisy, but PMS must only
 /// see an intentional rebuild for the latest settled target. This type owns that small piece of
 /// state and the restart budget so the app cannot accidentally start concurrent rebuild pipelines
 /// or silently hammer PMS after repeated failures. The default budget is slightly roomier than the

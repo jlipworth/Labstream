@@ -1,6 +1,6 @@
 # Music architecture
 
-VisionPlay's Music tab is implemented as a Plexamp-inspired, app-native music surface rather than a separate music-first app shell. The current code lives under `VisionPlay/Music/`, with pure request and queue helpers in `PMSKit/Sources/PMSKit/Music/`.
+Labstream's Music tab is implemented as a Plexamp-inspired, app-native music surface rather than a separate music-first app shell. The current code lives under `Labstream/Music/`, with pure request and queue helpers in `PMSKit/Sources/PMSKit/Music/`.
 
 ## Current surface
 

@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download expected bytes policy")
 struct DownloadExpectedBytesPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-expected-bytes.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-expected-bytes.mp4")
 
     private func record(progress: Double = 0,
                         bytes: Int = 0,

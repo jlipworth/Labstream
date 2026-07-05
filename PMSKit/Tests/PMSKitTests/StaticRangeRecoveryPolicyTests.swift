@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Static range recovery policy")
 struct StaticRangeRecoveryPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-static-range-policy.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-static-range-policy.mp4")
 
     private func record(status: DownloadStatus = .paused,
                         progress: Double = 0.25,

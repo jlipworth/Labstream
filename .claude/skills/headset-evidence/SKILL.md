@@ -1,9 +1,9 @@
 ---
 name: headset-evidence
-description: Gather a read-only VisionPlay evidence bundle from a paired Apple Vision Pro after the user reproduces a headset-only bug. Use before ad hoc sysdiagnose/unified-log attempts.
+description: Gather a read-only Labstream evidence bundle from a paired Apple Vision Pro after the user reproduces a headset-only bug. Use before ad hoc sysdiagnose/unified-log attempts.
 ---
 
-# Gather VisionPlay headset evidence
+# Gather Labstream headset evidence
 
 Use this after `scripts/deploy-to-device.sh --launch` and a user-driven repro on the physical Apple Vision Pro, or whenever the user asks for headset logs/evidence.
 
@@ -12,7 +12,7 @@ Use this after `scripts/deploy-to-device.sh --launch` and a user-driven repro on
 ```sh
 scripts/headset-evidence.sh
 scripts/headset-evidence.sh --device "$VP_DEVICE_ID"
-scripts/headset-evidence.sh --out /tmp/visionplay-headset-evidence
+scripts/headset-evidence.sh --out /tmp/labstream-headset-evidence
 ```
 
 The script is read-only. It does not install, launch, delete, or mutate the headset. It writes a local bundle under `build/headset-evidence/` by default.

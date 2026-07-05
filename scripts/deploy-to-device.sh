@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the locally-built VisionPlay app to a physical Apple Vision Pro over Wi-Fi.
+# Deploy the locally-built Labstream app to a physical Apple Vision Pro over Wi-Fi.
 #
 # This is the single source of truth for on-device (NOT simulator) deploys; the
 # `deploy-to-device` skill (.claude/skills/) just drives this script. It builds a
@@ -121,11 +121,11 @@ fi
 # LINK-SKIP guard (see CLAUDE.md): delete the device .app first so a skipped Ld step
 # can't leave us installing a stale binary.
 if [ "$BUILD" -eq 1 ]; then
-  rm -rf "$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-"*/Build/Products/Debug-xros/VisionPlay.app 2>/dev/null || true
+  rm -rf "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app 2>/dev/null || true
   VERSION_ARGS=()
   while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-version-args.sh)
   echo "building (Debug, visionOS device, signed, versioned)…"
-  xcodebuild "${VERSION_ARGS[@]}" -project VisionPlay.xcodeproj -scheme VisionPlay \
+  xcodebuild "${VERSION_ARGS[@]}" -project Labstream.xcodeproj -scheme Labstream \
     -destination "platform=visionOS,id=$DEVICE_ID" \
     -configuration Debug \
     -allowProvisioningUpdates \
@@ -136,8 +136,8 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 
 # --- Locate the freshest device build product -----------------------------------
-APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-"*/Build/Products/Debug-xros/VisionPlay.app 2>/dev/null | head -1 || true)
-[ -n "$APP" ] && [ -d "$APP" ] || die "no device build product found (Debug-xros/VisionPlay.app). Build first (omit --no-build)."
+APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app 2>/dev/null | head -1 || true)
+[ -n "$APP" ] && [ -d "$APP" ] || die "no device build product found (Debug-xros/Labstream.app). Build first (omit --no-build)."
 
 # Sanity: confirm it's signed for our team, not the simulator slice.
 SIGNED_TEAM=$(codesign -dvvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)

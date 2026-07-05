@@ -742,7 +742,7 @@ public enum EmbyPlayback {
     static func visionOSDeviceProfile(maxStreamingBitrate: Int,
                                       advertiseDolbyVision: Bool = false) -> [String: Any] {
         var profile: [String: Any] = [
-            "Name": "VisionPlay",
+            "Name": "Labstream",
             "MaxStreamingBitrate": maxStreamingBitrate,
             "DirectPlayProfiles": [
                 ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
@@ -816,7 +816,7 @@ public enum EmbyPlayback {
         // single-file h264/aac mp4. A clean h264 mp4 still downloads as a byte-exact original
         // (the two-gate `original` path), so this only changes which sources transcode.
         [
-            "Name": "VisionPlay-Download",
+            "Name": "Labstream-Download",
             "MaxStaticBitrate": maxStaticBitrate,
             "MaxStreamingBitrate": maxStaticBitrate,
             "DirectPlayProfiles": [
@@ -838,7 +838,7 @@ public enum EmbyPlayback {
 
     static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
         [
-            "Name": "VisionPlay-Compatible-Download",
+            "Name": "Labstream-Compatible-Download",
             "MaxStaticBitrate": maxStaticBitrate,
             "MaxStreamingBitrate": maxStaticBitrate,
             "DirectPlayProfiles": [

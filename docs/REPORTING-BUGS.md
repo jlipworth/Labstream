@@ -1,8 +1,8 @@
 # Report a bug
 
-Found something broken in VisionPlay? Here's the fastest way to get it fixed.
+Found something broken in Labstream? Here's the fastest way to get it fixed.
 
-VisionPlay sends **nothing** to the developer — it talks only to your own Plex,
+Labstream sends **nothing** to the developer — it talks only to your own Plex,
 Jellyfin, or Emby server (see the [Privacy Policy](privacy.md)). That means a GitHub
 issue is the only way we learn about a problem, and the more reproducible detail
 you give, the faster it gets fixed. The app has a built-in, **redacted**
@@ -10,7 +10,7 @@ diagnostic report to make that easy and safe.
 
 ## The easy path
 
-1. **Reproduce with logging on.** In VisionPlay, open
+1. **Reproduce with logging on.** In Labstream, open
    **Settings ▸ Diagnostics** and turn on **Enable diagnostic logging**. Then
    make the problem happen once.
 2. **Grab the report.** Tap **Send feedback to developer** to review the redacted
@@ -20,12 +20,12 @@ diagnostic report to make that easy and safe.
 3. **Review it.** The report is redacted for you (see below) — but give it a
    quick read so you're comfortable with what it contains.
 4. **Open a bug.** Go to the
-   [bug report form](https://github.com/jlipworth/VisionPlay/issues/new?template=bug_report.yml),
+   [bug report form](https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml),
    fill in what happened and the steps to reproduce, and **paste the report** into
    the *Diagnostic report* field.
 5. **Turn logging back off** in Settings ▸ Diagnostics if you no longer need it.
 
-That's it. The form will also ask for your VisionPlay version and build
+That's it. The form will also ask for your Labstream version and build
 (**Settings ▸ About**), your visionOS version, and which backend you use
 (Plex / Jellyfin / Emby).
 
@@ -63,14 +63,14 @@ titles. The bug form has a checkbox confirming you've done this.
 ## No diagnostic report? Still file it
 
 A report is optional. If you can't capture one, open the
-[bug report form](https://github.com/jlipworth/VisionPlay/issues/new?template=bug_report.yml)
+[bug report form](https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml)
 anyway with a clear description and steps to reproduce — that alone is often
 enough to get started.
 
 ## Requesting a feature instead?
 
 Use the
-[feature request form](https://github.com/jlipworth/VisionPlay/issues/new?template=feature_request.yml),
+[feature request form](https://github.com/jlipworth/Labstream/issues/new?template=feature_request.yml),
 or start a thread in
-[Discussions](https://github.com/jlipworth/VisionPlay/discussions) for open-ended
+[Discussions](https://github.com/jlipworth/Labstream/discussions) for open-ended
 ideas and questions.

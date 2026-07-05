@@ -2,7 +2,7 @@ import Foundation
 
 /// Aggregate counters for the local Offline downloads library.
 ///
-/// These values deliberately describe bytes/speeds observed by VisionPlay's local download store,
+/// These values deliberately describe bytes/speeds observed by Labstream's local download store,
 /// not server-side optimized files that exist only on Plex/Emby/Jellyfin.
 public struct OfflineDownloadAggregateStats: Sendable, Equatable {
     public static let empty = OfflineDownloadAggregateStats(activeSpeedBytesPerSecond: nil,

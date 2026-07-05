@@ -25,7 +25,7 @@ struct LiveDownloadProbeTests {
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let base = LiveProbeConfig(env, deviceName: "VisionPlay Live Download Probe"),
+            guard let base = LiveProbeConfig(env, deviceName: "Labstream Live Download Probe"),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
             self.base = base

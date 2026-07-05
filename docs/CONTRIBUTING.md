@@ -1,8 +1,8 @@
-# Contributing to VisionPlay
+# Contributing to Labstream
 
-VisionPlay is a source-first visionOS media client for user-selected Plex, Jellyfin, and Emby servers. Contributions are welcome, but the safest workflow is to keep secrets/device state local, prove pure logic in `PMSKit`, and only use live servers or a headset when a change genuinely needs them.
+Labstream is a source-first visionOS media client for user-selected Plex, Jellyfin, and Emby servers. Contributions are welcome, but the safest workflow is to keep secrets/device state local, prove pure logic in `PMSKit`, and only use live servers or a headset when a change genuinely needs them.
 
-By contributing, you agree that your contribution is licensed under GPLv3 plus the same Apple distribution additional permission described in [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/VisionPlay/blob/main/APP-STORE-EXCEPTION.md).
+By contributing, you agree that your contribution is licensed under GPLv3 plus the same Apple distribution additional permission described in [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/Labstream/blob/main/APP-STORE-EXCEPTION.md).
 
 ## Prerequisites
 
@@ -14,12 +14,12 @@ By contributing, you agree that your contribution is licensed under GPLv3 plus t
 ## First checkout
 
 ```sh
-git clone https://github.com/jlipworth/VisionPlay.git
-cd VisionPlay
+git clone https://github.com/jlipworth/Labstream.git
+cd Labstream
 (cd PMSKit && swift test)
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ./scripts/ci-hygiene.sh
@@ -35,9 +35,9 @@ Use the worktree-specific simulator helper when working in linked worktrees. It 
 scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-xcrun simctl install "$SIMID" /path/to/VisionPlay.app
+xcrun simctl install "$SIMID" /path/to/Labstream.app
 xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
-xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"' --style compact
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' --style compact
 ```
 
 Target `"$SIMID"`, not `booted`; multiple Vision Pro simulators can be booted during parallel work.

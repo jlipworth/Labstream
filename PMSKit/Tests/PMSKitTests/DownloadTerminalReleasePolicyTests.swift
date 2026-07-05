@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download terminal release policy")
 struct DownloadTerminalReleasePolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-terminal-release.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-terminal-release.mp4")
 
     private func record(_ status: DownloadStatus, key: String = "item") -> DownloadRecord {
         let ratingKey = DownloadRecordIdentity.recordKey(for: key, backend: .jellyfin)

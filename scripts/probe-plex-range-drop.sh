@@ -13,8 +13,8 @@ Usage: scripts/probe-plex-range-drop.sh (--query TEXT | --rating-key KEY) [optio
 Required selector (or env):
   --query TEXT                      Resolve a Plex item by title or "Show S01E02" syntax.
   --rating-key KEY                  Resolve a Plex item by Plex ratingKey.
-  VISIONPLAY_PROBE_QUERY            Env alternative for --query.
-  VISIONPLAY_PROBE_RATING_KEY       Env alternative for --rating-key.
+  LABSTREAM_PROBE_QUERY            Env alternative for --query.
+  LABSTREAM_PROBE_RATING_KEY       Env alternative for --rating-key.
 
 Options:
   --drop-after-bytes N              Simulated network-loss threshold (default: env or 2097152).
@@ -28,7 +28,7 @@ Options:
   --preset NAME                     Plex optimize preset if original is not eligible.
   --delete-existing                 Delete any existing probe record and exit.
   --delete-after                    Delete the probe record after observation.
-  --keep-app-running                Do not terminate VisionPlay after the observation window.
+  --keep-app-running                Do not terminate Labstream after the observation window.
   --skip-build                      Reuse the existing DerivedData app.
   --no-install                      Reuse the already installed app.
   -h, --help                        Show this help.
@@ -41,20 +41,20 @@ USAGE
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 cd "$repo_root"
 
-query=${VISIONPLAY_PROBE_QUERY:-}
-rating_key=${VISIONPLAY_PROBE_RATING_KEY:-}
-drop_after=${VISIONPLAY_PROBE_DROP_AFTER_BYTES:-2097152}
-observe_seconds=${VISIONPLAY_PROBE_OBSERVE_SECONDS:-90}
-pause_after_seconds=${VISIONPLAY_PROBE_PAUSE_AFTER_SECONDS:-8}
-preset=${VISIONPLAY_PROBE_PRESET:-}
-media_index=${VISIONPLAY_PROBE_MEDIA_INDEX:-0}
-part_index=${VISIONPLAY_PROBE_PART_INDEX:-0}
+query=${LABSTREAM_PROBE_QUERY:-}
+rating_key=${LABSTREAM_PROBE_RATING_KEY:-}
+drop_after=${LABSTREAM_PROBE_DROP_AFTER_BYTES:-2097152}
+observe_seconds=${LABSTREAM_PROBE_OBSERVE_SECONDS:-90}
+pause_after_seconds=${LABSTREAM_PROBE_PAUSE_AFTER_SECONDS:-8}
+preset=${LABSTREAM_PROBE_PRESET:-}
+media_index=${LABSTREAM_PROBE_MEDIA_INDEX:-0}
+part_index=${LABSTREAM_PROBE_PART_INDEX:-0}
 pause_resume=0
-existing_version=${VISIONPLAY_PROBE_EXISTING_VERSION:-0}
-list_versions=${VISIONPLAY_PROBE_LIST_VERSIONS:-0}
-delete_existing=${VISIONPLAY_PROBE_DELETE_EXISTING:-0}
-delete_after=${VISIONPLAY_PROBE_DELETE_AFTER:-0}
-keep_app_running=${VISIONPLAY_PROBE_KEEP_APP_RUNNING:-0}
+existing_version=${LABSTREAM_PROBE_EXISTING_VERSION:-0}
+list_versions=${LABSTREAM_PROBE_LIST_VERSIONS:-0}
+delete_existing=${LABSTREAM_PROBE_DELETE_EXISTING:-0}
+delete_after=${LABSTREAM_PROBE_DELETE_AFTER:-0}
+keep_app_running=${LABSTREAM_PROBE_KEEP_APP_RUNNING:-0}
 skip_build=0
 no_install=0
 
@@ -100,7 +100,7 @@ done
 is_positive_int() { [[ ${1:-} =~ ^[1-9][0-9]*$ ]]; }
 
 if [[ -z "$query" && -z "$rating_key" ]]; then
-  echo "ERROR: provide --query/--rating-key or VISIONPLAY_PROBE_QUERY/VISIONPLAY_PROBE_RATING_KEY." >&2
+  echo "ERROR: provide --query/--rating-key or LABSTREAM_PROBE_QUERY/LABSTREAM_PROBE_RATING_KEY." >&2
   echo "       The script intentionally has no built-in media id." >&2
   exit 2
 fi
@@ -118,9 +118,9 @@ if ! is_positive_int "$observe_seconds" || ! is_positive_int "$pause_after_secon
 fi
 
 simid=${SIMID:-$(scripts/worktree-sim.sh id)}
-derived_data=${VISIONPLAY_PROBE_DERIVED_DATA:-build/DerivedData/PlexRangeDropProbe}
+derived_data=${LABSTREAM_PROBE_DERIVED_DATA:-build/DerivedData/PlexRangeDropProbe}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-out_dir=${VISIONPLAY_PROBE_OUTPUT_DIR:-build/probes/plex-range-drop/$timestamp}
+out_dir=${LABSTREAM_PROBE_OUTPUT_DIR:-build/probes/plex-range-drop/$timestamp}
 mkdir -p "$out_dir"
 # `simctl launch --stdout/--stderr` is fragile with relative host paths on visionOS
 # simulators (it can report a misleading SFBSystemService NotFound launch error).
@@ -156,10 +156,10 @@ xcrun simctl boot "$simid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
 
 if [[ $skip_build -eq 0 ]]; then
-  printf '==> Building VisionPlay (log: %s)\n' "$build_log"
+  printf '==> Building Labstream (log: %s)\n' "$build_log"
   scripts/xcodebuild-versioned.sh \
-    -project VisionPlay.xcodeproj \
-    -scheme VisionPlay \
+    -project Labstream.xcodeproj \
+    -scheme Labstream \
     -configuration Debug \
     -destination "platform=visionOS Simulator,id=$simid" \
     -derivedDataPath "$derived_data" \
@@ -167,12 +167,12 @@ if [[ $skip_build -eq 0 ]]; then
     build >"$build_log" 2>&1
 fi
 
-app_path="$derived_data/Build/Products/Debug-xrsimulator/VisionPlay.app"
+app_path="$derived_data/Build/Products/Debug-xrsimulator/Labstream.app"
 if [[ ! -d "$app_path" ]]; then
-  app_path=$(find "$derived_data/Build/Products" -path '*/VisionPlay.app' -type d -print -quit 2>/dev/null || true)
+  app_path=$(find "$derived_data/Build/Products" -path '*/Labstream.app' -type d -print -quit 2>/dev/null || true)
 fi
 if [[ -z "$app_path" || ! -d "$app_path" ]]; then
-  echo "ERROR: could not find built VisionPlay.app under $derived_data" >&2
+  echo "ERROR: could not find built Labstream.app under $derived_data" >&2
   exit 1
 fi
 
@@ -210,7 +210,7 @@ if [[ $delete_after == "1" || $delete_after == "true" || $delete_after == "yes" 
   probe_args+=(--vp-probe-delete-after-observe)
 fi
 
-timeout_seconds=${VISIONPLAY_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + pause_after_seconds + 70))}
+timeout_seconds=${LABSTREAM_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + pause_after_seconds + 70))}
 printf '==> Capturing app logs for ~%ss (unified: %s)\n' "$timeout_seconds" "$log_file"
 
 predicate='subsystem == "com.jlipworth.VisionPlay" AND (category == "DownloadProbe" OR category == "Downloads")'
@@ -230,7 +230,7 @@ xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr
 
 sleep "$timeout_seconds"
 if [[ $keep_app_running == "1" || $keep_app_running == "true" || $keep_app_running == "yes" ]]; then
-  printf '==> Leaving VisionPlay running in simulator %s\n' "$simid"
+  printf '==> Leaving Labstream running in simulator %s\n' "$simid"
 else
   xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
 fi

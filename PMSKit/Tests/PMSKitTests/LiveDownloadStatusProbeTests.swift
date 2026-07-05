@@ -27,7 +27,7 @@ struct LiveDownloadStatusProbeTests {
 
         init?() {
             let env = ProcessInfo.processInfo.environment
-            guard let base = LiveProbeConfig(env, deviceName: "VisionPlay Live Status Probe"),
+            guard let base = LiveProbeConfig(env, deviceName: "Labstream Live Status Probe"),
                   let metadataKey = env["PLEX_LIVE_METADATA_KEY"], !metadataKey.isEmpty
             else { return nil }
             self.base = base
@@ -163,7 +163,7 @@ struct LiveDownloadStatusProbeTests {
             let data = try await send(request(cfg, path: key))
             let queue = try JSONDecoder().decode(BackgroundProcessingItems.self, from: data)
             print("""
-            >>> DLSTAT type42 items=\(queue.items.count) visionplay_marked=\(queue.markedCount(marker: "[VisionPlay ")) \
+            >>> DLSTAT type42 items=\(queue.items.count) labstream_marked=\(queue.markedCount(marker: "[VisionPlay ")) \
             pending=\(queue.pendingCount)
             """)
         } catch {

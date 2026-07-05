@@ -67,7 +67,7 @@ public enum DiagnosticReportRenderer {
                               generatedAt: Date = Date()) -> String {
         let shownEvents = Array(events.suffix(max(0, maxEvents)))
         var lines: [String] = []
-        lines.append("VisionPlay Diagnostic Report")
+        lines.append("Labstream Diagnostic Report")
         lines.append("Generated: \(ISO8601DateFormatter().string(from: generatedAt))")
         lines.append("Sensitive values are omitted: tokens, client identifiers, hostnames/IPs, full URLs, usernames, library paths, filenames, and media titles should not appear in this report.")
         lines.append("")

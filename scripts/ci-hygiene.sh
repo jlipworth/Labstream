@@ -56,10 +56,10 @@ check_pbxproj_churn() {
   local label="$1"
   shift
   local diff_output
-  diff_output=$(git diff --unified=0 "$@" -- VisionPlay.xcodeproj/project.pbxproj)
+  diff_output=$(git diff --unified=0 "$@" -- Labstream.xcodeproj/project.pbxproj)
   [[ -n "$diff_output" ]] || return 0
 
-  # New Swift/resources under the synchronized VisionPlay root are discovered by
+  # New Swift/resources under the synchronized Labstream root are discovered by
   # Xcode without PBXFileReference/PBXBuildFile churn. Keep allowing project
   # build-setting/version edits, but stop accidental file-reference/build-phase
   # noise before it reaches CI or review.
@@ -109,7 +109,7 @@ while IFS= read -r -d '' path; do
   esac
 done < <(git ls-files -z)
 
-old_bundle_id="$(printf '%s%s' 'com.personal.' 'VisionPlay')"
+old_bundle_id="$(printf '%s%s' 'com.personal.' 'Labstream')"
 if ((${#stale_paths[@]} > 0)) && git grep -n -I -F -- "$old_bundle_id" -- "${stale_paths[@]}"; then
   fail "stale bundle identifier $old_bundle_id found"
 fi
@@ -259,7 +259,7 @@ done < <(git ls-files -z)
 
 if ((${#archive_paths[@]} > 0)); then
   if git grep -n -I -E -- '/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/path/to/temp|\\b10\.([0-9]{1,3}\.){2}[0-9]{1,3}\b|\\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b|\\b172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}\b' -- "${archive_paths[@]}" | grep -v '/Users/AuthenticateByName'; then
-    fail "public archive docs contain machine-local paths or private-LAN IP examples; scrub to placeholders such as /path/to/visionplay or 192.0.2.10"
+    fail "public archive docs contain machine-local paths or private-LAN IP examples; scrub to placeholders such as /path/to/labstream or 192.0.2.10"
   fi
 fi
 

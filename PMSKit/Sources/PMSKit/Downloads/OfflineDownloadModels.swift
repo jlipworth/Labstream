@@ -375,7 +375,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Non-nil while/when this row represents a server-side optimize/download route. Lets the
     /// app resume "Preparing on server…" rows that have no URLSession task yet.
     public var optimizeTargetName: String?
-    /// VisionPlay-marked server optimize queue title for this row, when known. Persisted so an
+    /// Labstream-marked server optimize queue title for this row, when known. Persisted so an
     /// app relaunch can keep protecting/resuming the server-side render.
     public var optimizeQueueTitle: String?
     /// Part ids present on the source item immediately before the optimize job was created.

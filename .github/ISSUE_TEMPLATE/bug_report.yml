@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a problem with VisionPlay (playback, downloads, browse, music, subtitles, …).
+description: Report a problem with Labstream (playback, downloads, browse, music, subtitles, …).
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -8,13 +8,13 @@ body:
       value: |
         Thanks for taking the time to file a bug.
 
-        VisionPlay talks only to **your own** Plex / Jellyfin / Emby server and sends
+        Labstream talks only to **your own** Plex / Jellyfin / Emby server and sends
         nothing to the developer, so this issue is the only thing we'll see — please
         give us enough to reproduce it. The fastest, safest way to share context is the
         built-in **diagnostic report** (Settings ▸ Diagnostics), which is redacted for
         you. See the field near the bottom of this form.
 
-        Before filing, a quick scan of the [Support guide](https://github.com/jlipworth/VisionPlay/blob/main/SUPPORT.md)
+        Before filing, a quick scan of the [Support guide](https://github.com/jlipworth/Labstream/blob/main/SUPPORT.md)
         may already answer common playback / sign-in / remote-access questions.
   - type: textarea
     id: what-happened
@@ -72,7 +72,7 @@ body:
   - type: input
     id: app-version
     attributes:
-      label: VisionPlay version and build
+      label: Labstream version and build
       description: "From Settings ▸ About (Version and Build). Example: 1.2.0 (1)."
       placeholder: "1.2.0 (1)"
     validations:
@@ -105,7 +105,7 @@ body:
         (or **Copy diagnostic report**) and paste it here. The report is automatically
         redacted — it omits tokens, client identifiers, hostnames/IP addresses, full
         URLs, usernames, library paths, filenames, and media titles. See the
-        [Report a bug guide](https://github.com/jlipworth/VisionPlay/blob/main/docs/REPORTING-BUGS.md)
+        [Report a bug guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
         for the full walkthrough. Optional, but it greatly speeds up a fix.
       render: text
     validations:

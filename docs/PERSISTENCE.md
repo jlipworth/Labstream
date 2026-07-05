@@ -16,7 +16,7 @@ Passwords are not persisted. Emby Connect cloud tokens/access keys are used only
 
 ```mermaid
 flowchart LR
-  App[VisionPlay app] --> Keychain[KeychainStore]
+  App[Labstream app] --> Keychain[KeychainStore]
   App --> Defaults[UserDefaults]
   App --> DownloadStore[DownloadStore index.json]
   App --> DevFallback[Simulator/debug fallback files]
