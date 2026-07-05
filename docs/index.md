@@ -2,7 +2,7 @@
 
 VisionPlay is a native Apple Vision Pro media client for Plex, Jellyfin, and Emby. It is currently distributed as source for local builds; App Store/TestFlight distribution is not available today.
 
-This site is split into user help, human-developer onboarding, and current architecture notes. Historical research and generated implementation plans are intentionally kept out of the published docs navigation.
+This site is split into user help, human-developer onboarding, and current architecture notes. Historical research and generated implementation plans are intentionally kept out of the published docs navigation. The source repository is public at [github.com/jlipworth/VisionPlay](https://github.com/jlipworth/VisionPlay).
 
 ## For users
 
