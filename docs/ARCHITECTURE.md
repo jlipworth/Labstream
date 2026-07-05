@@ -1,91 +1,72 @@
-# Labstream architecture
+# Architecture overview
 
-Labstream is a native visionOS app with a deliberately small app shell, backend-specific service lanes, and a pure Swift package (`PMSKit`) for request builders, models, and policy state machines.
-
-## Ownership map
-
-- `Labstream.App` creates and wires the app-lifetime objects: `AppModel`, `AuthManager`, `DownloadManager`, `MusicPlayerController`, launch bootstrap state, and the Cinema/theater session stores.
-- `ContentView` is the main-window root that switches between restore, login, and browse UI using those app-owned objects.
-- `AppModel` owns backend/session selection and browse-ready state. It does not own the player, downloads, or auth controller.
-- `AuthManager` owns sign-in, restore, sign-out, selected server credentials, and Keychain persistence.
-- `DownloadManager` owns offline queue orchestration and the published offline-library snapshot, while narrower download services own persistence, transfer, backend lanes, side assets, and tested policy decisions.
-- `PlaybackController` owns an active playback session: AVPlayer, restart/reopen behavior, player diagnostics, heartbeat/progress, and teardown.
-- `SystemEntryRouter` is registered at launch so App Intents, Spotlight, deep links, user activities, and Cinema exit routes land in the main browse window.
-
-## PMSKit boundary
-
-`PMSKit` is intentionally not an app framework. It should stay pure and testable:
-
-- request builders for Plex, Jellyfin, and Emby
-- response models and MediaItem mapping
-- playback/download decision helpers
-- download policy state machines for row identity, backend routing, retry/pause/delete, static-range recovery, server-prep refresh, storage estimates, side-asset inventory, row display, and offline-library snapshot aggregation
-- small policy state machines such as adaptive bitrate and seek restart budgeting
-- diagnostics event/redaction primitives
-
-The app owns all live `URLSession`, `AVPlayer`, SwiftUI state, Keychain, filesystem, and system-integration behavior.
-
-
-## Component sketch
+Labstream is a SwiftUI visionOS app with backend-specific service lanes and a pure Swift package, `PMSKit`, for request builders, response models, and policy decisions.
 
 ```mermaid
 flowchart LR
-  UI[SwiftUI screens] --> AppModel[AppModel backend selection]
-  UI --> Auth[AuthManager and Keychain]
-  UI --> Downloads[DownloadManager]
+  UI[SwiftUI views] --> AppModel[AppModel]
+  UI --> Auth[AuthManager]
   UI --> Player[PlaybackController]
-  Auth --> Plex[Plex client lane]
-  Auth --> Jellyfin[Jellyfin service lane]
-  Auth --> Emby[Emby service lane]
-  Plex --> PMSKit[PMSKit request builders and policies]
+  UI --> Downloads[DownloadManager]
+  UI --> Music[MusicPlayerController]
+
+  Auth --> Plex[Plex lane]
+  Auth --> Jellyfin[Jellyfin lane]
+  Auth --> Emby[Emby lane]
+
+  Plex --> PMSKit[PMSKit]
   Jellyfin --> PMSKit
   Emby --> PMSKit
-  Downloads --> Store[DownloadStore and app container files]
-  Downloads --> BG[BackgroundDownloadSession]
+
   Player --> AV[AVFoundation]
+  Downloads --> Store[DownloadStore]
+  Downloads --> BG[BackgroundDownloadSession]
+  Store --> Files[App container]
 ```
 
-## Backend boundary
+## Design goals
 
-There is no shared “everything backend” protocol yet. Plex, Jellyfin, and Emby differ enough that a wide abstraction would hide important behavior. The Emby implementation reinforces that rule: related APIs are not identical enough to justify pretending one backend implementation can cover both Jellyfin and Emby without explicit seams. The current bridge is `MediaItem`: browse, playback, and library/search surfaces adapt backend-specific responses into that shared model where useful.
+- Keep server-specific behavior explicit instead of hiding real API differences behind a broad protocol.
+- Keep pure decisions in `PMSKit` so they can be unit-tested without a simulator, server, or Keychain.
+- Keep side effects in the app target: SwiftUI state, Keychain, URLSession, files, AVFoundation, and system integration.
+- Preserve user privacy by default: diagnostics are local, bounded, redacted, and user-exported only.
 
-See [`BACKENDS.md`](BACKENDS.md) for the backend comparison.
+## Ownership map
 
-## Playback boundary
+| Area | Owner | Responsibility |
+| --- | --- | --- |
+| App lifecycle | `Labstream/App` | Object creation, restore flow, window routing. |
+| Session state | `AppModel` | Active backend, selected server/session, browse readiness. |
+| Authentication | `AuthManager` | Sign-in, restore, sign-out, Keychain persistence. |
+| Browsing | Backend services | Plex/Jellyfin/Emby browse APIs mapped to shared app models. |
+| Playback | `PlaybackController` | AVPlayer, startup, restart/reopen, progress, cleanup, diagnostics snapshots. |
+| Downloads | `DownloadManager` plus helpers | Route choice, transfers, resume/reconcile, offline-library state. |
+| Music | `MusicPlayerController` and providers | Music browse, queue, and audio playback. |
+| System surfaces | `SystemEntryRouter` and integration files | App Intents, Spotlight, user activities. |
+| Pure policies | `PMSKit` | Request builders, DTOs, redaction, download/playback policies, tests. |
 
-Playback has four lanes:
+## Main runtime flow
 
-1. Plex universal-transcode/direct-stream HLS through `PlaybackController.start()`.
-2. Jellyfin resolved stream URLs with headers and a `RemoteStreamReopener`.
-3. Emby `PlaybackInfo` stream resolution, progress reporting, and explicit active-encoding cleanup.
-4. Local offline file URLs.
+```mermaid
+sequenceDiagram
+  participant User
+  participant UI as SwiftUI
+  participant Auth as AuthManager
+  participant App as AppModel
+  participant Backend as Backend service
+  participant Player as PlaybackController
 
-The player owns restart semantics and server cleanup. Plex transcode sessions must be stopped before intentional same-session restarts. Local offline files are static and have no server timeline or remote reopen path.
+  User->>UI: Choose backend / sign in
+  UI->>Auth: Authenticate or restore
+  Auth->>App: Apply active session
+  UI->>Backend: Load libraries and items
+  Backend->>UI: MediaItem models
+  User->>UI: Play item
+  UI->>Player: Start playback
+  Player->>Backend: Resolve stream/session
+  Player->>Player: Drive AVPlayer and diagnostics
+```
 
-See [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md).
+## Documentation rule
 
-## Offline boundary
-
-Downloads are not “streaming with a longer timeout.” They must end in a local file with a valid length and playable container. Plex downloads choose between direct-original, existing server versions, and server-rendered compatible copies. Jellyfin downloads choose between static original/range transfers and live-forward remux/transcode outputs. Emby downloads use download-time `PlaybackInfo` plus direct static, existing/prepared static, compatible remux, or convert-then-static lanes depending on the server verdict.
-
-The holistic downloads refactor split the app layer around these boundaries:
-
-- `DownloadManager.swift` remains the main-actor coordinator for queue state, runtime dictionaries, retry/resume scans, and publishing snapshots.
-- `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`, `+EmbyConvert.swift`, and `+SideCache.swift` keep backend-specific request/poller/side-asset behavior explicit instead of forcing a broad backend protocol.
-- `DownloadStore` owns the versioned offline index and file-side effects.
-- `BackgroundDownloadSession` owns URLSession tasks, static byte-range checkpointing, finalization, and transfer callbacks; pure parsing/routing decisions live in PMSKit.
-- `PMSKit/Sources/PMSKit/Downloads` owns the pure, unit-tested download policies used by the app layer.
-
-See [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md).
-
-## Persistence boundary
-
-Secrets live in Keychain, preferences in UserDefaults, and offline download records in a JSON store under the app container. PMSKit owns the Codable models for offline records; the app owns the actual store and file paths.
-
-See [`PERSISTENCE.md`](PERSISTENCE.md).
-
-## Diagnostics and privacy boundary
-
-Diagnostics are opt-in, local, bounded, and user-exported only. Sensitive fields must be represented with typed `DiagnosticFieldValue`s so redaction happens before report rendering.
-
-See [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md).
+Published docs should describe current behavior. Investigation notes, migration plans, historical issue details, and one-off validation logs belong in `docs/research/` or `docs/archive/`, not the public navigation.

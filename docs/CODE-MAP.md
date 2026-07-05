@@ -1,83 +1,78 @@
 # Code map
 
-Use this as the "where do I change X?" guide. The short rule: keep pure decisions in `PMSKit`; keep side effects, SwiftUI state, AVFoundation, Keychain, files, and system APIs in the `Labstream` app target.
+Use this as the “where do I change X?” guide.
+
+```mermaid
+mindmap
+  root((Labstream))
+    App
+      lifecycle
+      restore
+      routing
+    UI
+      settings
+      browse
+      detail
+      music
+    Auth
+      Plex
+      Jellyfin
+      Emby
+    Player
+      AVPlayer
+      diagnostics
+      progress
+    Downloads
+      routing
+      transfer
+      store
+    PMSKit
+      models
+      requests
+      policies
+      tests
+```
 
 ## App shell and lifecycle
 
-- `Labstream/App/` — app entry, environment setup, restore/bootstrap wiring, and top-level app state.
-- `Labstream/UI/` — Home, Libraries, Search, Detail, Settings, shared row/card views, and user-facing chrome.
-- `ContentView` — main-window root: restore, login, browse, and routing handoff.
-- `AppModel` — selected backend/session and browse-ready state. It should not become the player, auth controller, or download manager.
+- `Labstream/App/` creates app-lifetime objects and handles launch/bootstrap state.
+- `Labstream/UI/ContentView.swift` switches between restore, login, and browse states.
+- `Labstream/SystemIntegration/` routes Spotlight, App Intents, and user activities into the main window.
 
 ## Auth, sessions, and identity
 
-- `Labstream/Auth/` — sign-in/restore/sign-out orchestration and Keychain interaction.
-- `PMSKit/Sources/PMSKit/Auth/` — pure auth helpers and request/header builders.
-- `PMSKit/Sources/PMSKit/Security/` and `ClientIdentity` — stable client/device identity policies.
-- `docs/PERSISTENCE.md` — what belongs in Keychain vs UserDefaults vs the offline store.
+- `Labstream/Auth/` owns Plex, Jellyfin, and Emby sign-in/restore flows.
+- `Labstream/Auth/KeychainStore.swift` stores secrets. Do not move tokens into UserDefaults, diagnostics, logs, or Codable profile indexes.
+- `PMSKit/Sources/PMSKit/SessionIdentity.swift` contains token-free identity helpers.
 
-## Backend browse lanes
+## Browse and UI
 
-- `Labstream/Backend/PlexBrowseAPI.swift` — Plex browse/search/library service lane.
-- `Labstream/Backend/Jellyfin/` — Jellyfin browse, playback-open, and MediaBrowser adaptation.
-- `Labstream/Backend/Emby/` — Emby browse, Connect/manual auth integration, playback-open, and active-encoding cleanup.
-- `PMSKit/Sources/PMSKit/Jellyfin/`, `Emby/`, and `MediaBrowser/` — request builders, decoders, shared MediaBrowser shapes, and pure mapping helpers.
-
-Avoid a broad "one backend protocol" unless the concrete API behavior is truly identical. Plex, Jellyfin, and Emby intentionally keep separate lanes where server semantics differ.
+- `Labstream/Backend/Plex/`, `Labstream/Backend/Jellyfin/`, and `Labstream/Backend/Emby/` adapt backend-specific APIs into app models.
+- `Labstream/UI/` contains Settings, login, browse grids, detail screens, offline library, and download-option UI.
+- `Labstream/Music/` contains music providers and queue/player state.
 
 ## Playback
 
-- `Labstream/Player/` — `PlaybackController`, custom player UI, restart/reopen flow, diagnostics snapshots, progress reporting, and AVFoundation ownership.
-- `PMSKit/Sources/PMSKit/Playback/` — pure playback policy and response helpers.
-- `PMSKit/Sources/PMSKit/Transcode/` — Plex transcode request/device-profile policy. `X-Plex-Client-Profile-Name=Generic` is load-bearing.
-- `PMSKit/Sources/PMSKit/MediaSession/` — playlist/proxy helpers used only after a stream URL is already resolved.
-
-Playback has four lanes: Plex HLS, Jellyfin resolved remote streams, Emby `PlaybackInfo` streams, and local offline files. Keep restart and cleanup behavior explicit per lane.
+- `Labstream/Player/PlaybackController.swift` owns the active playback session.
+- `Labstream/Player/PlaybackDiagnostics.swift` feeds Stats for Nerds and exported diagnostics.
+- PMSKit owns request builders and pure playback policy helpers; the app owns AVFoundation and network side effects.
 
 ## Downloads and offline
 
-- `Labstream/Downloads/DownloadManager.swift` — main-actor coordinator for queue/runtime state and offline-library publishing.
-- `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`, `+EmbyConvert.swift`, `+SideCache.swift` — backend-specific request, poller, and side-asset behavior.
-- `BackgroundDownloadSession` — URLSession tasks, static byte-range checkpoints, finalization, and transfer callbacks.
-- `DownloadStore` — versioned `index.json`, file reconciliation, side-asset accounting, and app-container deletes.
-- `PMSKit/Sources/PMSKit/Downloads/` — pure route planners, retry/pause/delete rules, static-range recovery, storage estimates, side-asset choices, captions, and offline snapshots.
+- `Labstream/Downloads/DownloadManager.swift` coordinates queue state and user-visible snapshots.
+- Backend-specific download extensions keep Plex/Jellyfin/Emby behavior explicit.
+- `DownloadStore` persists the offline index.
+- `BackgroundDownloadSession` owns URLSession transfers and byte-range recovery.
+- `PMSKit/Sources/PMSKit/Downloads/` contains pure route/status/retry/display policies.
 
-If a decision can be tested without credentials, a simulator, or AVFoundation, it probably belongs in `PMSKit/Downloads`.
+## Diagnostics and privacy
 
-## Music
+- `Labstream/Diagnostics/` owns the app-side diagnostics facade and file sink.
+- `PMSKit/Sources/PMSKit/Diagnostics/` owns redaction, typed diagnostic fields, report rendering, and MetricKit summary models.
+- Use typed `DiagnosticFieldValue`s; do not add raw URLs, tokens, hosts, usernames, paths, filenames, or media titles.
 
-- `Labstream/Music/` — Music tab UI, queue/mini-player surface, and `MusicPlayerController` side effects.
-- `PMSKit/Sources/PMSKit/Music/` — pure music request and queue helpers.
+## Tests and scripts
 
-Music playback is separate from video `PlaybackController`; do not route music queue behavior through the video player.
-
-## Diagnostics, privacy, and profiling
-
-- `Labstream/Diagnostics/` — event capture, local report assembly, MetricKit summaries, and report UI.
-- `PMSKit/Sources/PMSKit/Diagnostics/` — typed diagnostic values and redaction primitives.
-- `docs/DIAGNOSTICS-PRIVACY.md` — required redaction contract.
-- `docs/PROFILING.md` — signpost and Instruments workflow.
-
-Never log or commit raw tokens, hostnames/IPs, media titles, library paths, usernames, item IDs, or play-session IDs.
-
-## System integration
-
-- `Labstream/SystemIntegration/` — App Intents, Spotlight, user activities, and route handoff.
-- `PMSKit/Sources/PMSKit/UI/` and routing helpers — pure identifier parsing/mapping where applicable.
-- `SystemEntryRouter` — the single gate into the existing main window. Do not add unrelated secondary windows for deep links or intents.
-
-## Tests, probes, and scripts
-
-- `PMSKit/Tests/PMSKitTests/` — pure request/model/policy tests and opt-in live probes.
-- `scripts/ci-hygiene.sh` — local/CI hygiene guardrails.
-- `scripts/live-*.sh` — opt-in server-wire probes gated by gitignored env files.
-- `scripts/probe-*-download.sh` — simulator app-process probes for download lanes.
-- `scripts/worktree-sim.sh` — one simulator per worktree; always target `$(scripts/worktree-sim.sh id)`.
-- `scripts/deploy-to-device.sh` — signed physical-device build/install wrapper.
-
-## Rules of thumb
-
-- Put deterministic decisions in `PMSKit` with tests.
-- Keep credentials, filesystem, Keychain, `URLSession`, AVFoundation, and SwiftUI side effects in the app target.
-- Prefer small backend-specific adapters over a shared abstraction that hides server differences.
-- Update focused current docs when behavior becomes a durable invariant; move plans and incident notes to `docs/archive/` or delete them before publication.
+- `PMSKit/Tests/PMSKitTests/` covers pure policies, request builders, decoders, and redaction.
+- `scripts/` contains simulator, deployment, docs, hygiene, and optional live-probe helpers.
+- `.woodpecker/` contains portable CI definitions.

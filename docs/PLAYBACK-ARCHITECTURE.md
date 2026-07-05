@@ -1,119 +1,46 @@
 # Playback architecture
 
-Playback starts in the same user-facing player but quickly splits into backend-specific lanes. The important invariant is that stream resolution, auth headers/URLs, restart semantics, and server cleanup stay explicit per backend.
+Playback is split by backend, then converges on a single `PlaybackController` that owns AVPlayer, progress reporting, diagnostics, and teardown.
 
 ```mermaid
 sequenceDiagram
-  participant UI as Detail/Player UI
+  participant UI
   participant PC as PlaybackController
-  participant PMS as PMSKit policy/builders
-  participant Plex as Plex PMS
-  participant JF as Jellyfin
-  participant Emby as Emby
+  participant Backend
   participant AV as AVPlayer
+  participant Server
 
-  UI->>PC: play(item, backend, quality)
-
-  alt Plex
-    PC->>PMS: build TranscodeRequest
-    PC->>Plex: decision/start.m3u8
-    Plex-->>PC: HLS URL + session
-    PC->>AV: open HLS
-  else Jellyfin
-    PC->>JF: playbackOpen
-    JF-->>PC: URL + headers + RemoteStreamReopener
-    PC->>AV: open URL/proxy when needed
-  else Emby
-    PC->>Emby: PlaybackInfo
-    Emby-->>PC: TranscodingUrl or DirectStreamUrl
-    PC->>AV: open resolved URL
-  else Local/offline
-    PC->>AV: open local file URL
-  end
-
-  UI->>PC: stop or intentional restart
-  alt Plex active HLS
-    PC->>Plex: stop transcode session
-  else Emby server encoding
-    PC->>Emby: DELETE ActiveEncodings
-  end
+  UI->>PC: start(item, backend session)
+  PC->>Backend: resolve playable source
+  Backend->>Server: playback/decision requests
+  Server-->>Backend: stream URL + session metadata
+  Backend-->>PC: Playback source
+  PC->>AV: create player item
+  PC->>Server: progress / heartbeat as needed
+  PC->>Server: stop/cleanup on teardown when needed
 ```
 
-## Plex playback
+## Plex
 
-The Plex path runs through `PlaybackController.start()`:
+Plex playback chooses between direct/copy and server-transcoded HLS paths. Quality settings can force a capped transcode; Direct Play / Maximum starts from the server decision path and then builds the appropriate AVPlayer item.
 
-1. Build a `TranscodeRequest` for the selected quality.
-2. For Direct Play / Maximum, probe the decision endpoint first.
-3. Open the resulting `start.m3u8` URL in AVPlayer.
-4. Start heartbeat/progress reporting and runtime diagnostics.
-5. Stop the PMS session explicitly during teardown or before intentional restarts.
+The profile and quality parameters are load-bearing. Do not change them casually: they determine whether Plex copies, direct-streams, or transcodes.
 
-The `X-Plex-Client-Profile-Name=Generic` parameter in `TranscodeRequest` is load-bearing. Keep it. `Safari` was tried and regressed high-bitrate 4K HEVC/MKV cases by forcing video transcodes even when Direct Play / Maximum should copy or direct-stream. Unknown profile names can return a bare PMS HTTP 400.
+## Jellyfin
 
-`MediaSessionProxy` is not the active Plex playback path and no longer owns a Plex `open`/decision flow. Plex playback uses PMS URLs directly plus targeted final-target rebuilds and stop-before-restart guards; the proxy is only a stream-level loopback/playlist forwarder for already-resolved HLS URLs.
+Jellyfin playback uses MediaBrowser playback responses and resolved stream URLs. The app preserves server-selected stream behavior while keeping credentials out of logs and diagnostics.
 
-## Jellyfin playback
+## Emby
 
-Jellyfin playback is resolved by `JellyfinBrowseService.playbackOpen`. The service returns:
-
-- the selected stream URL
-- required headers
-- source metadata for diagnostics
-- a `RemoteStreamReopener` closure used for quality/audio/subtitle/adaptive restarts
-
-Jellyfin HLS may still use an app proxy handle where needed for header or playlist behavior. That is a backend-specific implementation detail; do not assume Plex proxy behavior applies.
-
-## Emby playback
-
-Emby playback is implemented in the parallel Emby lane (`EmbyBrowseService.playbackOpen` + `EmbyPlayback` in PMSKit) and live-validated against a real Emby server. The lifecycle mirrors Jellyfin but is an explicit, separate lane:
-
-1. **PlaybackInfo.** `POST /Items/{Id}/PlaybackInfo?UserId=…` with `UserId` in **both** the query and the body, the full constraint set, and a visionOS `DeviceProfile`. `AutoOpenLiveStream` is `false` (Jellyfin used `true`). POST is required so the device profile and constraints are sent.
-2. **Stream resolution (`EmbyPlayback.resolveStream`).** Preference order: the server-generated `TranscodingUrl` (HLS), then `DirectStreamUrl`, then a synthesized `stream.{container}` direct-play URL. Server-generated URLs are **relative** (`/videos/{id}/master.m3u8`, lowercase) and are joined onto the server base URL, preserving any `/emby` base path.
-3. **Stream auth.** The server-generated HLS URL carries the token as `api_key=` in the query, so AVPlayer's child playlists/segments inherit auth automatically — **do not inject a per-child `Authorization` header.** For the direct-stream fallback, when `AddApiKeyToDirectStreamUrl` is true the token is appended to the URL; when false, the token is attached via the `X-Emby-Token` header instead. `RequiredHttpHeaders` from the response are always carried through.
-4. **Progress.** Report now-playing/progress/stopped/ping through `POST /Sessions/Playing`, `/Sessions/Playing/Progress`, `/Sessions/Playing/Stopped`, and `/Sessions/Playing/Ping?PlaySessionId=…`, sending the correct `PlayMethod` (`DirectPlay`/`DirectStream`/`Transcode`).
-5. **Encoder cleanup.** When the resolved source uses server-side encoding (`EmbyPlaybackOpenResult.usesServerEncoding`, set for the transcode/HLS path), call `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=` on stop via `EmbyBrowseService.stopActiveEncoding`. `/Sessions/Playing/Stopped` is session/progress state and does **not** terminate the encoder.
-
-The Emby lane does not reuse Jellyfin's `MediaBrowser` auth/header builder: Emby uses its own `Emby` auth scheme (`EmbyAuth.authorizationHeader`) plus `X-Emby-Token` on authenticated calls. (The live server happened to accept the `MediaBrowser` header too, but the Emby lane sends the canonical `Emby` scheme.) Redact the token and any `api_key`/`X-Emby-Token` value from logs.
+Emby playback uses its own MediaBrowser-family lane. It resolves stream URLs through Emby PlaybackInfo, reports progress to Emby's session endpoints, and stops active server encoding when a server-side encoding session was opened.
 
 ## Local/offline playback
 
-Offline playback uses the custom player with a local file URL. There is no server session, PMS timeline, Jellyfin/Emby active-encoding cleanup, or remote stream reopener. Resume information comes from the offline metadata/record model.
+Completed downloads play from local file URLs. Local playback has no remote progress stream, server session, or transcode cleanup path; it still shares player UI, diagnostics, and error surfaces with remote playback.
 
-## Restart/reopen matrix
+## Restart and cleanup principles
 
-```mermaid
-stateDiagram-v2
-  [*] --> ResolvingSource
-  ResolvingSource --> OpeningAVPlayer
-  OpeningAVPlayer --> Playing
-  OpeningAVPlayer --> Failed
-
-  Playing --> Restarting: quality/audio/subtitle change
-  Playing --> Restarting: final-target deep seek
-  Playing --> Failed: stream error or watchdog
-  Playing --> Stopping: user exits
-
-  Restarting --> CleanupServerSession
-  CleanupServerSession --> ResolvingSource
-
-  Failed --> ResolvingSource: explicit Retry
-  Stopping --> CleanupServerSession
-  CleanupServerSession --> [*]
-```
-
-| Trigger | Plex | Jellyfin | Emby | Local/offline |
-| --- | --- | --- | --- | --- |
-| Quality change | Stop current PMS session, then request a new stream | Use `RemoteStreamReopener` | Use the Emby remote stream reopener; stop active encoding when leaving a server-encoded source | Not applicable |
-| Audio/subtitle change | Stop current PMS session, then request a new stream | Use `RemoteStreamReopener` | Use the Emby remote stream reopener; preserve `RequiredHttpHeaders`/token handling from `PlaybackInfo` | Local track switching only if supported by the local asset |
-| Explicit Retry | Rebuild through the normal start path; resets restart budget | Reopen through the remote stream path | Reopen through the Emby playback-open path | Reopen local file |
-| Final-target deep seek | Debounced rebuild after final target; throttled by `SeekRestartBudget` | Reopen/seek through remote stream path when available | Reopen/seek through remote stream path when available | Seek local file |
-| Adaptive down/up shift | Rebuild capped Plex stream when policy allows | Reopen lower/higher Jellyfin stream when policy allows | Reopen lower/higher Emby stream when policy allows | Disabled |
-
-Silent auto-retry was removed. A failing stream should surface failure instead of hiding a retry loop.
-
-## Server cleanup invariant
-
-Plex HLS gives PMS no reliable end-of-playback signal. Always call the stop endpoint for active Plex transcode sessions, including before same-session restarts. This prevents stacked FFmpeg jobs and the server-side OOM pattern that arises when Plex is repeatedly forced into software HEVC transcodes for the same item within a short window.
-
-The same class of invariant applies to Emby: `POST /Sessions/Playing/Stopped` reports session/progress state but does **not** stop a server-side encoder. For any Emby source that used server-side encoding (`usesServerEncoding`), the encoder must be stopped explicitly with `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=` on teardown. Do not collapse `Stopped` and active-encoding cleanup into one call.
+- Restart player items rather than mutating a stale AVPlayer item in place when the server route changes.
+- Stop server sessions that Labstream intentionally opened before starting a replacement session.
+- Treat cleanup failures as non-fatal where the user-visible playback path can continue.
+- Keep diagnostic fields shape-level and redacted: no full URLs, tokens, hosts, titles, or filenames.

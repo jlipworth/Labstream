@@ -1,275 +1,84 @@
 # Downloads and offline playback
 
-Downloads must produce a static local file. The app should not treat a live streaming transcode as a durable offline transfer.
-
-For the current AVP compatibility research matrix — source-route gates, final-artifact validation, and headless vs. physical-device proof — see [Offline playback compatibility on Apple Vision Pro](https://github.com/jlipworth/Labstream/blob/main/docs/research/offline-playback-compatibility.md).
-
-## Module boundaries after the holistic refactor
-
-The downloads module is now split by responsibility rather than by one giant manager file:
-
-- **Coordinator:** `Labstream/Downloads/DownloadManager.swift` owns the main-actor queue, runtime state dictionaries, retry/resume scanners, and the published offline-library snapshot. It should adapt live facts, not re-implement pure route/caption/storage decisions.
-- **Backend lanes:** `DownloadManager+Plex.swift`, `+PlexOptimize.swift`, `+Jellyfin.swift`, `+Emby.swift`, and `+EmbyConvert.swift` keep backend-specific request construction, server-prep polling, active-encoding cleanup, and handoff behavior explicit. Do not collapse these into a wide backend protocol unless a future change proves the concrete steps are actually identical.
-- **Transfer engine:** `BackgroundDownloadSession` owns URLSession task registries, static byte-range task adoption, checkpoint appends, final-file validation, transient retries, and background completion callbacks. The transfer layer delegates pure HTTP/range/retry/finalization decisions to PMSKit policies.
-- **Persistence:** `DownloadStore` owns the versioned `index.json` envelope, row-by-row resilient decode, file reconciliation, side-asset byte accounting, and app-container deletes.
-- **Side assets:** `DownloadManager+SideCache.swift` owns authenticated request setup for posters, trickplay/chapter images, and external text subtitles; shared atomic write/persist tails keep backend differences out of disk IO.
-- **Pure policy core:** `PMSKit/Sources/PMSKit/Downloads` owns row identity, user choices, backend route planners, retry/pause/delete policy, static-range recovery policy, server-prep refresh/attempt tracking, storage estimates/caps, side-asset selection, row display/captions, and offline-library snapshot aggregation.
-
-This is the intended final architecture for the current refactor: the app layer still owns side effects and credentials, while PMSKit owns deterministic decisions that can be unit-tested without a simulator or server.
-
-```mermaid
-flowchart LR
-  UI[Download sheet / Offline tab] --> DM[DownloadManager coordinator]
-  DM --> Lanes[Backend manager extensions]
-  DM --> Store[DownloadStore index.json + files]
-  DM --> Session[BackgroundDownloadSession]
-  DM --> SideCache[Side asset cache]
-  DM --> Policies[PMSKit Downloads policies]
-
-  Lanes --> Plex[Plex optimize/static]
-  Lanes --> JF[Jellyfin static/live-forward]
-  Lanes --> Emby[Emby PlaybackInfo/convert/static]
-
-  Policies --> Route[Route planners]
-  Policies --> Retry[Retry/pause/delete policies]
-  Policies --> Range[Static range policies]
-  Policies --> Snapshot[Offline snapshot/row captions]
-
-  Session --> URLSession[URLSession tasks]
-  Session --> Validator[Final artifact validation]
-  Store --> Files[Media + sidecar files]
-```
-
-## Route sketch
+Labstream downloads are designed to end in a local file the headset can play, plus enough metadata to show the item in the offline library and resume safely.
 
 ```mermaid
 flowchart TD
-  Choice[Download choice] --> Probe[Backend route/probe]
-  Probe --> PlexOriginal[Plex direct original
-local-file compatible only]
-  Probe --> PlexOptimize[Plex optimizer/server prepare]
-  Probe --> JellyfinStatic[Jellyfin original/static]
-  Probe --> JellyfinLive[Jellyfin live-forward remux/transcode]
-  Probe --> EmbyStatic[Emby original/existing static]
-  Probe --> EmbyConvert[Emby convert job]
-  PlexOptimize --> StaticTransfer[Static transfer]
-  EmbyConvert --> StaticTransfer
-  PlexOriginal --> StaticTransfer
-  JellyfinStatic --> StaticTransfer
-  EmbyStatic --> StaticTransfer
-  JellyfinLive --> LiveTransfer[Live-forward transfer]
-  StaticTransfer --> Store[DownloadStore + media file + side assets]
-  LiveTransfer --> Store
+  Request[User taps download] --> Inspect[Inspect backend media options]
+  Inspect --> Route{Best route?}
+  Route --> Original[Direct original file]
+  Route --> Existing[Existing server version]
+  Route --> Rendered[Server-rendered compatible copy]
+  Original --> Transfer[Transfer and verify]
+  Existing --> Transfer
+  Rendered --> Transfer
+  Transfer --> Store[Offline index + side assets]
+  Store --> Offline[Offline library]
+  Offline --> Player[Local playback]
 ```
 
-## Plex routes
+## Core rules
 
-### Direct original
+- A completed download must have a local playable file and a durable offline record.
+- Direct original downloads are offered only when Labstream expects the file to play locally.
+- Server-rendered or server-prepared routes are used when the original is not a safe local target.
+- Transfers must tolerate interruption and reconcile state on relaunch.
+- Offline records must not contain tokens, private server URLs, or unnecessary user-identifying details.
 
-The sheet offers **Download original** only when both gates pass:
+## Backend routes
 
-1. the Plex decision response says the whole file is direct playable, and
-2. the source container is locally playable as a raw local file (`mp4`, `m4v`, or `mov`).
+| Backend | Download choices |
+| --- | --- |
+| Plex | Direct original when compatible, explicit existing versions when available, or server-rendered compatible copies. |
+| Jellyfin | Static original/range transfer when safe, otherwise server-selected remux/transcode output where available. |
+| Emby | Direct static, existing/prepared source reuse, compatible remux, or convert-then-static depending on server response. |
 
-This is intentionally stricter than streaming. A file can stream through direct stream/remux while still being a poor byte-for-byte offline file target. Most MKV originals therefore do not get the raw-original option.
-
-When original is selected, the manager runs a delayed muted AVPlayer preflight against the source path before committing. Failure falls back to a compatible original-quality optimizer route.
-
-### Compatible original quality
-
-**Original video quality** means “keep source video quality in a compatible offline file.” It uses the Plex optimizer/static rendered-part path with no meaningful video cap, so containers/audio can be repackaged or transcoded for local playback without intentionally lowering video quality.
-
-This should usually be much faster than a capped video encode when PMS can copy video and only remux/transcode audio, but it is still server work and can be slow if PMS decides a video transcode is required.
-
-### Bitrate presets
-
-Numeric presets request explicit lower-resolution/lower-bitrate compatible files through the optimizer route. Do not expose generic Plex labels such as “Optimized for TV” in the user-facing sheet; use the app’s concrete bitrate/resolution labels.
-
-`DownloadPresetPolicy` is the shared source of truth for these labels and their backend mappings:
-the Original-quality aliases, custom bitrate ladder caps, visible-picker filtering, stored row
-resolution label, storage preflight source sizing, Jellyfin/Emby transcode caps, and Plex fallback
-target tag/settings all live there instead of being redefined in backend-specific download paths.
-
-## Jellyfin routes
-
-Jellyfin download support mirrors the same offline goal:
-
-- original only when the source is locally playable as a static file
-- otherwise a compatible static MP4/transcoded request for the selected quality
-- required Jellyfin headers preserved on requests
-
-The app-driven simulator probe now covers Jellyfin static/original byte-range recovery on a signed-in simulator: an injected `NSURLErrorNetworkConnectionLost` is retried, durable 64 MiB checkpoints are appended, and the probe row is deleted after observation. This proves the simulator app glue and live server route for that lane; headset/off-head durability is still a device-only claim.
-
-
-## Emby routes
-
-Emby download decisions are made from a download-time `PlaybackInfo` response, not from browse metadata alone:
-
-- original/direct static downloads are used only when the selected media source is locally playable;
-- existing or server-prepared versions can be reused as static/range-capable downloads when the selected `MediaSourceId` is known;
-- compatible remux/transcode outputs are treated as live-forward server encoder streams when they cannot be represented as a completed static file immediately;
-- bitrate presets and unsafe originals can route through an Emby convert job, then hand off to the static existing-version lane once the converted file exists.
-
-Emby download code and live probes exist, but Plex still has the strongest headset/off-head validation history. Keep issue reports explicit about which backend and route were tested.
-
-The app-driven simulator probe now covers the Emby optimized/reuse path against an API-visible converted MP4: the optimizer choice reuses the existing converted source, hands off to the static range path, survives injected network drops/transient connection failures, appends durable checkpoints, and deletes the probe row after observation. This proves the simulator app glue and live server route for that lane; headset/off-head durability is still a device-only claim.
-
-## Transfer sessions
+## Transfer lifecycle
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Enqueued
-  Enqueued --> PreparingOnServer: Plex optimize / Emby convert
-  Enqueued --> Transferring: static/live-forward route ready
-
-  PreparingOnServer --> Transferring: rendered/static source ready
-  PreparingOnServer --> Paused
-  PreparingOnServer --> Failed
-
-  Transferring --> Checkpointing: static byte-range chunk
-  Checkpointing --> Transferring: next range
-  Transferring --> Validating: bytes complete
-  Validating --> Complete
-  Validating --> Unverified
-  Validating --> Failed
-
+  [*] --> Queued
+  Queued --> Preparing: server prep needed
+  Queued --> Transferring: static route
+  Preparing --> Transferring: prepared source ready
   Transferring --> Paused
-  Paused --> Transferring: resume/retry
-  Failed --> Enqueued: retry/re-probe
-
-  Complete --> Deleted
-  Failed --> Deleted
-  Paused --> Deleted
+  Paused --> Transferring
+  Transferring --> Verifying
+  Verifying --> Complete
+  Verifying --> Failed
+  Failed --> Queued: retry
+  Complete --> [*]
 ```
 
-- Device builds use background `URLSession` for durable transfers.
-- Simulator builds use a foreground session where background download behavior is not reliable.
-- Downloads reject HTTP error bodies and invalid final files. Very small files are not rejected by byte size alone; they still must pass local AVFoundation playback validation.
+## Module ownership
 
-### Off-head behavior (observed on hardware)
+| Component | Owns |
+| --- | --- |
+| `DownloadManager` | Main-actor queue coordination and user-visible state. |
+| Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
+| `BackgroundDownloadSession` | URLSession tasks, byte-range checkpointing, transfer callbacks, finalization. |
+| `DownloadStore` | Offline index persistence and file-side effects. |
+| PMSKit download policies | Pure route, retry, row-display, and recovery decisions. |
 
-The static-file transfer (`nsurlsessiond` background `URLSession`) keeps making progress with the
-headset off the head and connected to power, but **not indefinitely**. Observed: transfers continue
-for roughly the first ~30 minutes off-head, but over a span of hours they stop progressing — the
-system stops scheduling the suspended app's background transfer in deep standby, and being on power
-does not make it unbounded.
+## Offline metadata
 
-Practical guidance: small/medium downloads off-head are fine; the "queue a large download, set the
-headset down for hours, come back to a finished file" workflow is **not reliable**. For large
-downloads, keep the headset on (or pick it up periodically to re-wake the session — reconciliation
-re-kicks reconnectable transfers on resume).
+Offline records keep enough information to display and play the item without a live server:
 
-Current-engine #169/#190 note: static byte-range downloads now use frequent bounded checkpoints
-both while the app is active and when future chunks are started from inactive/background event
-drains. Each segment is still a background `URLSessionDownloadTask` owned by `nsurlsessiond`, but
-finished chunks are appended into the durable partial file periodically instead of parking all
-remaining bytes in one long-lived temp file. A failed off-head/background segment resumes from the
-last appended partial-file checkpoint; progress bytes still inside URLSession's temp file are
-intentionally not treated as durable.
+- backend and item identity;
+- title/metadata needed for the offline library;
+- local file URL and byte counts;
+- selected media characteristics;
+- optional poster and side-asset references;
+- resume/progress state where applicable.
 
-The static byte-range session has one ownership invariant: for a given rating key, there must be
-exactly one authoritative live range task. Relaunch reattachment, user Resume/Retry, and
-background-promotion paths suppress or cancel duplicates instead of starting a second task at the
-same checkpoint. Late callbacks from stale tasks must not publish backwards progress or append into
-the durable partial after a newer checkpoint has taken over. If a live task reports progress while
-the row is queued/paused/failed from reconciliation churn, the store re-promotes the row to
-`downloading` because the task is still active.
-
-Note this is the **Phase B** (byte-transfer) limit. It is separate from, and milder than, the Plex
-**Phase A** server-prepare poll: that poll runs in-process, so a long server render queued and then
-immediately set down may not even *start* its Phase B transfer until the headset is worn again.
+Side assets such as posters, chapters, and compatible external text subtitles are cached next to the download record when available. They are treated as convenience metadata; the main playable file remains the durable core of the download.
 
 ## Reconcile and resume
 
-On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-flight transfer tasks and local files.
+On launch, Labstream compares the offline index, files on disk, and any active transfers. It should:
 
-```mermaid
-sequenceDiagram
-  participant App as App launch
-  participant DM as DownloadManager
-  participant Store as DownloadStore
-  participant BGS as BackgroundDownloadSession
-  participant PMS as PMSKit policies
-  participant Backend as Backend lane
-
-  App->>DM: restore downloads
-  DM->>Store: load index.json
-  Store-->>DM: records + file facts
-  DM->>BGS: enumerate/adopt URLSession tasks
-  BGS-->>DM: task identities/progress
-  DM->>PMS: reconcile records vs tasks/files
-
-  alt static range task needs auth
-    DM->>Backend: rebuild authenticated request
-    Backend-->>DM: request
-    DM->>BGS: continue from checkpoint
-  else duplicate/stale task
-    DM->>BGS: suppress/cancel stale owner
-  else complete file exists
-    DM->>Store: hydrate/publish snapshot
-  end
-```
-
-- Static original transfers are network-bound and can reconnect/retry as file downloads.
-- Plex optimizer jobs have two phases: server preparation, then static rendered-part download. Server-prep state is represented separately so the UI can say “Preparing on server…” and poll progress where possible.
-- Jellyfin compatible downloads and Emby compatible-remux/transcode paths can be live-forward encoder streams rather than durable server-prep jobs. When those paths are canceled, fail, or complete, Labstream sends active-encoding cleanup for the download play session where the backend exposes it. Emby convert-then-download is different: it is server prepare followed by a static existing-version transfer.
-- Failed items keep metadata so retry can re-probe and choose the correct current route.
-- Canceled/deleted downloads should clean up local files and app-owned queue state; Plex optimizer cleanup must avoid deleting protected/current jobs.
-
-## Download-agent / probe harnesses
-
-The DEBUG download-agent probes run inside the signed-in app process on the worktree simulator. They intentionally exercise app glue, persisted backend sessions, `DownloadManager`, and `BackgroundDownloadSession` without printing tokens:
-
-- `scripts/probe-plex-range-drop.sh` — Plex static range lane. Use `--existing-version --media-index N` when a pre-optimized Plex version is available and a quick static/range probe is preferred.
-- `scripts/probe-jellyfin-download.sh` — Jellyfin route and static/range download probe.
-- `scripts/probe-emby-download.sh` — Emby route, existing converted-source refresh, optimize/convert reuse, and static/range download probe.
-
-Operational rules:
-
-1. Target the worktree simulator explicitly: `SIMID=$(scripts/worktree-sim.sh id)`.
-2. Use `--keep-app-running` during iterative validation so the simulator stays open and signed-in state is preserved.
-3. Use `--drop-after-bytes 1048576` to inject a deterministic connection loss on static byte-range lanes.
-4. Use `--delete-after`/default cleanup unless intentionally preserving a row for a resume observation.
-5. Treat `build/probes/**` as private local evidence; do not paste server URLs, tokens, item IDs, or media paths into public issues.
-
-Recent simulator probes have validated Plex static range recovery, Jellyfin static original recovery, and Emby converted-source reuse/static range recovery. Treat probe artifacts under `build/probes/**` as private local evidence and summarize only redacted outcomes in public issues.
-
-## Offline playback metadata
-
-Offline playback uses the stored metadata snapshot for title, artwork, text chapters, resume, duration, episode hierarchy, and selected source identifiers. Server metadata may be stale while offline; refresh on later online browse/download actions rather than blocking local playback.
-
-### Cached side assets
-
-Beyond the metadata snapshot, a download persists several binary side assets so the
-offline experience matches online playback without any server access. Each is stored
-as a path **relative to the Downloads base directory** (the sandbox container path is
-not stable across installs/devices) and re-resolved to an absolute URL when the record
-is hydrated:
-
-- **Poster / backdrop.** The cached poster (`posterRelativePath`) feeds the offline
-  library rows; the original `thumb`/`art` keys are kept so the image can be re-fetched
-  if the local cache is missing and the server is reachable again.
-- **Chapter images.** Per-chapter thumbnails (`chapterImageRelativePaths`) are fetched
-  at download time from each backend's chapter-image endpoint and keyed by chapter index
-  (not a flat array — chapter indices are not always contiguous). They power the offline
-  Chapters menu rail with real thumbnails and give the Emby offline scrubber a coarse
-  chapter-granularity preview source. Empty when no chapter carried an image. The text
-  chapter markers themselves (`chapters`) are stored separately so the Chapters tab works
-  even when no images were captured.
-- **Plex trick-play index.** For Plex parts that advertise a standard-definition BIF, the
-  index (`plexBIFRelativePath`) is cached for offline scrubbing.
-- **Jellyfin trick-play.** The Jellyfin trickplay playlist (`jellyfinTrickPlayPlaylistRelativePath`)
-  and its tile sheets (`jellyfinTrickPlayTileRelativePaths`) are cached. The cached playlist
-  is **sanitized**: tile lines are rewritten to local filenames and never contain
-  token-bearing server URLs.
-- **Offline text subtitles.** External text subtitle tracks (`offlineTextSubtitles`) are
-  downloaded for offline selection. Embedded subtitles remain discoverable through
-  AVFoundation directly; image/burned-in/unavailable tracks are intentionally not
-  represented here.
-
-### Side-asset disk accounting
-
-A record tracks the bytes occupied by its sidecar assets (poster, trickplay, subtitles)
-separately from the media file in `sideAssetBytes`. This value is computed by the app store
-when records are hydrated (it is not persisted in the media row itself) so the Offline tab
-can account for the full on-disk footprint of a download, not just the video file.
+- resume or retry recoverable transfers;
+- surface failed items clearly;
+- avoid deleting user data unless the user asked for cleanup;
+- keep orphan detection conservative;
+- preserve completed downloads even when the source server is temporarily unavailable.
