@@ -11,8 +11,8 @@ struct LoginBrandHeader: View {
             brandMark
 
             HStack(spacing: 0) {
-                Text("Vision")
-                Text("Play")
+                Text("Lab")
+                Text("stream")
                     .foregroundStyle(DS.Brand.amber)
             }
             .font(.largeTitle.bold())
