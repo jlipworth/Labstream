@@ -1,93 +1,58 @@
 # Contributing to Labstream
 
-Labstream is a source-first visionOS media client for user-selected Plex, Jellyfin, and Emby servers. Contributions are welcome, but the safest workflow is to keep secrets/device state local, prove pure logic in `PMSKit`, and only use live servers or a headset when a change genuinely needs them.
+Thanks for helping improve Labstream. This project touches private media servers and headset diagnostics, so the main contribution rule is simple: keep code testable and keep private data private.
 
-By contributing, you agree that your contribution is licensed under GPLv3 plus the same Apple distribution additional permission described in [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/Labstream/blob/main/APP-STORE-EXCEPTION.md).
+## Before you start
 
-## Prerequisites
+- Read [Development setup](DEVELOPMENT.md).
+- Skim the [Architecture overview](ARCHITECTURE.md) and [Code map](CODE-MAP.md).
+- Check open issues to avoid duplicating work.
 
-- macOS with Xcode 26 and an Apple Vision Pro visionOS 26.x simulator runtime.
-- Swift 6 / Swift Package Manager, as provided by the selected Xcode toolchain.
-- Optional: a paired Apple Vision Pro for device-only validation.
-- Optional live-server env files copied locally from your own secrets. Never commit tokens, URLs, LAN IPs, or signing material.
-
-## First checkout
+## Local workflow
 
 ```sh
-git clone https://github.com/jlipworth/Labstream.git
+git clone git@github.com:jlipworth/Labstream.git
 cd Labstream
-(cd PMSKit && swift test)
-SIMID=$(scripts/worktree-sim.sh id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
-  -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO
-./scripts/ci-hygiene.sh
-```
-
-New Swift files are picked up by Xcode file-system-synchronized groups and SwiftPM source discovery, so most changes should not require manual `project.pbxproj` edits.
-
-## Simulator workflow
-
-Use the worktree-specific simulator helper when working in linked worktrees. It avoids several contributors fighting over one app container or targeting the wrong booted simulator.
-
-```sh
 scripts/worktree-sim.sh setup
-SIMID=$(scripts/worktree-sim.sh id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-xcrun simctl install "$SIMID" /path/to/Labstream.app
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
-xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' --style compact
 ```
 
-Target `"$SIMID"`, not `booted`; multiple Vision Pro simulators can be booted during parallel work.
+Build and test with the commands in [Development setup](DEVELOPMENT.md). Use the worktree simulator ID rather than `booted`.
 
-## Device installs
+## Pull request expectations
 
-Use the wrapper script instead of re-deriving signing flags:
+A good PR includes:
+
+- a focused description of the user-visible change;
+- tests for pure policies or request builders when applicable;
+- notes about simulator, device, or live-server validation when relevant;
+- screenshots only when they do not reveal private server or media details.
+
+Run the basic checks before opening or updating a PR:
 
 ```sh
-scripts/deploy-to-device.sh
-scripts/deploy-to-device.sh --launch
-scripts/deploy-to-device.sh --no-build
+cd PMSKit && swift test
+cd ..
+scripts/ci-hygiene.sh
+uv run --with-requirements requirements.txt mkdocs build --strict
 ```
 
-The script expects local signing state and a paired headset. The development build uses `com.jlipworth.Labstream`; installing it can replace another build with the same bundle id and app state may be reset when the app is deleted or overwritten across install sources.
+## Privacy and secrets
 
-## Validation expectations
+Never commit or paste:
 
-Run the cheapest faithful checks for your change:
+- Plex/Jellyfin/Emby tokens;
+- client identifiers;
+- server hostnames, LAN/public IPs, or full URLs;
+- usernames/emails that are not intentionally public;
+- media titles, filenames, library paths, or screenshots containing them;
+- signing files, provisioning profiles, or local team IDs.
 
-- Pure request/model/policy changes: targeted `PMSKit` tests, then `cd PMSKit && swift test`.
-- App-code changes: generic unsigned visionOS simulator build plus relevant unit tests.
-- UI/runtime changes: install and launch on the worktree simulator when possible.
-- Playback, audio routing, and off-head behavior: device validation is required before calling behavior headset-proven.
-- Docs changes: `uv run --with-requirements requirements.txt mkdocs build --strict`.
+Use placeholders such as `plex.example.internal`, `192.0.2.10`, `<server-url>`, `<token>`, and `<media title>`.
 
-## Secrets and privacy
+## Architecture guidelines
 
-Do not commit or paste:
-
-- Plex, Jellyfin, or Emby tokens.
-- server hostnames, LAN IPs, real media titles, item ids, device ids, or play-session ids unless explicitly scrubbed.
-- signing files, provisioning profiles, certificates, or Xcode account details.
-
-Diagnostics and bug reports should follow [`REPORTING-BUGS.md`](REPORTING-BUGS.md) and [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md).
-
-Before making the repository or an issue thread public, run the publication audit across
-the surfaces that become visible:
-
-```sh
-./scripts/publication-audit.py                 # tracked docs + git history
-./scripts/publication-audit.py --github-issues # also scan issue bodies/comments via gh
-```
-
-Treat the report as a review queue. It prints only redacted snippets; edit or rewrite
-any true positives before publication.
-
-## Architecture rules of thumb
-
-- Keep `PMSKit` pure and testable: request builders, decoders, route decisions, and policy state machines.
-- Keep backend-specific behavior explicit. Plex, Jellyfin, and Emby share concepts, not one universal protocol.
-- Avoid growing large app controllers such as `PlaybackController` into god objects. Prefer small coordinators or pure policy helpers at new seams.
-- Promote proven current behavior into public docs; keep active research in `docs/research/` and move obsolete/future-refactor notes to `docs/archive/`.
+- Keep backend-specific wire behavior explicit.
+- Put pure decisions in `PMSKit` where they can be unit-tested.
+- Keep SwiftUI, AVFoundation, URLSession side effects, files, and Keychain in the app target.
+- Use typed diagnostic fields and redaction helpers for anything that can reach a report.
+- Archive research, implementation plans, and historical validation notes instead of publishing them as current docs.

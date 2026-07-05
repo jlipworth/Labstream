@@ -5,136 +5,174 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
-A source-available, native **visionOS (Apple Vision Pro)** media client for your own Plex, Jellyfin, or Emby server. It combines
-server-aware streaming quality control, custom Apple Vision Pro cinema playback, and offline downloads
-that choose between raw originals and compatible server-rendered copies.
+**Labstream is a native Apple Vision Pro media client for your own Plex, Jellyfin, or Emby server.**
 
-> **Status: working app.** End-to-end playback runs in the visionOS 26 simulator runtime and on device.
-> Build is green and the `PMSKit` package ships a full unit-test suite (`cd PMSKit && swift test`).
-> This project is currently distributed as source for local builds — there is no App Store build today.
+It brings server-aware streaming, an Apple Vision Pro cinema playback surface, music browsing, privacy-preserving diagnostics, and offline downloads to a source-first visionOS app.
 
-## What this app does
+> **Distribution status:** Labstream is currently distributed as source for local builds. There is no App Store or TestFlight build today.
 
-- **Sign-in** via Plex PIN OAuth, Jellyfin credentials, or Emby Connect/manual Emby credentials, with secrets stored in Keychain
-- **Browse + search** Home hubs, libraries, and a search surface
-- **Server-aware playback** — Direct Play / Maximum attempts copy/direct paths where viable; explicit
-  quality rungs request capped server streams
-- **Scrubbing + resume** — seeks cleanly and resumes half-watched titles at the right offset
-- **Cinema mode** — the custom player expands into an app-owned immersive Cinema surface with the
-  same transport, menus, retry, scrubber, and Up Next controls
-- **TV show hierarchy** — drill down Show → Seasons → Episodes
-- **Skip Intro / Skip Credits** during server-detected marker windows
-- **Up Next + autoplay** — advances to the next episode with a countdown, crossing season boundaries
-- **Offline downloads** — raw original downloads only when locally playable; otherwise compatible
-  original-quality or bitrate-capped server-rendered files with metadata, poster, resume, and integrity checks
-- **Failure recovery** — a stall watchdog surfaces a "Playback failed" overlay and rebuilds the player
-  to recover from wedged HLS network loss without relaunching the app
-- **Playback extras** — quality switch that keeps the playhead, subtitles by language name, chapters,
-  stats, and 0.5×–2× speed; progress scrobble / mark-watched; buffering spinner; audio-session
-  interruption handling
+## Contents
 
-## Tech
+- [Features](#features)
+- [Supported backends](#supported-backends)
+- [Tech stack](#tech-stack)
+- [Quick start](#quick-start)
+- [Project structure](#project-structure)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [Privacy and bug reports](#privacy-and-bug-reports)
+- [License](#license)
 
-- **SwiftUI** app shell with a custom AVFoundation player surface for streaming, offline playback,
-  and app-owned Cinema mode
-- **Swift 6** with strict concurrency
-- **`PMSKit`** — a local Swift package providing tested Plex/Jellyfin/Emby request builders, models,
-  playback/download decision helpers, diagnostics primitives, and policy state machines
-- **Xcode 26**, targeting **visionOS 26.0**; examples assume an installed Apple Vision Pro 26.x simulator/runtime
+## Features
+
+### Playback
+
+- Custom AVFoundation player surface built for visionOS.
+- Direct Play / Maximum attempts copy or direct-stream paths where viable.
+- Explicit quality rungs request capped server streams when needed.
+- Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and Stats for Nerds.
+- Cinema mode expands playback into an app-owned immersive surface with the same transport controls.
+- Watch progress, mark-watched behavior, Up Next, and episode autoplay.
+
+### Libraries and search
+
+- Home, library, search, and detail surfaces for personal media.
+- TV hierarchy navigation from show to season to episode.
+- Music browsing and playback for supported backend music libraries.
+- Backend-aware sign-in and server/session restore.
+
+### Downloads and offline
+
+- Offline downloads with metadata, poster/side-asset support, integrity checks, and resume/reconcile behavior.
+- Direct original downloads only when Labstream expects the file to be locally playable.
+- Server-prepared or server-rendered compatible files when the original is not a safe offline target.
+
+### Privacy and diagnostics
+
+- Tokens and server credentials are stored in Keychain.
+- Diagnostic logging is off by default, local-only, bounded, and user-exported only.
+- Built-in bug-report diagnostics redact tokens, client identifiers, hostnames/IPs, full URLs, usernames, library paths, filenames, and media titles.
+
+## Supported backends
+
+| Backend | Sign-in | Core support |
+| --- | --- | --- |
+| Plex | Plex PIN/OAuth and server discovery | Browse, search, playback, progress, music, downloads/offline. |
+| Jellyfin | Server URL plus Jellyfin auth or Quick Connect | Browse, search, playback, progress, music, downloads/offline. |
+| Emby | Emby Connect PIN or manual server login | Browse, search, playback, progress, music, downloads/offline. |
+
+Labstream is unofficial and independent. It is not affiliated with, endorsed by, sponsored by, or officially supported by Plex, the Jellyfin project, or Emby Media.
+
+## Tech stack
+
+- SwiftUI app shell targeting visionOS 26.
+- Swift 6 with strict concurrency.
+- Custom AVFoundation playback and offline playback paths.
+- `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models, diagnostics primitives, and pure policy state machines.
+- MkDocs Material documentation published at <https://jlipworth.github.io/Labstream/>.
+
+## Quick start
+
+### Requirements
+
+- macOS with Xcode 26 and the visionOS 26 SDK.
+- An Apple Vision Pro simulator runtime, or a paired Apple Vision Pro for device installs.
+- A Plex, Jellyfin, or Emby server you control or have permission to access.
+
+### Build for the simulator
+
+```sh
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+
+scripts/xcodebuild-versioned.sh \
+  -project Labstream.xcodeproj \
+  -scheme Labstream \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
+  -configuration Debug \
+  build CODE_SIGNING_ALLOWED=NO
+```
+
+### Run core checks
+
+```sh
+cd PMSKit && swift test
+cd ..
+scripts/ci-hygiene.sh
+uv run --with-requirements requirements.txt mkdocs build --strict
+```
+
+### Install on a physical Apple Vision Pro
+
+```sh
+scripts/deploy-to-device.sh            # build + install
+scripts/deploy-to-device.sh --launch   # also launch while the headset is awake/worn
+```
+
+The development bundle identifier remains `com.jlipworth.VisionPlay` for compatibility with existing app identity, Keychain entries, downloads, background sessions, and installed app state.
 
 ## Project structure
 
-```
+```text
 Labstream/
-├── Labstream/            # visionOS app (SwiftUI)
-│   ├── App/              # app entry + session state
-│   ├── Auth/             # Plex/Jellyfin/Emby auth + Keychain
-│   ├── Backend/          # backend service lanes and shared browse helpers
-│   ├── Networking/       # Plex client wiring
-│   ├── Player/           # custom AVPlayer surface + app-owned Cinema mode + recovery
-│   ├── Music/            # Plexamp-style music browse + audio player
-│   ├── Downloads/        # offline transfers + offline library
-│   ├── SystemIntegration/ # App Intents, Spotlight, and system-entry routing
-│   ├── Diagnostics/      # local diagnostics/reporting helpers
-│   ├── Theater/          # RealityKit theater prototype scaffolding
-│   └── UI/               # Home · Libraries · Search · Detail · Settings
-├── PMSKit/              # local Swift package: request/model/policy layer (+ tests)
-└── docs/                 # current architecture docs plus archived research/plans
+├── Labstream/             # visionOS app target
+│   ├── App/               # app entry, object graph, restore state
+│   ├── Auth/              # Plex/Jellyfin/Emby auth and Keychain persistence
+│   ├── Backend/           # backend service lanes, paging, search
+│   ├── Diagnostics/       # local diagnostics/reporting helpers
+│   ├── Downloads/         # offline transfers, offline index, download UI state
+│   ├── Music/             # music browse, queue, and audio playback
+│   ├── Networking/        # shared app networking helpers
+│   ├── Player/            # custom player, diagnostics, restart/reopen logic
+│   ├── SystemIntegration/ # App Intents, Spotlight, system-entry routing
+│   ├── Theater/           # immersive playback surface support
+│   └── UI/                # login, home, libraries, search, detail, settings
+├── PMSKit/                # pure Swift package: requests, models, policies, tests
+├── docs/                  # published docs plus archived research outside the nav
+├── scripts/               # local validation, simulator, deploy, and probe helpers
+└── .woodpecker/           # portable CI definitions
 ```
 
-## Build & run
+## Documentation
 
-This is a **source-first local-build** project today. The app identity is **Labstream** and the
-development bundle identifier is `com.jlipworth.Labstream`. It runs from Xcode on a visionOS 26.x
-simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
-expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
-the first-launch trust prompt are Apple's expected security gate for sideloaded development builds.
+- Published docs: <https://jlipworth.github.io/Labstream/>
+- Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+- Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Backend model: [`docs/BACKENDS.md`](docs/BACKENDS.md)
+- Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)
+- Downloads/offline: [`docs/DOWNLOADS-OFFLINE.md`](docs/DOWNLOADS-OFFLINE.md)
+- Diagnostics/privacy: [`docs/DIAGNOSTICS-PRIVACY.md`](docs/DIAGNOSTICS-PRIVACY.md)
 
-Build the app (visionOS 26.x simulator, unsigned):
+Public docs describe the current app. Internal research notes, old implementation plans, and superseded validation notes are kept under `docs/research/` or `docs/archive/` and are not part of the published navigation.
 
-```bash
-SIMID=$(scripts/worktree-sim.sh id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
-  -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO
+## Contributing
+
+Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). In short:
+
+- keep backend-specific wire behavior explicit;
+- put pure decisions in `PMSKit`;
+- keep SwiftUI, AVFoundation, URLSession, Keychain, and filesystem side effects in the app target;
+- never commit tokens, server URLs, private IPs, media titles, local signing files, or diagnostic artifacts.
+
+For a quick module size readout, run:
+
+```sh
+scripts/loc.sh
 ```
 
-Run the `PMSKit` test suite:
+## Privacy and bug reports
 
-```bash
-cd PMSKit && swift test
-```
+Labstream does not send analytics, diagnostics, or media-server data to the developer. If something breaks, the app can generate a local redacted diagnostic report that you review before posting to GitHub.
 
-For physical Apple Vision Pro installs, use `scripts/deploy-to-device.sh`. It builds a signed device slice, derives the correct development team from the Apple Development certificate, installs with `devicectl`, and avoids common signing traps. You still need a paired headset, Developer Mode enabled, and an Apple ID signed into Xcode Settings ▸ Accounts.
-
-Do not commit local signing files, provisioning profiles, certificates, Plex tokens, server
-hostnames, or LAN IPs.
-
-Local validation before handing off:
-
-```bash
-SIMID=$(scripts/worktree-sim.sh id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
-  -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO
-(cd PMSKit && swift test)
-./scripts/ci-hygiene.sh
-```
-
-Woodpecker runs the portable CI checks: split `PMSKit` tests, repo hygiene, and a strict MkDocs site build/deploy on docs changes. The unsigned
-visionOS simulator `xcodebuild` remains a local macOS/Xcode validation step unless or until a future
-macOS-runner CI job is added. A future App Store/TestFlight pass can add distribution signing,
-entitlements review, screenshots, privacy metadata, and store-specific release automation later; it
-is intentionally not part of today's local-build setup.
-
-See the published docs site at <https://jlipworth.github.io/Labstream/>. Contributor workflow lives in [`CONTRIBUTING.md`](https://github.com/jlipworth/Labstream/blob/main/CONTRIBUTING.md), and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) covers install/launch, logging, and the platform
-gotchas worth knowing before changing the player or transcode code. Current architecture docs start at
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), with focused notes for
-[`playback`](docs/PLAYBACK-ARCHITECTURE.md), [`backends`](docs/BACKENDS.md),
-[`downloads/offline`](docs/DOWNLOADS-OFFLINE.md), [`persistence`](docs/PERSISTENCE.md),
-[`diagnostics/privacy`](docs/DIAGNOSTICS-PRIVACY.md), [`system integration`](docs/SYSTEM-INTEGRATION.md),
-[`testing`](docs/TESTING-STRATEGY.md), and the [`scripts catalog`](https://github.com/jlipworth/Labstream/blob/main/scripts/README.md).
-
-On first launch, choose Plex, Jellyfin, or Emby and sign in to your server. A plain simulator/device
-upgrade install usually preserves the app container; deleting the app, erasing the simulator, or installing
-over the App Store build starts with fresh app state and requires sign-in again.
-
-## Docs
-
-Current architecture and operating guidance lives in the top-level files under [`docs/`](docs/). Active research for not-yet-implemented work lives in [`docs/research/`](https://github.com/jlipworth/Labstream/tree/main/docs/research); promote only proven behavior from research into the current docs. Historical design research, completed implementation plans, and superseded review snapshots live in [`docs/archive/`](https://github.com/jlipworth/Labstream/tree/main/docs/archive). Archived files are context only; they are not the current source of truth and may contain retired decisions such as the old `Safari` Plex profile assumption.
+- Bug guide: [`docs/REPORTING-BUGS.md`](docs/REPORTING-BUGS.md)
+- Bug form: <https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml>
+- Privacy policy: [`PRIVACY.md`](PRIVACY.md)
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](https://github.com/jlipworth/Labstream/blob/main/LICENSE) for the
-full text.
+Labstream is licensed under the **GNU General Public License v3.0**. See [`LICENSE`](LICENSE) for the full text.
 
-There is no App Store build today; the project carries a GPLv3 **section 7 additional permission**
-to preserve that option for future Apple App Store / TestFlight distribution. It
-applies — see [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/Labstream/blob/main/APP-STORE-EXCEPTION.md). It resolves the well-known
-GPL-vs-App-Store conflict while keeping copyleft intact: distributed modified versions must still
-provide corresponding source under GPLv3.
+The project also carries a GPLv3 section 7 additional permission for Apple App Store / TestFlight distribution if that distribution path is used later. See [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md).
 
 Copyright (C) 2026 Jonathan Lipworth
 

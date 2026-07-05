@@ -7,6 +7,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
 - `ci-hygiene.sh` — repo hygiene guardrails, including redaction/signing checks.
 - `xcodebuild-versioned.sh` and `build-version-args.sh` — version-aware Xcode build helpers.
 - `perf-log-summary.py` — summarizes local performance signposts from exported logs.
+- `loc.sh` — prints an informational per-module source line count for app, PMSKit, scripts, and docs.
 - `tests/` — script/tooling tests.
 
 ## Simulator and device helpers

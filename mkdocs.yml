@@ -41,26 +41,23 @@ exclude_docs: |
 
 nav:
   - Home: index.md
-  - Using Labstream:
-      - Support & Troubleshooting: support.md
+  - User guide:
+      - Support & troubleshooting: support.md
       - Report a bug: REPORTING-BUGS.md
-      - Privacy Policy: privacy.md
-      - License Exception: app-store-exception.md
-  - Developer onboarding:
-      - Contributor Guide: CONTRIBUTING.md
-      - Development Setup: DEVELOPMENT.md
-      - Code Map: CODE-MAP.md
-      - Scripts Catalog: SCRIPTS.md
-      - Testing Strategy: TESTING-STRATEGY.md
-      - Live Test Matrix: TESTING-LIVE-MATRIX.md
-      - Live Test Requirements: TESTING-LIVE-REQUIREMENTS.md
-      - Profiling: PROFILING.md
+      - Privacy policy: privacy.md
+      - License exception: app-store-exception.md
+  - Developer guide:
+      - Contributing: CONTRIBUTING.md
+      - Development setup: DEVELOPMENT.md
+      - Testing strategy: TESTING-STRATEGY.md
+      - Scripts catalog: SCRIPTS.md
   - Architecture:
       - Overview: ARCHITECTURE.md
+      - Code map: CODE-MAP.md
       - Backends: BACKENDS.md
       - Playback: PLAYBACK-ARCHITECTURE.md
-      - Downloads & Offline: DOWNLOADS-OFFLINE.md
+      - Downloads & offline: DOWNLOADS-OFFLINE.md
       - Music: MUSIC-DESIGN.md
       - Persistence: PERSISTENCE.md
-      - System Integration: SYSTEM-INTEGRATION.md
-      - Diagnostics & Privacy: DIAGNOSTICS-PRIVACY.md
+      - System integration: SYSTEM-INTEGRATION.md
+      - Diagnostics & privacy: DIAGNOSTICS-PRIVACY.md

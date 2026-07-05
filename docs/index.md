@@ -1,36 +1,26 @@
 # Labstream docs
 
-Labstream is a native Apple Vision Pro media client for Plex, Jellyfin, and Emby. It is currently distributed as source for local builds; App Store/TestFlight distribution is not available today.
+Labstream is a native Apple Vision Pro media client for Plex, Jellyfin, and Emby. It is distributed as source for local builds and is designed around privacy: the app talks to the media server you choose and does not send diagnostics or analytics to the developer.
 
-This site is split into user help, human-developer onboarding, and current architecture notes. Historical research and generated implementation plans are intentionally kept out of the published docs navigation. The source repository is public at [github.com/jlipworth/Labstream](https://github.com/jlipworth/Labstream).
+```mermaid
+flowchart LR
+  User[Apple Vision Pro user] --> App[Labstream]
+  App --> Plex[Plex Media Server]
+  App --> Jellyfin[Jellyfin server]
+  App --> Emby[Emby server]
+  App -. user initiated .-> Issue[GitHub bug report]
+```
 
-## For users
+## Start here
 
-- [Support & troubleshooting](support.md) — requirements, first-run steps, common playback/sign-in questions, and how to get help.
-- [Report a bug](REPORTING-BUGS.md) — how to capture, preview, and share a redacted diagnostic report.
-- [Privacy Policy](privacy.md) — what stays on your device and what Labstream sends to your selected media backend.
-- [License Exception](app-store-exception.md) — GPLv3 plus the Apple distribution permission used by this project.
+- **Users:** [Support & troubleshooting](support.md), [Report a bug](REPORTING-BUGS.md), and [Privacy policy](privacy.md).
+- **Contributors:** [Development setup](DEVELOPMENT.md), [Testing strategy](TESTING-STRATEGY.md), and [Code map](CODE-MAP.md).
+- **Architecture readers:** [Overview](ARCHITECTURE.md), [Backends](BACKENDS.md), [Playback](PLAYBACK-ARCHITECTURE.md), and [Downloads & offline](DOWNLOADS-OFFLINE.md).
 
-## For contributors
+## What the site is for
 
-- [Contributor Guide](CONTRIBUTING.md) — checkout, simulator/device workflow, validation expectations, and privacy rules.
-- [Development Setup](DEVELOPMENT.md) — build, launch, logging, and platform notes for day-to-day development.
-- [Code Map](CODE-MAP.md) — where to change app lifecycle, auth, backend, playback, downloads, music, diagnostics, and tests.
-- [Scripts Catalog](SCRIPTS.md) — safe local validation, live probes, simulator/worktree helpers, and device deployment scripts.
-- [Testing Strategy](TESTING-STRATEGY.md) — test layers and live-validation expectations.
-- [Profiling](PROFILING.md) — Instruments, signposts, MetricKit, and baseline-retention rules.
+These pages describe the app as it exists for its first public source release: how to build it, how to report problems safely, and how the major subsystems fit together. Historical research, implementation plans, and superseded design notes are kept out of the published navigation so the site reads as product documentation rather than a project diary.
 
-## Architecture by subsystem
+## Repository
 
-- [Architecture overview](ARCHITECTURE.md) — ownership boundaries and the app/PMSKit split.
-- [Backends](BACKENDS.md) — Plex, Jellyfin, and Emby auth, browse, playback, and download differences.
-- [Playback architecture](PLAYBACK-ARCHITECTURE.md) — startup lanes, restart/reopen behavior, and server cleanup invariants.
-- [Downloads and offline](DOWNLOADS-OFFLINE.md) — route choices, transfer lifecycle, reconcile/resume, and local metadata.
-- [Music architecture](MUSIC-DESIGN.md) — the Plexamp-inspired music surface and queue model.
-- [Persistence](PERSISTENCE.md) — Keychain, UserDefaults, offline index, and debug fallbacks.
-- [System integration](SYSTEM-INTEGRATION.md) — App Intents, Spotlight, user activities, and single-window routing.
-- [Diagnostics and privacy](DIAGNOSTICS-PRIVACY.md) — developer contract for safe diagnostic fields and reports.
-
-## Docs organization
-
-Top-level files in `docs/` are the current source of truth. Active research for not-yet-implemented behavior belongs in `docs/research/`; historical or superseded material belongs in `docs/archive/`. Promote only implemented, validated behavior into the current docs.
+Source lives at [github.com/jlipworth/Labstream](https://github.com/jlipworth/Labstream).
