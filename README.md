@@ -5,13 +5,13 @@
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
-A personal-use, native **visionOS (Apple Vision Pro)** media client for Plex, Jellyfin, and Emby. It combines
+A source-available, native **visionOS (Apple Vision Pro)** media client for your own Plex, Jellyfin, or Emby server. It combines
 server-aware streaming quality control, custom Apple Vision Pro cinema playback, and offline downloads
 that choose between raw originals and compatible server-rendered copies.
 
 > **Status: working app.** End-to-end playback runs in the visionOS 26 simulator runtime and on device.
 > Build is green and the `PMSKit` package ships a full unit-test suite (`cd PMSKit && swift test`).
-> This is a single-user, sideload-only project — there is no App Store build.
+> This project is currently distributed as source for local builds — there is no App Store build today.
 
 ## What this app does
 
@@ -64,7 +64,7 @@ VisionPlay/
 
 ## Build & run
 
-This is a **personal-device sideload** project today. The app identity is **VisionPlay** and the
+This is a **source-first local-build** project today. The app identity is **VisionPlay** and the
 development bundle identifier is `com.jlipworth.VisionPlay`. It runs from Xcode on a visionOS 26.x
 simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
 expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
@@ -86,11 +86,7 @@ Run the `PMSKit` test suite:
 cd PMSKit && swift test
 ```
 
-For personal-device signing, create a local-only `Signing.local.xcconfig` containing only your Apple Developer Team ID. The bundle ID and signing style are committed project settings:
-
-```xcconfig
-DEVELOPMENT_TEAM = YOUR_TEAM_ID
-```
+For physical Apple Vision Pro installs, use `scripts/deploy-to-device.sh`. It builds a signed device slice, derives the correct development team from the Apple Development certificate, installs with `devicectl`, and avoids common signing traps. You still need a paired headset, Developer Mode enabled, and an Apple ID signed into Xcode Settings ▸ Accounts.
 
 Do not commit local signing files, provisioning profiles, certificates, Plex tokens, server
 hostnames, or LAN IPs.
@@ -111,7 +107,7 @@ Woodpecker runs the portable CI checks: split `PMSKit` tests, repo hygiene, and 
 visionOS simulator `xcodebuild` remains a local macOS/Xcode validation step unless or until a future
 macOS-runner CI job is added. A future App Store/TestFlight pass can add distribution signing,
 entitlements review, screenshots, privacy metadata, and store-specific release automation later; it
-is intentionally not part of this personal sideload setup.
+is intentionally not part of today's local-build setup.
 
 See [`CONTRIBUTING.md`](https://github.com/jlipworth/VisionPlay/blob/main/CONTRIBUTING.md) for contributor workflow and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
 gotchas worth knowing before changing the player or transcode code. Current architecture docs start at
@@ -134,10 +130,11 @@ Current architecture and operating guidance lives in the top-level files under [
 This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](https://github.com/jlipworth/VisionPlay/blob/main/LICENSE) for the
 full text.
 
-For distribution through the Apple App Store / TestFlight, a GPLv3 **section 7 additional permission**
+There is no App Store build today; the project carries a GPLv3 **section 7 additional permission**
+to preserve that option for future Apple App Store / TestFlight distribution. It
 applies — see [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/VisionPlay/blob/main/APP-STORE-EXCEPTION.md). It resolves the well-known
-GPL-vs-App-Store conflict while keeping copyleft fully intact: the source stays GPL and any fork must
-remain open.
+GPL-vs-App-Store conflict while keeping copyleft intact: distributed modified versions must still
+provide corresponding source under GPLv3.
 
 Copyright (C) 2026 Jonathan Lipworth
 

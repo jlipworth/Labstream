@@ -3,8 +3,8 @@
 Copyright (C) 2026 Jonathan Lipworth
 
 VisionPlay is licensed under the GNU General Public License v3.0 (see
-[`LICENSE`](https://github.com/jlipworth/VisionPlay/blob/main/LICENSE)). As the sole copyright holder, I grant the following
-**additional permission** under section 7 of that license. This permission does
+[`LICENSE`](https://github.com/jlipworth/VisionPlay/blob/main/LICENSE)). For code to which I hold copyright, I grant the following
+**additional permission** under section 7 of that license. Contributions are accepted only on the understanding that this same additional permission applies to the contributed work as part of VisionPlay. This permission does
 **not** weaken copyleft: the complete corresponding source of any distributed
 version must still be made available under the GPLv3.
 
@@ -36,5 +36,5 @@ build, modify, and redistribute that source under the GPLv3.
 
 *Rationale: the GPLv3 is widely understood to conflict with App Store
 distribution terms (the FSF/VLC precedent). This section-7 additional permission
-resolves that specific conflict while preserving copyleft, so the source on
-GitHub stays GPL and any fork must remain open.*
+resolves that specific conflict while preserving copyleft. Distributed modified
+versions must still provide corresponding source under the GPLv3.*

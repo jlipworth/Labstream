@@ -6,6 +6,31 @@ System entries route through `SystemEntryRouter` into the existing app window. T
 
 `ContentView` registers `AppModel` and `AuthManager` before restore completes so cold-launch intents and Spotlight opens can queue safely until browsing is ready.
 
+```mermaid
+sequenceDiagram
+  participant Entry as Intent/Spotlight/UserActivity/Cinema exit
+  participant Router as SystemEntryRouter
+  participant CV as ContentView
+  participant Auth as AuthManager
+  participant Model as AppModel
+  participant Nav as Main browse navigation
+
+  Entry->>Router: route request
+  Router->>CV: enqueue route on existing window
+
+  alt restore not complete
+    CV->>Auth: wait for restore
+    Auth-->>CV: session ready/not ready
+  end
+
+  CV->>Model: resolve backend-scoped item
+  alt signed in and routable
+    Model-->>Nav: push detail/player path
+  else not ready / wrong backend
+    Model-->>CV: clear failure
+  end
+```
+
 ## App Intents
 
 VisionPlay exposes intents for:

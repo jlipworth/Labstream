@@ -1,11 +1,28 @@
 # Testing strategy
 
-> **Companion docs (issue #75):** [`TESTING-LIVE-MATRIX.md`](TESTING-LIVE-MATRIX.md) is the
+> **Companion docs:** [`TESTING-LIVE-MATRIX.md`](TESTING-LIVE-MATRIX.md) is the
 > row-by-row coverage map (screens, menus, playback, downloads, profiles, subtitles) showing where
 > each flow is exercised across the mocked-unit / live-probe / device layers;
 > [`TESTING-LIVE-REQUIREMENTS.md`](TESTING-LIVE-REQUIREMENTS.md) documents the live-server fixtures,
 > the env-var/secret gate, cleanup expectations, and CI enablement. This doc remains the high-level
 > strategy (what may/may not become a required CI assertion; device-only gates).
+
+```mermaid
+flowchart TD
+  Behavior[Behavior to validate] --> Unit{Pure/request/policy?}
+  Unit -->|yes| PMSKit[PMSKit unit tests]
+  Unit -->|no| Server{Needs real server verdict?}
+
+  Server -->|yes| LiveProbe[Opt-in Live*Probe]
+  Server -->|no| Simulator{Needs app runtime?}
+
+  Simulator -->|yes| SimSmoke[Worktree simulator build/install/launch/log/screenshot]
+  Simulator -->|no| Hygiene[Repo hygiene / docs / scripts checks]
+
+  LiveProbe --> Device{Needs AVP hardware/media plane?}
+  SimSmoke --> Device
+  Device -->|yes| Checklist[Manual TESTING-CHECKLIST.md]
+```
 
 ## CI / portable checks
 

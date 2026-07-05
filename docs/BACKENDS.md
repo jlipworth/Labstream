@@ -19,6 +19,32 @@ Downloads/offline behavior is intentionally out of scope for this backend overvi
 | Progress | PMS timeline/scrobble endpoints | Jellyfin session/progress path where available | `POST /Sessions/Playing`, `/Sessions/Playing/Progress`, `/Sessions/Playing/Stopped`, `/Sessions/Playing/Ping` |
 | Cleanup | Explicit transcode stop endpoint | Stop active encoding/session where available | `DELETE /Videos/ActiveEncodings?DeviceId=&PlaySessionId=`, called when the resolved source uses server-side encoding (`usesServerEncoding`) — **separate from `Stopped`** |
 
+```mermaid
+flowchart TD
+  User[User selects backend] --> PlexChoice{Plex?}
+  User --> JFChoice{Jellyfin?}
+  User --> EmbyChoice{Emby?}
+
+  PlexChoice --> PlexPIN[Plex PIN OAuth]
+  PlexPIN --> PlexAcct[Plex account/resource discovery]
+  PlexAcct --> PlexKeychain[Persist account token + server token/id]
+
+  JFChoice --> JFAuth[Server URL + login or Quick Connect]
+  JFAuth --> JFKeychain[Persist server URL + access token + user/server id]
+
+  EmbyChoice --> EmbyMode{Connect PIN or manual?}
+  EmbyMode --> EmbyConnect[Emby Connect PIN exchange]
+  EmbyMode --> EmbyManual[AuthenticateByName]
+  EmbyConnect --> EmbyLocal[Exchange to local server session]
+  EmbyManual --> EmbyKeychain[Persist local server URL + access token + user/server id]
+  EmbyLocal --> EmbyKeychain
+
+  PlexKeychain --> Restore[AuthManager restore]
+  JFKeychain --> Restore
+  EmbyKeychain --> Restore
+  Restore --> AppModel[AppModel selected backend/session]
+```
+
 ## Abstraction rule
 
 Do not introduce a broad backend protocol across Plex, Jellyfin, and Emby. Plex differs fundamentally in auth, library shape, stream resolution, timeline/progress, and PMS-specific feature support.

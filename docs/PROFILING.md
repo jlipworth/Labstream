@@ -82,7 +82,7 @@ Keep signpost payloads numeric or generic. Do not signpost media titles, server 
 URLs, tokens, client identifiers, or local paths.
 
 
-## Issue #42 repeatable load-time spans
+## Repeatable load-time spans
 
 The profiling log summarizer is Python stdlib-only, but it is intentionally pinned through the repo
 `pyproject.toml`/`uv.lock` so repeated local and CI runs use a known Python toolchain. Use `uv run`

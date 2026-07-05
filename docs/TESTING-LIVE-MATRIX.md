@@ -1,4 +1,4 @@
-# Live-server test matrix (issue #75)
+# Live-server test matrix
 
 This is the **design + coverage map** for live-server integration testing of VisionPlay against a
 real media server (Plex first; Jellyfin/Emby as the parallel lanes mature). It answers three

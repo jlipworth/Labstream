@@ -14,6 +14,21 @@ Passwords are not persisted. Emby Connect cloud tokens/access keys are used only
 
 `KeychainStore` uses `kSecAttrAccessibleAfterFirstUnlock`. Simulator/debug fallback files are only a development/migration escape hatch and should not be treated as a second source of truth.
 
+```mermaid
+flowchart LR
+  App[VisionPlay app] --> Keychain[KeychainStore]
+  App --> Defaults[UserDefaults]
+  App --> DownloadStore[DownloadStore index.json]
+  App --> DevFallback[Simulator/debug fallback files]
+
+  Keychain --> Secrets[Plex/Jellyfin/Emby tokens, server ids, client id]
+  Defaults --> Prefs[Quality, subtitles, speed, diagnostics toggles]
+  DownloadStore --> Offline[Offline records + relative file paths]
+  DevFallback -. development only .-> Keychain
+
+  PMSKit[PMSKit Codable models] --> DownloadStore
+```
+
 ### Emby session fields
 
 `KeychainStore` persists four Emby session keys: `embyServerURL`, `embyAccessToken`, `embyUserID`, and `embyServerID`.
@@ -26,6 +41,28 @@ On launch, `AuthManager.restoreEmbySession()` reads those keys back into `AppMod
 
 - `401`/`403`: clear the session and force re-login via `signOutEmby()`.
 - transient unreachable/server errors: keep the saved session and surface an offline/unreachable state rather than logging the user out.
+
+```mermaid
+sequenceDiagram
+  participant App as App launch
+  participant Auth as AuthManager
+  participant KC as KeychainStore
+  participant Emby as Emby server
+  participant Model as AppModel
+
+  App->>Auth: restoreEmbySession()
+  Auth->>KC: read URL/token/user/server ids
+  Auth->>Emby: userViewsRequest validation
+
+  alt 200 OK
+    Auth->>Model: restore signed-in Emby session
+  else 401/403
+    Auth->>KC: clear Emby keys
+    Auth->>Model: require re-login
+  else unreachable/transient
+    Auth->>Model: keep session, surface offline/unreachable
+  end
+```
 
 On explicit sign-out, the Emby keys are cleared locally.
 

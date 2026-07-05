@@ -8,7 +8,7 @@ live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the 
 
 ```sh
 # This worktree's simulator. In the main worktree this resolves to the golden
-# D9BD8E9D…; in a linked worktree it's that worktree's own cloned sim (see
+# sim recorded in <main>/.simid; in a linked worktree it's that worktree's own cloned sim (see
 # "Worktree simulators" below). It may be Shutdown — boot it first.
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
@@ -125,8 +125,8 @@ Each worktree gets its own visionOS simulator so parallel worktrees don't clobbe
 other's app container / login. `scripts/worktree-sim.sh` is the single source of truth;
 the same script backs both the git hook and these agent steps.
 
-- The **main** worktree owns the *golden* logged-in sim (`D9BD8E9D…`, recorded in
-  `<main>/.simid`). Never delete it.
+- The **main** worktree owns the *golden* logged-in sim (recorded in `<main>/.simid`).
+  Never delete it.
 - A **linked** worktree gets a `vpwt-<branch>-<hash>` clone of the golden, created **shut down**
   (boot it yourself when building). Its UDID lives in `<worktree>/.simid` (git-ignored).
 - `scripts/worktree-sim.sh id` prints this worktree's UDID — used as `$SIMID` above.
@@ -231,9 +231,9 @@ Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 - Never commit Plex tokens or client identifiers.
 - Never reintroduce the scrubbed real PMS hostname or LAN IP; the repo uses
   `plex.example.internal` / `192.0.2.10` as placeholders.
-- The repo WILL BE MADE PUBLIC eventually. Before committing any externally-authored
+- Treat the repository and GitHub issues as public. Before committing any externally-authored
   doc/report/log, scrub personal identifiers: real hostnames/domains, ssh usernames,
-  media titles/library paths, home timezone, local `/Users/...` paths. If something
+  media titles/library paths, home timezone, local home-directory paths. If something
   sensitive was already PUSHED, history must be rewritten with `git filter-repo`
   (amend/reset suffices only while unpushed). GH issues also become public — keep
   identifying details out of issue bodies/comments too.

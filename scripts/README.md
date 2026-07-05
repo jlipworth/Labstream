@@ -32,7 +32,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
 Examples:
 
 - `live-download-probe.sh`, `live-download-status-probe.sh`, `live-optimize-probe.sh` — Plex download/optimizer checks.
-- `live-emby-probe.sh`, `live-emby-download-probe.sh` — Emby auth/browse/playback/download wire checks.
+- `live-emby-probe.sh` and `probe-emby-download.sh` — Emby auth/browse/playback and simulator download-lane checks.
 - `live-segment-probe.sh`, `live-subtitle-burn-probe.sh`, `live-sidecar-subtitle-probe.sh` — playback/profile/subtitle server checks.
 
 Before adding a new live probe, document its required env keys, make it no-op safely when env is missing, and ensure logs redact tokens, hostnames, titles, and file paths.

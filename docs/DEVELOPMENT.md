@@ -24,8 +24,10 @@ scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay
 scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-APP="$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-<hash>/Build/Products/Debug-xrsimulator/VisionPlay.app"
-xcrun simctl install "$SIMID" "$APP" && xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
+APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+xcrun simctl install "$SIMID" "$APP"
+xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null || true
+xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
 
 # After-the-fact logs
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"' --style compact
@@ -39,9 +41,9 @@ xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPl
 
 ## Personal-device signing
 
-Simulator builds stay unsigned. For Apple Vision Pro sideload installs, prefer `scripts/deploy-to-device.sh` (or `--launch` / `--no-build`) so device signing stays consistent. Keep the Apple Developer
-Team ID local and out of git by creating `Signing.local.xcconfig`. The bundle ID and signing style
-are committed project settings; the local file should contain only:
+Simulator builds stay unsigned. For Apple Vision Pro installs, prefer `scripts/deploy-to-device.sh` (or `--launch` / `--no-build`) so device signing stays consistent. The script builds a signed device slice, derives the correct development team from the Apple Development certificate, installs with `devicectl`, and avoids the recurring team-ID trap.
+
+You still need a paired headset, Developer Mode enabled, and an Apple ID signed into Xcode Settings ▸ Accounts. Advanced users can override the team with a local-only `Signing.local.xcconfig` containing:
 
 ```xcconfig
 DEVELOPMENT_TEAM = YOUR_TEAM_ID
@@ -54,7 +56,7 @@ Do not commit:
 - Plex tokens, client secrets, real server hostnames, or LAN IPs
 
 Developer Mode and the first-launch trust prompt on device are Apple's normal security gate for
-personal development builds. App Store/TestFlight distribution signing, entitlement cleanup, store
+development builds. App Store/TestFlight distribution signing, entitlement cleanup, store
 metadata, and review-specific release automation can be handled in a later publication pass.
 
 ## Docs site
@@ -235,8 +237,8 @@ CI installs `requirements.txt` and runs `mkdocs build --strict` before deploying
 - **Primary-window plus Cinema constraint:** normal browsing/playback uses one main `WindowGroup`
   and the player presents as a `.fullScreenCover`. Cinema is the exception: it uses an
   `ImmersiveSpace` and may reopen the main window on exit. Do not add unrelated secondary windows.
-- **Server:** configured per-user at sign-in (a Cloudflare-fronted PMS over `:443`). The real
-  hostname/LAN IP are intentionally kept out of the repo.
+- **Server configuration:** selected per user at sign-in. Keep real hostnames, LAN IPs, domains,
+  and account-specific topology out of docs, logs, and issues.
 - **Emby `Stopped` is NOT encoder cleanup.** `POST /Sessions/Playing/Stopped` reports session/progress
   state only; it does not terminate a server-side encoder. Any Emby source that used server-side encoding
   (the transcode/HLS path — `EmbyPlaybackOpenResult.usesServerEncoding == true`) MUST also be torn down with
@@ -250,8 +252,8 @@ CI installs `requirements.txt` and runs `mkdocs build --strict` before deploying
 - **Emby tokens leak through URLs, not just headers — redact `api_key`.** The Emby auth token rides three
   ways: the `Authorization: Emby … Token="…"` header, the `X-Emby-Token` header, AND the server-generated
   HLS/direct-stream URL as an `api_key=` query value. That last one is why diagnostics/log output must scrub
-  `api_key=` (and `X-Emby-Token`) — a logged stream URL otherwise prints the live token. The repo is going
-  public; `LiveEmbyProbe`/`live-emby-probe.sh` already redact token, `api_key`, and the live scheme/host, and
+  `api_key=` (and `X-Emby-Token`) — a logged stream URL otherwise prints the live token. Treat every
+  committed file and GitHub issue as public; `LiveEmbyProbe`/`live-emby-probe.sh` already redact token, `api_key`, and the live scheme/host, and
   the same discipline applies anywhere an Emby URL or header set is logged. (Per the general rule, also never
   `NSLog` a raw `%`.)
 - **Emby is its own auth scheme — `Emby `, not `MediaBrowser `.** `EmbyAuth.authorizationHeader` emits
@@ -457,8 +459,8 @@ link):
 
 ## Plex copy-lane startup deadlines: why Original quality "never loaded" (GH #196)
 
-Root-caused live (2026-07-03) with a bare-AVPlayer raw-URL probe against a real PMS over
-Cloudflare (~50–57 Mbps link, 62.7 Mbps 4K HEVC video-copy stream):
+Root-caused live (2026-07-03) with a bare-AVPlayer raw-URL probe against a real remote PMS link with
+bandwidth below the source bitrate:
 
 - **AVFoundation enforces hard per-media-file startup deadlines**: `-12889` "No response
   for media file in 10s" and `-16830` "Media file not received in 20s". On a miss it

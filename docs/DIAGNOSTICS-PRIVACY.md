@@ -24,6 +24,23 @@ Use `DiagnosticFieldValue` constructors instead of raw strings:
 
 The redaction layer runs at field construction/rendering time. Do not add raw URL/token/server/title strings to diagnostic fields.
 
+```mermaid
+flowchart TD
+  Event[Runtime event] --> Fields[DiagnosticFieldValue constructors]
+  Fields --> Redact[Redaction at construction/render time]
+  Redact --> Ring[Bounded local storage]
+
+  MetricKit[Passive MetricKit summaries] --> MXRedact[Redacted summary storage]
+  MXRedact --> Report
+
+  Ring --> Report[Diagnostic report builder]
+  UserText[Optional user feedback] --> Scrub[Best-effort scrub + preview]
+  Scrub --> Report
+
+  Report --> Preview[User preview]
+  Preview --> Export[Copy/export/share by user action only]
+```
+
 ## Report contents
 
 The report may include:

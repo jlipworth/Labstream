@@ -1,6 +1,6 @@
 # VisionPlay — Privacy Policy
 
-_Last updated: 2026-06-26_
+_Last updated: 2026-07-05_
 
 VisionPlay is a personal media client for Apple Vision Pro that connects to a
 Plex Media Server, Jellyfin server, or Emby server **that you choose and
@@ -29,18 +29,18 @@ control**. It is designed to collect as little as possible.
 - **Playback preferences and resume positions** are stored locally
   (UserDefaults) and, where applicable, reported to your selected media server as
   that backend's normal playback-state/progress feature.
-- **Offline downloads** you choose to make are stored in the app's private
-  container on your device and can be deleted at any time from within the app or
-  by removing the app.
+- **Offline downloads** you choose to make are stored in VisionPlay's private app
+  container on your device and can be deleted from within the app or by removing
+  the app.
 - **Spotlight, Siri, and Shortcuts media suggestions** can expose browsed media
   titles and summaries to Apple system surfaces on your device. You can turn this
   off in Settings with **Show Media in Spotlight & Siri**; turning it off stops
   new Spotlight indexing, clears VisionPlay's Spotlight index, and removes media
   title entity results from VisionPlay's Shortcuts/App Intents queries.
 - **Opt-in diagnostic logs** are off by default. If you enable diagnostic logging
-  in Settings, VisionPlay keeps recent app events in a bounded local ring buffer
-  so you can copy a bug-report summary after reproducing a problem. This
-  diagnostic report is user-initiated only and is not uploaded automatically.
+  in Settings, VisionPlay keeps recent app events in bounded local storage so you
+  can copy, export, or share a bug-report summary after reproducing a problem.
+  This diagnostic report is user-initiated only and is not uploaded automatically.
 - **Passive MetricKit crash/hang summaries** may be delivered by visionOS after a
   bad run and stored locally in a small bounded list. VisionPlay keeps only
   redacted summary fields for inclusion in a report you explicitly preview/copy/
@@ -49,14 +49,15 @@ control**. It is designed to collect as little as possible.
 
 ## Diagnostic reports
 
-When you tap **Copy diagnostic report**, export a report, or open the feedback
-sheet, VisionPlay includes safe app/server product/version information, backend
-name, connection scheme, selected quality settings, a recent playback snapshot
-when available, passive redacted MetricKit summaries when present, and recent
-redacted events when diagnostic logging was enabled. The diagnostics API and
-report renderer are designed to omit sensitive values such as Plex/Jellyfin/Emby
-tokens, client identifiers, hostnames/IP addresses, full URLs, usernames,
-library paths, filenames, and media titles.
+When you tap **Send feedback to developer**, **Copy diagnostic report**, or
+**Export diagnostic report file**, VisionPlay includes safe app/server
+product/version information, backend name, connection scheme, selected quality
+settings, Adaptive Bitrate state when available, a recent playback snapshot when
+available, passive redacted MetricKit summaries when present, and recent redacted
+events when diagnostic logging was enabled. The diagnostics API and report
+renderer are designed to omit sensitive values such as Plex/Jellyfin/Emby tokens,
+client identifiers, hostnames/IP addresses, full URLs, usernames, library paths,
+filenames, and media titles.
 
 The optional free-form feedback note is best-effort scrubbed and shown in the
 preview before sharing, but ordinary prose can still contain a media title or
@@ -91,8 +92,7 @@ VisionPlay is not directed at children and collects no personal information.
 ## Contact
 
 Questions about privacy: open an issue at
-<https://github.com/jlipworth/VisionPlay/issues> (or the support contact listed
-in the App Store).
+<https://github.com/jlipworth/VisionPlay/issues>.
 
 ## Changes
 
