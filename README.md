@@ -109,7 +109,7 @@ macOS-runner CI job is added. A future App Store/TestFlight pass can add distrib
 entitlements review, screenshots, privacy metadata, and store-specific release automation later; it
 is intentionally not part of today's local-build setup.
 
-See [`CONTRIBUTING.md`](https://github.com/jlipworth/VisionPlay/blob/main/CONTRIBUTING.md) for contributor workflow and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for install/launch, logging, and the platform
+See the published docs site at <https://jlipworth.github.io/VisionPlay/>. Contributor workflow lives in [`CONTRIBUTING.md`](https://github.com/jlipworth/VisionPlay/blob/main/CONTRIBUTING.md), and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) covers install/launch, logging, and the platform
 gotchas worth knowing before changing the player or transcode code. Current architecture docs start at
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), with focused notes for
 [`playback`](docs/PLAYBACK-ARCHITECTURE.md), [`backends`](docs/BACKENDS.md),
