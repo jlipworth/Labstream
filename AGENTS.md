@@ -18,7 +18,7 @@ scripts/deploy-to-device.sh --no-build # reinstall last build without rebuilding
 One-time GUI prereqs (an agent can't do these): pair the headset, and sign an Apple ID
 into Xcode ▸ Settings ▸ Accounts (a keychain cert alone is not enough → "No Account for
 Team" build failure). Free-team provisioning profiles expire ~7 days — just re-run the
-script. The dev build shares the bundle id `com.jlipworth.VisionPlay` with the App Store
+script. The dev build shares the bundle id `com.jlipworth.Labstream` with the App Store
 build, so only one is installed at a time (the dev install clobbers App Store state).
 Full detail + traps: `.claude/skills/deploy-to-device/SKILL.md`.
 
@@ -35,7 +35,7 @@ scripts/headset-evidence.sh
 This is read-only: it does not install, launch, delete, or mutate the headset. It writes a
 local bundle under `build/headset-evidence/` with `devicectl` JSON/log artifacts, bounded
 app-container listings, known Labstream diagnostic files when present, and the legacy
-`VisionPlay/Downloads/index.json` app-support path when available. Treat the bundle as private; redact
+`Labstream/Downloads/index.json` app-support path when available. Treat the bundle as private; redact
 device IDs, server details, media names, item IDs, tokens, and playSession IDs before any
 public GitHub text.
 

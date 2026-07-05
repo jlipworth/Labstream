@@ -112,7 +112,7 @@ struct EmbyConvertJobTests {
         let req = try EmbyConvertRequest.createJobRequest(
             server: server, token: token, identity: identity,
             userId: userId, itemId: "item-placeholder",
-            quality: "custom", profile: "tv", bitrate: 8_000_000, name: "Title [VisionPlay abcd1234]")
+            quality: "custom", profile: "tv", bitrate: 8_000_000, name: "Title [Labstream abcd1234]")
         let data = try #require(req.httpBody)
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
@@ -122,7 +122,7 @@ struct EmbyConvertJobTests {
         let req = try EmbyConvertRequest.createJobRequest(
             server: server, token: token, identity: identity,
             userId: userId, itemId: "item-placeholder",
-            quality: "custom", profile: "tv", bitrate: 8_000_000, name: "Title [VisionPlay abcd1234]")
+            quality: "custom", profile: "tv", bitrate: 8_000_000, name: "Title [Labstream abcd1234]")
         #expect(req.httpMethod == "POST")
         #expect(req.url?.path == "/Sync/Jobs")
         #expect(req.value(forHTTPHeaderField: "Content-Type") == "application/json")
@@ -140,7 +140,7 @@ struct EmbyConvertJobTests {
         #expect(body["quality"] as? String == "custom")
         #expect(body["profile"] as? String == "tv")
         #expect(body["bitrate"] as? Int == 8_000_000)
-        #expect(body["name"] as? String == "Title [VisionPlay abcd1234]")
+        #expect(body["name"] as? String == "Title [Labstream abcd1234]")
         #expect(body["unwatchedOnly"] as? Bool == false)
         #expect(body["syncNewContent"] as? Bool == false)
         #expect(body["category"] is NSNull)
@@ -286,7 +286,7 @@ struct EmbyConvertJobTests {
             server: server, token: token, identity: identity,
             userId: userId, itemId: "item-placeholder",
             quality: q.quality, profile: q.profile, bitrate: q.bitrate,
-            name: "Title [VisionPlay abcd1234]",
+            name: "Title [Labstream abcd1234]",
             container: q.container, videoCodec: q.videoCodec, audioCodec: q.audioCodec)
         let data = try #require(req.httpBody)
         let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])

@@ -150,7 +150,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
 @Test func backgroundItemsDecodeLenientlyWithIntIdAndStatusState() throws {
     let json = """
     {"MediaContainer":{"size":2,"Item":[
-      {"id":7,"title":"Old Movie [VisionPlay aaaa1111]","Status":{"state":"pending"}},
+      {"id":7,"title":"Old Movie [Labstream aaaa1111]","Status":{"state":"pending"}},
       {"id":"8","title":"Library Scan"}
     ]}}
     """.data(using: .utf8)!
@@ -171,15 +171,15 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
 @Test func staleItemIDsOnlyOurMarkedUnprotectedItems() throws {
     let json = """
     {"MediaContainer":{"Item":[
-      {"id":"1","title":"Abandoned A [VisionPlay aaaa1111]"},
-      {"id":"2","title":"In Flight [VisionPlay bbbb2222]"},
+      {"id":"1","title":"Abandoned A [Labstream aaaa1111]"},
+      {"id":"2","title":"In Flight [Labstream bbbb2222]"},
       {"id":"3","title":"Someone Else's Job"},
-      {"id":"4","title":"Abandoned B [VisionPlay cccc3333]"}
+      {"id":"4","title":"Abandoned B [Labstream cccc3333]"}
     ]}}
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let protected: Set<String> = ["In Flight [VisionPlay bbbb2222]"]
-    let stale = q.staleItemIDs(marker: "[VisionPlay ", protectedTitles: protected)
+    let protected: Set<String> = ["In Flight [Labstream bbbb2222]"]
+    let stale = q.staleItemIDs(marker: "[Labstream ", protectedTitles: protected)
     // Deletes our two abandoned items; never the protected in-flight one, never the
     // non-Labstream job (no marker).
     #expect(Set(stale) == ["1", "4"])
@@ -188,13 +188,13 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
 @Test func staleItemIDsSkipsCompletedJobsWhoseFileMayBeDownloading() throws {
     let json = """
     {"MediaContainer":{"Item":[
-      {"id":"1","title":"Pending Junk [VisionPlay aaaa1111]","Status":{"state":"pending"}},
-      {"id":"2","title":"Just Finished [VisionPlay bbbb2222]","Status":{"state":"complete"}},
-      {"id":"3","title":"Failed Junk [VisionPlay cccc3333]","Status":{"state":"error"}}
+      {"id":"1","title":"Pending Junk [Labstream aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Just Finished [Labstream bbbb2222]","Status":{"state":"complete"}},
+      {"id":"3","title":"Failed Junk [Labstream cccc3333]","Status":{"state":"error"}}
     ]}}
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let stale = q.staleItemIDs(marker: "[VisionPlay ", protectedTitles: [])
+    let stale = q.staleItemIDs(marker: "[Labstream ", protectedTitles: [])
     // Clears the pending + failed pileup, but NOT the completed job (its file may be in use).
     #expect(Set(stale) == ["1", "3"])
 }
@@ -207,15 +207,15 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     // removable; completed jobs must remain discoverable for app relaunch/retry.
     let json = """
     {"MediaContainer":{"Item":[
-      {"id":"1","title":"Pending Junk [VisionPlay aaaa1111]","Status":{"state":"pending"}},
-      {"id":"2","title":"Leftover A [VisionPlay bbbb2222]","Status":{"state":"complete"}},
-      {"id":"3","title":"Leftover B [VisionPlay cccc3333]","Status":{"state":"completed"}},
-      {"id":"4","title":"Failed Junk [VisionPlay dddd4444]","Status":{"state":"error"}},
-      {"id":"5","title":"Leftover C [VisionPlay eeee5555]","Status":{"state":"successful"}}
+      {"id":"1","title":"Pending Junk [Labstream aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Leftover A [Labstream bbbb2222]","Status":{"state":"complete"}},
+      {"id":"3","title":"Leftover B [Labstream cccc3333]","Status":{"state":"completed"}},
+      {"id":"4","title":"Failed Junk [Labstream dddd4444]","Status":{"state":"error"}},
+      {"id":"5","title":"Leftover C [Labstream eeee5555]","Status":{"state":"successful"}}
     ]}}
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: [])
+    let removable = q.removableItemIDs(marker: "[Labstream ", protectedTitles: [])
     // Only pending/failed items are cleared. Completed server renders stay available to be
     // discovered and downloaded after a long-running optimize or app relaunch.
     #expect(Set(removable) == ["1", "4"])
@@ -227,13 +227,13 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     // optimized version + its file on the server) would yank the file out from under the transfer.
     let json = """
     {"MediaContainer":{"Item":[
-      {"id":"1","title":"Downloading Now [VisionPlay aaaa1111]","Status":{"state":"complete"}},
-      {"id":"2","title":"Abandoned Leftover [VisionPlay bbbb2222]","Status":{"state":"complete"}}
+      {"id":"1","title":"Downloading Now [Labstream aaaa1111]","Status":{"state":"complete"}},
+      {"id":"2","title":"Abandoned Leftover [Labstream bbbb2222]","Status":{"state":"complete"}}
     ]}}
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let protected: Set<String> = ["Downloading Now [VisionPlay aaaa1111]"]
-    let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: protected)
+    let protected: Set<String> = ["Downloading Now [Labstream aaaa1111]"]
+    let removable = q.removableItemIDs(marker: "[Labstream ", protectedTitles: protected)
     // Completed items are preserved whether or not they are currently protected.
     #expect(removable.isEmpty)
 }
@@ -241,15 +241,15 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
 @Test func removableItemIDsNeverTouchesForeignClientItems() throws {
     let json = """
     {"MediaContainer":{"Item":[
-      {"id":"1","title":"Ours Pending [VisionPlay aaaa1111]","Status":{"state":"pending"}},
-      {"id":"2","title":"Ours Completed [VisionPlay bbbb2222]","Status":{"state":"complete"}},
+      {"id":"1","title":"Ours Pending [Labstream aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Ours Completed [Labstream bbbb2222]","Status":{"state":"complete"}},
       {"id":"3","title":"Someone Else's Optimize"},
       {"id":"4","title":"Another Client's Job","Status":{"state":"complete"}},
       {"id":"5","title":"Library Scan","Status":{"state":"running"}}
     ]}}
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let removable = q.removableItemIDs(marker: "[VisionPlay ", protectedTitles: [])
+    let removable = q.removableItemIDs(marker: "[Labstream ", protectedTitles: [])
     // Only non-completed items carrying OUR marker are candidates — foreign jobs and completed
     // server renders are never touched.
     #expect(Set(removable) == ["1"])

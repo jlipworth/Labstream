@@ -163,7 +163,7 @@ struct LiveDownloadStatusProbeTests {
             let data = try await send(request(cfg, path: key))
             let queue = try JSONDecoder().decode(BackgroundProcessingItems.self, from: data)
             print("""
-            >>> DLSTAT type42 items=\(queue.items.count) labstream_marked=\(queue.markedCount(marker: "[VisionPlay ")) \
+            >>> DLSTAT type42 items=\(queue.items.count) labstream_marked=\(queue.markedCount(marker: "[Labstream ")) \
             pending=\(queue.pendingCount)
             """)
         } catch {

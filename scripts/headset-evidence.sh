@@ -9,7 +9,7 @@
 set -u
 set -o pipefail
 
-BUNDLE_ID="com.jlipworth.VisionPlay"
+BUNDLE_ID="com.jlipworth.Labstream"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_OUT_ROOT="$REPO/build/headset-evidence"
 DEVICE_ID="${VP_DEVICE_ID:-}"
@@ -238,17 +238,17 @@ run_devicectl "app support listing" "$OUT/app-container-application-support.json
   device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support' --no-recurse
 
 run_devicectl "Labstream support listing" "$OUT/app-container-labstream-support.json" "$DEVLOG_DIR/app-container-labstream-support.log" \
-  device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support/VisionPlay' --no-recurse
+  device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support/Labstream' --no-recurse
 
 run_devicectl "Labstream downloads listing" "$OUT/app-container-labstream-downloads.json" "$DEVLOG_DIR/app-container-labstream-downloads.log" \
-  device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support/VisionPlay/Downloads' --no-recurse
+  device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support/Labstream/Downloads' --no-recurse
 
 run_devicectl "system crash log listing" "$OUT/system-crashlogs.json" "$DEVLOG_DIR/system-crashlogs.log" \
   device info files --device "$DEVICE_ID" --domain-type systemCrashLogs --columns '*' --no-recurse
 
 # 3. Copy high-value, bounded app-owned files only. Avoid copying actual media.
-copy_from_app_container 'Library/Application Support/VisionPlay/Downloads/index.json' 'Library/Application Support/VisionPlay/Downloads/index.json'
-copy_from_app_container 'Library/Application Support/VisionPlay/Diagnostics' 'Library/Application Support/VisionPlay/Diagnostics'
+copy_from_app_container 'Library/Application Support/Labstream/Downloads/index.json' 'Library/Application Support/Labstream/Downloads/index.json'
+copy_from_app_container 'Library/Application Support/Labstream/Diagnostics' 'Library/Application Support/Labstream/Diagnostics'
 copy_from_app_container 'Library/Application Support/Diagnostics' 'Library/Application Support/Diagnostics'
 copy_from_app_container 'Documents/Labstream-Diagnostic-Report.txt' 'Documents/Labstream-Diagnostic-Report.txt'
 copy_from_app_container 'Documents/Labstream-Feedback.txt' 'Documents/Labstream-Feedback.txt'
@@ -283,7 +283,7 @@ IDs, device IDs, and playSession IDs before sharing.
 
 1. Read \`summary.json\` for failed commands, classified failures, and copied files.
 2. If \`classified_failures\` contains \`developer_disk_image_mount_unauthorized\`, ask the human to wear/unlock/trust the headset and check Xcode Devices, then retry this script.
-3. Inspect \`app-container-files/Library/Application Support/VisionPlay/Downloads/index.json\` if present.
+3. Inspect \`app-container-files/Library/Application Support/Labstream/Downloads/index.json\` if present.
 4. Inspect any copied diagnostics report or diagnostics directory if present.
 5. Use the app-container JSON listings to decide whether another bounded file should be copied manually.
 6. Only then try heavier host unified-log/sysdiagnose paths; those may be unreliable for headset repros.

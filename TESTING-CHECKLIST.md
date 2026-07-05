@@ -57,7 +57,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       offline. Both paths now serve a STATIC file with a real Content-Length, so the % is server-
       reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
       unavailable there; device keeps the background session.) Logs:
-      `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.VisionPlay"'`
+      `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.Labstream"'`
 - [ ] **Off-head static Range continuation (GH #169, DEVICE-ONLY)** — start a large
       static/original/existing-version download while the headset is worn, wait for
       `downloads.range_start segment_kind=boundedCheckpoint`, then remove the headset while plugged
@@ -80,7 +80,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       rendered Part, then downloads it. The Plex optimizer POST/rendered-part contract is covered by
       `./scripts/live-optimize-probe.sh`; the Emby convert/reuse lane is covered by
       `scripts/probe-emby-download.sh --refresh-existing` and `--start-optimize`. Optimizer logs persist at os.log `.error`:
-      `log show --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Downloads"'`
+      `log show --predicate 'subsystem == "com.jlipworth.Labstream" AND category == "Downloads"'`
 - [ ] **Download sheet probe-failure fallback** — with the server briefly unreachable when the sheet
       opens, it still offers the optimize presets (it must never dead-end on a probe failure).
 - [x] **Static byte-range recovery probes (downloads holistic refactor)** ✅ sim-verified
@@ -103,7 +103,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       from the now-active lane).
 - [x] **Relaunch mid-flight reconcile (GH #84)** ✅ verified live (2026-06-21) — with a Plex
       server-prep row AND an Emby live-transcode row both in flight, force-quit
-      (`xcrun simctl terminate <SIMID> com.jlipworth.VisionPlay`) and relaunched: the Plex server-prep
+      (`xcrun simctl terminate <SIMID> com.jlipworth.Labstream`) and relaunched: the Plex server-prep
       row re-polled/resumed and completed (~3.17 GB); the Emby live-transcode row (no Content-Length)
       reconciled to failed/retryable ("Download failed. Tap to retry."); nothing false-failed or
       orphaned; completes stayed intact; no crash and `Migration events: 0`.
@@ -258,7 +258,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       - [ ] **Stop-before-restart** — quality switch, audio switch, in-player Retry, and a
             final-target deep-seek rebuild each log `transcode: stopping previous job before
             in-place restart` (Playback category — `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 5m
-            --predicate 'subsystem == "com.jlipworth.VisionPlay" AND category == "Playback"'`) and
+            --predicate 'subsystem == "com.jlipworth.Labstream" AND category == "Playback"'`) and
             the server never shows more than ONE `Plex Transcoder` for the session.
       - [ ] **Final-target coalescing** — scrub repeatedly into unbuffered territory on a heavy
             (4K HEVC/EAC3 MKV) title. During one drag, PMS sees only the settled final target, not

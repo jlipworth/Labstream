@@ -402,7 +402,7 @@ func friendlyMessage(_ error: Error) -> String {
     // Labstream-authored playback messages (e.g. the DV P5 guard block, GH #196) are
     // already user-safe — surface them verbatim instead of redacting to a code.
     let nsError = error as NSError
-    if nsError.domain == "VisionPlay.Playback",
+    if nsError.domain == "Labstream.Playback",
        let message = nsError.userInfo[NSLocalizedDescriptionKey] as? String {
         return message
     }

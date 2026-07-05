@@ -4,11 +4,11 @@
 Usage examples:
 
   xcrun simctl spawn booted log show --style json --last 15m \
-    --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
+    --predicate 'subsystem == "com.jlipworth.Labstream" && category == "Performance"' \
     | scripts/perf-log-summary.py --markdown
 
   log show --style compact --last 10m \
-    --predicate 'subsystem == "com.jlipworth.VisionPlay" && category == "Performance"' \
+    --predicate 'subsystem == "com.jlipworth.Labstream" && category == "Performance"' \
     | scripts/perf-log-summary.py --phase playback.startup
 
 The parser only consumes `perf.span key=value ...` lines emitted by

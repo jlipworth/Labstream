@@ -11,7 +11,7 @@ enum AppDiagnostics {
     static let enabledDefaultsKey = "diagnosticLoggingEnabled"
     static let maxReportEvents = 80
 
-    private static let subsystem = "com.jlipworth.VisionPlay"
+    private static let subsystem = "com.jlipworth.Labstream"
     private static let store = DiagnosticLogStore(
         capacity: 300,
         enabled: UserDefaults.standard.bool(forKey: enabledDefaultsKey)

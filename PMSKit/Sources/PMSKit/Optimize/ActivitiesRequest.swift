@@ -152,7 +152,7 @@ public struct PlexActivity: Decodable, Sendable, Equatable {
 
     /// `true` when this activity's human title/subtitle matches the **bare** media title
     /// (e.g. `"Blade Runner"`, NOT our suffixed optimize-queue title `"Blade Runner
-    /// [VisionPlay abc12345]"` — the server activity never carries that suffix). Normalized
+    /// [Labstream abc12345]"` — the server activity never carries that suffix). Normalized
     /// equality first, then a containment fallback for `"Title (year)"`-style subtitles.
     /// In-memory only — the title is NEVER logged (see `PlexActivity.title` doc).
     public func matchesTitle(_ mediaTitle: String?) -> Bool {

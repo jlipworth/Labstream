@@ -177,12 +177,12 @@ extension DownloadManager {
         convertMetadata.embyConvertSnapshotIDs = Array(snapshotIds)
 
         // NOTE: Emby IGNORES the submitted job `name` and stores the item's own title instead
-        // (verified live, Emby 4.9.3 — a "<title> [VisionPlay <hex>]" submission comes back stored
-        // as just "<title>"). So unlike Plex's `[VisionPlay …]` queue-title marker discipline, an
+        // (verified live, Emby 4.9.3 — a "<title> [Labstream <hex>]" submission comes back stored
+        // as just "<title>"). So unlike Plex's `[Labstream …]` queue-title marker discipline, an
         // Emby convert job CANNOT be tagged/identified by name. We instead identify and cancel our
         // jobs by the persisted `embyConvertJobID` (set immediately after create, below). The name
         // is still sent (harmless, matches the Emby web client) but is purely cosmetic.
-        let jobName = "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
+        let jobName = "\(item.title) [Labstream \(UUID().uuidString.prefix(8))]"
         let quality = EmbyConvertRequest.convertQuality(forPresetLabel: targetName)
 
         recordDownloadDiagnostic("downloads.convert_start", fields: [

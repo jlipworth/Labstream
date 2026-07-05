@@ -30,8 +30,8 @@ The capture directory is wiped per run, so frames always belong to the latest pr
 ```sh
 SIMID=$(scripts/worktree-sim.sh id)
 # build + install per CLAUDE.md (versioned script, CODE_SIGNING_ALLOWED=NO), then:
-xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null
-xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay \
+xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null
+xcrun simctl launch "$SIMID" com.jlipworth.Labstream \
   --vp-probe-backend emby --vp-probe-emby-playback \
   --vp-probe-capture-frames --vp-probe-query "Some Movie" \
   --vp-probe-bitrate-kbps 8000        # optional quality cap
@@ -41,7 +41,7 @@ xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstrea
   | grep -E 'probe\.(frame|pass|fail)'
 
 # pull the PNGs and Read them:
-DATA=$(xcrun simctl get_app_container "$SIMID" com.jlipworth.VisionPlay data)
+DATA=$(xcrun simctl get_app_container "$SIMID" com.jlipworth.Labstream data)
 /bin/ls "$DATA/Documents/ProbeCaptures/"*/
 ```
 

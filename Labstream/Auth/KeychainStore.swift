@@ -141,7 +141,7 @@ final class KeychainStore {
     private func fallbackDirectory() -> URL {
         fileManager
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("VisionPlaySecrets", isDirectory: true)
+            .appendingPathComponent("LabstreamSecrets", isDirectory: true)
     }
 
     private func fallbackURL(for account: String) -> URL {

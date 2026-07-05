@@ -31,7 +31,7 @@ import PMSKit
 ///     the encoder-teardown path.
 @MainActor
 enum DebugEmbyDownloadProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.VisionPlay", category: "EmbyDownloadProbe")
+    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "EmbyDownloadProbe")
 
     static func runIfRequested(appModel: AppModel, downloadManager: DownloadManager) async {
         let arguments = ProcessInfo.processInfo.arguments

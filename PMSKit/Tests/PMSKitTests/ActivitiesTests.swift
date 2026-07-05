@@ -120,7 +120,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
 
 @Test func suffixedQueueTitleDoesNotMatchBareServerSubtitle() throws {
     // Regression guard for the dead-code bug: our queue title carries a unique
-    // "[VisionPlay abcd1234]" suffix the server activity never contains, so passing the
+    // "[Labstream abcd1234]" suffix the server activity never contains, so passing the
     // SUFFIXED title must NOT match — only the bare title does.
     let json = """
     {"MediaContainer":{"Activity":[
@@ -128,7 +128,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     ]}}
     """.data(using: .utf8)!
     let a = try JSONDecoder().decode(Activities.self, from: json)
-    #expect(a.optimizeActivity(ratingKey: nil, title: "Blade Runner [VisionPlay abcd1234]") == nil)
+    #expect(a.optimizeActivity(ratingKey: nil, title: "Blade Runner [Labstream abcd1234]") == nil)
     #expect(a.optimizeActivity(ratingKey: nil, title: "Blade Runner") != nil)
 }
 
