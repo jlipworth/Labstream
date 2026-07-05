@@ -65,7 +65,7 @@ Labstream/
 ## Build & run
 
 This is a **source-first local-build** project today. The app identity is **Labstream** and the
-development bundle identifier is `com.jlipworth.VisionPlay`. It runs from Xcode on a visionOS 26.x
+development bundle identifier is `com.jlipworth.Labstream`. It runs from Xcode on a visionOS 26.x
 simulator unsigned, or on a registered Apple Vision Pro with local signing. Free Apple-ID profiles
 expire every 7 days, so a device install needs a periodic Mac-tethered rebuild. Developer Mode and
 the first-launch trust prompt are Apple's expected security gate for sideloaded development builds.

@@ -21,7 +21,7 @@ The script is read-only. It does not install, launch, delete, or mutate the head
 
 1. Run `scripts/headset-evidence.sh` first.
 2. Inspect `summary.json` for command failures, `classified_failures`, copied-file paths, and misses.
-3. Inspect copied app-owned diagnostics and `app-container-files/Library/Application Support/VisionPlay/Downloads/index.json` before guessing from UI symptoms.
+3. Inspect copied app-owned diagnostics and `app-container-files/Library/Application Support/Labstream/Downloads/index.json` before guessing from UI symptoms.
 4. Use the app-container JSON listings to decide whether another bounded file should be copied manually.
 5. Try host unified-log/sysdiagnose paths only opportunistically; prior headset runs found them less reliable than devicectl process/container evidence plus app-owned diagnostics.
 

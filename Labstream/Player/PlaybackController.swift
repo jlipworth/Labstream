@@ -53,7 +53,7 @@ typealias RemoteStreamReopener = (RemoteStreamReopenRequest) async throws -> Rem
 /// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
 /// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
 /// before an in-place restart (#27), which guards against the server-OOM job pile-up.
-let playbackLog = Logger(subsystem: "com.jlipworth.VisionPlay", category: "Playback")
+let playbackLog = Logger(subsystem: "com.jlipworth.Labstream", category: "Playback")
 
 /// Owns the `AVPlayer` for one playback session and drives Plex playback state.
 ///
@@ -2199,7 +2199,7 @@ final class PlaybackController {
                     // would 400 into an opaque -1008; fail fast with the DV message instead.
                     if dvGuardReason != nil {
                         NSLog("PlaybackController: PMS refused DV P5 tone-map, surfacing DV error (#196)")
-                        surfaceFailure(NSError(domain: "VisionPlay.Playback",
+                        surfaceFailure(NSError(domain: "Labstream.Playback",
                                                code: -196,
                                                userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage]))
                         return
@@ -3828,7 +3828,7 @@ final class PlaybackController {
         fields["dv_guard"] = .bool(true)
         recordPlaybackDiagnostic("playback.dv_guard_watchdog_fired", fields: fields)
         NSLog("PlaybackController: DV guard first-frame deadline expired, surfacing failure (#196)")
-        surfaceFailure(NSError(domain: "VisionPlay.Playback",
+        surfaceFailure(NSError(domain: "Labstream.Playback",
                                code: -196,
                                userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage]))
     }
@@ -3923,7 +3923,7 @@ final class PlaybackController {
                 NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
             }
             surfaceFailure(NSError(
-                domain: "VisionPlay.Playback", code: -1001,
+                domain: "Labstream.Playback", code: -1001,
                 userInfo: [NSLocalizedDescriptionKey: message]))
         }
     }
@@ -3993,7 +3993,7 @@ final class PlaybackController {
         recordPlaybackDiagnostic("playback.startup_deadline_failure", fields: fields)
         NSLog("PlaybackController: variant abandoned after startup deadlines and retry exhausted; surfacing failure (#196)")
         surfaceFailure(NSError(
-            domain: "VisionPlay.Playback",
+            domain: "Labstream.Playback",
             code: HLSStartupDeadlinePolicy.variantsRemovedCode,
             userInfo: [NSLocalizedDescriptionKey: HLSStartupDeadlinePolicy.failureMessage(errorLogCodes: codes)]))
     }
@@ -4323,7 +4323,7 @@ final class PlaybackController {
                 ])
                 NSLog("PlaybackController: remote stream reopen failed (%@)", Self.safeErrorSummary(error))
                 self.surfaceFailure(NSError(
-                    domain: "VisionPlay.Playback", code: -1004,
+                    domain: "Labstream.Playback", code: -1004,
                     userInfo: [NSLocalizedDescriptionKey:
                         "Couldn't reopen the stream at that position. Tap Retry or try a lower quality setting."]))
                 self.didStopRemoteSession = true
@@ -4395,7 +4395,7 @@ final class PlaybackController {
                 "target": .millisecondsBucket(targetMs),
             ])
             surfaceFailure(NSError(
-                domain: "VisionPlay.Playback", code: -1002,
+                domain: "Labstream.Playback", code: -1002,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Playback keeps falling behind the server. Tap Retry to rebuild the stream, or lower the quality setting."]))
         }
@@ -4504,7 +4504,7 @@ final class PlaybackError {
             return reconnect.errorDescription
         }
         let nsError = error as NSError
-        if nsError.domain == "VisionPlay.Playback" {
+        if nsError.domain == "Labstream.Playback" {
             return nsError.userInfo[NSLocalizedDescriptionKey] as? String
         }
         return DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Playback")

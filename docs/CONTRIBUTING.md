@@ -36,7 +36,7 @@ scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 xcrun simctl install "$SIMID" /path/to/Labstream.app
-xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
+xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' --style compact
 ```
 
@@ -52,7 +52,7 @@ scripts/deploy-to-device.sh --launch
 scripts/deploy-to-device.sh --no-build
 ```
 
-The script expects local signing state and a paired headset. The development build uses `com.jlipworth.VisionPlay`; installing it can replace another build with the same bundle id and app state may be reset when the app is deleted or overwritten across install sources.
+The script expects local signing state and a paired headset. The development build uses `com.jlipworth.Labstream`; installing it can replace another build with the same bundle id and app state may be reset when the app is deleted or overwritten across install sources.
 
 ## Validation expectations
 

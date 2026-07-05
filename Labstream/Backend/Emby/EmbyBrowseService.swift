@@ -242,7 +242,7 @@ struct EmbyBrowseService {
         switch dvVerdict {
         case .blockPlayback(let reason):
             NSLog("EmbyBrowseService: blocking playback (%@)", reason)
-            throw NSError(domain: "VisionPlay.Playback",
+            throw NSError(domain: "Labstream.Playback",
                           code: -196,
                           userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage])
         case .forceToneMapTranscode(let reason):

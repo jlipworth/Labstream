@@ -269,9 +269,9 @@ xcrun simctl install "$simid" "$app" >>"$outdir/install.log" 2>&1 || {
 }
 
 log_note "Launching Labstream..."
-xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
+xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
 set +e
-xcrun simctl launch "$simid" com.jlipworth.VisionPlay >"$outdir/launch.log" 2>&1
+xcrun simctl launch "$simid" com.jlipworth.Labstream >"$outdir/launch.log" 2>&1
 launch_exit_code=$?
 set -e
 if [ "$launch_exit_code" -ne 0 ]; then
@@ -298,7 +298,7 @@ sleep "$duration"
 stop_recording
 collect_tail_artifacts
 
-if xcrun simctl get_app_container "$simid" com.jlipworth.VisionPlay app >/dev/null 2>&1; then
+if xcrun simctl get_app_container "$simid" com.jlipworth.Labstream app >/dev/null 2>&1; then
   log_note "App container exists after launch."
 fi
 

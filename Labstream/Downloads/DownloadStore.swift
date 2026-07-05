@@ -78,7 +78,7 @@ final class DownloadStore: @unchecked Sendable {
     private let fileManager: FileManager
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
-    ///   `Application Support/VisionPlay/Downloads`, created if missing.
+    ///   `Application Support/Labstream/Downloads`, created if missing.
     init(baseDirectory: URL? = nil, fileManager: FileManager = .default) {
         self.fileManager = fileManager
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,

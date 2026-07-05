@@ -40,7 +40,7 @@ extension DownloadManager {
         let token = session.token
         let identity = appModel.identity
         let queueTitle = metadata.optimizeQueueTitle
-            ?? "\(item.title) [VisionPlay \(UUID().uuidString.prefix(8))]"
+            ?? "\(item.title) [Labstream \(UUID().uuidString.prefix(8))]"
         var optimizeMetadata = metadata
         optimizeMetadata.optimizeTargetName = targetName
         optimizeMetadata.optimizeQueueTitle = queueTitle
@@ -456,7 +456,7 @@ extension DownloadManager {
     /// background-processing queue. Completed optimize items are server-side artifacts that may
     /// contain the rendered file a relaunched app still needs to discover/download; deleting the
     /// queue item deletes that optimized version in Plex. Scoped hard: only items carrying our
-    /// `[VisionPlay …]` title marker, not currently in-flight (`serverPrepAttempts`), and not in a
+    /// `[Labstream …]` title marker, not currently in-flight (`serverPrepAttempts`), and not in a
     /// completed state are removed — never another client's jobs or completed server renders.
     private func cleanStaleOptimizeJobs(backgroundProcessingKey: String, server: URL,
                                         token: String, identity: ClientIdentity) async {
@@ -472,7 +472,7 @@ extension DownloadManager {
             ])
             return
         }
-        let marker = "[VisionPlay "
+        let marker = "[Labstream "
         let persistedProtectedTitles = Set(records.compactMap { record -> String? in
             guard record.status != .complete else { return nil }
             return record.metadata?.optimizeQueueTitle

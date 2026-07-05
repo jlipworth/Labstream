@@ -94,7 +94,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var lastRangeProgressDiagnostic: [Int: BackgroundRangeProgressDiagnosticSnapshot] = [:]
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.5
-    private static let appBundleIdentifier = "com.jlipworth.VisionPlay"
+    private static let appBundleIdentifier = "com.jlipworth.Labstream"
     private let lock = NSLock()
 
     /// #169/#190: the static byte-range lane downloads in bounded Range chunks via the

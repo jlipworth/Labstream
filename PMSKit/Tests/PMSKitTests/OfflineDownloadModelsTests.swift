@@ -200,7 +200,7 @@ struct OfflineDownloadModelsTests {
             sourcePartID: 42,
             sourcePartSize: 1_234_567_890,
             optimizeTargetName: "Original video quality",
-            optimizeQueueTitle: "Round Trip [VisionPlay 12345678]",
+            optimizeQueueTitle: "Round Trip [Labstream 12345678]",
             optimizeBaselinePartIDs: [42, 43, 44],
             posterRelativePath: "555.poster.jpg",
             plexBIFRelativePath: "555.plex-sd.bif",

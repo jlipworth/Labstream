@@ -14,7 +14,7 @@ import PMSKit
 /// signed in to Plex with a server selected.
 @MainActor
 enum DebugPlexPlaybackProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.VisionPlay", category: "PlexProbe")
+    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "PlexProbe")
 
     static func runIfRequested(appModel: AppModel) async {
         let arguments = ProcessInfo.processInfo.arguments

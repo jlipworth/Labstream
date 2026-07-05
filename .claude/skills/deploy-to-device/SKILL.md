@@ -35,7 +35,7 @@ only if you have several devices or teams. By default it masks device/team IDs i
    The keychain having an "Apple Development" cert is **not** enough — automatic
    provisioning also needs the Apple ID logged in here to mint/refresh the device
    profile. Without it the build fails with **`No Account for Team … / No profiles for
-   'com.jlipworth.VisionPlay' were found`**. A free/personal Apple ID works (see expiry
+   'com.jlipworth.Labstream' were found`**. A free/personal Apple ID works (see expiry
    below); a paid Developer Program membership works too and lasts a year.
 
 ## The two traps this script exists to dodge
@@ -93,12 +93,12 @@ security cms -D -i ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.m
 When it lapses the installed app refuses to launch ("Unable to verify app"). Fix =
 just re-run `scripts/deploy-to-device.sh` (a fresh `-allowProvisioningUpdates` build mints
 a new profile). Free teams also cap the number of distinct App IDs and devices — reusing
-the one `com.jlipworth.VisionPlay` bundle id keeps us well under it.
+the one `com.jlipworth.Labstream` bundle id keeps us well under it.
 
 ## Coexistence: Xcode-loaded build vs. App Store build
 
 The dev build and a future App Store ("consumer") build **share one bundle id**
-(`com.jlipworth.VisionPlay`). visionOS keys an installed app by bundle id, so:
+(`com.jlipworth.Labstream`). visionOS keys an installed app by bundle id, so:
 
 - **Only one can be installed at a time.** Installing the dev build **replaces** an App
   Store copy (and its data container), and vice-versa. They are different *signers*
@@ -108,7 +108,7 @@ The dev build and a future App Store ("consumer") build **share one bundle id**
 - **Today this is fine** — we only run the Xcode-loaded build on-device, so the collision
   is moot. Just be aware the dev install clobbers App Store state and login.
 - **When we need both side-by-side** (e.g. compare consumer vs. dev), the dev build needs
-  its **own** bundle id + display name — `com.jlipworth.VisionPlay.dev` /
+  its **own** bundle id + display name — `com.jlipworth.Labstream.dev` /
   "Labstream (Dev)" via a Debug-only `PRODUCT_BUNDLE_IDENTIFIER` suffix and
   `PRODUCT_NAME`. Not implemented yet (the user deferred it); when asked, add a
   `.dev` suffix in the Debug config and a Settings-bundle/`CFBundleDisplayName` marker so
