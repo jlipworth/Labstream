@@ -3,7 +3,7 @@
 Found something broken in VisionPlay? Here's the fastest way to get it fixed.
 
 VisionPlay sends **nothing** to the developer — it talks only to your own Plex,
-Jellyfin, or Emby server (see [PRIVACY.md](https://github.com/jlipworth/VisionPlay/blob/main/PRIVACY.md)). That means a GitHub
+Jellyfin, or Emby server (see the [Privacy Policy](privacy.md)). That means a GitHub
 issue is the only way we learn about a problem, and the more reproducible detail
 you give, the faster it gets fixed. The app has a built-in, **redacted**
 diagnostic report to make that easy and safe.
@@ -50,7 +50,7 @@ It is designed to **omit** sensitive values, including:
 Diagnostics are **off by default**, kept in bounded local storage, and **never
 uploaded by the app** — the report leaves your device only when *you* copy,
 export, or share it. For the full contract, see
-[Diagnostics and privacy](DIAGNOSTICS-PRIVACY.md) and [PRIVACY.md](https://github.com/jlipworth/VisionPlay/blob/main/PRIVACY.md).
+[Diagnostics and privacy](DIAGNOSTICS-PRIVACY.md) and the [Privacy Policy](privacy.md).
 
 ## Before you post: a 10-second privacy check
 

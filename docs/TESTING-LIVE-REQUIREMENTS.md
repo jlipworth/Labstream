@@ -166,7 +166,7 @@ Guidance:
    table above.
 4. Flip the relevant *(gap)* in `TESTING-LIVE-MATRIX.md` to the new probe name.
 5. Redact secrets in any printed URL/header; log codecs/decisions, never media titles or library
-   paths (this repo is going public).
+   paths. Treat every committed file and GitHub issue as public.
 6. **Proof discipline (avoid trivially-green tests).** Decode leniently (`try?` → nil → loud SKIP,
    never a false RED on a 200 with an unexpected body); never silently swallow a failed control
    leg (`Issue.record` or SKIP with a diagnostic); and don't assert an absolute value that can pass

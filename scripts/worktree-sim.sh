@@ -21,7 +21,6 @@
 #
 set -euo pipefail
 
-GOLDEN_FALLBACK="D9BD8E9D-8E58-485D-B332-F8CDF37133B5"
 NAME_PREFIX="vpwt-"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
@@ -34,10 +33,11 @@ main_worktree() { git worktree list --porcelain | awk '/^worktree /{print $2; ex
 
 is_main() { [ "$(worktree_root)" = "$(main_worktree)" ]; }
 
-# Golden UDID = main worktree's .simid, seeded from the known booted sim if absent.
+# Golden UDID = main worktree's .simid. The file is local/gitignored because simulator IDs are
+# machine-specific and should not be committed.
 golden_udid() {
   local f; f="$(main_worktree)/.simid"
-  if [ ! -f "$f" ]; then printf '%s\n' "$GOLDEN_FALLBACK" > "$f"; fi
+  if [ ! -f "$f" ]; then die "missing golden simulator id at $f; create it with this worktree's logged-in simulator UDID"; fi
   cat "$f"
 }
 

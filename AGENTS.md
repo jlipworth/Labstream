@@ -53,7 +53,7 @@ Each git worktree gets its own visionOS simulator so parallel worktrees don't cl
 each other's app container / login. `scripts/worktree-sim.sh` is the single source of
 truth (also invoked by a `post-checkout` git hook).
 
-- The **main** worktree owns the *golden* logged-in sim (`D9BD8E9D…`, in `<main>/.simid`).
+- The **main** worktree owns the *golden* logged-in sim (recorded in `<main>/.simid`).
   Never delete it.
 - A **linked** worktree gets a `vpwt-<branch>-<hash>` clone of the golden, created **shut down**;
   its UDID lives in `<worktree>/.simid` (git-ignored). Boot it yourself before building.

@@ -17,6 +17,29 @@ The downloads module is now split by responsibility rather than by one giant man
 
 This is the intended final architecture for the current refactor: the app layer still owns side effects and credentials, while PMSKit owns deterministic decisions that can be unit-tested without a simulator or server.
 
+```mermaid
+flowchart LR
+  UI[Download sheet / Offline tab] --> DM[DownloadManager coordinator]
+  DM --> Lanes[Backend manager extensions]
+  DM --> Store[DownloadStore index.json + files]
+  DM --> Session[BackgroundDownloadSession]
+  DM --> SideCache[Side asset cache]
+  DM --> Policies[PMSKit Downloads policies]
+
+  Lanes --> Plex[Plex optimize/static]
+  Lanes --> JF[Jellyfin static/live-forward]
+  Lanes --> Emby[Emby PlaybackInfo/convert/static]
+
+  Policies --> Route[Route planners]
+  Policies --> Retry[Retry/pause/delete policies]
+  Policies --> Range[Static range policies]
+  Policies --> Snapshot[Offline snapshot/row captions]
+
+  Session --> URLSession[URLSession tasks]
+  Session --> Validator[Final artifact validation]
+  Store --> Files[Media + sidecar files]
+```
+
 ## Route sketch
 
 ```mermaid
@@ -93,6 +116,32 @@ The app-driven simulator probe now covers the Emby optimized/reuse path against 
 
 ## Transfer sessions
 
+```mermaid
+stateDiagram-v2
+  [*] --> Enqueued
+  Enqueued --> PreparingOnServer: Plex optimize / Emby convert
+  Enqueued --> Transferring: static/live-forward route ready
+
+  PreparingOnServer --> Transferring: rendered/static source ready
+  PreparingOnServer --> Paused
+  PreparingOnServer --> Failed
+
+  Transferring --> Checkpointing: static byte-range chunk
+  Checkpointing --> Transferring: next range
+  Transferring --> Validating: bytes complete
+  Validating --> Complete
+  Validating --> Unverified
+  Validating --> Failed
+
+  Transferring --> Paused
+  Paused --> Transferring: resume/retry
+  Failed --> Enqueued: retry/re-probe
+
+  Complete --> Deleted
+  Failed --> Deleted
+  Paused --> Deleted
+```
+
 - Device builds use background `URLSession` for durable transfers.
 - Simulator builds use a foreground session where background download behavior is not reliable.
 - Downloads reject HTTP error bodies and invalid final files. Very small files are not rejected by byte size alone; they still must pass local AVFoundation playback validation.
@@ -134,6 +183,33 @@ immediately set down may not even *start* its Phase B transfer until the headset
 
 On launch, `DownloadManager` reconciles the persisted `DownloadStore` with in-flight transfer tasks and local files.
 
+```mermaid
+sequenceDiagram
+  participant App as App launch
+  participant DM as DownloadManager
+  participant Store as DownloadStore
+  participant BGS as BackgroundDownloadSession
+  participant PMS as PMSKit policies
+  participant Backend as Backend lane
+
+  App->>DM: restore downloads
+  DM->>Store: load index.json
+  Store-->>DM: records + file facts
+  DM->>BGS: enumerate/adopt URLSession tasks
+  BGS-->>DM: task identities/progress
+  DM->>PMS: reconcile records vs tasks/files
+
+  alt static range task needs auth
+    DM->>Backend: rebuild authenticated request
+    Backend-->>DM: request
+    DM->>BGS: continue from checkpoint
+  else duplicate/stale task
+    DM->>BGS: suppress/cancel stale owner
+  else complete file exists
+    DM->>Store: hydrate/publish snapshot
+  end
+```
+
 - Static original transfers are network-bound and can reconnect/retry as file downloads.
 - Plex optimizer jobs have two phases: server preparation, then static rendered-part download. Server-prep state is represented separately so the UI can say “Preparing on server…” and poll progress where possible.
 - Jellyfin compatible downloads and Emby compatible-remux/transcode paths can be live-forward encoder streams rather than durable server-prep jobs. When those paths are canceled, fail, or complete, VisionPlay sends active-encoding cleanup for the download play session where the backend exposes it. Emby convert-then-download is different: it is server prepare followed by a static existing-version transfer.
@@ -156,12 +232,7 @@ Operational rules:
 4. Use `--delete-after`/default cleanup unless intentionally preserving a row for a resume observation.
 5. Treat `build/probes/**` as private local evidence; do not paste server URLs, tokens, item IDs, or media paths into public issues.
 
-Current refactor evidence on 2026-06-30:
-
-- Plex existing-version static range: `build/probes/plex-range-drop/20260630T124843Z/` retried after an injected `-1005` drop and appended multiple 64 MiB checkpoints before cleanup.
-- Jellyfin static original: `build/probes/jellyfin-download/20260630T125201Z/` retried after an injected `-1005` drop and appended checkpoints through 268 MiB before cleanup.
-- Emby existing converted-source discovery: `build/probes/emby-download/20260630T125913Z/` refreshed the item, saw API-visible converted file sources, and did not start a transfer.
-- Emby optimize/reuse static range: `build/probes/emby-download/20260630T130201Z/` reused the existing converted source, recovered from injected/transient failures, appended checkpoints through 402 MiB, and cleaned up the row.
+Recent simulator probes have validated Plex static range recovery, Jellyfin static original recovery, and Emby converted-source reuse/static range recovery. Treat probe artifacts under `build/probes/**` as private local evidence and summarize only redacted outcomes in public issues.
 
 ## Offline playback metadata
 

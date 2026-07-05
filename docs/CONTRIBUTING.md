@@ -1,6 +1,8 @@
 # Contributing to VisionPlay
 
-VisionPlay is a personal-use, sideloaded visionOS media client. Contributions are welcome, but the safest workflow is to keep secrets/device state local, prove pure logic in `PMSKit`, and only use live servers or a headset when a change genuinely needs them.
+VisionPlay is a source-first visionOS media client for user-selected Plex, Jellyfin, and Emby servers. Contributions are welcome, but the safest workflow is to keep secrets/device state local, prove pure logic in `PMSKit`, and only use live servers or a headset when a change genuinely needs them.
+
+By contributing, you agree that your contribution is licensed under GPLv3 plus the same Apple distribution additional permission described in [`APP-STORE-EXCEPTION.md`](https://github.com/jlipworth/VisionPlay/blob/main/APP-STORE-EXCEPTION.md).
 
 ## Prerequisites
 
@@ -71,6 +73,17 @@ Do not commit or paste:
 - signing files, provisioning profiles, certificates, or Xcode account details.
 
 Diagnostics and bug reports should follow [`REPORTING-BUGS.md`](REPORTING-BUGS.md) and [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md).
+
+Before making the repository or an issue thread public, run the publication audit across
+the surfaces that become visible:
+
+```sh
+./scripts/publication-audit.py                 # tracked docs + git history
+./scripts/publication-audit.py --github-issues # also scan issue bodies/comments via gh
+```
+
+Treat the report as a review queue. It prints only redacted snippets; edit or rewrite
+any true positives before publication.
 
 ## Architecture rules of thumb
 

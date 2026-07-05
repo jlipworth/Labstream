@@ -1,5 +1,44 @@
 # Playback architecture
 
+Playback starts in the same user-facing player but quickly splits into backend-specific lanes. The important invariant is that stream resolution, auth headers/URLs, restart semantics, and server cleanup stay explicit per backend.
+
+```mermaid
+sequenceDiagram
+  participant UI as Detail/Player UI
+  participant PC as PlaybackController
+  participant PMS as PMSKit policy/builders
+  participant Plex as Plex PMS
+  participant JF as Jellyfin
+  participant Emby as Emby
+  participant AV as AVPlayer
+
+  UI->>PC: play(item, backend, quality)
+
+  alt Plex
+    PC->>PMS: build TranscodeRequest
+    PC->>Plex: decision/start.m3u8
+    Plex-->>PC: HLS URL + session
+    PC->>AV: open HLS
+  else Jellyfin
+    PC->>JF: playbackOpen
+    JF-->>PC: URL + headers + RemoteStreamReopener
+    PC->>AV: open URL/proxy when needed
+  else Emby
+    PC->>Emby: PlaybackInfo
+    Emby-->>PC: TranscodingUrl or DirectStreamUrl
+    PC->>AV: open resolved URL
+  else Local/offline
+    PC->>AV: open local file URL
+  end
+
+  UI->>PC: stop or intentional restart
+  alt Plex active HLS
+    PC->>Plex: stop transcode session
+  else Emby server encoding
+    PC->>Emby: DELETE ActiveEncodings
+  end
+```
+
 ## Plex playback
 
 The Plex path runs through `PlaybackController.start()`:
@@ -42,6 +81,26 @@ The Emby lane does not reuse Jellyfin's `MediaBrowser` auth/header builder: Emby
 Offline playback uses the custom player with a local file URL. There is no server session, PMS timeline, Jellyfin/Emby active-encoding cleanup, or remote stream reopener. Resume information comes from the offline metadata/record model.
 
 ## Restart/reopen matrix
+
+```mermaid
+stateDiagram-v2
+  [*] --> ResolvingSource
+  ResolvingSource --> OpeningAVPlayer
+  OpeningAVPlayer --> Playing
+  OpeningAVPlayer --> Failed
+
+  Playing --> Restarting: quality/audio/subtitle change
+  Playing --> Restarting: final-target deep seek
+  Playing --> Failed: stream error or watchdog
+  Playing --> Stopping: user exits
+
+  Restarting --> CleanupServerSession
+  CleanupServerSession --> ResolvingSource
+
+  Failed --> ResolvingSource: explicit Retry
+  Stopping --> CleanupServerSession
+  CleanupServerSession --> [*]
+```
 
 | Trigger | Plex | Jellyfin | Emby | Local/offline |
 | --- | --- | --- | --- | --- |
