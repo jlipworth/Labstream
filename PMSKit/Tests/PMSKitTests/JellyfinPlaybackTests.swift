@@ -5,7 +5,7 @@ import Testing
 @Suite("Jellyfin playback")
 struct JellyfinPlaybackTests {
     private let server = URL(string: "https://jellyfin.example.test/base")!
-    private let identity = JellyfinClientIdentity(client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
+    private let identity = JellyfinClientIdentity(client: "Labstream", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
 
     @Test func playbackInfoRequestPostsDeviceProfileAndPlaybackOptions() throws {
         let request = try JellyfinPlayback.playbackInfoRequest(
@@ -38,7 +38,7 @@ struct JellyfinPlaybackTests {
         #expect(object["EnableDirectStream"] as? Bool == true)
         #expect(object["EnableTranscoding"] as? Bool == true)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
-        #expect(profile["Name"] as? String == "VisionPlay")
+        #expect(profile["Name"] as? String == "Labstream")
         #expect(profile["MaxStreamingBitrate"] as? Int == 8_000_000)
         let directProfiles = try #require(profile["DirectPlayProfiles"] as? [[String: Any]])
         let mpegTSProfile = try #require(directProfiles.first { $0["Container"] as? String == "mpegts" })
@@ -72,7 +72,7 @@ struct JellyfinPlaybackTests {
         #expect(object["MaxStaticBitrate"] as? Int == 200_000_000)
         #expect(object["AllowVideoStreamCopy"] as? Bool == true)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
-        #expect(profile["Name"] as? String == "VisionPlay-Compatible-Download")
+        #expect(profile["Name"] as? String == "Labstream-Compatible-Download")
         let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
         let first = try #require(transcoding.first)
         #expect(first["Container"] as? String == "mp4")

@@ -10,7 +10,7 @@ Scenarios:
   click-login-jellyfin-tab   Launch, click the Jellyfin tab on the login panel, verify UI pixels changed.
 
 Options:
-  --skip-build               Reuse the newest Debug-xrsimulator VisionPlay.app.
+  --skip-build               Reuse the newest Debug-xrsimulator Labstream.app.
   --duration SECONDS         Seconds to keep recording after scenario action. Default: 8.
   --artifact-root PATH       Artifact root. Default: artifacts/agent-sim-runs.
   --keep-booted              Do not shut down the worktree simulator after the run.
@@ -139,9 +139,9 @@ stop_recording() {
 
 collect_tail_artifacts() {
   xcrun simctl io "$simid" screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1 || true
-  xcrun simctl spawn "$simid" log show --last 2m --style compact --predicate 'process == "VisionPlay"' >"$outdir/app.log" 2>&1 || true
+  xcrun simctl spawn "$simid" log show --last 2m --style compact --predicate 'process == "Labstream"' >"$outdir/app.log" 2>&1 || true
   # Keep the broad simulator log bounded; full all-process logs are enormous on visionOS.
-  xcrun simctl spawn "$simid" log show --last 30s --style compact --predicate 'process == "SpringBoard" OR process == "launchd_sim" OR eventMessage CONTAINS[c] "VisionPlay"' >"$outdir/sim.log" 2>&1 || true
+  xcrun simctl spawn "$simid" log show --last 30s --style compact --predicate 'process == "SpringBoard" OR process == "launchd_sim" OR eventMessage CONTAINS[c] "Labstream"' >"$outdir/sim.log" 2>&1 || true
 }
 
 cleanup() {
@@ -242,9 +242,9 @@ xcrun simctl boot "$simid" 2>/dev/null || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
 
 if [ "$skip_build" -eq 0 ]; then
-  log_note "Building VisionPlay for simulator..."
-  rm -rf "$HOME"/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app
-  scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+  log_note "Building Labstream for simulator..."
+  rm -rf "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app
+  scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
     -destination "platform=visionOS Simulator,id=$simid" \
     -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet >"$outdir/xcodebuild.log" 2>&1 || {
       log_note "Build failed; see xcodebuild.log."
@@ -255,9 +255,9 @@ else
   log_note "Skipping build by request."
 fi
 
-app=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app 2>/dev/null | head -1 || true)
+app=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app 2>/dev/null | head -1 || true)
 if [ -z "$app" ] || [ ! -d "$app" ]; then
-  log_note "No built VisionPlay.app found."
+  log_note "No built Labstream.app found."
   status="blocked"
   exit 2
 fi
@@ -268,7 +268,7 @@ xcrun simctl install "$simid" "$app" >>"$outdir/install.log" 2>&1 || {
   exit 1
 }
 
-log_note "Launching VisionPlay..."
+log_note "Launching Labstream..."
 xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
 set +e
 xcrun simctl launch "$simid" com.jlipworth.VisionPlay >"$outdir/launch.log" 2>&1

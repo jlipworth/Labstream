@@ -75,7 +75,7 @@ final class BIFParserTests: XCTestCase {
 
     func testPlexBIFRequestUsesPartIndexesEndpointWithoutTokenHeader() {
         let identity = ClientIdentity(clientIdentifier: "client-id",
-                                      product: "VisionPlay",
+                                      product: "Labstream",
                                       version: "1.0",
                                       deviceName: "Vision Pro")
         let request = TrickPlayRequest.plexBIFIndex(server: URL(string: "https://example.test")!,
@@ -88,7 +88,7 @@ final class BIFParserTests: XCTestCase {
         XCTAssertEqual(urlRequest.url?.path, "/library/parts/123/indexes/sd")
         XCTAssertEqual(URLComponents(url: urlRequest.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "X-Plex-Token" })?.value, "secret-token")
         XCTAssertNil(urlRequest.value(forHTTPHeaderField: "X-Plex-Token"))
-        XCTAssertEqual(urlRequest.value(forHTTPHeaderField: "X-Plex-Product"), "VisionPlay")
+        XCTAssertEqual(urlRequest.value(forHTTPHeaderField: "X-Plex-Product"), "Labstream")
     }
 
     func testPartIndexesAdvertiseStandardDefinitionBIF() throws {

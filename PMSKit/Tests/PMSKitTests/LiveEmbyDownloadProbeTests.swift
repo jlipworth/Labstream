@@ -46,9 +46,9 @@ struct LiveEmbyDownloadProbeTests {
             self.itemId = itemId
             self.maxStaticBitrate = env["EMBY_LIVE_MAX_BITRATE"].flatMap(Int.init) ?? 200_000_000
             self.identity = EmbyClientIdentity(
-                client: "VisionPlay",
+                client: "Labstream",
                 device: "Apple Vision Pro",
-                deviceId: env["EMBY_LIVE_DEVICE_ID"] ?? "visionplay-emby-live-probe",
+                deviceId: env["EMBY_LIVE_DEVICE_ID"] ?? "labstream-emby-live-probe",
                 version: "0.1.0")
         }
     }

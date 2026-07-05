@@ -213,7 +213,7 @@ struct OfflineDownloadModelsTests {
             backendServerID: "server-123",
             backendUserID: "user-456",
             mediaSourceID: "media-source-789",
-            playSessionID: "visionplay-download-abc",
+            playSessionID: "labstream-download-abc",
             downloadLane: .compatibleRemux)
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)

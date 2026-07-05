@@ -23,15 +23,15 @@ struct LiveProbeConfig {
     /// skip line and returns, so nothing hits the network. `deviceName` lets each probe keep its
     /// own label in Plex's device list while still sharing this env-parse + identity build.
     init?(_ env: [String: String] = ProcessInfo.processInfo.environment,
-          deviceName: String = "VisionPlay Live Probe") {
+          deviceName: String = "Labstream Live Probe") {
         guard let serverString = env["PLEX_LIVE_SERVER"], let server = URL(string: serverString),
               let token = env["PLEX_LIVE_TOKEN"], !token.isEmpty
         else { return nil }
         self.server = server
         self.token = token
         self.identity = ClientIdentity(
-            clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "visionplay-live-probe",
-            product: "VisionPlay",
+            clientIdentifier: env["PLEX_LIVE_CLIENT_ID"] ?? "labstream-live-probe",
+            product: "Labstream",
             version: "0.1.0",
             deviceName: deviceName)
     }

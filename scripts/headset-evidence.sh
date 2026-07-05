@@ -4,7 +4,7 @@
 # This is intentionally read-only: it does not install, launch, delete, or mutate
 # anything on the headset. It favors devicectl JSON/log-output artifacts because
 # that is the supported scripting interface and has been more reliable than
-# host-side unified-log/sysdiagnose collection for VisionPlay headset repros.
+# host-side unified-log/sysdiagnose collection for Labstream headset repros.
 
 set -u
 set -o pipefail
@@ -21,7 +21,7 @@ usage() {
   cat <<USAGE
 Usage: scripts/headset-evidence.sh [options]
 
-Read-only headset evidence collection for VisionPlay after a user-driven repro.
+Read-only headset evidence collection for Labstream after a user-driven repro.
 
 Options:
   --device <id>       Target Vision Pro device UDID/name (default: VP_DEVICE_ID or first paired visionOS device)
@@ -186,7 +186,7 @@ fi
 
 if [ -z "$DEVICE_ID" ]; then
   cat > "$OUT/README.md" <<README
-# VisionPlay headset evidence bundle
+# Labstream headset evidence bundle
 
 Collection started at $TS UTC, but no Vision Pro device identifier could be selected.
 
@@ -237,10 +237,10 @@ run_devicectl "app container root listing" "$OUT/app-container-root.json" "$DEVL
 run_devicectl "app support listing" "$OUT/app-container-application-support.json" "$DEVLOG_DIR/app-container-application-support.log" \
   device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support' --no-recurse
 
-run_devicectl "VisionPlay support listing" "$OUT/app-container-visionplay-support.json" "$DEVLOG_DIR/app-container-visionplay-support.log" \
+run_devicectl "Labstream support listing" "$OUT/app-container-labstream-support.json" "$DEVLOG_DIR/app-container-labstream-support.log" \
   device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support/VisionPlay' --no-recurse
 
-run_devicectl "VisionPlay downloads listing" "$OUT/app-container-visionplay-downloads.json" "$DEVLOG_DIR/app-container-visionplay-downloads.log" \
+run_devicectl "Labstream downloads listing" "$OUT/app-container-labstream-downloads.json" "$DEVLOG_DIR/app-container-labstream-downloads.log" \
   device info files --device "$DEVICE_ID" --domain-type appDataContainer --domain-identifier "$BUNDLE_ID" --columns '*' --subdirectory 'Library/Application Support/VisionPlay/Downloads' --no-recurse
 
 run_devicectl "system crash log listing" "$OUT/system-crashlogs.json" "$DEVLOG_DIR/system-crashlogs.log" \
@@ -250,12 +250,12 @@ run_devicectl "system crash log listing" "$OUT/system-crashlogs.json" "$DEVLOG_D
 copy_from_app_container 'Library/Application Support/VisionPlay/Downloads/index.json' 'Library/Application Support/VisionPlay/Downloads/index.json'
 copy_from_app_container 'Library/Application Support/VisionPlay/Diagnostics' 'Library/Application Support/VisionPlay/Diagnostics'
 copy_from_app_container 'Library/Application Support/Diagnostics' 'Library/Application Support/Diagnostics'
-copy_from_app_container 'Documents/VisionPlay-Diagnostic-Report.txt' 'Documents/VisionPlay-Diagnostic-Report.txt'
-copy_from_app_container 'Documents/VisionPlay-Feedback.txt' 'Documents/VisionPlay-Feedback.txt'
-copy_from_app_container 'tmp/VisionPlay-Diagnostic-Report.txt' 'tmp/VisionPlay-Diagnostic-Report.txt'
+copy_from_app_container 'Documents/Labstream-Diagnostic-Report.txt' 'Documents/Labstream-Diagnostic-Report.txt'
+copy_from_app_container 'Documents/Labstream-Feedback.txt' 'Documents/Labstream-Feedback.txt'
+copy_from_app_container 'tmp/Labstream-Diagnostic-Report.txt' 'tmp/Labstream-Diagnostic-Report.txt'
 
 cat > "$OUT/README.md" <<README
-# VisionPlay headset evidence bundle
+# Labstream headset evidence bundle
 
 Created: $TS UTC
 Bundle ID: $BUNDLE_ID
@@ -272,10 +272,10 @@ IDs, device IDs, and playSession IDs before sharing.
 - \`process-info.json\`: running process inventory from the headset.
 - \`app-container-root.json\`: non-recursive app data container root listing.
 - \`app-container-application-support.json\`: non-recursive Application Support listing.
-- \`app-container-visionplay-support.json\`: non-recursive VisionPlay support directory listing.
-- \`app-container-visionplay-downloads.json\`: non-recursive Downloads directory listing, where the download index usually lives.
+- \`app-container-labstream-support.json\`: non-recursive Labstream support directory listing.
+- \`app-container-labstream-downloads.json\`: non-recursive Downloads directory listing, where the download index usually lives.
 - \`system-crashlogs.json\`: non-recursive crash-log domain listing only (no crash logs copied by default).
-- \`app-container-files/\`: best-effort copies of bounded known app files, including \`VisionPlay/Downloads/index.json\` when present.
+- \`app-container-files/\`: best-effort copies of bounded known app files, including \`Labstream/Downloads/index.json\` when present.
 - \`logs/devicectl/\`: per-command devicectl logs/stdout/stderr.
 - \`summary.json\`: command statuses, copied-file list, and misses.
 

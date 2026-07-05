@@ -51,7 +51,7 @@ Run an unsigned simulator build locally on macOS/Xcode against this worktree's s
 ```sh
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -73,7 +73,7 @@ When running app-driven probes during a refactor, target `SIMID=$(scripts/worktr
 
 ### LiveEmbyProbe gate
 
-The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](https://github.com/jlipworth/VisionPlay/blob/main/scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
+The Emby wire shape was promoted to "proven" through `LiveEmbyProbeTests.liveEmbyProbe` (`PMSKit/Tests/PMSKitTests/`), driven by [`scripts/live-emby-probe.sh`](https://github.com/jlipworth/Labstream/blob/main/scripts/live-emby-probe.sh). The probe sends the real Emby request builders (`EmbyAuth`, `EmbyLibrary`, `EmbyPlayback`) through `URLSession.shared` — the exact wire shape the app produces — and asserts the PMSKit decoders (`EmbyServerInfo`, `EmbyBaseItemDto`, `EmbyPlaybackInfoResponse`) parse the live bodies and that `resolveStream` yields a playable URL.
 
 It is opt-in and a no-op unless `EMBY_LIVE_SERVER`, `EMBY_LIVE_TOKEN`, `EMBY_LIVE_USER_ID`, and `EMBY_LIVE_ITEM_ID` are set, so plain macOS `swift test` and the split Linux CI test invocations stay hermetic. Credentials live ONLY in the gitignored `scripts/emby-live.env`; the script refuses to run if that file is somehow tracked by git. The probe redacts the token, `api_key`, `X-Emby-Token`, and the live scheme/host before printing any URL or header.
 
@@ -108,7 +108,7 @@ Keep these as manual Apple Vision Pro checks:
 - Jellyfin browse/playback/download request paths are implemented and unit-tested. The app-driven simulator download probe has also proven Jellyfin static byte-range recovery against a live signed-in backend; headset/off-head behavior remains device-only before calling it headset-proven.
 - Emby sign-in, browse/DTO mapping, PlaybackInfo stream resolution, progress, active-encoding cleanup, and download route/request paths are implemented and unit-tested. The core playback wire shape is live-proven via `LiveEmbyProbe`, Emby Connect PIN request/exchange shape is live-verified, Emby downloads have `LiveEmbyDownloadProbe` coverage, and the app-driven simulator probe has proven existing-converted-source reuse plus static byte-range recovery. In-headset PIN UX, playback/progress/cleanup, and download/off-head behavior remain device-only gates before calling those flows headset-proven.
 
-The manual checklist remains in [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/VisionPlay/blob/main/TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
+The manual checklist remains in [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md). Treat it as a checklist and issue trail, not the canonical architecture doc.
 
 ## Remaining Emby validation gates
 

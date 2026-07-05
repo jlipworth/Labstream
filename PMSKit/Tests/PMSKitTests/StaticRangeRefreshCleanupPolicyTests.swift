@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Static range refresh cleanup policy")
 struct StaticRangeRefreshCleanupPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-static-range-refresh-cleanup.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-static-range-refresh-cleanup.mp4")
 
     private func record(_ key: String, status: DownloadStatus) -> DownloadRecord {
         let metadata = OfflineMetadata(ratingKey: key,

@@ -13,7 +13,7 @@ Usage: scripts/probe-emby-download.sh --query TEXT [options]
 
 Required selector (or env):
   --query TEXT                      Resolve an Emby item by search/title.
-  VISIONPLAY_PROBE_QUERY            Env alternative for --query.
+  LABSTREAM_PROBE_QUERY            Env alternative for --query.
 
 Options:
   --dry-run                         Resolve and log route only.
@@ -24,7 +24,7 @@ Options:
   --drop-after-bytes N              Enable DEBUG range-drop URLProtocol for static range downloads.
   --observe-seconds N               Observation window inside the app (default: env or 30).
   --keep-record                     Leave the probe download row in the app.
-  --keep-app-running                Do not terminate VisionPlay after the observation window.
+  --keep-app-running                Do not terminate Labstream after the observation window.
   --skip-build                      Reuse the existing DerivedData app.
   --no-install                      Reuse the already installed app.
   -h, --help                        Show this help.
@@ -37,13 +37,13 @@ USAGE
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 cd "$repo_root"
 
-query=${VISIONPLAY_PROBE_QUERY:-}
-observe_seconds=${VISIONPLAY_PROBE_OBSERVE_SECONDS:-30}
-preset=${VISIONPLAY_PROBE_PRESET:-1080p 8 Mbps}
+query=${LABSTREAM_PROBE_QUERY:-}
+observe_seconds=${LABSTREAM_PROBE_OBSERVE_SECONDS:-30}
+preset=${LABSTREAM_PROBE_PRESET:-1080p 8 Mbps}
 mode=optimize
-drop_after=${VISIONPLAY_PROBE_DROP_AFTER_BYTES:-}
-keep_record=${VISIONPLAY_PROBE_KEEP_RECORD:-0}
-keep_app_running=${VISIONPLAY_PROBE_KEEP_APP_RUNNING:-0}
+drop_after=${LABSTREAM_PROBE_DROP_AFTER_BYTES:-}
+keep_record=${LABSTREAM_PROBE_KEEP_RECORD:-0}
+keep_app_running=${LABSTREAM_PROBE_KEEP_APP_RUNNING:-0}
 skip_build=0
 no_install=0
 
@@ -68,7 +68,7 @@ done
 
 is_positive_int() { [[ ${1:-} =~ ^[1-9][0-9]*$ ]]; }
 if [[ -z "$query" ]]; then
-  echo "ERROR: provide --query or VISIONPLAY_PROBE_QUERY." >&2
+  echo "ERROR: provide --query or LABSTREAM_PROBE_QUERY." >&2
   exit 2
 fi
 if ! is_positive_int "$observe_seconds"; then
@@ -81,9 +81,9 @@ if [[ -n "$drop_after" ]] && ! is_positive_int "$drop_after"; then
 fi
 
 simid=${SIMID:-$(scripts/worktree-sim.sh id)}
-derived_data=${VISIONPLAY_PROBE_DERIVED_DATA:-build/DerivedData/EmbyDownloadProbe}
+derived_data=${LABSTREAM_PROBE_DERIVED_DATA:-build/DerivedData/EmbyDownloadProbe}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-out_dir=${VISIONPLAY_PROBE_OUTPUT_DIR:-build/probes/emby-download/$timestamp}
+out_dir=${LABSTREAM_PROBE_OUTPUT_DIR:-build/probes/emby-download/$timestamp}
 mkdir -p "$out_dir"
 out_dir=$(cd "$out_dir" && pwd -P)
 
@@ -109,10 +109,10 @@ xcrun simctl boot "$simid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
 
 if [[ $skip_build -eq 0 ]]; then
-  printf '==> Building VisionPlay (log: %s)\n' "$build_log"
+  printf '==> Building Labstream (log: %s)\n' "$build_log"
   scripts/xcodebuild-versioned.sh \
-    -project VisionPlay.xcodeproj \
-    -scheme VisionPlay \
+    -project Labstream.xcodeproj \
+    -scheme Labstream \
     -configuration Debug \
     -destination "platform=visionOS Simulator,id=$simid" \
     -derivedDataPath "$derived_data" \
@@ -120,12 +120,12 @@ if [[ $skip_build -eq 0 ]]; then
     build >"$build_log" 2>&1
 fi
 
-app_path="$derived_data/Build/Products/Debug-xrsimulator/VisionPlay.app"
+app_path="$derived_data/Build/Products/Debug-xrsimulator/Labstream.app"
 if [[ ! -d "$app_path" ]]; then
-  app_path=$(find "$derived_data/Build/Products" -path '*/VisionPlay.app' -type d -print -quit 2>/dev/null || true)
+  app_path=$(find "$derived_data/Build/Products" -path '*/Labstream.app' -type d -print -quit 2>/dev/null || true)
 fi
 if [[ -z "$app_path" || ! -d "$app_path" ]]; then
-  echo "ERROR: could not find built VisionPlay.app under $derived_data" >&2
+  echo "ERROR: could not find built Labstream.app under $derived_data" >&2
   exit 1
 fi
 
@@ -152,7 +152,7 @@ if [[ $keep_record == "1" || $keep_record == "true" || $keep_record == "yes" ]];
   probe_args+=(--vp-probe-keep-record)
 fi
 
-timeout_seconds=${VISIONPLAY_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + 90))}
+timeout_seconds=${LABSTREAM_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + 90))}
 printf '==> Capturing app logs for ~%ss (unified: %s)\n' "$timeout_seconds" "$log_file"
 predicate='subsystem == "com.jlipworth.VisionPlay" AND (category == "EmbyDownloadProbe" OR category == "Downloads")'
 xcrun simctl spawn "$simid" log stream --style compact --level debug --predicate "$predicate" >"$log_file" 2>&1 &
@@ -171,7 +171,7 @@ xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr
 
 sleep "$timeout_seconds"
 if [[ $keep_app_running == "1" || $keep_app_running == "true" || $keep_app_running == "yes" ]]; then
-  printf '==> Leaving VisionPlay running in simulator %s\n' "$simid"
+  printf '==> Leaving Labstream running in simulator %s\n' "$simid"
 else
   xcrun simctl terminate "$simid" com.jlipworth.VisionPlay >/dev/null 2>&1 || true
 fi

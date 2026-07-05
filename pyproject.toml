@@ -1,7 +1,7 @@
 [project]
-name = "visionplay-tooling"
+name = "labstream-tooling"
 version = "0.1.0"
-description = "Local Python tooling for VisionPlay profiling and repository checks."
+description = "Local Python tooling for Labstream profiling and repository checks."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []

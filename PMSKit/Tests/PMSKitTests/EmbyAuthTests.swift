@@ -8,7 +8,7 @@ import Testing
 @Suite("Emby auth")
 struct EmbyAuthTests {
     private let identity = EmbyClientIdentity(
-        client: "VisionPlay",
+        client: "Labstream",
         device: "Apple Vision Pro",
         deviceId: "device-123",
         version: "0.1.0")
@@ -17,7 +17,7 @@ struct EmbyAuthTests {
         let header = EmbyAuth.authorizationHeader(identity: identity)
 
         // DIVERGENCE FROM JELLYFIN: prefix is "Emby " not "MediaBrowser ".
-        #expect(header == "Emby Client=\"VisionPlay\", Device=\"Apple Vision Pro\", DeviceId=\"device-123\", Version=\"0.1.0\"")
+        #expect(header == "Emby Client=\"Labstream\", Device=\"Apple Vision Pro\", DeviceId=\"device-123\", Version=\"0.1.0\"")
         #expect(!header.contains("MediaBrowser"))
         #expect(!header.contains("UserId="))
         #expect(!header.contains("Token="))
@@ -28,7 +28,7 @@ struct EmbyAuthTests {
 
         #expect(header.hasPrefix("Emby "))
         #expect(header.contains("UserId=\"user-9\""))
-        #expect(header.contains("Client=\"VisionPlay\""))
+        #expect(header.contains("Client=\"Labstream\""))
         #expect(header.contains("DeviceId=\"device-123\""))
         #expect(header.contains("Token=\"token-abc\""))
     }

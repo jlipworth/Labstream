@@ -14,10 +14,10 @@ dirty="clean"
 # the app build before it is tracked, so build IDs must not stamp that state as clean.
 if ! git diff --quiet --ignore-submodules -- 2>/dev/null || \
    ! git diff --cached --quiet --ignore-submodules -- 2>/dev/null || \
-   [ -n "$(git ls-files --others --exclude-standard -- VisionPlay PMSKit 2>/dev/null | grep -E '\.(swift|metal|json|plist|strings|storyboard|xib|entitlements|xcconfig|png|jpe?g|heic|svg|pdf|mp4|mov|m4v|mp3|wav|srt|vtt|ttf|otf)$|Assets\.xcassets/' | head -1)" ]; then
+   [ -n "$(git ls-files --others --exclude-standard -- Labstream PMSKit 2>/dev/null | grep -E '\.(swift|metal|json|plist|strings|storyboard|xib|entitlements|xcconfig|png|jpe?g|heic|svg|pdf|mp4|mov|m4v|mp3|wav|srt|vtt|ttf|otf)$|Assets\.xcassets/' | head -1)" ]; then
   dirty="dirty"
 fi
 
 slug="${commit_count}-${commit}-${dirty}"
-echo "xcodebuild-versioned: VISIONPLAY_BUILD_SLUG=${slug} VISIONPLAY_BUILD_DATE_UTC=${built_at}" >&2
-exec xcodebuild "VISIONPLAY_BUILD_SLUG=${slug}" "VISIONPLAY_BUILD_DATE_UTC=${built_at}" "$@"
+echo "xcodebuild-versioned: LABSTREAM_BUILD_SLUG=${slug} LABSTREAM_BUILD_DATE_UTC=${built_at}" >&2
+exec xcodebuild "LABSTREAM_BUILD_SLUG=${slug}" "LABSTREAM_BUILD_DATE_UTC=${built_at}" "$@"

@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Jellyfin download keepalive policy")
 struct JellyfinDownloadKeepalivePolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-jellyfin-keepalive.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-jellyfin-keepalive.mp4")
 
     private func record(status: DownloadStatus = .downloading,
                         backend: DownloadBackendKind = .jellyfin,

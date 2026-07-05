@@ -26,6 +26,6 @@ steps:
       - ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
       - git config --global user.name  "woodpecker-ci"
       - git config --global user.email "ci@example.invalid"
-      - git remote set-url origin git@github.com:jlipworth/VisionPlay.git
+      - git remote set-url origin git@github.com:jlipworth/Labstream.git
       - export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes"
       - mkdocs gh-deploy --force --remote-name origin

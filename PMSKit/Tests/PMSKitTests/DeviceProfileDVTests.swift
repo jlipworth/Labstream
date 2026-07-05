@@ -10,10 +10,10 @@ import Testing
 @Suite("Device profile DV advertising (experimental)")
 struct DeviceProfileDVTests {
     private let jfServer = URL(string: "https://jellyfin.example.test/base")!
-    private let jfIdentity = JellyfinClientIdentity(client: "VisionPlay", device: "Apple Vision Pro",
+    private let jfIdentity = JellyfinClientIdentity(client: "Labstream", device: "Apple Vision Pro",
                                                     deviceId: "device-123", version: "0.1.0")
     private let embyServer = URL(string: "https://emby.example.test/emby")!
-    private let embyIdentity = EmbyClientIdentity(client: "VisionPlay", device: "Apple Vision Pro",
+    private let embyIdentity = EmbyClientIdentity(client: "Labstream", device: "Apple Vision Pro",
                                                   deviceId: "device-123", version: "0.1.0")
 
     @Test func plexProfilesOmitDVByDefault() {

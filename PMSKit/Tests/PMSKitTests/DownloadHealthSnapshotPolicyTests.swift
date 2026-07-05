@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download health snapshot policy")
 struct DownloadHealthSnapshotPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-health-policy.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-health-policy.mp4")
 
     private func record(_ status: DownloadStatus, key: String) -> DownloadRecord {
         let ratingKey = DownloadRecordIdentity.recordKey(for: key, backend: .jellyfin)

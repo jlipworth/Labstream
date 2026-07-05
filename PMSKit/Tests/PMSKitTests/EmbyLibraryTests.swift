@@ -9,7 +9,7 @@ import Testing
 struct EmbyLibraryTests {
     private let server = URL(string: "https://emby.example.test/emby")!
     private let identity = EmbyClientIdentity(
-        client: "VisionPlay",
+        client: "Labstream",
         device: "Apple Vision Pro",
         deviceId: "device-123",
         version: "0.1.0")

@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download watchdog policy")
 struct DownloadWatchdogPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-watchdog-policy.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-watchdog-policy.mp4")
 
     private func record(status: DownloadStatus,
                         backend: DownloadBackendKind = .jellyfin,

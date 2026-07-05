@@ -5,7 +5,7 @@ suite passes locally on macOS with `cd PMSKit && swift test`; Linux CI runs the 
 Testing halves separately as documented in `.woodpecker/pmskit.yml`) but the unchecked items are NOT
 yet human-verified in the headset/simulator. Work through them in one pass._
 
-**Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/VisionPlay/issues)).
+**Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/Labstream/issues)).
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: a same-bundle-id upgrade install usually preserves the container; deleting the app, erasing the sim, or switching install sources starts fresh and requires sign-in again.
 
@@ -22,7 +22,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
       plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
-      **VisionPlay**. Both paths land in the library.
+      **Labstream**. Both paths land in the library.
 - [ ] **Emby Connect PIN sign-in (GH #72)** — select Emby, choose "Sign in with Emby Connect,"
       confirm the code at `emby.media/pin.html`, and verify the app lands in the Emby library
       with the exchanged local server token. If the account has multiple linked servers, verify
@@ -280,7 +280,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       `AVPlayerItem` there. **Manual result after `9ed4569`: single drag OK; double-drag still
       shows behavior very similar to the pre-reset failure, so do not mark #33 solved.** Claude
       self-serves screenshots/logs (`SIMID=$(scripts/worktree-sim.sh id); xcrun simctl io "$SIMID" screenshot`,
-      `log show --predicate 'process == "VisionPlay"'`).
+      `log show --predicate 'process == "Labstream"'`).
       - [ ] **Normal playback uses direct PMS URL.** Open any title; no `media proxy open ok` or
             `proxy re-prime` log appears. Playback starts normally and Stats still show the PMS
             decision/probe data.
@@ -312,7 +312,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       PMS `/firstCharacter` counts.
 - [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
   - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; visionOS row sane;
-    Client row says "VisionPlay on Apple Vision Pro" (NO client identifier shown).
+    Client row says "Labstream on Apple Vision Pro" (NO client identifier shown).
   - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
     the connection scheme only — no token, client identifier, hostname, or full URL.
   - Server section: Version row shows the PMS version; Status row says "Tap to check",
@@ -647,7 +647,7 @@ these as hardware/manual-system tests, not simulator merge blockers. Simulator v
 this slice is: app builds, App Intents metadata extraction succeeds, app launches, Settings/About
 shows the stamped Build ID, and normal in-app browsing still works.
 
-- [ ] **Shortcuts: Play Media (GH #24)** — Shortcuts app → new shortcut → search "VisionPlay" →
+- [ ] **Shortcuts: Play Media (GH #24)** — Shortcuts app → new shortcut → search "Labstream" →
       **Play Media**. Tapping the "Title" parameter should suggest the On Deck list and allow
       free-text search of the library (music never appears, per #15). Running the shortcut
       foregrounds the app, lands on Home, pushes the item's DetailView, and starts playback
@@ -658,7 +658,7 @@ shows the stamped Build ID, and normal in-app browsing still works.
 - [ ] **Shortcuts: Continue Watching (GH #24)** — zero-parameter intent resumes the top On Deck
       item; with an empty On Deck it errors with "There's nothing in Continue Watching right now."
 - [ ] **Intent while signed out (GH #24)** — after sign-out, any intent fails with the
-      "VisionPlay isn't signed in to a Plex server…" dialog; no crash, no half-open UI.
+      "Labstream isn't signed in to a Plex server…" dialog; no crash, no half-open UI.
 - [ ] **Spotlight indexing (GH #24)** — browse Home + a library grid, then system search
       (Home View search field): browsed titles appear (episodes under "Show · SxEy · Title").
       Tapping a result opens the app and pushes that item's DetailView (no autoplay, no second

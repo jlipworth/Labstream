@@ -1,9 +1,9 @@
 ---
 name: deploy-to-device
-description: Build and install VisionPlay onto a physical Apple Vision Pro over Wi-Fi for on-device testing (NOT the simulator). Use whenever the user asks to load / deploy / install / sideload / "put it on the headset" / test the app on the real Vision Pro. Covers device signing (the team-ID OU trap), the one-command deploy script, provisioning-profile expiry, and how the Xcode-loaded build coexists with the App Store build.
+description: Build and install Labstream onto a physical Apple Vision Pro over Wi-Fi for on-device testing (NOT the simulator). Use whenever the user asks to load / deploy / install / sideload / "put it on the headset" / test the app on the real Vision Pro. Covers device signing (the team-ID OU trap), the one-command deploy script, provisioning-profile expiry, and how the Xcode-loaded build coexists with the App Store build.
 ---
 
-# Deploy VisionPlay to a physical Apple Vision Pro
+# Deploy Labstream to a physical Apple Vision Pro
 
 This is **on-device** install over Wi-Fi via `devicectl` — a different path from the
 simulator loop in `CLAUDE.md` (`simctl` + `$SIMID`). A device build lands in
@@ -60,7 +60,7 @@ ever build by hand, pass `DEVELOPMENT_TEAM=XXXXXXXXXX -allowProvisioningUpdates`
 ### Trap 2 — it's a device build, signed, no simulator shortcuts
 `-destination 'platform=visionOS,id=<UUID>'` (device), product in `Debug-xros`, real
 signing required. The LINK-SKIP trap from `CLAUDE.md` still applies — the script deletes
-the `Debug-xros/VisionPlay.app` before building so a skipped `Ld` step can't leave a stale
+the `Debug-xros/Labstream.app` before building so a skipped `Ld` step can't leave a stale
 binary, stamps the internal Build ID via `scripts/build-version-args.sh`, and verifies the
 built `TeamIdentifier` after.
 
@@ -69,14 +69,14 @@ built `TeamIdentifier` after.
 ```sh
 DEVICE_ID=$(xcrun devicectl list devices | grep -iE 'vision|reality' \
   | grep -oiE '[0-9a-f-]{36}' | head -1)
-rm -rf "$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-"*/Build/Products/Debug-xros/VisionPlay.app
+rm -rf "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app
 VERSION_ARGS=()
 while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-version-args.sh)
-xcodebuild "${VERSION_ARGS[@]}" -project VisionPlay.xcodeproj -scheme VisionPlay \
+xcodebuild "${VERSION_ARGS[@]}" -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS,id=$DEVICE_ID" \
   -configuration Debug -allowProvisioningUpdates \
   DEVELOPMENT_TEAM=XXXXXXXXXX build
-APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/VisionPlay-"*/Build/Products/Debug-xros/VisionPlay.app | head -1)
+APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app | head -1)
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP"
 ```
 
@@ -109,7 +109,7 @@ The dev build and a future App Store ("consumer") build **share one bundle id**
   is moot. Just be aware the dev install clobbers App Store state and login.
 - **When we need both side-by-side** (e.g. compare consumer vs. dev), the dev build needs
   its **own** bundle id + display name — `com.jlipworth.VisionPlay.dev` /
-  "VisionPlay (Dev)" via a Debug-only `PRODUCT_BUNDLE_IDENTIFIER` suffix and
+  "Labstream (Dev)" via a Debug-only `PRODUCT_BUNDLE_IDENTIFIER` suffix and
   `PRODUCT_NAME`. Not implemented yet (the user deferred it); when asked, add a
   `.dev` suffix in the Debug config and a Settings-bundle/`CFBundleDisplayName` marker so
   the two are visually distinguishable on the Home View. Note Plex/Jellyfin/Emby logins

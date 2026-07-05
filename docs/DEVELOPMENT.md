@@ -1,7 +1,7 @@
 # Development notes
 
 Durable, easy-to-forget facts about building and working on this app. Task/bug tracking lives in
-[GitHub Issues](https://github.com/jlipworth/VisionPlay/issues); see the [README](https://github.com/jlipworth/VisionPlay/blob/main/README.md)
+[GitHub Issues](https://github.com/jlipworth/Labstream/issues); see the [README](https://github.com/jlipworth/Labstream/blob/main/README.md)
 for the basic build/run.
 
 ## Build, test, run
@@ -10,7 +10,7 @@ for the basic build/run.
 # Build (visionOS 26.x simulator, unsigned)
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 
@@ -24,17 +24,17 @@ scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay
 scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/VisionPlay-*/Build/Products/Debug-xrsimulator/VisionPlay.app | head -1)
+APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.VisionPlay 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay
 
 # After-the-fact logs
-xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"' --style compact
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' --style compact
 ```
 
 - App bundle id: `com.jlipworth.VisionPlay` · project deployment target: visionOS 26.0 · normal local sim runtime: the installed Apple Vision Pro visionOS 26.x runtime. Use `scripts/worktree-sim.sh id` and target `"$SIMID"`, not `booted`, because multiple worktree simulators can be running.
-- Docs map: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](TESTING-STRATEGY.md). Active-but-not-implemented research lives under [`research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/research/); historical research lives under [`archive/research/`](https://github.com/jlipworth/VisionPlay/blob/main/docs/archive/research/).
+- Docs map: [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](TESTING-STRATEGY.md). Active-but-not-implemented research lives under [`research/`](https://github.com/jlipworth/Labstream/blob/main/docs/research/); historical research lives under [`archive/research/`](https://github.com/jlipworth/Labstream/blob/main/docs/archive/research/).
 - Profiling workflow: see [`docs/PROFILING.md`](PROFILING.md) for Instruments baseline targets, simulator/device caveats, and finding templates.
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
   `PMSKit/Sources`, `PMSKit/Tests`) — no `project.pbxproj` edits needed.
@@ -114,7 +114,7 @@ CI installs `requirements.txt` and runs `mkdocs build --strict` before deploying
   On Exit/Crown/EOF/Up Next it stops the active controller, reopens the main browse window only
   while the scene is active, and posts a `SystemEntryRouter` route back to the current or next item.
   This avoids duplicate hidden audio and avoids re-running sign-in/server discovery because the
-  long-lived app objects are owned by `VisionPlay.App`, not by the main window view.
+  long-lived app objects are owned by `Labstream.App`, not by the main window view.
 - **ⓘ Info card year:** the card shows a year after the runtime, sourced from the stream's
   creation date — for a live transcode that's *today's* year (seen as "2026" on a 2013 film).
   Override: `externalMetadata` item `.commonIdentifierCreationDate` with an **NSDate-typed
@@ -213,7 +213,7 @@ CI installs `requirements.txt` and runs `mkdocs build --strict` before deploying
   a session that can't keep up (see `SeekRestartBudget`), and a deeper client buffer does NOT help
   here — it cannot pre-fetch segments the server hasn't produced.
 - **PMS HLS is a FULL-TIMELINE playlist with ABSOLUTE-TIME segment URIs and ABSOLUTE PTS, but
-  VisionPlay no longer relies on no-reload segment splicing.** The universal-transcoder media
+  Labstream no longer relies on no-reload segment splicing.** The universal-transcoder media
   playlist lists EVERY segment from t=0 to the end (e.g. **10548 one-second segments** for a ~2.9h
   film; master is a tiny one-variant `#EXT-X-STREAM-INF`), each named **`0NNNNN.ts` where NNNNN is
   the absolute second offset** — `02600.ts` is t=2600s in *every* session regardless of prime

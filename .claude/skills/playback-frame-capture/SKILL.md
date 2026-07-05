@@ -37,7 +37,7 @@ xcrun simctl launch "$SIMID" com.jlipworth.VisionPlay \
   --vp-probe-bitrate-kbps 8000        # optional quality cap
 
 # wait for probe.pass/probe.fail, then:
-xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "VisionPlay"' \
+xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' \
   | grep -E 'probe\.(frame|pass|fail)'
 
 # pull the PNGs and Read them:

@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Server-prep refresh policy")
 struct ServerPrepRefreshPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-server-prep-refresh.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-server-prep-refresh.mp4")
 
     private func record(key: String,
                         status: DownloadStatus,

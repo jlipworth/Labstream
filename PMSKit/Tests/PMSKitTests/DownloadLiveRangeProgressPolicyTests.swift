@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download live range progress policy")
 struct DownloadLiveRangeProgressPolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-live-range.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-live-range.mp4")
 
     private func record(status: DownloadStatus = .downloading, bytes: Int = 100) -> DownloadRecord {
         DownloadRecord(ratingKey: DownloadRecordIdentity.recordKey(for: "item", backend: .jellyfin),

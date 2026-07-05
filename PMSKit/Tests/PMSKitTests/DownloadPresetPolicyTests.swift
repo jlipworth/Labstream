@@ -127,7 +127,7 @@ struct DownloadPresetPolicyTests {
     private func record(metadata: OfflineMetadata) -> DownloadRecord {
         DownloadRecord(ratingKey: metadata.ratingKey,
                        title: metadata.title,
-                       localURL: URL(fileURLWithPath: "/tmp/visionplay-preset-policy.mp4"),
+                       localURL: URL(fileURLWithPath: "/tmp/labstream-preset-policy.mp4"),
                        bytes: 0,
                        progress: 0,
                        status: .downloading,

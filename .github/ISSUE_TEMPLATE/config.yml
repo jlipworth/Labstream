@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Support & troubleshooting
-    url: https://github.com/jlipworth/VisionPlay/blob/main/SUPPORT.md
+    url: https://github.com/jlipworth/Labstream/blob/main/SUPPORT.md
     about: Requirements, getting started, and answers to common playback / sign-in / remote-access questions. Check here first.
   - name: How to report a bug (with a redacted diagnostic report)
-    url: https://github.com/jlipworth/VisionPlay/blob/main/docs/REPORTING-BUGS.md
+    url: https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md
     about: Step-by-step guide to capturing a privacy-safe diagnostic report before you open a bug.
   - name: Questions & discussion
-    url: https://github.com/jlipworth/VisionPlay/discussions
+    url: https://github.com/jlipworth/Labstream/discussions
     about: For questions, ideas, and help that aren't a confirmed bug or a specific feature request.

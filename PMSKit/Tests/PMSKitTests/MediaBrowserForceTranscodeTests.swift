@@ -10,10 +10,10 @@ import Testing
 @Suite("MediaBrowser force-transcode PlaybackInfo")
 struct MediaBrowserForceTranscodeTests {
     private let jfServer = URL(string: "https://jellyfin.example.test/base")!
-    private let jfIdentity = JellyfinClientIdentity(client: "VisionPlay", device: "Apple Vision Pro",
+    private let jfIdentity = JellyfinClientIdentity(client: "Labstream", device: "Apple Vision Pro",
                                                     deviceId: "device-123", version: "0.1.0")
     private let embyServer = URL(string: "https://emby.example.test/emby")!
-    private let embyIdentity = EmbyClientIdentity(client: "VisionPlay", device: "Apple Vision Pro",
+    private let embyIdentity = EmbyClientIdentity(client: "Labstream", device: "Apple Vision Pro",
                                                   deviceId: "device-123", version: "0.1.0")
 
     private func bodyJSON(_ request: URLRequest) throws -> [String: Any] {

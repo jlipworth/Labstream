@@ -8,7 +8,7 @@ import Testing
 @Suite("Emby downloads")
 struct EmbyDownloadTests {
     private let server = URL(string: "https://emby.example.test/emby")!
-    private let identity = EmbyClientIdentity(client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
+    private let identity = EmbyClientIdentity(client: "Labstream", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
 
     // MARK: - Static original download request
 
@@ -89,7 +89,7 @@ struct EmbyDownloadTests {
 
     @Test func downloadDeviceProfileAdvertisesStaticMp4NotHls() throws {
         let profile = EmbyPlayback.visionOSDownloadDeviceProfile(maxStaticBitrate: 200_000_000)
-        #expect(profile["Name"] as? String == "VisionPlay-Download")
+        #expect(profile["Name"] as? String == "Labstream-Download")
         #expect(profile["MaxStaticBitrate"] as? Int == 200_000_000)
         // `try #require` (not `try?`): a missing/renamed TranscodingProfiles is a real structural
         // regression and must fail here, not silently nil out and surface as a confusing
@@ -122,7 +122,7 @@ struct EmbyDownloadTests {
         #expect(object["MaxStreamingBitrate"] as? Int == 200_000_000)
         #expect(object["MediaSourceId"] as? String == "mediasource_1")
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
-        #expect(profile["Name"] as? String == "VisionPlay-Download")
+        #expect(profile["Name"] as? String == "Labstream-Download")
         let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
         #expect(transcoding.first?["Protocol"] as? String == "http")
     }
@@ -158,7 +158,7 @@ struct EmbyDownloadTests {
         #expect(object["AllowVideoStreamCopy"] as? Bool == true)
         #expect(object["AutoOpenLiveStream"] as? Bool == false)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
-        #expect(profile["Name"] as? String == "VisionPlay-Compatible-Download")
+        #expect(profile["Name"] as? String == "Labstream-Compatible-Download")
         let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
         let first = try #require(transcoding.first)
         #expect(first["Container"] as? String == "mp4")

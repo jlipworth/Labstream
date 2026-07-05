@@ -6,7 +6,7 @@ import Testing
 struct DownloadRetryPolicyTests {
     @Test("Plex server-prep candidate requires queued zero-byte server-prep mode")
     func plexServerPrepCandidateRequiresServerPrepMode() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-plex-prep.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-plex-prep.mp4")
         let prepMetadata = OfflineMetadata(ratingKey: "12345",
                                            title: "Plex Prep",
                                            type: "movie",
@@ -35,7 +35,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Plex server-prep candidate rejects non-Plex and non-zero rows")
     func plexServerPrepCandidateRejectsWrongBackendOrProgress() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-plex-prep-nonzero.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-plex-prep-nonzero.mp4")
         let plexMetadata = OfflineMetadata(ratingKey: "12345",
                                            title: "Plex Prep",
                                            type: "movie",
@@ -68,7 +68,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Paused Emby existing-version static partial promotes before backend retry")
     func pausedEmbyExistingVersionStaticPartialPromotes() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-partial.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-partial.mp4")
         let metadata = OfflineMetadata(ratingKey: "emby:item-1",
                                        title: "Offline Title",
                                        type: "movie",
@@ -93,7 +93,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Does not promote live forward-only or missing partial rows")
     func doesNotPromoteUnsafeRows() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-live.ts")
+        let url = URL(fileURLWithPath: "/tmp/labstream-live.ts")
         let liveMetadata = OfflineMetadata(ratingKey: "emby:item-2",
                                            title: "Live Title",
                                            type: "movie",
@@ -167,7 +167,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Paused full durable static file promotes so finalization can run")
     func pausedFullDurableStaticFilePromotesForFinalization() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-full-but-unfinalized.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-full-but-unfinalized.mp4")
         let metadata = OfflineMetadata(ratingKey: "emby:item-full",
                                        title: "Full",
                                        type: "movie",
@@ -190,7 +190,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Optimistic row bytes without durable partial do not promote")
     func optimisticRowBytesWithoutDurablePartialDoNotPromote() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-optimistic-temp.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-optimistic-temp.mp4")
         let record = DownloadRecord(ratingKey: "emby:item-optimistic",
                                     title: "Optimistic",
                                     localURL: url,
@@ -212,7 +212,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Durable partial promotes even when persisted row bytes are stale")
     func durablePartialPromotesWhenRowBytesAreStale() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-stale-row.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-stale-row.mp4")
         let record = DownloadRecord(ratingKey: "emby:item-stale",
                                     title: "Stale Row",
                                     localURL: url,
@@ -234,7 +234,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Stale queued static partial demotes only when no live task owns it")
     func staleQueuedStaticPartialDemotesOnlyWhenInactive() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-queued-partial.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-queued-partial.mp4")
         let metadata = OfflineMetadata(ratingKey: "emby:item-queued",
                                        title: "Queued Partial",
                                        type: "movie",
@@ -272,7 +272,7 @@ struct DownloadRetryPolicyTests {
 
     @Test("Plex static partial uses same stale queued demotion policy")
     func plexStaticPartialUsesSamePolicy() throws {
-        let url = URL(fileURLWithPath: "/tmp/visionplay-plex-partial.mp4")
+        let url = URL(fileURLWithPath: "/tmp/labstream-plex-partial.mp4")
         let metadata = OfflineMetadata(ratingKey: "12345",
                                        title: "Plex Static",
                                        type: "movie",

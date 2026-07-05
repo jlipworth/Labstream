@@ -5,7 +5,7 @@ import Testing
 @Suite("Emby playback")
 struct EmbyPlaybackTests {
     private let server = URL(string: "https://emby.example.test/emby")!
-    private let identity = EmbyClientIdentity(client: "VisionPlay", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
+    private let identity = EmbyClientIdentity(client: "Labstream", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
 
     @Test func playbackInfoIsPostWithUserIdInQueryAndBodyPlusDeviceProfile() throws {
         let request = try EmbyPlayback.playbackInfoRequest(
@@ -48,7 +48,7 @@ struct EmbyPlaybackTests {
         // DIVERGENCE FROM JELLYFIN: AutoOpenLiveStream is false.
         #expect(object["AutoOpenLiveStream"] as? Bool == false)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
-        #expect(profile["Name"] as? String == "VisionPlay")
+        #expect(profile["Name"] as? String == "Labstream")
         #expect(profile["MaxStreamingBitrate"] as? Int == 8_000_000)
         let transcodeProfiles = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
         let hlsProfile = try #require(transcodeProfiles.first)

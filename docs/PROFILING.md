@@ -1,6 +1,6 @@
-# Profiling VisionPlay
+# Profiling Labstream
 
-This is the baseline profiling workflow for VisionPlay on visionOS. Keep traces, screenshots, and
+This is the baseline profiling workflow for Labstream on visionOS. Keep traces, screenshots, and
 exported logs out of git unless they have been scrubbed: Instruments captures can include app state,
 URLs, media titles, account identifiers, and local machine details.
 
@@ -35,8 +35,8 @@ must be repeated on a physical Vision Pro before filing it as a product finding.
 
 ## Exact Xcode / Instruments workflow
 
-1. Open `VisionPlay.xcodeproj` in Xcode.
-2. Choose the `VisionPlay` scheme.
+1. Open `Labstream.xcodeproj` in Xcode.
+2. Choose the `Labstream` scheme.
 3. Select either:
    - `Apple Vision Pro` simulator for a repeatable local pass, or
    - a paired Apple Vision Pro for representative performance.
@@ -54,7 +54,7 @@ Command-line build sanity before profiling (target this worktree's simulator, no
 ```sh
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project VisionPlay.xcodeproj -scheme VisionPlay \
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
@@ -183,7 +183,7 @@ and re-measure rather than adding broad speculative caching.
 Raw `.trace` bundles, simulator logs, screenshots, and media-specific notes stay outside git. For quick
 one-off checks, paste the reviewed `perf-log-summary.py` table into the relevant GitHub issue. When a
 result is useful as a long-term comparison point, commit a small privacy-reviewed Markdown summary under
-[`docs/profiling/baselines/`](https://github.com/jlipworth/VisionPlay/tree/main/docs/profiling/baselines/) and keep the raw artifact only in local scratch storage.
+[`docs/profiling/baselines/`](https://github.com/jlipworth/Labstream/tree/main/docs/profiling/baselines/) and keep the raw artifact only in local scratch storage.
 
 This gives us three tiers:
 

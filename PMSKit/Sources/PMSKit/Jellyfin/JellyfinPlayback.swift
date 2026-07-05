@@ -619,7 +619,7 @@ public enum JellyfinPlayback {
         // so a transcode manifest carrying a forced/default subtitle rendition re-shows
         // subtitles the user turned off (seen live on a forced+default track, GH #196 retest).
         var profile: [String: Any] = [
-            "Name": "VisionPlay",
+            "Name": "Labstream",
             "MaxStreamingBitrate": maxStreamingBitrate,
             "DirectPlayProfiles": [
                 ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
@@ -670,7 +670,7 @@ public enum JellyfinPlayback {
 
     static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
         [
-            "Name": "VisionPlay-Compatible-Download",
+            "Name": "Labstream-Compatible-Download",
             "MaxStaticBitrate": maxStaticBitrate,
             "MaxStreamingBitrate": maxStaticBitrate,
             "DirectPlayProfiles": [

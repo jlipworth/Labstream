@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Download delete policy")
 struct DownloadDeletePolicyTests {
-    private let url = URL(fileURLWithPath: "/tmp/visionplay-delete-policy.mp4")
+    private let url = URL(fileURLWithPath: "/tmp/labstream-delete-policy.mp4")
 
     private func record(status: DownloadStatus,
                         backend: DownloadBackendKind = .emby,

@@ -91,7 +91,7 @@ import Foundation
 
 @Test func offlinePlaybackDecisionPrefersCompletedLocalFile() {
     let item = MediaItem(ratingKey: "101", title: "Movie", type: "movie")
-    let local = URL(fileURLWithPath: "/tmp/visionplay-offline-101.mp4")
+    let local = URL(fileURLWithPath: "/tmp/labstream-offline-101.mp4")
     let record = DownloadRecord(ratingKey: "101", title: "Movie", localURL: local,
                                 progress: 1, status: .complete)
 
