@@ -140,3 +140,9 @@ GPL-vs-App-Store conflict while keeping copyleft fully intact: the source stays 
 remain open.
 
 Copyright (C) 2026 Jonathan Lipworth
+
+<p align="center">
+  <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">
+    <img src="https://www.gnu.org/graphics/gplv3-with-text-136x68.png" alt="GNU GPLv3" width="136" height="68">
+  </a>
+</p>
