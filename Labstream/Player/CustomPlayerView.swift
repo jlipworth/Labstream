@@ -50,6 +50,9 @@ struct CustomPlayerView: View {
     #if os(macOS)
     @State private var macSystemCoordinator: MacPlayerSystemCoordinator?
     #endif
+    #if os(visionOS)
+    @State private var watchTogetherAttachTask: Task<Void, Never>?
+    #endif
 
     init(item: MediaItem,
          controllerFactory: @escaping @MainActor () -> PlaybackController,
@@ -183,6 +186,10 @@ struct CustomPlayerView: View {
             #if os(macOS)
             macSystemCoordinator?.teardown()
             #endif
+            #if os(visionOS)
+            watchTogetherAttachTask?.cancel()
+            watchTogetherAttachTask = nil
+            #endif
             if cinemaSession.presentationState == .closed {
                 controller?.stop()
                 cinemaSession.clear()
@@ -238,8 +245,6 @@ struct CustomPlayerView: View {
                                          artworkRequest: artworkRequest)
             #endif
             #if os(visionOS)
-            _ = watchTogetherCoordinator.attachPlaybackCoordinatorIfReady(player: playback.player,
-                                                                          item: item)
             cinemaSession.activate(title: item.title,
                                    item: item,
                                    origin: cinemaOrigin,
@@ -250,6 +255,12 @@ struct CustomPlayerView: View {
             #endif
             refreshScrubberClock(from: playback)
             playback.start()
+            #if os(visionOS)
+            watchTogetherAttachTask?.cancel()
+            watchTogetherAttachTask = Task { @MainActor in
+                await attachWatchTogetherCoordinatorWhenReady(for: playback)
+            }
+            #endif
             Task { @MainActor in
                 _ = await playback.loadChaptersIfNeeded()
             }
@@ -287,6 +298,22 @@ struct CustomPlayerView: View {
         onClose?()
         #endif
     }
+
+    #if os(visionOS)
+    @MainActor
+    private func attachWatchTogetherCoordinatorWhenReady(for playback: PlaybackController) async {
+        for _ in 0..<100 {
+            guard !Task.isCancelled else { return }
+            guard controller === playback, watchTogetherCoordinator.hasActiveSession else { return }
+            if playback.player.currentItem != nil {
+                _ = watchTogetherCoordinator.attachPlaybackCoordinatorIfReady(player: playback.player,
+                                                                              item: item)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+    #endif
 }
 
 #if os(macOS)
