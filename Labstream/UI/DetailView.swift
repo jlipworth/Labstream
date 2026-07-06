@@ -323,7 +323,7 @@ struct DetailView: View {
                     .padding(.horizontal, DS.Space.md)
                     .padding(.vertical, DS.Space.xs)
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .disabled(isResolvingPlayback || !metadataReadyForActions)
 
                 downloadButton
@@ -401,7 +401,7 @@ struct DetailView: View {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
             }
-            .buttonStyle(.bordered)
+            .labstreamGlassButtonStyle()
         } else {
             Button {
                 showDownloadOptions = true
@@ -409,7 +409,7 @@ struct DetailView: View {
                 Label(downloadLabel, systemImage: "arrow.down.circle")
                     .font(.title3)
             }
-            .buttonStyle(.bordered)
+            .labstreamGlassButtonStyle()
             .disabled(isDownloading || !metadataReadyForActions)
         }
     }
@@ -427,7 +427,7 @@ struct DetailView: View {
                   systemImage: isWatched ? "minus.circle" : "checkmark.circle")
                 .font(.title3)
         }
-        .buttonStyle(.bordered)
+        .labstreamGlassButtonStyle()
         .disabled(isTogglingWatched)
     }
 

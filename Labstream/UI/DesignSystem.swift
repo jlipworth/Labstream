@@ -153,14 +153,19 @@ extension View {
         #endif
     }
 
-    /// Button style for controls floating over media: visionOS `.bordered` (already a
-    /// glass platter there), iOS 26 `.glass` (Liquid Glass).
+    /// Neutral secondary button: visionOS `.bordered` (already a glass platter there),
+    /// iOS 26 `.glass` (Liquid Glass). The iOS branch forces a `.primary` tint so the
+    /// label reads monochrome instead of inheriting the amber app accent — secondary
+    /// browse/detail/login chrome should look Apple-neutral, with amber reserved for the
+    /// genuine prominent CTA (`labstreamGlassProminentButtonStyle`). visionOS keeps the
+    /// accent it always had, so its rendering is unchanged.
     @ViewBuilder
     func labstreamGlassButtonStyle() -> some View {
         #if os(visionOS)
         self.buttonStyle(.bordered)
         #else
         self.buttonStyle(.glass)
+            .tint(.primary)
         #endif
     }
 

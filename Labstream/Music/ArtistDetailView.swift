@@ -104,7 +104,7 @@ struct ArtistDetailView: View {
                             .padding(.horizontal, DS.Space.md)
                             .padding(.vertical, DS.Space.xs)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .labstreamGlassProminentButtonStyle()
 
                     Button {
                         Task { await playDiscography(shuffled: true) }
@@ -112,7 +112,7 @@ struct ArtistDetailView: View {
                         Label("Shuffle", systemImage: "shuffle")
                             .font(.title3)
                     }
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
                 }
                 .disabled(isStartingPlayback)
                 .padding(.top, DS.Space.md)

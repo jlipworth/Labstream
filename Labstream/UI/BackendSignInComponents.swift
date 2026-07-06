@@ -77,7 +77,7 @@ struct PlexLinkCodeView: View {
             }
 
             Button("Open Plex sign-in in this headset instead", action: onOpenInHeadset)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
         }
     }
 }
@@ -94,7 +94,7 @@ struct PlexSignInStartView: View {
                     .padding(.horizontal, DS.Space.lg)
                     .padding(.vertical, DS.Space.xs)
             }
-            .buttonStyle(.borderedProminent)
+            .labstreamGlassProminentButtonStyle()
             .disabled(isWorking)
 
             Text("Uses a code at plex.tv/link.")
@@ -386,7 +386,7 @@ struct BackendSignInMethodChooser: View {
                         .font(.title3.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 52)
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .disabled(primaryDisabled)
 
                 Button(action: onSecondary) {
@@ -394,7 +394,7 @@ struct BackendSignInMethodChooser: View {
                         .font(.title3.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 52)
                 }
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
                 .disabled(secondaryDisabled)
             }
             .frame(maxWidth: 340)
@@ -442,12 +442,12 @@ struct BackendAuthStartView: View {
                         .padding(.horizontal, DS.Space.lg)
                         .padding(.vertical, DS.Space.xs)
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .disabled(isStartDisabled)
             }
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
         }
     }
 }
@@ -517,11 +517,11 @@ struct BackendCredentialsSignInForm: View {
                         .padding(.vertical, DS.Space.xs)
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .labstreamGlassProminentButtonStyle()
             .disabled(isSignInDisabled)
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
         }
     }
 }
@@ -572,14 +572,14 @@ struct EmbyConnectServerPicker: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, DS.Space.xs)
                     }
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
                     .disabled(isWorking || selectingServerID != nil)
                 }
             }
             .frame(maxWidth: 420)
 
             Button("Cancel", action: onCancel)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
                 .disabled(isWorking || selectingServerID != nil)
         }
     }
