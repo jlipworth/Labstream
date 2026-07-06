@@ -90,6 +90,65 @@ public struct MetadataResponse: Decodable, Sendable {
 /// can advance past rows that don't fit the expected model.
 private struct OpaqueRow: Decodable {}
 
+/// Backend-provided remote trailer metadata. Jellyfin/Emby surface these as URL-like
+/// descriptors on full item payloads; they are capability hints only until a UI/playback
+/// layer elects to resolve them safely.
+public struct MediaRemoteTrailer: Decodable, Sendable, Equatable {
+    public let name: String?
+    public let url: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case url = "Url"
+    }
+
+    public init(name: String? = nil, url: String? = nil) {
+        self.name = name
+        self.url = url
+    }
+}
+
+/// Cheap related-media availability lifted from backend detail payloads. The actual
+/// playable rows should still be fetched through backend-specific helpers (`/extras`,
+/// `LocalTrailers`, `SpecialFeatures`, `Intros`) so item ids/types are preserved.
+public struct MediaRelatedAvailability: Sendable, Equatable {
+    public let extraIds: [String]
+    public let localTrailerCount: Int?
+    public let specialFeatureCount: Int?
+    public let remoteTrailers: [MediaRemoteTrailer]
+
+    public var hasLocalTrailers: Bool { (localTrailerCount ?? 0) > 0 }
+    public var hasSpecialFeatures: Bool { (specialFeatureCount ?? 0) > 0 }
+    public var hasRemoteTrailers: Bool { !remoteTrailers.isEmpty }
+    public var hasAnyRelatedMedia: Bool {
+        !extraIds.isEmpty || hasLocalTrailers || hasSpecialFeatures || hasRemoteTrailers
+    }
+
+    public init(extraIds: [String] = [],
+                localTrailerCount: Int? = nil,
+                specialFeatureCount: Int? = nil,
+                remoteTrailers: [MediaRemoteTrailer] = []) {
+        self.extraIds = extraIds
+        self.localTrailerCount = localTrailerCount
+        self.specialFeatureCount = specialFeatureCount
+        self.remoteTrailers = remoteTrailers
+    }
+}
+
+/// Plex wraps inline extras as `Extras.Metadata` when requested with `includeExtras=1`.
+private struct PlexRelatedMediaContainer: Decodable, Sendable {
+    let metadata: [MediaItem]
+
+    enum CodingKeys: String, CodingKey {
+        case metadata = "Metadata"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        metadata = try c.decodeIfPresent([MediaItem].self, forKey: .metadata) ?? []
+    }
+}
+
 public struct MediaItem: Decodable, Sendable, Identifiable {
     public let ratingKey: String
     public let key: String?
@@ -220,6 +279,14 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// `nil` when absent so existing fixtures/tests decode unchanged; Jellyfin/Emby populate
     /// it via the synthetic mapper in `MediaBrowserBaseItemDto.toMediaItem()`.
     public let providerIds: [String: String]?
+    /// Inline playable/secondary media returned with the item's metadata. Currently used
+    /// for Plex `includeExtras=1` (`Extras.Metadata`), where each row preserves its native
+    /// ratingKey/type/media payload for direct playback.
+    public let relatedItems: [MediaItem]?
+    /// Cheap Jellyfin/Emby related-media capability hints decoded from full-item fields.
+    /// Fetch playable rows through backend request helpers instead of treating these ids
+    /// or counts as complete media objects.
+    public let relatedAvailability: MediaRelatedAvailability?
 
     public var id: String { ratingKey }
 
@@ -266,6 +333,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case leafCount
         case playlistType
         case primaryImageAspectRatio
+        case relatedItems = "Extras"
     }
 
     public init(from decoder: Decoder) throws {
@@ -324,12 +392,15 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         // Plex payloads omit this key (→ nil → 2:3 fallback); Jellyfin/Emby supply it via
         // the synthetic mapper in MediaBrowserBaseItemDto.toMediaItem(). See GH #101.
         primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
+        let extras = try c.decodeIfPresent(PlexRelatedMediaContainer.self, forKey: .relatedItems)?.metadata ?? []
+        relatedItems = extras.isEmpty ? nil : extras
         // `versions` is a client-side movie-grid grouping carrier (#108), never on the wire.
         versions = nil
         // `providerIds` is intentionally absent from `CodingKeys`: Plex payloads (and any
         // existing JSON fixture) don't carry it, so the decoder defaults it to nil and all
         // prior decoding behavior is preserved. Jellyfin/Emby fill it via `toMediaItem()`.
         providerIds = nil
+        relatedAvailability = nil
     }
 
     public init(ratingKey: String,
@@ -374,7 +445,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 playlistType: String? = nil,
                 primaryImageAspectRatio: Double? = nil,
                 versions: [MediaItem]? = nil,
-                providerIds: [String: String]? = nil) {
+                providerIds: [String: String]? = nil,
+                relatedItems: [MediaItem]? = nil,
+                relatedAvailability: MediaRelatedAvailability? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -418,6 +491,8 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.primaryImageAspectRatio = primaryImageAspectRatio
         self.versions = versions
         self.providerIds = providerIds
+        self.relatedItems = relatedItems
+        self.relatedAvailability = relatedAvailability
     }
 
     /// Return a copy of `self` carrying `versions` as its selectable movie-version group
@@ -443,7 +518,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                   playlistType: playlistType,
                   primaryImageAspectRatio: primaryImageAspectRatio,
                   versions: versions,
-                  providerIds: providerIds)
+                  providerIds: providerIds,
+                  relatedItems: relatedItems,
+                  relatedAvailability: relatedAvailability)
     }
 }
 
