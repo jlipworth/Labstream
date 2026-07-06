@@ -465,6 +465,9 @@ final class PlaybackController {
         NSLog("PlaybackController: isSeeking=%@ targetMs=%@",
               seeking ? "true" : "false",
               seekHoldTargetMs.map { String($0) } ?? "nil")
+        // The transport overlay covers the rebuild window of an in-flight seek (see
+        // `resolvedTransportStatus`), so it must be re-derived on every hold begin/end.
+        updateTransportStatus()
     }
 
     /// Release the hold only if it still belongs to the seek that scheduled this completion
@@ -494,6 +497,19 @@ final class PlaybackController {
             NSLog("PlaybackController: seek hold released by max-hold ceiling (target=%@)",
                   String(target))
             setSeeking(false)
+            // The ceiling firing means the seek never landed. When the player still isn't
+            // rendering — a starved transcoder can leave the rebuilt item reloading a
+            // segment-less playlist forever, with no KVO transition, no item error, and no
+            // stall watchdog (seen live: frozen chrome pinned at the target with zero
+            // status) — escalate to the visible reconnect path: spinner now, and the
+            // existing 20s reconnect watchdog converts a dead rebuild into the Retry/Close
+            // overlay. A genuine recovery cancels it at the `.playing` transition.
+            if player.timeControlStatus != .playing, !userWantsPaused, !playbackError.isFailed {
+                recordPlaybackDiagnostic("playback.seek_hold_ceiling_escalated", fields: [
+                    "target": .millisecondsBucket(target),
+                ])
+                beginReconnectStatus()
+            }
             return
         }
         let secs = player.currentTime().seconds
@@ -3253,6 +3269,20 @@ final class PlaybackController {
         }
         guard hasObservedTimeControlStatus,
               currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
+            // A rebuild-backed user seek replaces the player item, which resets the
+            // timeControlStatus observation gate above. A wedged rebuild (starved
+            // transcoder whose playlist never grows segments) can then sit forever
+            // without a single KVO transition — no spinner over a frozen, pinned
+            // scrubber (seen live on iPad, GH #110 follow-up). While the seek hold is
+            // riding such a not-yet-started item, report buffering so the viewer sees
+            // progress state instead of dead chrome. In-buffer native seeks keep the
+            // observation gate (same item), so quick scrubs don't flash the overlay.
+            if isSeeking, !hasObservedTimeControlStatus {
+                if userWantsPaused || transport.pauseRequested || transport.isPaused {
+                    return .pausedBuffering
+                }
+                return .buffering
+            }
             return .none
         }
         if userWantsPaused || transport.pauseRequested || transport.isPaused {
