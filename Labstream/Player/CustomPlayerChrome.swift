@@ -22,6 +22,10 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
     // Self-clear the seek hold once the live clock has actually landed at/after the target (the
     // per-item readyToPlay fires once and may precede that, so the 500ms tick backstops it).
     controller.releaseSeekHoldIfLanded()
+    // Zombie-playback backstop: a starved rebuild can report `.playing` with a parked clock
+    // forever (no `.waiting`-keyed watchdog ever fires) — the tick polls for that and escalates
+    // to the visible reconnect path.
+    controller.detectZombiePlaybackIfStuck()
     if !scrubState.isDragging {
         // While a user seek is in flight (in-buffer native seek, or an out-of-buffer
         // rebuild/reopen), pass `holdCommittedTarget: true` so the committed target stays pinned:
