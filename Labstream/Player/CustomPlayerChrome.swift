@@ -165,6 +165,12 @@ struct CustomPlayerChrome: View {
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
         .animation(.easeInOut(duration: 0.18), value: controller.skipMarker.active != nil)
+        #if os(iOS)
+        // System-player look: the whole chrome is monochrome — white pills, symbols,
+        // and scrubber — instead of inheriting the amber app accent. The brand color
+        // stays in the browse UI; inside the player it reads as non-native.
+        .tint(.white)
+        #endif
         .onAppear { revealChrome() }
         .onDisappear {
             hideTask?.cancel()
@@ -243,6 +249,9 @@ struct CustomPlayerChrome: View {
                     .buttonStyle(.glass)
                     .buttonBorderShape(.circle)
                     .tint(.primary)
+                    // Sit a touch lower than the visionOS chrome so the circle clears
+                    // the status-bar corner radius comfortably.
+                    .padding(.top, 10)
                     #endif
                 }
 
