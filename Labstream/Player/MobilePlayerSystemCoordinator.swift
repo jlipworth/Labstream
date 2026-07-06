@@ -19,6 +19,9 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
     private var remoteCommandTargets: [Any] = []
     private var previousRemoteCommandState: RemoteCommandState?
     private var nowPlayingOwner = UUID()
+    /// Poster for the lock screen / Control Center card, fetched once per configure.
+    private var artworkImage: UIImage?
+    private var artworkTask: Task<Void, Never>?
 
     private(set) var isPictureInPictureActive = false
 
@@ -41,7 +44,7 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
         isPictureInPictureActive || controller?.player.isExternalPlaybackActive == true
     }
 
-    func configure(controller: PlaybackController, item: MediaItem) {
+    func configure(controller: PlaybackController, item: MediaItem, artworkRequest: URLRequest? = nil) {
         self.controller = controller
         self.item = item
         nowPlayingOwner = UUID()
@@ -53,6 +56,23 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
 
         registerRemoteCommands()
         updateNowPlayingInfo()
+        loadArtwork(from: artworkRequest)
+    }
+
+    /// One best-effort poster fetch for the Now Playing card. Failures just leave the
+    /// text-only card; the request is the same authenticated transcode the browse grids use.
+    private func loadArtwork(from request: URLRequest?) {
+        artworkTask?.cancel()
+        artworkImage = nil
+        guard let request else { return }
+        artworkTask = Task { [weak self] in
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let image = UIImage(data: data),
+                  !Task.isCancelled else { return }
+            self?.artworkImage = image
+            self?.updateNowPlayingInfo()
+        }
     }
 
     func attach(playerLayer: AVPlayerLayer) {
@@ -94,16 +114,21 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
         if let subtitle = subtitle(for: item) {
             info[MPMediaItemPropertyAlbumTitle] = subtitle
         }
+        if let artworkImage {
+            // The request handler runs on an arbitrary queue; a decoded UIImage is immutable,
+            // so handing it back directly is safe and keeps decode off the Now Playing path.
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in
+                artworkImage
+            }
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = controller.transport.showsPausedControl ? .paused : .playing
     }
 
-    func pauseForBackgroundIfNeeded() {
-        guard !canContinueOnBackground else { return }
-        controller?.requestPause()
-    }
-
     func teardown() {
+        artworkTask?.cancel()
+        artworkTask = nil
+        artworkImage = nil
         removeRemoteCommands()
         controller?.shouldContinueOnBackground = { false }
         if pictureInPictureController?.isPictureInPictureActive == true {
