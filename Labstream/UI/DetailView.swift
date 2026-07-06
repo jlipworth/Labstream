@@ -691,23 +691,24 @@ struct DetailView: View {
 
     @ViewBuilder
     private var watchTogetherStatus: some View {
+        let stateApplies = watchTogetherCoordinator.stateApplies(to: detailed)
         switch watchTogetherCoordinator.state {
         case .inactive:
             EmptyView()
-        case .resolving(let title):
-            if title == detailed.title {
+        case .resolving:
+            if stateApplies {
                 Label("Preparing Watch Together…", systemImage: "shareplay")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-        case .active(let title):
-            if title == detailed.title {
+        case .active:
+            if stateApplies {
                 Label("Watch Together active", systemImage: "shareplay")
                     .font(.callout)
                     .foregroundStyle(.green)
             }
-        case .unavailable(let title, let reason):
-            if title == detailed.title {
+        case .unavailable(_, let reason):
+            if stateApplies {
                 Label(reason.userMessage, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.orange)
