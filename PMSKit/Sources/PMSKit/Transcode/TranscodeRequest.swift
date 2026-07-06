@@ -80,9 +80,9 @@ public struct TranscodeRequest: Sendable, Equatable {
 
     /// The device profile advertised to PMS for this request.
     public var deviceProfile: DeviceProfile {
-        DeviceProfile.visionOS(maxVideoBitrateKbps: maxVideoBitrateKbps,
-                               maxAudioBitrateKbps: maxAudioBitrateKbps,
-                               advertiseDolbyVision: advertiseDolbyVision)
+        DeviceProfile.streaming(maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                maxAudioBitrateKbps: maxAudioBitrateKbps,
+                                advertiseDolbyVision: advertiseDolbyVision)
     }
 
     public static func resolutionCap(forBitrateKbps kbps: Int) -> String? {
@@ -254,9 +254,9 @@ public struct TranscodeRequest: Sendable, Equatable {
         items.append(.init(name: "directPlay", value: "1"))
         // Advertise the direct-play-capable profile only on this path.
         items.removeAll { $0.name == "X-Plex-Client-Profile-Extra" }
-        let probeProfile = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps,
-                                                                 maxAudioBitrateKbps: maxAudioBitrateKbps,
-                                                                 advertiseDolbyVision: advertiseDolbyVision)
+        let probeProfile = DeviceProfile.directPlayProbe(maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                                         maxAudioBitrateKbps: maxAudioBitrateKbps,
+                                                         advertiseDolbyVision: advertiseDolbyVision)
         items.append(.init(name: "X-Plex-Client-Profile-Extra", value: probeProfile.clientProfileExtra))
         return items
     }

@@ -87,7 +87,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
 }
 
 @Test func deviceProfileDeclaresHLSAndBitrateLimit() {
-    let p = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000, maxAudioBitrateKbps: 640)
+    let p = DeviceProfile.streaming(maxVideoBitrateKbps: 8000, maxAudioBitrateKbps: 640)
     #expect(p.clientProfileExtra.contains("add-transcode-target"))
     #expect(p.clientProfileExtra.contains("protocol=hls"))
     #expect(p.clientProfileExtra.contains("name=video.bitrate&value=8000"))
@@ -153,7 +153,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
 
 @Test func deviceProfileDeclaresHEVCInFMP4Container() {
     // HEVC over HLS requires the fMP4 (mp4) container (research/09).
-    let p = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000)
+    let p = DeviceProfile.streaming(maxVideoBitrateKbps: 8000)
     let extra = p.clientProfileExtra
     #expect(extra.contains("hevc"))
     #expect(extra.contains("container=mp4"))
@@ -382,8 +382,8 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("X-Plex-Client-Profile-Extra")?.contains("add-direct-play-profile") == false)
 }
 
-@Test func visionOSProfileUnchanged() {
-    let extra = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000).clientProfileExtra
+@Test func streamingProfileUnchanged() {
+    let extra = DeviceProfile.streaming(maxVideoBitrateKbps: 8000).clientProfileExtra
     #expect(extra.contains("add-direct-play-profile") == false)
     #expect(extra.contains("isRequired=true") == false)
 }
