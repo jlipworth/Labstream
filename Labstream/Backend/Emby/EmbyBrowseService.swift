@@ -86,6 +86,19 @@ struct EmbyBrowseService {
         return (page.items, page.total)
     }
 
+    /// Children of a backend BoxSet/collection. Uses the generic Items + ParentId read
+    /// path, not MediaBrowser collection-management endpoints.
+    func collectionItems(collectionId: String) async throws -> [MediaItem] {
+        let context = try context()
+        let req = try EmbyLibrary.collectionItemsRequest(server: context.server,
+                                                         token: context.token,
+                                                         identity: embyIdentity,
+                                                         userId: context.userID,
+                                                         collectionId: collectionId)
+        let response = try await send(req, as: EmbyItemsResponse.self)
+        return response.items.compactMap { $0.toMediaItem() }
+    }
+
     /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
     func albumArtistsPage(parentId: String?,
                           startIndex: Int? = nil,

@@ -1,7 +1,7 @@
 import SwiftUI
 import PMSKit
 
-/// Browser for a TV CONTAINER (a `show` or a `season`).
+/// Browser for a backend container (`show`, `season`, or collection/BoxSet).
 ///
 /// - A `show` lists its seasons; selecting one pushes another `DetailView`, which (since a
 ///   season is itself a container) recurses into this browser to show that season's
@@ -12,7 +12,9 @@ import PMSKit
 /// Mark actions target the episode's own ratingKey (the item that owns a Media/Part),
 /// which is the fix for the series-download HTTP 400.
 ///
-/// Children come from `GET /library/metadata/{ratingKey}/children` via `BrowseAPI.children`.
+/// TV children come from `GET /library/metadata/{ratingKey}/children` via `BrowseAPI.children`.
+/// Collection children use backend-specific collection item reads (Plex
+/// `/library/collections/{id}/items`; Jellyfin/Emby generic Items + ParentId).
 struct ContainerBrowserView: View {
     let container: MediaItem
 
@@ -30,6 +32,7 @@ struct ContainerBrowserView: View {
 
     /// A season lists episodes (drawn as wide episode rows); a show lists seasons (posters).
     private var childrenAreEpisodes: Bool { container.kind == .season }
+    private var isCollection: Bool { container.isCollection }
 
     var body: some View {
         ScrollView {
@@ -45,34 +48,55 @@ struct ContainerBrowserView: View {
                     .frame(maxWidth: .infinity, minHeight: 360)
             case .loaded:
                 if children.isEmpty {
-                    ContentUnavailableView(childrenAreEpisodes ? "No episodes" : "No seasons",
-                                           systemImage: "tv",
-                                           description: Text("Nothing to show for \(container.title)."))
+                    ContentUnavailableView(emptyTitle,
+                                           systemImage: emptySystemImage,
+                                           description: Text(emptyDescription))
                         .frame(maxWidth: .infinity, minHeight: 360)
                 } else if childrenAreEpisodes {
                     episodeList
                 } else {
-                    seasonGrid
+                    posterGrid
                 }
             }
         }
-        .navigationTitle(container.grandparentTitle ?? container.title)
+        .navigationTitle(navigationTitle)
         .id(container.ratingKey)
         .task(id: container.ratingKey) { await load() }
     }
 
-    /// Seasons as a poster grid (same look as a library section).
-    private var seasonGrid: some View {
+    /// Seasons/collection items as a poster grid (same look as a library section).
+    private var posterGrid: some View {
         LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
-            ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, season in
-                NavigationLink(value: season) {
-                    PosterCell(item: season, width: DS.Poster.gridMin(compact: compactWidth))
+            ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, child in
+                NavigationLink(value: child) {
+                    PosterCell(item: child, width: DS.Poster.gridMin(compact: compactWidth))
                 }
                 .cardLink()
                 .videoCardContextMenu(for: season)
             }
         }
         .padding(DS.pagePadding(compact: compactWidth))
+    }
+
+    private var navigationTitle: String {
+        if isCollection { return container.title }
+        return container.grandparentTitle ?? container.title
+    }
+
+    private var emptyTitle: String {
+        if isCollection { return "No collection items" }
+        return childrenAreEpisodes ? "No episodes" : "No seasons"
+    }
+
+    private var emptySystemImage: String {
+        isCollection ? "rectangle.stack" : "tv"
+    }
+
+    private var emptyDescription: String {
+        if isCollection {
+            return "This server did not return any items for \(container.title)."
+        }
+        return "Nothing to show for \(container.title)."
     }
 
     /// Episodes as a vertical list of wide rows, each reading
@@ -113,8 +137,13 @@ struct ContainerBrowserView: View {
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                let loaded = try await JellyfinBrowseService(appModel: appModel)
-                    .items(parentId: container.ratingKey, recursive: false)
+                let service = JellyfinBrowseService(appModel: appModel)
+                let loaded: [MediaItem]
+                if isCollection {
+                    loaded = try await service.collectionItems(collectionId: container.ratingKey)
+                } else {
+                    loaded = try await service.items(parentId: container.ratingKey, recursive: false)
+                }
                 let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
                 recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Jellyfin")
                 children = normalized
@@ -127,8 +156,13 @@ struct ContainerBrowserView: View {
         if appModel.activeBackend == .emby {
             loadState = .loading
             do {
-                let loaded = try await EmbyBrowseService(appModel: appModel)
-                    .items(parentId: container.ratingKey, recursive: false)
+                let service = EmbyBrowseService(appModel: appModel)
+                let loaded: [MediaItem]
+                if isCollection {
+                    loaded = try await service.collectionItems(collectionId: container.ratingKey)
+                } else {
+                    loaded = try await service.items(parentId: container.ratingKey, recursive: false)
+                }
                 let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
                 recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Emby")
                 children = normalized
@@ -145,7 +179,9 @@ struct ContainerBrowserView: View {
         }
         loadState = .loading
         do {
-            let loaded = try await service.children(ratingKey: container.ratingKey)
+            let loaded = isCollection
+                ? try await service.collectionItems(collectionId: container.ratingKey)
+                : try await service.children(ratingKey: container.ratingKey)
             let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
             recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Plex")
             children = normalized
