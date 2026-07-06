@@ -1095,8 +1095,8 @@ final class PlaybackController {
         }
 
         let selectedID = subtitleStreamIndexOverride
-            ?? MediaBrowserPlaybackPreferencePolicy.subtitleStreamIndex()
-            ?? -1
+            ?? MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(for: item,
+                                                                                 mediaIndex: mediaIndex)
         return (tracks, selectedID)
     }
 
@@ -1171,30 +1171,22 @@ final class PlaybackController {
         }
     }
 
-    /// Auto-apply the persisted subtitle-language preference to the current item's legible
-    /// group, once per item (gated by `didApplySavedSubtitle`). If the user previously chose
-    /// "Off" we leave captions disabled and do NOT override it. Otherwise we select the first
-    /// legible option whose language matches the saved code. No-op when nothing is saved or no
-    /// match exists (the HLS default selection stands).
+    /// Apply the subtitle preference to the current item's legible group, once per item
+    /// (gated by `didApplySavedSubtitle`). The default is an explicit DESELECT: the HLS
+    /// default selection must never stand on its own, because AVFoundation auto-selects
+    /// DEFAULT/AUTOSELECT renditions per system caption settings while the picker computes
+    /// "Off" — the "subtitles show while Off" bug. A track is selected only when an
+    /// auto-select mode applies and a legible option matches the saved language.
     ///
     /// Invoked on `.readyToPlay`; stays on the @MainActor since it reads the non-`Sendable`
     /// `AVMediaSelectionOption`s.
     private func applySavedSubtitlePreferenceIfNeeded() async {
         guard !didApplySavedSubtitle else { return }
         let defaults = UserDefaults.standard
-
-        // No preference at all (neither Off nor a language): nothing to do, but don't burn
-        // the one-shot gate yet — leave the HLS default and let a future pick start fresh.
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
         let savedLang = defaults.string(forKey: SubtitlePrefKey.language)
         let mode = SubtitleAutoSelectMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
             ?? .manual
-        guard wantsOff || (mode != .manual && savedLang?.isEmpty == false) else { return }
-
-        if mode == .foreignAudio && !sourceAudioIsForeign(toPreferredLanguage: defaults) {
-            didApplySavedSubtitle = true
-            return
-        }
 
         // Load the legible group once. If the HLS carries no legible renditions, there's
         // nothing to apply on this item — mark applied so we don't re-probe each readyToPlay.
@@ -1205,24 +1197,18 @@ final class PlaybackController {
             return
         }
 
-        if wantsOff {
-            // Honor an explicit "Off": disable captions and do NOT auto-select anything.
-            playerItem.select(nil, in: group)
-            didApplySavedSubtitle = true
-            return
-        }
-
-        // Select the first legible option whose language matches the saved code. No match →
-        // leave the HLS default selection in place.
-        if let saved = savedLang {
-            let match = group.options.first { option in
+        // Off unless an auto-select mode picks a matching track (mirrors
+        // MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex).
+        var selection: AVMediaSelectionOption?
+        if !wantsOff, mode != .manual,
+           let saved = savedLang, !saved.isEmpty,
+           mode == .always || sourceAudioIsForeign(toPreferredLanguage: defaults) {
+            selection = group.options.first { option in
                 option.extendedLanguageTag == saved
                     || option.locale?.language.languageCode?.identifier == saved
             }
-            if let match {
-                playerItem.select(match, in: group)
-            }
         }
+        playerItem.select(selection, in: group)
         didApplySavedSubtitle = true
     }
 
@@ -1440,6 +1426,17 @@ final class PlaybackController {
         didApplyAudioPreference = true
     }
 
+    /// Whether the current preferences resolve to "no subtitles" for a newly built stream.
+    /// Delegates to the shared preference policy so Plex's part-level deselect, the picker's
+    /// Off row, and the Emby/Jellyfin `-1` wire sentinel all share ONE semantic: explicit Off
+    /// and manual mode ("Subtitles stay off until selected in the player") mean off; the
+    /// auto-select modes mean off only when no stream matches the saved language.
+    private func subtitlesOffForNewStream() -> Bool {
+        MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(for: item,
+                                                                          mediaIndex: mediaIndex)
+            == MediaBrowserPlaybackPreferencePolicy.subtitleOffStreamIndex
+    }
+
     private func selectedBurnSubtitleStreamIDForCurrentPreferences() -> Int? {
         let defaults = UserDefaults.standard
         let burnMode = SubtitleBurnMode(rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? "")
@@ -1501,7 +1498,8 @@ final class PlaybackController {
 
     private func effectiveRemoteSubtitleStreamIndex() -> Int? {
         subtitleStreamIndexOverride
-            ?? MediaBrowserPlaybackPreferencePolicy.subtitleStreamIndex()
+            ?? MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(for: item,
+                                                                                 mediaIndex: mediaIndex)
     }
 
     private func sourcePartForCurrentMedia() -> Part? {
@@ -2022,10 +2020,17 @@ final class PlaybackController {
         // #118: PMS ignores the `subtitles=burn`/`subtitleStreamID` query params on the
         // transcode URL for image-based (PGS/VOBSUB) subtitles — it only burns a subtitle that
         // is *selected on the part*. So when we intend to burn, PUT the selection onto the part
-        // first (same mechanic as `selectAudioStream`), then build the transcode below. We
-        // deliberately do NOT deselect (`subtitleStreamID=0`) when not burning: non-burn text
-        // subs ride `subtitles=auto` as soft HLS renditions off the part's *selected* stream,
-        // so deselecting would suppress them.
+        // first (same mechanic as `selectAudioStream`), then build the transcode below.
+        //
+        // Off is the same mechanic in reverse. Plex part-level selection is ACCOUNT-STICKY and
+        // shared with every other Plex client, and `subtitles=auto` burns a part-selected text
+        // subtitle into the video (proven live by LiveSubtitleOffProbeTests: a selected
+        // forced/default SRT flipped the copy-lane decision to `video=transcode`, with the app's
+        // picker showing "Off" the whole time). So when the effective preference is "no
+        // subtitles", PUT `subtitleStreamID=0` to deselect — otherwise a selection left behind
+        // by another client (or our own burn path) keeps burning subtitles into every session.
+        // When subtitles ARE wanted (auto-select modes) we leave the part selection alone so
+        // `subtitles=auto` can serve/burn the chosen stream.
         if let burnSubtitleStreamID, let part = sourcePartForCurrentMedia() {
             do {
                 try await client.send(StreamSelectionRequest.selectSubtitleStream(server: server,
@@ -2040,6 +2045,21 @@ final class PlaybackController {
                 // Non-fatal: fall through and still request the transcode. The burn just won't
                 // apply (the pre-#118 behavior) rather than failing the whole stream start.
                 NSLog("PlaybackController: subtitle burn selection PUT failed: %@", Self.safeErrorSummary(error))
+            }
+        } else if subtitlesOffForNewStream(), let part = sourcePartForCurrentMedia() {
+            do {
+                try await client.send(StreamSelectionRequest.selectSubtitleStream(server: server,
+                                                                                  token: token,
+                                                                                  identity: identity,
+                                                                                  partID: part.id,
+                                                                                  subtitleStreamID: 0))
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                NSLog("PlaybackController: deselected part %d subtitle stream (subtitles off) before transcode build",
+                      part.id)
+            } catch {
+                // Non-fatal: the stream still starts; a stale server-side selection may burn
+                // subtitles this session (the pre-fix behavior).
+                NSLog("PlaybackController: subtitle off deselection PUT failed: %@", Self.safeErrorSummary(error))
             }
         }
 
