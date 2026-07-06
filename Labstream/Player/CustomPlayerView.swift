@@ -178,18 +178,6 @@ struct CustomPlayerView: View {
             mobileOrientationCoordinator.enterLandscapeIfNeeded()
         }
         #endif
-        // The bounded attach poll below can expire before the SharePlay session finishes
-        // activating (e.g. the user lingers on the FaceTime activation sheet), so retrigger
-        // whenever the coordinator's state changes while a session is active. `state` is the
-        // observable hook here — `hasActiveSession` is derived from an @ObservationIgnored
-        // stored property and never fires onChange.
-        .onChange(of: watchTogetherCoordinator.state) {
-            guard let controller, watchTogetherCoordinator.hasActiveSession else { return }
-            watchTogetherAttachTask?.cancel()
-            watchTogetherAttachTask = Task { @MainActor in
-                await attachWatchTogetherCoordinatorWhenReady(for: controller)
-            }
-        }
         .onDisappear {
             #if os(iOS)
             mobileSystemCoordinator?.teardown()
@@ -314,15 +302,26 @@ struct CustomPlayerView: View {
     #if os(visionOS)
     @MainActor
     private func attachWatchTogetherCoordinatorWhenReady(for playback: PlaybackController) async {
-        for _ in 0..<300 {
-            guard !Task.isCancelled else { return }
+        // Lifetime observer rather than a bounded poll: the SharePlay session can activate at
+        // any time (the user may linger on the FaceTime activation sheet), the first player
+        // item can take arbitrarily long to mint on a slow remote transcode decision, and
+        // PlaybackController.load() replaces player.currentItem on quality/track switches,
+        // retries, and stall recovery — every replacement item must be re-attached or
+        // AVPlayerPlaybackCoordinator silently stops syncing it (the delegate pins one
+        // AVPlayerItem by identity). A failed attach marks that item as tried so it isn't
+        // hammered; losing the session resets so a later session attaches fresh.
+        var attemptedItemID: ObjectIdentifier?
+        while !Task.isCancelled {
             guard controller === playback else { return }
-            if playback.player.currentItem != nil, watchTogetherCoordinator.hasActiveSession {
+            if !watchTogetherCoordinator.hasActiveSession {
+                attemptedItemID = nil
+            } else if let currentItem = playback.player.currentItem,
+                      ObjectIdentifier(currentItem) != attemptedItemID {
+                attemptedItemID = ObjectIdentifier(currentItem)
                 _ = watchTogetherCoordinator.attachPlaybackCoordinatorIfReady(player: playback.player,
                                                                               item: item)
-                return
             }
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(250))
         }
     }
     #endif

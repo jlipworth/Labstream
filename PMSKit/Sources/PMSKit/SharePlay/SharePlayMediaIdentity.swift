@@ -184,7 +184,12 @@ public struct SharePlayMediaIdentity: Codable, Sendable, Equatable, Hashable {
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .lowercased()
-        guard !collapsed.isEmpty, !SharePlayPrivacyGuard.containsProhibitedContent(collapsed) else { return nil }
+        // Comparable text stays local and only ever leaves the device SHA-256-hashed inside
+        // the opaque coordinator identifier, so only hard secret markers disqualify it. The
+        // broad hostname/path/filename/IP heuristics are reserved for display text, where a
+        // false positive costs a generic label — here it would wrongly disable Watch Together
+        // for legitimate titles like "Startup.com" or "11:14".
+        guard !collapsed.isEmpty, !SharePlayPrivacyGuard.containsSecretMarker(collapsed) else { return nil }
         return collapsed
     }
 
@@ -342,8 +347,25 @@ private enum SharePlayPrivacyGuard {
     }
 
     static func containsProhibitedContent(_ text: String) -> Bool {
-        let lowered = text.lowercased()
+        if containsSecretMarker(text) {
+            return true
+        }
         if DiagnosticRedactor.redact(text) != text {
+            return true
+        }
+        let lowered = text.lowercased()
+        return heuristicPatterns.contains {
+            $0.firstMatch(in: lowered, range: NSRange(lowered.startIndex..., in: lowered)) != nil
+        }
+    }
+
+    /// Hard, low-false-positive markers of leaked credentials or backend identifiers — the
+    /// checks that apply even to matching text that never leaves the device unhashed. The
+    /// broader hostname/IP/path/filename heuristics (including DiagnosticRedactor, which
+    /// shares them) only gate display text via `containsProhibitedContent`.
+    static func containsSecretMarker(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        if secretPatterns.contains(where: { $0.firstMatch(in: lowered, range: NSRange(lowered.startIndex..., in: lowered)) != nil }) {
             return true
         }
         if lowered.contains("x-plex-token")
@@ -372,18 +394,28 @@ private enum SharePlayPrivacyGuard {
             || lowered.contains("password:") {
             return true
         }
-        let patterns = [
-            #"https?://"#,
-            #"[a-z][a-z0-9+.-]*://"#,
-            #"\b(?:\d{1,3}\.){3}\d{1,3}\b"#,
-            #"\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f]{0,4}\b"#,
-            #"\b[a-z0-9.-]+\.(?:local|internal|lan|home|example|com|net|org|io|tv|me|dev|app|co|us|uk|ca|de|fr|es|it|nl|au|eu|se|ch|info|biz|xyz|cloud|site|online|live|pro|direct)(?:[:/]|\b)"#,
-            #"\b[a-z0-9-]{2,}:\d{2,5}\b"#,
-            #"(?i)(?:^|[\s])(?:/Users/|/home/|/Volumes/|/mnt/|/media/|/storage/|/private/|/var/|/tmp/|/library/|/metadata/|/transcode/|/video/|/items/)[^\s]*"#,
-            #"(?i)\b[A-Z]:\\[^\s]+"#,
-            #"(?i)\b[^\s/\\]+\.(?:mkv|mp4|m4v|mov|avi|ts|m3u8|mp3|flac|srt|ass|jpg|jpeg|png|webp|nfo)\b"#,
-            #"(?i)\b(?:ratingkey|rating_key|itemid|item_id|libraryid|library_id|mediaid|media_id|mediasourceid|media_source_id|playsessionid|play_session_id|api[_ -]?key|client[_ -]?(?:id|identifier)|password|passwd|pwd)\s*[:=]\s*\S+"#
-        ]
-        return patterns.contains { lowered.range(of: $0, options: .regularExpression) != nil }
+        return false
     }
+
+    private static let secretPatterns: [NSRegularExpression] = [
+        #"[a-z][a-z0-9+.-]*://"#,
+        #"\b(?:x-plex-token|tokens?|access[_-]?token|api[_-]?key|apikey|password|passwd|pwd|secret|client[_-]?identifier)\s*[=:]\s*\S+"#,
+        #"\bauthorization\b\s*:?\s*(?:bearer\b|\S+)"#
+    ].map { try! NSRegularExpression(pattern: $0) }
+
+    /// Precompiled once: these run on every identity/payload construction, and DetailView
+    /// re-evaluates identities per render — recompiling ten regexes each time is measurable
+    /// main-thread work.
+    private static let heuristicPatterns: [NSRegularExpression] = [
+        #"https?://"#,
+        #"[a-z][a-z0-9+.-]*://"#,
+        #"\b(?:\d{1,3}\.){3}\d{1,3}\b"#,
+        #"\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f]{0,4}\b"#,
+        #"\b[a-z0-9.-]+\.(?:local|internal|lan|home|example|com|net|org|io|tv|me|dev|app|co|us|uk|ca|de|fr|es|it|nl|au|eu|se|ch|info|biz|xyz|cloud|site|online|live|pro|direct)(?:[:/]|\b)"#,
+        #"\b[a-z0-9-]{2,}:\d{2,5}\b"#,
+        #"(?i)(?:^|[\s])(?:/Users/|/home/|/Volumes/|/mnt/|/media/|/storage/|/private/|/var/|/tmp/|/library/|/metadata/|/transcode/|/video/|/items/)[^\s]*"#,
+        #"(?i)\b[A-Z]:\\[^\s]+"#,
+        #"(?i)\b[^\s/\\]+\.(?:mkv|mp4|m4v|mov|avi|ts|m3u8|mp3|flac|srt|ass|jpg|jpeg|png|webp|nfo)\b"#,
+        #"(?i)\b(?:ratingkey|rating_key|itemid|item_id|libraryid|library_id|mediaid|media_id|mediasourceid|media_source_id|playsessionid|play_session_id|api[_ -]?key|client[_ -]?(?:id|identifier)|password|passwd|pwd)\s*[:=]\s*\S+"#
+    ].map { try! NSRegularExpression(pattern: $0) }
 }
