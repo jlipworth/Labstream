@@ -18,6 +18,7 @@ struct ContentView: View {
     let authManager: AuthManager
     let downloadManager: DownloadManager
     let musicPlayer: MusicPlayerController
+    let watchTogetherCoordinator: WatchTogetherCoordinator
 
     /// Launch bootstrap state, also app-lifetime so a reopened window never re-runs the one-time
     /// session restore. While restoring we show a neutral splash — NOT `LoginView` — because a saved
@@ -40,7 +41,8 @@ struct ContentView: View {
                 RootView(appModel: appModel,
                          authManager: authManager,
                          downloadManager: downloadManager,
-                         musicPlayer: musicPlayer)
+                         musicPlayer: musicPlayer,
+                         watchTogetherCoordinator: watchTogetherCoordinator)
             case .restoringSplash:
                 RestoringSessionView()
             case .login:
@@ -183,13 +185,16 @@ private struct RestoringSessionView: View {
 #Preview(windowStyle: .plain) {
     let identity = PlatformClientIdentity.make(clientIdentifier: "preview", version: "0.0.0")
     let model = AppModel(identity: identity)
+    let watchTogetherCoordinator = WatchTogetherCoordinator()
     ContentView(appModel: model,
                 authManager: AuthManager(appModel: model),
                 downloadManager: DownloadManager(appModel: model),
                 musicPlayer: MusicPlayerController(appModel: model),
+                watchTogetherCoordinator: watchTogetherCoordinator,
                 bootstrap: SessionBootstrap())
         .environment(CustomCinemaSessionStore())
         .environment(RealityTheaterSessionStore())
+        .environment(watchTogetherCoordinator)
 }
 #else
 #Preview {

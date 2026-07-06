@@ -11,6 +11,7 @@ struct RootView: View {
     let authManager: AuthManager
     let downloadManager: DownloadManager
     let musicPlayer: MusicPlayerController
+    let watchTogetherCoordinator: WatchTogetherCoordinator
 
     @State private var selection: AppTab = .home
     /// Last non-Search tab, so clearing the dedicated Search surface returns to the
@@ -218,6 +219,7 @@ struct RootView: View {
         .environment(appModel)
         .environment(downloadManager)
         .environment(musicPlayer)
+        .environment(watchTogetherCoordinator)
     }
 
     @ViewBuilder

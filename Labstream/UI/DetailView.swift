@@ -42,6 +42,9 @@ struct DetailView: View {
     /// that must also shrink for a compact iPad pane key on this rather than
     /// `isCompactPhoneLayout`. Always false on visionOS, so its metrics stay untouched.
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    #if os(visionOS)
+    @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
+    #endif
     /// The browse tab this detail lives under, injected by RootView, so Cinema exit returns to the
     /// originating tab's detail instead of always Home (#87). `nil` → fall back to the system-entry
     /// (Home) path, preserving prior behavior.
@@ -663,8 +666,55 @@ struct DetailView: View {
                     .font(.callout)
                     .foregroundStyle(.red)
             }
+
+            #if os(visionOS)
+            watchTogetherStatus
+            #endif
         }
     }
+
+    #if os(visionOS)
+    @ViewBuilder
+    private var watchTogetherButton: some View {
+        Button {
+            let item = detailed
+            Task { await watchTogetherCoordinator.requestWatchTogether(for: item) }
+        } label: {
+            Label("Watch Together", systemImage: "shareplay")
+                .font(.title3.weight(.semibold))
+                .padding(.horizontal, DS.Space.md)
+                .padding(.vertical, DS.Space.xs)
+        }
+        .buttonStyle(.bordered)
+        .disabled(isResolvingPlayback || !metadataReadyForActions || detailed.sharePlayActivityPayload == nil)
+    }
+
+    @ViewBuilder
+    private var watchTogetherStatus: some View {
+        switch watchTogetherCoordinator.state {
+        case .inactive:
+            EmptyView()
+        case .resolving(let title):
+            if title == detailed.title {
+                Label("Preparing Watch Together…", systemImage: "shareplay")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        case .active(let title):
+            if title == detailed.title {
+                Label("Watch Together active", systemImage: "shareplay")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+            }
+        case .unavailable(let title, let reason):
+            if title == detailed.title {
+                Label(reason.userMessage, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+    #endif
 
     @ViewBuilder
     private var actionButtonStack: some View {
@@ -676,6 +726,9 @@ struct DetailView: View {
             VStack(spacing: DS.Space.md) {
                 playButton
                 downloadButton
+                #if os(visionOS)
+                watchTogetherButton
+                #endif
                 if supportsWatchedToggle {
                     markWatchedButton
                 }
@@ -685,6 +738,9 @@ struct DetailView: View {
             HStack(spacing: DS.Space.lg) {
                 playButton
                 downloadButton
+                #if os(visionOS)
+                watchTogetherButton
+                #endif
                 if supportsWatchedToggle {
                     markWatchedButton
                 }
