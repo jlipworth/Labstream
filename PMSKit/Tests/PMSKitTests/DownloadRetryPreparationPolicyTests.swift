@@ -57,6 +57,20 @@ struct DownloadRetryPreparationPolicyTests {
                                                                                    hasResumeData: false))
     }
 
+    @Test("Persisted blobs for range-checkpoint rows resume via the range lane")
+    func persistedResumeDataLaneRouting() {
+        // Registering a blob-resumed Range task into the opaque inflight map would treat its
+        // partial-body temp as a whole file at completion — the range lane must own these.
+        #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: .staticByteRange)
+            == .rangeCheckpoint)
+        #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: .serverPrepThenStatic)
+            == .rangeCheckpoint)
+        #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: .liveForwardOnly)
+            == .opaque)
+        #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: nil)
+            == .opaque)
+    }
+
     @Test("Paused Plex server prep reattaches only before static handoff")
     func pausedPlexServerPrepGate() {
         #expect(DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(status: .paused,
