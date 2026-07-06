@@ -215,12 +215,19 @@ final class AudioSessionCoordinator {
         }
     }
 
+    /// When set and returning true, `pauseForBackground()` becomes a no-op. iOS Picture in
+    /// Picture is the one case where losing the foreground must NOT pause: the system keeps
+    /// rendering the video in the PiP window, so the P5 "can't decode in the background"
+    /// rationale doesn't apply while PiP is active.
+    var shouldSuppressBackgroundPause: (@MainActor () -> Bool)?
+
     /// Pause video when the app is backgrounded / loses the foreground (P5). Video can't
     /// decode/render in the background and a live transcode would keep running, so we always
     /// pause. We deliberately do NOT auto-resume on foreground: resume is the user's choice
     /// on return. Do not set the interruption-resume flag here, or a later
     /// interruption-ended notification with `.shouldResume` can restart playback.
     private func pauseForBackground() {
+        if shouldSuppressBackgroundPause?() == true { return }
         if player.timeControlStatus != .paused {
             player.pause()
         }

@@ -57,6 +57,8 @@ struct CustomPlayerChrome: View {
     let title: String
     @Binding var scrubState: PlaybackScrubState
     let trickPlayProvider: (any TrickPlayThumbnailProviding)?
+    /// Drives the iOS Picture in Picture button; inert on visionOS.
+    let pipCoordinator: PlayerPiPCoordinator
     let onRetry: () -> Void
     let onClose: (() -> Void)?
     let allowsRealityTheater: Bool
@@ -70,11 +72,18 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
+    /// True only between a Slider `onEditingChanged(true)` and its matching `(false)`. Guards the
+    /// scrubber binding's defensive `beginDrag` so a trailing value-set arriving after the commit
+    /// cannot re-open the drag (see `scrubberBinding`).
+    @State private var scrubEditingSessionActive = false
 
     init(controller: PlaybackController,
          title: String,
          scrubState: Binding<PlaybackScrubState>,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         // Defaulted so the visionOS Cinema/Theater call sites (which have no PiP) need no
+         // change; the iOS window path passes the shared coordinator from CustomPlayerView.
+         pipCoordinator: PlayerPiPCoordinator = PlayerPiPCoordinator(),
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?,
          allowsRealityTheater: Bool = false) {
@@ -82,6 +91,7 @@ struct CustomPlayerChrome: View {
         self.title = title
         _scrubState = scrubState
         self.trickPlayProvider = trickPlayProvider
+        self.pipCoordinator = pipCoordinator
         self.onRetry = onRetry
         self.onClose = onClose
         self.allowsRealityTheater = allowsRealityTheater
@@ -165,6 +175,13 @@ struct CustomPlayerChrome: View {
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+
+            #if os(iOS)
+            // Hardware-keyboard transport. These zero-size buttons stay in the hierarchy
+            // regardless of `shouldShowChrome`, so the shortcuts fire even while the chrome
+            // is auto-hidden (the on-screen transport buttons are gone at that point).
+            keyboardShortcuts
+            #endif
         }
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
@@ -260,12 +277,85 @@ struct CustomPlayerChrome: View {
                 }
 
                 Spacer()
+
+                #if os(iOS)
+                // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
+                // circles at the top-trailing corner, opposite the close button.
+                airPlayButton
+                    .padding(.top, 10)
+
+                if pipCoordinator.isPossible {
+                    pipButton
+                        .padding(.top, 10)
+                }
+                #endif
             }
             .padding(28)
 
             Spacer()
         }
     }
+
+    #if os(iOS)
+    private var airPlayButton: some View {
+        AirPlayRoutePickerButton()
+            .frame(width: 44, height: 44)
+            .labstreamOverlayPlatter(in: Circle())
+            .accessibilityLabel("AirPlay")
+    }
+
+    private var pipButton: some View {
+        Button {
+            revealChrome(keepVisible: true)
+            pipCoordinator.toggle()
+        } label: {
+            Label(pipCoordinator.isActive ? "Exit Picture in Picture" : "Picture in Picture",
+                  systemImage: pipCoordinator.isActive ? "pip.exit" : "pip.enter")
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.semibold))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .tint(.primary)
+    }
+
+    /// Zero-size buttons whose only job is to register hardware-keyboard shortcuts. Space
+    /// toggles play/pause, ←/→ skip 10s back / 30s forward (matching the on-screen skip
+    /// buttons), and Esc closes the player. Kept out of the visible layout via `opacity(0)`.
+    @ViewBuilder private var keyboardShortcuts: some View {
+        Group {
+            Button("Play or pause") {
+                revealChrome()
+                controller.togglePlayback()
+                scheduleChromeHideIfNeeded()
+            }
+            .keyboardShortcut(.space, modifiers: [])
+
+            Button("Skip back 10 seconds") {
+                performRelativeSkip(seconds: -10)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+
+            Button("Skip forward 30 seconds") {
+                performRelativeSkip(seconds: 30)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [])
+
+            if let onClose {
+                Button("Close player") {
+                    revealChrome()
+                    onClose()
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+    #endif
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -510,6 +600,7 @@ struct CustomPlayerChrome: View {
     }
 
     private var menuStrip: some View {
+        #if os(visionOS)
         HStack(spacing: 8) {
             ForEach(availableMenus) { menu in
                 Button {
@@ -525,8 +616,68 @@ struct CustomPlayerChrome: View {
                 .controlSize(.small)
             }
         }
+        #else
+        // System-player parity on iOS: Subtitles and Audio stay as inline icon-only glass
+        // circles, and the rest (Quality/Chapters/Speed/Stats) collapse behind a single
+        // "more" button. Each item still just calls `openMenu`, so the existing popovers
+        // are reused unchanged.
+        HStack(spacing: 8) {
+            inlineMenuButton(.subtitles)
+            inlineMenuButton(.audio)
+
+            Menu {
+                ForEach(overflowMenus) { menu in
+                    Button {
+                        openMenu(menu)
+                    } label: {
+                        Label(menu.title, systemImage: menu.systemImage)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .tint(.primary)
+            .accessibilityLabel("More options")
+        }
+        #endif
     }
 
+    #if os(iOS)
+    /// Icon-only glass circle that opens one of the popover menus inline (Subtitles/Audio).
+    private func inlineMenuButton(_ menu: CustomPlayerMenuKind) -> some View {
+        Button {
+            openMenu(menu)
+        } label: {
+            Label(menu.title, systemImage: menu.systemImage)
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.semibold))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .tint(.primary)
+    }
+
+    /// The menus that collapse behind the iOS "more" button. Quality is gated the same way
+    /// the visionOS pill strip gates it; the rest always appear (matching prior behavior).
+    private var overflowMenus: [CustomPlayerMenuKind] {
+        [.quality, .chapters, .speed, .stats].filter { menu in
+            switch menu {
+            case .quality:
+                return controller.supportsQualityReload
+            default:
+                return true
+            }
+        }
+    }
+    #endif
+
+    #if os(visionOS)
     private var availableMenus: [CustomPlayerMenuKind] {
         CustomPlayerMenuKind.allCases.filter { menu in
             switch menu {
@@ -539,6 +690,7 @@ struct CustomPlayerChrome: View {
             }
         }
     }
+    #endif
 
     private func upNextCard(_ next: MediaItem) -> some View {
         HStack(spacing: 12) {
@@ -576,6 +728,12 @@ struct CustomPlayerChrome: View {
         } set: { fraction in
             revealChrome(keepVisible: true)
             if !scrubState.isDragging {
+                // On iPad a trailing Slider value-set can land AFTER onEditingChanged(false) has
+                // already committed the seek. Without this guard that set re-opens the drag with no
+                // editing session left to close it, so isDragging sticks true and the trickplay
+                // preview stays pinned on screen. Only honor the defensive begin inside a live
+                // editing session; ignore a stray trailing set.
+                guard scrubEditingSessionActive else { return }
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
@@ -584,6 +742,7 @@ struct CustomPlayerChrome: View {
     }
 
     private func handleScrubEditingChanged(_ editing: Bool) {
+        scrubEditingSessionActive = editing
         if editing {
             revealChrome(keepVisible: true)
             scrubState.beginDrag(livePositionMs: controller.currentResumeMs)

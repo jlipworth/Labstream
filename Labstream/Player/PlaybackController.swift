@@ -343,6 +343,15 @@ final class PlaybackController {
     /// across a Quality reload); torn down in `stop()`.
     private lazy var audioSession = AudioSessionCoordinator(player: player)
 
+    /// Passthrough to the audio-session coordinator's background-pause suppression. The iOS
+    /// player view points this at its PiP coordinator so an active Picture in Picture window
+    /// keeps playing when the app backgrounds (the coordinator otherwise pauses on
+    /// resign-active/background, which would freeze the PiP tile).
+    var suppressBackgroundPause: (@MainActor () -> Bool)? {
+        get { audioSession.shouldSuppressBackgroundPause }
+        set { audioSession.shouldSuppressBackgroundPause = newValue }
+    }
+
     /// Timeline heartbeats + scrobble reporting to PMS. Spans Quality reloads (its
     /// one-shot scrobble guard deliberately survives a stream rebuild); its readiness
     /// gate is reset per item in `load(_:)`.

@@ -13,6 +13,7 @@ Labstream has two native Apple app targets:
 - Controls that float over media (player chrome platters and free-floating buttons) use Liquid Glass on iOS via the `labstream*` helpers in `Labstream/UI/DesignSystem.swift`; visionOS keeps its proven `glassBackgroundEffect`/material look.
 - The app icon set is seeded from the existing Labstream artwork as `MobileAppIcon`.
 - The Plex client identity reports `X-Plex-Platform=iOS` and `X-Plex-Device` as `iPad` or `iPhone`; visionOS continues to report `visionOS` / `Apple Vision Pro`.
+- The custom player chrome adopts iOS-native affordances under `#if os(iOS)` (visionOS chrome is unchanged): a top-trailing AirPlay route button and a Picture in Picture toggle, a consolidated menu (Subtitles and Audio inline, the rest behind an `ellipsis.circle` "more" menu), and hardware-keyboard shortcuts (Space play/pause, ←/→ skip 10s/30s, Esc close).
 
 ## Build and smoke on an iPad simulator
 
@@ -43,7 +44,7 @@ A compatible installed iOS Simulator runtime is required. If Xcode reports that 
 
 The first milestone is a buildable native iPhone/iPad target with a real app shell. These product behaviors still need dedicated follow-up validation/implementation before calling the mobile app feature-complete:
 
-- Picture in Picture, AirPlay, Now Playing / lock-screen controls, and other mobile media-background expectations.
+- Now Playing / lock-screen (`MPNowPlayingInfoCenter` / remote command center) controls and other mobile media-background expectations. AirPlay and Picture in Picture are implemented in the iOS player chrome (an `AVRoutePickerView` route button, and an `AVPictureInPictureController` driven by a toggle that appears when PiP is possible; `UIBackgroundModes = audio` is set on the `LabstreamMobile` target).
 - Final iOS/iPadOS background-download and cellular-download policy UX. Default cellular downloads should stay conservative until explicitly implemented and tested.
 - Mobile-specific Spotlight/Siri/App Intents behavior. System entry routing remains scoped to the active backend/session, matching the no-offline-sync decision.
 - Detailed iPhone layout polish beyond the compact tab shell, plus complete iPad interaction QA.
