@@ -13,7 +13,9 @@ struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     #if os(iOS)
-    @Environment(\.scenePhase) private var scenePhase
+    /// Only read to build the authenticated Now Playing artwork request; the player
+    /// itself never touches browse state.
+    @Environment(AppModel.self) private var appModel
     #endif
     #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
@@ -156,13 +158,6 @@ struct CustomPlayerView: View {
                 #endif
             }
         }
-        #if os(iOS)
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background {
-                mobileSystemCoordinator.pauseForBackgroundIfNeeded()
-            }
-        }
-        #endif
     }
 
     private func runPlayer() async {
@@ -173,8 +168,15 @@ struct CustomPlayerView: View {
             controller = playback
             #if os(iOS)
             // Keep playing into the PiP window or an active AirPlay route when the app
-            // backgrounds; otherwise ordinary in-app video pauses on background.
-            mobileSystemCoordinator.configure(controller: playback, item: item)
+            // backgrounds; otherwise ordinary in-app video pauses on background. The same
+            // authenticated transcode request the browse grids use gives Now Playing a
+            // lock-screen poster at roughly card size.
+            let artworkRequest = MediaArtwork.imageRequest(path: item.thumb,
+                                                           appModel: appModel,
+                                                           pixelWidth: 600,
+                                                           pixelHeight: 900)
+            mobileSystemCoordinator.configure(controller: playback, item: item,
+                                              artworkRequest: artworkRequest)
             #endif
             #if os(visionOS)
             cinemaSession.activate(title: item.title,
