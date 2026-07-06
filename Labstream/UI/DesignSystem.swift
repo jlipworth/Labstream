@@ -164,13 +164,16 @@ extension View {
         #endif
     }
 
-    /// Prominent variant of `labstreamGlassButtonStyle`.
+    /// Prominent variant of `labstreamGlassButtonStyle`. The player chrome tints
+    /// controls white on iOS, so the prominent fill is white — the label must be
+    /// explicitly dark or it disappears into the pill (white-on-white).
     @ViewBuilder
     func labstreamGlassProminentButtonStyle() -> some View {
         #if os(visionOS)
         self.buttonStyle(.borderedProminent)
         #else
         self.buttonStyle(.glassProminent)
+            .foregroundStyle(.black)
         #endif
     }
 

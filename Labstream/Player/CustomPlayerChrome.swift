@@ -559,7 +559,7 @@ struct CustomPlayerChrome: View {
                 revealChrome()
                 controller.playNextNow()
             }
-            .buttonStyle(.borderedProminent)
+            .labstreamGlassProminentButtonStyle()
         }
         .padding(18)
         .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -1128,7 +1128,7 @@ struct CustomTransportStatusOverlay: View {
                     Label(isPausedBuffering ? "Play when ready" : "Pause while loading",
                           systemImage: isPausedBuffering ? "play.fill" : "pause.fill")
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .controlSize(.small)
             case .reconnecting:
                 if let onClose {
@@ -1145,7 +1145,7 @@ struct CustomTransportStatusOverlay: View {
                         Label("Retry", systemImage: "arrow.clockwise")
                             .frame(minWidth: 160)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .labstreamGlassProminentButtonStyle()
                     if let onClose {
                         Button(action: onClose) {
                             Text("Close")
