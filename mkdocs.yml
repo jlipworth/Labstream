@@ -1,5 +1,5 @@
 site_name: Labstream
-site_description: Native Apple Vision Pro client for your own Plex, Jellyfin, or Emby server.
+site_description: Native Apple-platform client for your own Plex, Jellyfin, or Emby server.
 site_url: https://jlipworth.github.io/Labstream/
 repo_url: https://github.com/jlipworth/Labstream
 repo_name: jlipworth/Labstream
@@ -50,6 +50,7 @@ nav:
       - Contributing: CONTRIBUTING.md
       - Development setup: DEVELOPMENT.md
       - Testing strategy: TESTING-STRATEGY.md
+      - iOS and iPadOS target: MOBILE-IOS.md
       - Scripts catalog: SCRIPTS.md
   - Architecture:
       - Overview: ARCHITECTURE.md

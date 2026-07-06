@@ -1,3 +1,4 @@
+#if os(visionOS)
 import AVFoundation
 import PMSKit
 import RealityKit
@@ -513,3 +514,92 @@ private extension Comparable {
         min(max(self, range.lowerBound), range.upperBound)
     }
 }
+
+#else
+import PMSKit
+import SwiftUI
+
+struct CustomCinemaScreenAdjustment: Equatable, Sendable {
+    static let `default` = CustomCinemaScreenAdjustment()
+    static let pitchDegreesRange: ClosedRange<Float> = (-45)...60
+    static let verticalDeltaRange: ClosedRange<Float> = (-1.20)...3.80
+    static let distanceDeltaRange: ClosedRange<Float> = (-1.5)...1.0
+
+    var pitchDegrees: Float = 0
+    var verticalDeltaMeters: Float = 0
+    var distanceDeltaMeters: Float = 0
+}
+
+struct CustomCinemaGeometry: Sendable {
+    init(item: MediaItem, mediaIndex: Int) {}
+}
+
+enum CustomCinemaMode {
+    static let mainWindowID = "main"
+    static let immersiveSpaceID = "custom-cinema"
+    static let isUserVisible = false
+}
+
+/// The shared browse-origin environment still exists on iOS so `RootView` and
+/// playback-launch code can use the same routing path even though mobile never enters
+/// an immersive Cinema scene in this slice.
+private struct CinemaOriginTabKey: EnvironmentKey {
+    static let defaultValue: CinemaTab? = nil
+}
+
+extension EnvironmentValues {
+    var cinemaOriginTab: CinemaTab? {
+        get { self[CinemaOriginTabKey.self] }
+        set { self[CinemaOriginTabKey.self] = newValue }
+    }
+}
+
+@Observable
+@MainActor
+final class CustomCinemaSessionStore {
+    enum PresentationState: Equatable {
+        case closed
+        case inTransition
+        case open
+    }
+
+    var presentationState: PresentationState = .closed
+    var screenAdjustment = CustomCinemaScreenAdjustment.default
+    private(set) var title: String?
+    private(set) var item: MediaItem?
+    private(set) var controller: PlaybackController?
+    private(set) var trickPlayProvider: (any TrickPlayThumbnailProviding)?
+
+    var hasActivePlayer: Bool { controller != nil }
+
+    func activate(title: String,
+                  item: MediaItem,
+                  origin: CinemaOrigin,
+                  controller: PlaybackController,
+                  geometry: CustomCinemaGeometry,
+                  trickPlayProvider: (any TrickPlayThumbnailProviding)?) {
+        self.title = title
+        self.item = item
+        self.controller = controller
+        self.trickPlayProvider = trickPlayProvider
+        presentationState = .closed
+    }
+
+    func prepareExit(returningTo item: MediaItem?, autoPlay: Bool, advancingToNext: Bool) {}
+    func clear() {
+        title = nil
+        item = nil
+        controller = nil
+        trickPlayProvider = nil
+        presentationState = .closed
+    }
+
+    func applyReclinedScreenPreset() {}
+    func applyLyingDownScreenPreset() {}
+    func resetScreenAdjustment() { screenAdjustment = .default }
+    func nudgeScreenAdjustment(pitchDegrees: Float = 0,
+                               verticalDeltaMeters: Float = 0,
+                               distanceDeltaMeters: Float = 0) {}
+    func updateScreenAdjustment(_ next: CustomCinemaScreenAdjustment) { screenAdjustment = next }
+}
+#endif

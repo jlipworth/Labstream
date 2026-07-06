@@ -1,3 +1,4 @@
+#if os(visionOS)
 import AVFoundation
 import PMSKit
 import RealityKit
@@ -367,3 +368,5 @@ private enum RealityTheaterEntityFactory {
         entity.scale = SIMD3<Float>(repeating: scale)
     }
 }
+
+#endif

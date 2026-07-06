@@ -30,8 +30,30 @@ struct RootView: View {
     @State private var systemEntryTask: Task<Void, Never>?
     @State private var systemEntryGeneration = 0
 
-    enum AppTab: Hashable {
+    enum AppTab: Hashable, CaseIterable {
         case home, libraries, search, music, offline, settings
+
+        var title: String {
+            switch self {
+            case .home: "Home"
+            case .libraries: "Libraries"
+            case .search: "Search"
+            case .music: "Music"
+            case .offline: "Offline"
+            case .settings: "Settings"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .home: "house"
+            case .libraries: "rectangle.stack"
+            case .search: "magnifyingglass"
+            case .music: "music.note"
+            case .offline: "arrow.down.circle"
+            case .settings: "gearshape"
+            }
+        }
 
         /// Map to/from the backend-agnostic `CinemaTab` PMSKit uses for exit routing (#87).
         /// Only the three online browse tabs participate; other tabs have no Cinema origin.
@@ -54,51 +76,7 @@ struct RootView: View {
     }
 
     var body: some View {
-        TabView(selection: $selection) {
-            // Browse tabs are keyed on `appModel.activeBrowseSessionKey` so a backend/server/user
-            // change or same-server re-auth tears down and rebuilds each stack — dropping any
-            // pushed DetailView and resetting the root — instead of leaving a stale item from the
-            // previous session mounted (#100/#136). `.onChange` below also clears the lifted paths
-            // so the rebuilt stack does not re-push old snapshots. Offline/Settings are deliberately
-            // NOT keyed: Downloads is cross-backend by design (each DownloadRecord carries its own
-            // backendKind) and must persist across switches.
-            Tab("Home", systemImage: "house", value: AppTab.home) {
-                NavigationStack(path: $homePath) { HomeView() }
-                    .environment(\.cinemaOriginTab, .home)
-                    .id(appModel.activeBrowseSessionKey)
-            }
-            Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
-                NavigationStack(path: $librariesPath) { LibrariesView() }
-                    .environment(\.cinemaOriginTab, .libraries)
-                    .id(appModel.activeBrowseSessionKey)
-            }
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack(path: $searchPath) { SearchView() }
-                    .environment(\.cinemaOriginTab, .search)
-                    .id(appModel.activeBrowseSessionKey)
-            }
-            Tab("Music", systemImage: "music.note", value: AppTab.music) {
-                NavigationStack(path: $musicPath) { MusicLibraryView() }
-                    .id(appModel.activeBrowseSessionKey)
-            }
-            Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
-                NavigationStack {
-                    OfflineLibraryView(manager: downloadManager,
-                                       focusedRatingKey: $offlineReturnRatingKey)
-                }
-            }
-            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
-                NavigationStack { SettingsView(authManager: authManager) }
-            }
-        }
-        // The mini player spans every tab so music keeps a visible handle while
-        // browsing; it renders nothing when no track is loaded (#17). A bottom scene
-        // ornament — NOT safeAreaInset, which a visionOS TabView simply never displays
-        // (verified live: body ran with a current track, nothing rendered). The
-        // ornament floats below the window glass, the platform idiom for transport.
-        .ornament(attachmentAnchor: .scene(.bottom)) {
-            MiniPlayerBar()
-        }
+        rootContent
         // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
         // session-keyed NavigationStacks (see `.id(appModel.activeBrowseSessionKey)` above) do
         // not re-push a stale DetailView from the previous backend/server/user/session. The
@@ -154,6 +132,123 @@ struct RootView: View {
         .environment(downloadManager)
         .environment(musicPlayer)
     }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        #if os(iOS)
+        mobileRootContent
+        #else
+        visionRootContent
+        #endif
+    }
+
+    #if os(visionOS)
+    private var visionRootContent: some View {
+        TabView(selection: $selection) {
+            // Browse tabs are keyed on `appModel.activeBrowseSessionKey` so a backend/server/user
+            // change or same-server re-auth tears down and rebuilds each stack — dropping any
+            // pushed DetailView and resetting the root — instead of leaving a stale item from the
+            // previous session mounted (#100/#136). `.onChange` below also clears the lifted paths
+            // so the rebuilt stack does not re-push old snapshots. Offline/Settings are deliberately
+            // NOT keyed: Downloads is cross-backend by design (each DownloadRecord carries its own
+            // backendKind) and must persist across switches.
+            Tab("Home", systemImage: "house", value: AppTab.home) {
+                NavigationStack(path: $homePath) { HomeView() }
+                    .environment(\.cinemaOriginTab, .home)
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
+                NavigationStack(path: $librariesPath) { LibrariesView() }
+                    .environment(\.cinemaOriginTab, .libraries)
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                NavigationStack(path: $searchPath) { SearchView() }
+                    .environment(\.cinemaOriginTab, .search)
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Music", systemImage: "music.note", value: AppTab.music) {
+                NavigationStack(path: $musicPath) { MusicLibraryView() }
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
+                NavigationStack {
+                    OfflineLibraryView(manager: downloadManager,
+                                       focusedRatingKey: $offlineReturnRatingKey)
+                }
+            }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                NavigationStack { SettingsView(authManager: authManager) }
+            }
+        }
+        // The mini player spans every tab so music keeps a visible handle while
+        // browsing; it renders nothing when no track is loaded (#17). A bottom scene
+        // ornament — NOT safeAreaInset, which a visionOS TabView simply never displays
+        // (verified live: body ran with a current track, nothing rendered). The
+        // ornament floats below the window glass, the platform idiom for transport.
+        .ornament(attachmentAnchor: .scene(.bottom)) {
+            MiniPlayerBar()
+        }
+    }
+    #endif
+
+    #if os(iOS)
+    /// One adaptive shell for iPhone AND iPad: `.sidebarAdaptable` renders the Liquid
+    /// Glass floating tab bar in compact widths and a real sidebar on iPad (#209's iPad
+    /// sidebar shell) without a hand-rolled `NavigationSplitView`. Search gets the
+    /// system `.search` role so the platform separates it in the tab bar / pins it in
+    /// the sidebar. The mini player rides `.tabViewBottomAccessory` — the iOS 26
+    /// transport idiom (Apple Music) — matching the visionOS scene ornament's role, and
+    /// the tab bar minimizes on scroll so media rails keep the full height.
+    private var mobileRootContent: some View {
+        TabView(selection: $selection) {
+            ForEach(AppTab.allCases.filter { $0 != .search }, id: \.self) { tab in
+                Tab(tab.title, systemImage: tab.systemImage, value: tab) {
+                    tabContent(for: tab)
+                }
+            }
+            Tab(AppTab.search.title, systemImage: AppTab.search.systemImage,
+                value: AppTab.search, role: .search) {
+                tabContent(for: .search)
+            }
+        }
+        .tabViewStyle(.sidebarAdaptable)
+        .tabBarMinimizeBehavior(.onScrollDown)
+        // `isEnabled:` (not a conditional inside the builder, which leaves an empty
+        // glass bubble on screen) removes the accessory entirely when no music is loaded.
+        .tabViewBottomAccessory(isEnabled: musicPlayer.current != nil) {
+            MiniPlayerBar()
+        }
+    }
+
+    @ViewBuilder
+    private func tabContent(for tab: AppTab) -> some View {
+        switch tab {
+        case .home:
+            NavigationStack(path: $homePath) { HomeView() }
+                .environment(\.cinemaOriginTab, .home)
+                .id(appModel.activeBrowseSessionKey)
+        case .libraries:
+            NavigationStack(path: $librariesPath) { LibrariesView() }
+                .environment(\.cinemaOriginTab, .libraries)
+                .id(appModel.activeBrowseSessionKey)
+        case .search:
+            NavigationStack(path: $searchPath) { SearchView() }
+                .environment(\.cinemaOriginTab, .search)
+                .id(appModel.activeBrowseSessionKey)
+        case .music:
+            NavigationStack(path: $musicPath) { MusicLibraryView() }
+                .id(appModel.activeBrowseSessionKey)
+        case .offline:
+            NavigationStack {
+                OfflineLibraryView(manager: downloadManager,
+                                   focusedRatingKey: $offlineReturnRatingKey)
+            }
+        case .settings:
+            NavigationStack { SettingsView(authManager: authManager) }
+        }
+    }
+    #endif
 
     // MARK: - System entries (App Intents / Spotlight, #24)
 

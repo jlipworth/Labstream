@@ -12,7 +12,9 @@ import UIKit
 struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
+    #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
+    #endif
 
     private let item: MediaItem
     private let controllerFactory: @MainActor () -> PlaybackController
@@ -63,10 +65,7 @@ struct CustomPlayerView: View {
          onClose: (() -> Void)? = nil) {
         // Version comes from the bundle (#26) so the offline X-Plex-Version can't drift
         // from the marketing version — same source of truth as the main identity.
-        let identity = ClientIdentity(clientIdentifier: "offline",
-                                      product: "Labstream",
-                                      version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
-                                      deviceName: "Apple Vision Pro")
+        let identity = PlatformClientIdentity.make(clientIdentifier: "offline")
         let client = PlexClient(identity: identity)
         self.init(item: item,
                   controllerFactory: {
@@ -88,7 +87,11 @@ struct CustomPlayerView: View {
     }
 
     var body: some View {
+        #if os(visionOS)
         let isDetachedToCinema = cinemaSession.presentationState != .closed
+        #else
+        let isDetachedToCinema = false
+        #endif
 
         ZStack {
             (isDetachedToCinema ? Color.clear : Color.black)
@@ -122,7 +125,9 @@ struct CustomPlayerView: View {
                 controller?.stop()
                 cinemaSession.clear()
                 realityTheaterSession.clear()
+                #if os(visionOS)
                 Task { @MainActor in await dismissImmersiveSpace() }
+                #endif
             }
         }
     }
@@ -133,6 +138,7 @@ struct CustomPlayerView: View {
             playback.onAdvanceToNext = onRequestPlay
             playback.onPlaybackEnded = onClose
             controller = playback
+            #if os(visionOS)
             cinemaSession.activate(title: item.title,
                                    item: item,
                                    origin: cinemaOrigin,
@@ -140,6 +146,7 @@ struct CustomPlayerView: View {
                                    geometry: CustomCinemaGeometry(item: item,
                                                                   mediaIndex: playback.mediaIndex),
                                    trickPlayProvider: trickPlayProvider)
+            #endif
             refreshScrubberClock(from: playback)
             playback.start()
             Task { @MainActor in

@@ -6,14 +6,14 @@ usage() {
 Usage: scripts/agent-sim-run.sh <scenario> [options]
 
 Scenarios:
-  launch-home-passive        Build/install/launch, capture video/screenshots/logs/run.json.
+  launch-home-passive        Build/install/launch visionOS app, capture video/screenshots/logs/run.json.
   click-login-jellyfin-tab   Launch, click the Jellyfin tab on the login panel, verify UI pixels changed.
 
 Options:
   --skip-build               Reuse the newest Debug-xrsimulator Labstream.app.
   --duration SECONDS         Seconds to keep recording after scenario action. Default: 8.
   --artifact-root PATH       Artifact root. Default: artifacts/agent-sim-runs.
-  --keep-booted              Do not shut down the worktree simulator after the run.
+  --keep-booted              Do not shut down the visionOS worktree simulator after the run.
 
 Exit codes:
   0 passed with artifacts
@@ -51,7 +51,7 @@ esac
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 
-simid=$(scripts/worktree-sim.sh id) || { echo "failed to resolve worktree simulator" >&2; exit 2; }
+simid=$(scripts/worktree-sim.sh --platform visionos id) || { echo "failed to resolve visionOS worktree simulator" >&2; exit 2; }
 commit=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 outdir="$artifact_root/${timestamp}-${scenario}"

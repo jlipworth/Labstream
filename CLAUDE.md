@@ -1,8 +1,10 @@
 # Labstream (Labstream) — Claude Code notes
 
-visionOS Plex client. App code in `Labstream/`, networking/model layer in `PMSKit/`
-(local Swift package with its own tests). Design rationale and hard-won AVKit findings
-live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the player.
+Apple-platform Plex/Jellyfin/Emby client. App code in `Labstream/`, networking/model
+layer in `PMSKit/` (local Swift package with its own tests). The primary shipping path is
+still visionOS, and the repo also contains the `LabstreamMobile` universal iOS/iPadOS
+target. Design rationale and hard-won AVKit findings live in `docs/DEVELOPMENT.md` —
+read it before re-deriving anything about the player.
 
 ## Build / install / test loop
 
@@ -10,7 +12,7 @@ live in `docs/DEVELOPMENT.md` — read it before re-deriving anything about the 
 # This worktree's simulator. In the main worktree this resolves to the golden
 # sim recorded in <main>/.simid; in a linked worktree it's that worktree's own cloned sim (see
 # "Worktree simulators" below). It may be Shutdown — boot it first.
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 
 # Build (simulator UDID may differ; `xcrun simctl list devices booted` to check).
@@ -47,6 +49,30 @@ cd PMSKit && swift test
 
 New Swift files are picked up automatically (file-system-synchronized groups) — never
 edit the pbxproj to add one.
+
+### Building the native iPad/iPhone target
+
+The mobile app target/scheme is `LabstreamMobile`; its product/display name is
+`Labstream` and it shares the bundle id `com.jlipworth.Labstream`.
+
+```sh
+printf 'ipad\n' > .simplatform   # gitignored per-worktree default; or use LABSTREAM_SIM_PLATFORM=ipad
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
+  -destination "platform=iOS Simulator,id=$SIMID" \
+  -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
+
+APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
+xcrun simctl install "$SIMID" "$APP"
+xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" com.jlipworth.Labstream
+```
+
+Mobile simulator builds require an iOS Simulator runtime compatible with the installed
+iOS SDK. If Xcode reports the iOS platform/runtime is missing, install the matching
+runtime in Xcode Settings before treating `LabstreamMobile` as broken.
 
 ### Installing on a physical Vision Pro (device testing)
 
@@ -86,12 +112,13 @@ owns the build/install command once signing is unblocked.
 
 Compiling is necessary but not sufficient. Any time you change app code — yourself OR via
 a workflow / subagent — you MUST headlessly verify it actually *runs* on **this worktree's
-own `$SIMID`** (`scripts/worktree-sim.sh id`; boot it first — clones are created Shutdown;
-never target `booted`). The minimum smoke test, which Claude self-serves (it is the passive
+own `$SIMID`** (`scripts/worktree-sim.sh id` for the selected platform, or
+`--platform visionos`/`--platform ipad` explicitly; boot it first — sims are created
+Shutdown; never target `booted`). The minimum smoke test, which Claude self-serves (it is the passive
 half of the live-testing workflow — do NOT ask the user to do it):
 
 ```sh
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
@@ -121,23 +148,30 @@ as its own final gate — it should not need to be spelled out in each workflow 
 
 ## Worktree simulators
 
-Each worktree gets its own visionOS simulator so parallel worktrees don't clobber each
-other's app container / login. `scripts/worktree-sim.sh` is the single source of truth;
-the same script backs both the git hook and these agent steps.
+Each worktree gets its own simulator so parallel worktrees don't clobber each other's app
+container / login. `scripts/worktree-sim.sh` is the single source of truth; the same
+script backs both the git hook and these agent steps.
 
-- The **main** worktree owns the *golden* logged-in sim (recorded in `<main>/.simid`).
-  Never delete it.
-- A **linked** worktree gets a `vpwt-<branch>-<hash>` clone of the golden, created **shut down**
-  (boot it yourself when building). Its UDID lives in `<worktree>/.simid` (git-ignored).
-- `scripts/worktree-sim.sh id` prints this worktree's UDID — used as `$SIMID` above.
-  Always target `"$SIMID"`, never `booted` (which errors once two sims are up).
+- The **main** worktree owns the visionOS *golden* logged-in sim (recorded in
+  `<main>/.simid`). Never delete it.
+- By default, a **linked** worktree gets a `vpwt-<branch>-<hash>` visionOS clone of the
+  golden, created **shut down** (boot it yourself when building). Its UDID lives in
+  `<worktree>/.simid` (git-ignored).
+- iPad/iOS work can opt into an independent `ipadwt-<branch>-<hash>` simulator with
+  `LABSTREAM_SIM_PLATFORM=ipad`, `scripts/worktree-sim.sh --platform ipad ...`, or a
+  gitignored `.simplatform` containing `ipad`; its UDID lives in `.simid-ipad`.
+- `scripts/worktree-sim.sh id` prints the selected platform's UDID — used as `$SIMID`
+  above. Always target `"$SIMID"`, never `booted` (which errors once two sims are up).
 
 ```sh
 scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on `git worktree add`
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
-scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-* sims
-scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone (backstop after a bare `git worktree remove`)
+scripts/worktree-sim.sh teardown --all # delete every sim owned by this linked worktree
+scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/ipadwt-* sims
+scripts/worktree-sim.sh prune          # sweep worktree sims whose worktree is gone (backstop after a bare `git worktree remove`)
+scripts/worktree-sim.sh --platform visionos id
+scripts/worktree-sim.sh --platform ipad id
 ```
 
 If `install-hook` warns that `core.hooksPath` is set, Git will ignore the shared hook it
@@ -145,13 +179,15 @@ just wrote; unset that config before relying on auto-clone behavior.
 
 **Agent rule:** after creating a worktree, run `setup`; when finishing/removing one, run
 `teardown` **before** `git worktree remove`, or run `closeout PATH` / `prune` immediately
-afterward. `setup` clones from the golden sim, which `simctl` can only do while the
-golden is **shut down**, so it briefly bounces your booted main sim — expect a ~10s
-blip in the main worktree's simulator when a new worktree is provisioned.
+afterward. visionOS `setup` clones from the golden sim, which `simctl` can only do while
+the golden is **shut down**, so it briefly bounces your booted main sim — expect a ~10s
+blip in the main worktree's simulator when a new visionOS worktree sim is provisioned.
+iPad setup creates a fresh simulator from the newest available iOS runtime instead.
 
 **Booted sims are NOT free — shut them down.** When parallelizing work across several
-worktrees (fanning out agents, many at a time), each linked worktree boots its own
-visionOS simulator and several booted `vpwt-*` clones at once bog down the MacBook. So:
+worktrees (fanning out agents, many at a time), each linked worktree may boot its own
+visionOS simulator or iPad simulator, and several booted `vpwt-*`/`ipadwt-*` sims at
+once bog down the MacBook. So:
 cap how many run concurrently, and **shut each worktree's sim down the moment its work is
 done** — `xcrun simctl shutdown $(scripts/worktree-sim.sh id)` from inside the worktree
 (or `xcrun simctl shutdown <UDID>`). Every fan-out coding agent should shut down its own
@@ -179,11 +215,12 @@ scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|ipadwt|<branch-fragment>' || true
 ```
 
 Closeout invariant: only the main worktree owns the golden sim; linked-worktree closeout
-must remove the relevant `vpwt-*` clone and must not remove the golden sim.
+must remove the relevant `vpwt-*` and/or `ipadwt-*` simulator and must not remove the
+golden sim.
 
 ## Live-testing workflow (semi-automated)
 
@@ -193,9 +230,9 @@ self-serves the passive half — screenshots and logs. Don't ask the user for sc
 or log dumps:
 
 ```sh
-# SIMID is this worktree's sim (see Build block / "Worktree simulators"); always target it
+# SIMID is this worktree's visionOS sim (see Build block / "Worktree simulators"); always target it
 # explicitly because more than one simulator may be booted.
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 
 # Claude takes its own screenshots after the user interacts
 xcrun simctl io "$SIMID" screenshot /tmp/labstream-test.png   # then Read the PNG

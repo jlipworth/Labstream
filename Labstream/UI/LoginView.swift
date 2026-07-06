@@ -52,6 +52,14 @@ struct LoginView: View {
         .frame(maxWidth: 560)
         .background(LoginPanelBackground())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(iOS)
+        // The dark login panel was authored against the visionOS glass window. A bare
+        // iOS window is white, which reads as a gray slab floating in a void — give
+        // mobile a full-bleed brand backdrop and render the panel's materials and
+        // secondary text in dark mode to match.
+        .background(DS.Brand.iconPlateGradient.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
+        #endif
         .onChange(of: authManager.state) { _, newValue in
             switch newValue {
             case .failed(let message):
