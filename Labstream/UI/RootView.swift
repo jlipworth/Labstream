@@ -29,6 +29,8 @@ struct RootView: View {
     @State private var offlineReturnRatingKey: String?
     @State private var systemEntryTask: Task<Void, Never>?
     @State private var systemEntryGeneration = 0
+    /// Incremented by the ⌘F shortcut to route to Search and (re-)focus its field.
+    @State private var searchFocusRequest = 0
 
     enum AppTab: Hashable, CaseIterable {
         case home, libraries, search, music, offline, settings
@@ -77,6 +79,16 @@ struct RootView: View {
 
     var body: some View {
         rootContent
+        .background {
+            // App-wide ⌘F → Search tab, then focus its field. A zero-size, invisible
+            // button keeps the shortcut in the responder chain without occupying layout;
+            // works with an iPad hardware keyboard and the visionOS Magic Keyboard.
+            Button("Search", action: focusSearch)
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
         // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
         // session-keyed NavigationStacks (see `.id(appModel.activeBrowseSessionKey)` above) do
         // not re-push a stale DetailView from the previous backend/server/user/session. The
@@ -155,16 +167,19 @@ struct RootView: View {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack(path: $homePath) { HomeView() }
                     .environment(\.cinemaOriginTab, .home)
+                    .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
                 NavigationStack(path: $librariesPath) { LibrariesView() }
                     .environment(\.cinemaOriginTab, .libraries)
+                    .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack(path: $searchPath) { SearchView() }
+                NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
                     .environment(\.cinemaOriginTab, .search)
+                    .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
@@ -227,14 +242,17 @@ struct RootView: View {
         case .home:
             NavigationStack(path: $homePath) { HomeView() }
                 .environment(\.cinemaOriginTab, .home)
+                .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .libraries:
             NavigationStack(path: $librariesPath) { LibrariesView() }
                 .environment(\.cinemaOriginTab, .libraries)
+                .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .search:
-            NavigationStack(path: $searchPath) { SearchView() }
+            NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
                 .environment(\.cinemaOriginTab, .search)
+                .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .music:
             NavigationStack(path: $musicPath) { MusicLibraryView() }
@@ -369,6 +387,13 @@ struct RootView: View {
         systemEntryTask?.cancel()
         systemEntryTask = nil
         systemEntryGeneration += 1
+    }
+
+    /// ⌘F: land on the Search tab and bump the focus request so SearchView focuses its
+    /// field whether it was already mounted or is mounting fresh from the tab switch.
+    private func focusSearch() {
+        selection = .search
+        searchFocusRequest += 1
     }
 
     /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have
