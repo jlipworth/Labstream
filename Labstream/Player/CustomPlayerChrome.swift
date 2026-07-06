@@ -23,6 +23,10 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
     // Self-clear the seek hold once the live clock has actually landed at/after the target (the
     // per-item readyToPlay fires once and may precede that, so the 500ms tick backstops it).
     controller.releaseSeekHoldIfLanded()
+    // Zombie watch: a starved rebuild can report `.playing` with a parked clock, a state no
+    // KVO transition ever surfaces — this tick poll is the ONLY signal that escalates it to
+    // the Reconnecting/Retry overlay and the only one that clears the overlay on recovery.
+    controller.detectZombiePlaybackIfStuck()
     if !scrubState.isDragging {
         // While a user seek is in flight (in-buffer native seek, or an out-of-buffer
         // rebuild/reopen), pass `holdCommittedTarget: true` so the committed target stays pinned:
@@ -70,6 +74,10 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
+    /// True only between a Slider `onEditingChanged(true)` and its matching `(false)`. Guards the
+    /// scrubber binding's defensive `beginDrag` so a trailing value-set arriving after the commit
+    /// cannot re-open the drag (see `scrubberBinding`).
+    @State private var scrubEditingSessionActive = false
 
     init(controller: PlaybackController,
          title: String,
@@ -216,6 +224,13 @@ struct CustomPlayerChrome: View {
         .onChange(of: controller.transportStatus.status) { _, _ in
             scheduleChromeHideIfNeeded()
         }
+        #if os(iOS)
+        // System-player behavior: the status bar and home indicator ride with the chrome —
+        // hidden over clean video, back the moment controls reveal. Without this the clock/
+        // battery and indicator bar sit lit over the picture for the whole session.
+        .statusBarHidden(!shouldShowChrome)
+        .persistentSystemOverlays(shouldShowChrome ? .automatic : .hidden)
+        #endif
     }
 
     private var shouldShowChrome: Bool {
@@ -500,14 +515,15 @@ struct CustomPlayerChrome: View {
                 }
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    skipControls
-                    menuStrip
-                }
-                .padding(.vertical, 2)
+            // No scroll track for primary transport: two skips (matching the hardware-keyboard
+            // mapping ←10/→30) plus the three menu circles fit iPhone portrait outright. The
+            // four-skip strip stays exclusive to the regular/iPad layout.
+            HStack(spacing: 8) {
+                skipButton(seconds: -10)
+                skipButton(seconds: 30)
+                Spacer(minLength: 8)
+                menuStrip
             }
-            .scrollClipDisabled()
         }
     }
 
@@ -585,6 +601,9 @@ struct CustomPlayerChrome: View {
     private func skipButton(seconds: Int) -> some View {
         let isForward = seconds > 0
         let amount = abs(seconds)
+        // 44pt on compact: the HIG-minimum touch target for a phone; the tighter 38pt
+        // square only ships inside the roomier regular/iPad strip.
+        let side: CGFloat = isCompactMobileChrome ? 44 : 38
         return Button {
             performRelativeSkip(seconds: seconds)
         } label: {
@@ -592,7 +611,7 @@ struct CustomPlayerChrome: View {
                   systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
                 .labelStyle(.iconOnly)
                 .font(.title3.weight(.semibold))
-                .frame(width: 38, height: 38)
+                .frame(width: side, height: side)
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
@@ -810,6 +829,12 @@ struct CustomPlayerChrome: View {
         } set: { fraction in
             revealChrome(keepVisible: true)
             if !scrubState.isDragging {
+                // SwiftUI's Slider can deliver one more value-set AFTER onEditingChanged(false).
+                // If that stray set re-opened the drag here, there would be no editing session
+                // left to close it, so isDragging would stick true and the trickplay preview
+                // stay pinned on screen. Only honor the defensive begin inside a live editing
+                // session; ignore a stray trailing set.
+                guard scrubEditingSessionActive else { return }
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
@@ -818,6 +843,7 @@ struct CustomPlayerChrome: View {
     }
 
     private func handleScrubEditingChanged(_ editing: Bool) {
+        scrubEditingSessionActive = editing
         if editing {
             revealChrome(keepVisible: true)
             scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
