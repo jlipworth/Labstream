@@ -33,6 +33,12 @@ struct DetailView: View {
     /// originating tab's detail instead of always Home (#87). `nil` → fall back to the system-entry
     /// (Home) path, preserving prior behavior.
     @Environment(\.cinemaOriginTab) private var cinemaOriginTab
+    #if os(iOS)
+    /// Drives the compact-width adaptation of `leafDetail` on iPhone / a narrow iPad split:
+    /// side-by-side poster+metadata collapses to a vertical stack. visionOS has a fixed-ish
+    /// window width and keeps the HStack unconditionally, so this is iOS-only.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
 
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
@@ -169,65 +175,106 @@ struct DetailView: View {
                          type: "album", thumb: item.parentThumb)
     }
 
+    #if os(iOS)
+    /// Readable-measure cap for the metadata/synopsis column in regular width (iPad). Without
+    /// it the synopsis `Text` stretches edge-to-edge and is unreadably wide on a 13" landscape
+    /// iPad. The poster + text cluster stays leading (not centered), so this only bounds the
+    /// text column, not the page. visionOS keeps its uncapped fixed-window layout.
+    private static let readableMetadataWidth: CGFloat = 680
+    #endif
+
+    /// Poster + metadata arrangement. visionOS keeps the canonical side-by-side HStack. iOS
+    /// caps the metadata column to a readable measure in regular width, and stacks the poster
+    /// above the metadata in horizontally-compact widths (iPhone, narrow iPad split).
+    @ViewBuilder
+    private var detailLayout: some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            VStack(alignment: .leading, spacing: DS.Space.xxxl) {
+                posterHero
+                metadataColumn
+            }
+        } else {
+            HStack(alignment: .top, spacing: DS.Space.xxxl) {
+                posterHero
+                metadataColumn
+                    .frame(maxWidth: Self.readableMetadataWidth, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+        }
+        #else
+        HStack(alignment: .top, spacing: DS.Space.xxxl) {
+            posterHero
+            metadataColumn
+            Spacer(minLength: 0)
+        }
+        #endif
+    }
+
+    /// Hero sizes to the item's real artwork ratio when the backend reports one
+    /// (e.g. a 16:9 episode still renders 16:9 instead of cropped 2:3); Plex and
+    /// any item without a ratio keep the canonical 2:3 poster shape (GH #101).
+    private var posterHero: some View {
+        PosterImage(path: detailed.thumb,
+                    width: DS.Poster.detailWidth,
+                    height: CGFloat(Double(DS.Poster.detailWidth) / detailed.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
+                    cornerRadius: DS.Radius.card)
+            .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
+    }
+
+    /// Title, metadata rows, credits, actions, and synopsis. Leading-aligned; the enclosing
+    /// layout decides its width (capped on regular-width iOS, full width elsewhere).
+    private var metadataColumn: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xl) {
+            DetailTitleHeader(item: detailed, showItem: showItem)
+
+            if let tagline = detailed.tagline, !tagline.isEmpty {
+                Text(tagline)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .italic()
+            }
+
+            DetailMetadataRow(year: detailed.year,
+                              runtimeMinutes: runtimeMinutes,
+                              contentRating: detailed.contentRating,
+                              rating: detailed.rating,
+                              criticRating: detailed.criticRating,
+                              isWatched: isWatched)
+
+            if let genres = detailed.genres, !genres.isEmpty {
+                Text(genres.map(\.tag).joined(separator: " · "))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            DetailCreditsSection(roles: detailed.roles,
+                                 directors: detailed.directors,
+                                 studios: detailed.studios)
+
+            actionButtons
+
+            if let media = selectedMedia {
+                DetailMediaInfoSummary(specBadges: mediaSpecBadges(media),
+                                       chapterCount: detailed.chapters?.count)
+            }
+
+            if let summary = detailed.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.body)
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .lineSpacing(4)
+                    .padding(.top, DS.Space.sm)
+            }
+        }
+    }
+
     /// The play/download detail for a LEAF item (movie or episode). Actions target this
     /// item's own ratingKey, which is guaranteed to own a Media/Part.
     private var leafDetail: some View {
         ScrollView {
-            HStack(alignment: .top, spacing: DS.Space.xxxl) {
-                // Hero sizes to the item's real artwork ratio when the backend reports one
-                // (e.g. a 16:9 episode still renders 16:9 instead of cropped 2:3); Plex and
-                // any item without a ratio keep the canonical 2:3 poster shape (GH #101).
-                PosterImage(path: detailed.thumb,
-                            width: DS.Poster.detailWidth,
-                            height: CGFloat(Double(DS.Poster.detailWidth) / detailed.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
-                            cornerRadius: DS.Radius.card)
-                    .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
-
-                VStack(alignment: .leading, spacing: DS.Space.xl) {
-                    DetailTitleHeader(item: detailed, showItem: showItem)
-
-                    if let tagline = detailed.tagline, !tagline.isEmpty {
-                        Text(tagline)
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
-                            .italic()
-                    }
-
-                    DetailMetadataRow(year: detailed.year,
-                                      runtimeMinutes: runtimeMinutes,
-                                      contentRating: detailed.contentRating,
-                                      rating: detailed.rating,
-                                      criticRating: detailed.criticRating,
-                                      isWatched: isWatched)
-
-                    if let genres = detailed.genres, !genres.isEmpty {
-                        Text(genres.map(\.tag).joined(separator: " · "))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    DetailCreditsSection(roles: detailed.roles,
-                                         directors: detailed.directors,
-                                         studios: detailed.studios)
-
-                    actionButtons
-
-                    if let media = selectedMedia {
-                        DetailMediaInfoSummary(specBadges: mediaSpecBadges(media),
-                                               chapterCount: detailed.chapters?.count)
-                    }
-
-                    if let summary = detailed.summary, !summary.isEmpty {
-                        Text(summary)
-                            .font(.body)
-                            .foregroundStyle(.primary.opacity(0.9))
-                            .lineSpacing(4)
-                            .padding(.top, DS.Space.sm)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(DS.Space.xxxl)
+            detailLayout
+                .padding(DS.Space.xxxl)
         }
         .background(artBackdrop)
         .navigationTitle(detailed.title)

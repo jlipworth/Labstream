@@ -23,49 +23,46 @@ public struct OfflineLibraryView: View {
     public var body: some View {
         let snapshot = manager.offlineLibrarySnapshot
 
-        NavigationStack {
-            ScrollViewReader { scrollProxy in
-                Group {
-                    if snapshot.rows.isEmpty {
-                        ContentUnavailableView(
-                            "No Offline Downloads",
-                            systemImage: "arrow.down.circle",
-                            description: Text("Download a movie or episode to watch it offline. "
-                                              + "Transfers pause while the headset is off and resume when it's worn again.")
-                        )
-                    } else {
-                        List {
-                            SwiftUI.Section {
-                                ForEach(snapshot.rows) { rowSnapshot in
-                                    row(for: rowSnapshot)
-                                        .id(rowSnapshot.id)
-                                }
-                                .onDelete { offsets in
-                                    for index in offsets {
-                                        manager.delete(ratingKey: snapshot.rows[index].id)
-                                    }
-                                }
-                            } footer: {
-                                Text(snapshot.footerText)
+        // No NavigationStack here: RootView already wraps the Offline tab in one on every
+        // platform, so opening a second stack nested large-title collapse and toolbar merging.
+        // The navigationTitle/toolbar below attach to this content and merge into the outer stack.
+        ScrollViewReader { scrollProxy in
+            Group {
+                if snapshot.rows.isEmpty {
+                    ContentUnavailableView(
+                        "No Offline Downloads",
+                        systemImage: "arrow.down.circle",
+                        description: Text("Download a movie or episode to watch it offline. "
+                                          + "Transfers pause while the headset is off and resume when it's worn again.")
+                    )
+                } else {
+                    List {
+                        SwiftUI.Section {
+                            ForEach(snapshot.rows) { rowSnapshot in
+                                row(for: rowSnapshot)
+                                    .id(rowSnapshot.id)
                             }
+                            .onDelete { offsets in
+                                for index in offsets {
+                                    manager.delete(ratingKey: snapshot.rows[index].id)
+                                }
+                            }
+                        } footer: {
+                            Text(snapshot.footerText)
                         }
                     }
                 }
-                .navigationTitle("Offline")
-                .toolbar {
-                    if snapshot.aggregateStats.hasVisibleMetrics || snapshot.queueToolbarAction != nil {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            offlineToolbarCluster(snapshot: snapshot)
-                        }
-                    }
-                }
-                .task(id: focusedRatingKey) {
+            }
+            .navigationTitle("Offline")
+            .toolbar {
+                offlineToolbar(snapshot: snapshot)
+            }
+            .task(id: focusedRatingKey) {
+                await focusRequestedDownload(using: scrollProxy)
+            }
+            .onChange(of: snapshot.ratingKeys) { _, _ in
+                Task { @MainActor in
                     await focusRequestedDownload(using: scrollProxy)
-                }
-                .onChange(of: snapshot.ratingKeys) { _, _ in
-                    Task { @MainActor in
-                        await focusRequestedDownload(using: scrollProxy)
-                    }
                 }
             }
         }
@@ -87,6 +84,37 @@ public struct OfflineLibraryView: View {
 
     fileprivate static let rowActionControlSize: CGFloat = 56
 
+    /// The Offline toolbar. On iOS 26 bare toolbar items get Liquid Glass (and adjacent items
+    /// share one glass background) automatically, so the metrics + queue action ride a plain
+    /// `ToolbarItemGroup` with no hand-rolled material. visionOS keeps the custom capsule cluster.
+    @ToolbarContentBuilder
+    private func offlineToolbar(snapshot: OfflineLibrarySnapshot) -> some ToolbarContent {
+        if snapshot.aggregateStats.hasVisibleMetrics || snapshot.queueToolbarAction != nil {
+            #if os(iOS)
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
+                    aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
+                                           systemImage: "speedometer",
+                                           accessibilityLabel: "Active download speed")
+                }
+                if snapshot.aggregateStats.downloadedBytes > 0 {
+                    aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
+                                           systemImage: "externaldrive.fill",
+                                           accessibilityLabel: "Downloaded data")
+                }
+                if let queueToolbarAction = snapshot.queueToolbarAction {
+                    queueToolbarButton(queueToolbarAction)
+                }
+            }
+            #else
+            ToolbarItem(placement: .topBarTrailing) {
+                offlineToolbarCluster(snapshot: snapshot)
+            }
+            #endif
+        }
+    }
+
+    #if os(visionOS)
     private func offlineToolbarCluster(snapshot: OfflineLibrarySnapshot) -> some View {
         HStack(spacing: 8) {
             if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
@@ -119,6 +147,7 @@ public struct OfflineLibraryView: View {
         .fixedSize(horizontal: true, vertical: true)
         .accessibilityElement(children: .contain)
     }
+    #endif
 
     private func aggregateToolbarMetric(value: String,
                                         systemImage: String,
