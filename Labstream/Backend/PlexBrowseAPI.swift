@@ -85,11 +85,15 @@ enum BrowseAPI {
     /// `GET /library/collections/<collectionId>/items` — children of a Plex collection.
     /// Collection detail must not reuse the TV `/metadata/{id}/children` endpoint.
     static func collectionItems(server: URL, token: String, identity: ClientIdentity,
-                                collectionId: String) -> PlexRequest {
+                                collectionId: String,
+                                containerStart: Int? = nil,
+                                containerSize: Int? = nil) -> PlexRequest {
         CollectionRequest.plexCollectionItems(server: server,
                                               token: token,
                                               identity: identity,
-                                              collectionId: collectionId)
+                                              collectionId: collectionId,
+                                              containerStart: containerStart,
+                                              containerSize: containerSize)
     }
 
     /// `GET /library/metadata/<ratingKey>` — full metadata for one item.
