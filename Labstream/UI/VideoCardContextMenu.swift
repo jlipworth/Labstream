@@ -101,10 +101,7 @@ extension View {
 /// threading a `NavigationPath` binding through every rail/grid view. `nil` where no stack
 /// provides one, in which case navigation actions are simply omitted.
 struct PushMediaItemKey: EnvironmentKey {
-    // The stored default is immutably nil, so the non-Sendable closure type can never carry
-    // shared mutable state across concurrency domains; real values are @MainActor closures
-    // installed and invoked on the main actor by SwiftUI.
-    nonisolated(unsafe) static let defaultValue: (@MainActor (MediaItem) -> Void)? = nil
+    static let defaultValue: (@MainActor (MediaItem) -> Void)? = nil
 }
 
 extension EnvironmentValues {
