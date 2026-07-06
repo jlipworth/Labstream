@@ -77,6 +77,11 @@ final class AuthManager {
         appModel.activeBackend = backend
         keychain.selectedBackend = backend
         state = .idle
+        // The Spotlight domain is shared across backends and system-entry routing only
+        // resolves against the ACTIVE backend, so entries indexed under the previous
+        // backend would surface as dead taps. Drop them; the new backend re-indexes as
+        // the user browses.
+        SpotlightIndexer.deleteAll()
     }
 
     func switchBackend(_ backend: MediaBackendKind) async {
@@ -88,6 +93,9 @@ final class AuthManager {
         cancelPendingLogin()
         appModel.activeBackend = backend
         keychain.selectedBackend = backend
+        // Same stale-entry sweep as `selectBackend` — routing rejects the old backend's
+        // Spotlight results the moment the active backend changes.
+        SpotlightIndexer.deleteAll()
 
         // The guard above already returned for `.alreadyActive`, so only the two
         // session-transition cases reach here at runtime. The `.alreadyActive` arm
