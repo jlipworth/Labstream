@@ -24,6 +24,7 @@ struct CustomPlayerView: View {
     @Environment(AppModel.self) private var appModel
     #endif
     #if os(visionOS)
+    @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     #endif
 
@@ -237,6 +238,8 @@ struct CustomPlayerView: View {
                                          artworkRequest: artworkRequest)
             #endif
             #if os(visionOS)
+            _ = watchTogetherCoordinator.attachPlaybackCoordinatorIfReady(player: playback.player,
+                                                                          item: item)
             cinemaSession.activate(title: item.title,
                                    item: item,
                                    origin: cinemaOrigin,
