@@ -277,7 +277,7 @@ public enum EmbyPlayback {
             "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": false,
-            "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
+            "DeviceProfile": streamingDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
                                                    advertiseDolbyVision: advertiseDolbyVision),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
@@ -322,7 +322,7 @@ public enum EmbyPlayback {
             "AllowVideoStreamCopy": true,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": false,
-            "DeviceProfile": visionOSDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
+            "DeviceProfile": downloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
@@ -358,7 +358,7 @@ public enum EmbyPlayback {
             "AllowVideoStreamCopy": true,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": false,
-            "DeviceProfile": visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
+            "DeviceProfile": compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
@@ -739,8 +739,8 @@ public enum EmbyPlayback {
         }
     }
 
-    static func visionOSDeviceProfile(maxStreamingBitrate: Int,
-                                      advertiseDolbyVision: Bool = false) -> [String: Any] {
+    static func streamingDeviceProfile(maxStreamingBitrate: Int,
+                                       advertiseDolbyVision: Bool = false) -> [String: Any] {
         var profile: [String: Any] = [
             "Name": "Labstream",
             "MaxStreamingBitrate": maxStreamingBitrate,
@@ -755,7 +755,7 @@ public enum EmbyPlayback {
                     "Protocol": "hls",
                     // h264 first (encode target); hevc enables VIDEO COPY of HEVC MKV
                     // remuxes instead of a source-bitrate h264 re-encode. See the matching
-                    // comment in JellyfinPlayback.visionOSDeviceProfile (GH #196 retest).
+                    // comment in JellyfinPlayback.streamingDeviceProfile (GH #196 retest).
                     "VideoCodec": "h264,hevc",
                     "AudioCodec": "aac,ac3",
                     "Context": "Streaming",
@@ -794,7 +794,7 @@ public enum EmbyPlayback {
 
     /// DOWNLOAD-ONLY device profile.
     ///
-    /// DIVERGENCE FROM PLAYBACK: the playback profile (`visionOSDeviceProfile`) advertises an
+    /// DIVERGENCE FROM PLAYBACK: the playback profile (`streamingDeviceProfile`) advertises an
     /// HLS (`Protocol: hls`) TranscodingProfile, so PlaybackInfo returns a `master.m3u8`
     /// TranscodingUrl — a segment playlist, NOT a single downloadable file. For offline
     /// downloads we instead advertise a **Static-context, http mp4** TranscodingProfile, which
@@ -805,7 +805,7 @@ public enum EmbyPlayback {
     /// `MaxStaticBitrate` is advertised generously (≈200 Mbps default) so a high-bitrate but
     /// already-compatible mp4/m4v/mov file still qualifies for a direct-play (original) download —
     /// a bitrate cap must NEVER force a transcode verdict for a download.
-    static func visionOSDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+    static func downloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
         // CRITICAL (caught by the on-device download probe — see DebugEmbyDownloadProbe): the
         // DirectPlayProfile must NOT advertise `hevc`/`ac3`/`eac3` for downloads. If it does, an
         // MKV/HEVC/DTS source negotiates to a stream-COPY remux (`ffmpeg -c:v copy -c:a copy`) into
@@ -836,7 +836,7 @@ public enum EmbyPlayback {
         ]
     }
 
-    static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+    static func compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
         [
             "Name": "Labstream-Compatible-Download",
             "MaxStaticBitrate": maxStaticBitrate,
