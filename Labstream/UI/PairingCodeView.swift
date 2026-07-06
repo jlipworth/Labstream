@@ -68,7 +68,7 @@ struct PairingCodeView<Header: View>: View {
 
             if let fallbackTitle, let onFallback {
                 Button(fallbackTitle, action: onFallback)
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
             }
         }
     }

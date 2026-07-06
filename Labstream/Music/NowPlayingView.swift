@@ -289,7 +289,7 @@ struct NowPlayingView: View {
                             .font(.subheadline)
                             .padding(.horizontal, DS.Space.xs)
                     }
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
                     .accessibilityLabel("Clear queue")
                 }
             }

@@ -109,7 +109,7 @@ struct MusicPagedGrid: View {
             Label("Sort", systemImage: "arrow.up.arrow.down")
                 .font(.callout)
         }
-        .buttonStyle(.bordered)
+        .labstreamGlassButtonStyle()
     }
 
     /// "Artist · 1973" on albums, dropping whichever half is missing; nil for artists.

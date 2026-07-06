@@ -29,6 +29,11 @@ struct DetailMovieVersionPicker: View {
                     .font(.callout)
             }
             .menuStyle(.borderlessButton)
+            #if os(iOS)
+            // Neutral (monochrome) label on iOS — a borderless menu otherwise inherits
+            // the amber app accent, which piles onto the "all yellow" detail chrome.
+            .tint(.primary)
+            #endif
         }
     }
 
@@ -80,6 +85,9 @@ struct DetailMediaVersionPicker: View {
                     .font(.callout)
             }
             .menuStyle(.borderlessButton)
+            #if os(iOS)
+            .tint(.primary)
+            #endif
         }
     }
 }
