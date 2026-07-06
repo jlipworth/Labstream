@@ -10,7 +10,9 @@ enum PlatformClientIdentity {
         #if os(visionOS)
         "Apple Vision Pro"
         #elseif os(iOS)
-        UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        MainActor.assumeIsolated {
+            UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        }
         #else
         "Apple Device"
         #endif

@@ -14,6 +14,7 @@ enum PlaybackPreferences {
         static let adaptiveBitrateEnabled = "playerAdaptiveBitrateEnabled"
         static let defaultDownloadQuality = "defaultDownloadQuality"
         static let downloadStorageLimitBytes = "downloadStorageLimitBytes"
+        static let allowCellularDownloads = "allowCellularDownloads"
         static let prioritizeQuickDownloads = "prioritizeQuickDownloads"
         static let systemMediaSuggestionsEnabled = "systemMediaSuggestionsEnabled"
         // GH #196: experimental Dolby Vision signalling (dvh1 profile advertising + HLS
@@ -53,6 +54,8 @@ enum PlaybackPreferences {
     static let defaultSkipMode = SkipMode.manual
     static let defaultStorageLimitBytes = DownloadStorageLimit.unlimited
     static let defaultDownloadQuality = "1080p 8 Mbps"
+    /// Off by default on mobile so a tap-to-download cannot unexpectedly consume a cellular plan.
+    static let defaultAllowCellularDownloads = false
     /// Off by default: the move PUT reorders the user's server-wide conversion queue and is
     /// admin-gated, so it is opt-in (least surprising — respect the server's queue order).
     static let defaultPrioritizeQuickDownloads = false
@@ -75,6 +78,17 @@ enum PlaybackPreferences {
             return defaultPrioritizeQuickDownloads
         }
         return defaults.bool(forKey: Keys.prioritizeQuickDownloads)
+    }
+
+    /// Whether new background/download URLSession tasks may use cellular data.
+    ///
+    /// Existing active/resume-data tasks keep the policy archived when they were created;
+    /// `BackgroundDownloadSession` stamps this setting onto each fresh URLRequest task.
+    static func allowsCellularDownloads(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: Keys.allowCellularDownloads) != nil else {
+            return defaultAllowCellularDownloads
+        }
+        return defaults.bool(forKey: Keys.allowCellularDownloads)
     }
 
     static func qualityKbps(forDefaultsKey key: String, defaults: UserDefaults = .standard) -> Int {

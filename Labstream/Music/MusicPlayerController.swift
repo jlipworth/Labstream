@@ -577,6 +577,10 @@ final class MusicPlayerController {
         audioSession.installObservers()
         installPlayerObservers()
         registerRemoteCommands()
+        // A just-dismissed video PiP/Now Playing session may have restored global
+        // MPRemoteCommand availability to a disabled pre-video state. Music is now the
+        // foreground media owner, so explicitly re-enable the commands it registered.
+        setRemoteCommands(enabled: true)
     }
 
     // MARK: - Observers
@@ -818,13 +822,15 @@ final class MusicPlayerController {
         center.playCommand.addTarget { [weak self] _ in
             if Thread.isMainThread {
                 return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
+                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                        return .noActionableNowPlayingItem
+                    }
                     if !self.isPlaying { self.togglePlayPause() }
                     return .success
                 }
             }
             Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil else { return }
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else { return }
                 if !self.isPlaying { self.togglePlayPause() }
             }
             return .success
@@ -832,13 +838,15 @@ final class MusicPlayerController {
         center.pauseCommand.addTarget { [weak self] _ in
             if Thread.isMainThread {
                 return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
+                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                        return .noActionableNowPlayingItem
+                    }
                     if self.isPlaying { self.togglePlayPause() }
                     return .success
                 }
             }
             Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil else { return }
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else { return }
                 if self.isPlaying { self.togglePlayPause() }
             }
             return .success
@@ -846,13 +854,15 @@ final class MusicPlayerController {
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
             if Thread.isMainThread {
                 return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil else { return .noActionableNowPlayingItem }
+                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                        return .noActionableNowPlayingItem
+                    }
                     self.togglePlayPause()
                     return .success
                 }
             }
             Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil else { return }
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else { return }
                 self.togglePlayPause()
             }
             return .success
@@ -860,13 +870,15 @@ final class MusicPlayerController {
         center.nextTrackCommand.addTarget { [weak self] _ in
             if Thread.isMainThread {
                 return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.current != nil else { return .noActionableNowPlayingItem }
+                    guard let self, self.current != nil, !self.suspendedForVideo else {
+                        return .noActionableNowPlayingItem
+                    }
                     self.next()
                     return .success
                 }
             }
             Task { @MainActor [weak self] in
-                guard let self, self.current != nil else { return }
+                guard let self, self.current != nil, !self.suspendedForVideo else { return }
                 self.next()
             }
             return .success
@@ -874,13 +886,15 @@ final class MusicPlayerController {
         center.previousTrackCommand.addTarget { [weak self] _ in
             if Thread.isMainThread {
                 return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.current != nil else { return .noActionableNowPlayingItem }
+                    guard let self, self.current != nil, !self.suspendedForVideo else {
+                        return .noActionableNowPlayingItem
+                    }
                     self.previous()
                     return .success
                 }
             }
             Task { @MainActor [weak self] in
-                guard let self, self.current != nil else { return }
+                guard let self, self.current != nil, !self.suspendedForVideo else { return }
                 self.previous()
             }
             return .success
@@ -888,8 +902,10 @@ final class MusicPlayerController {
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             if Thread.isMainThread {
                 return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil,
-                          let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                        return .noActionableNowPlayingItem
+                    }
+                    guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
                         return .commandFailed
                     }
                     self.seek(to: positionEvent.positionTime)
@@ -902,6 +918,7 @@ final class MusicPlayerController {
             let positionTime = positionEvent.positionTime
             Task { @MainActor [weak self] in
                 guard let self, self.player.currentItem != nil,
+                      !self.suspendedForVideo,
                       !Task.isCancelled else { return }
                 self.seek(to: positionTime)
             }
@@ -909,8 +926,9 @@ final class MusicPlayerController {
         }
     }
 
-    /// Remove all targets from the commands we registered. We're the only MediaPlayer
-    /// user in the app, so a blanket `removeTarget(nil)` per command is safe.
+    /// Remove all music-command targets at music session teardown. Video owns its command
+    /// targets only while its full-screen player is presented; during that overlap the
+    /// handlers above no-op while `suspendedForVideo` is true.
     private func removeRemoteCommandTargets() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.removeTarget(nil)

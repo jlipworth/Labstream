@@ -15,9 +15,9 @@ import UniformTypeIdentifiers
 ///     item (with a token-bearing URL); titles + descriptions are plenty for search.
 ///   - Music stays out of this first system-video surface; music now has dedicated
 ///     in-app routes, but these App Intents/deep links target video DetailView.
-///   - `uniqueIdentifier` currently keeps the legacy Plex server namespace plus ratingKey,
-///     while PMSKit also understands the newer backend-scoped id shape for future
-///     non-Plex system-entry routes.
+///   - `uniqueIdentifier` keeps the legacy Plex server namespace plus ratingKey for
+///     compatibility; non-Plex entries use the versioned backend/server/item shape.
+///     These ids are token-free but still private user/server metadata and are never logged.
 enum SpotlightIndexer {
     /// Single domain for everything we index, so sign-out can wipe it in one call.
     static let domainIdentifier = "com.jlipworth.Labstream.media"
@@ -25,9 +25,13 @@ enum SpotlightIndexer {
     /// Queue a batch for indexing. Fire-and-forget: indexing is a nicety and must
     /// never affect browse, so failures are only logged.
     static func index(_ items: [MediaItem], server: URL) {
+        index(items, backend: .plex, server: server)
+    }
+
+    static func index(_ items: [MediaItem], backend: MediaBackendKind, server: URL) {
         guard PlaybackPreferences.systemMediaSuggestionsEnabled() else { return }
         guard CSSearchableIndex.isIndexingAvailable() else { return }
-        let searchable = items.compactMap { searchableItem(for: $0, server: server) }
+        let searchable = items.compactMap { searchableItem(for: $0, backend: backend, server: server) }
         guard !searchable.isEmpty else { return }
         CSSearchableIndex.default().indexSearchableItems(searchable) { error in
             if let error {
@@ -64,7 +68,7 @@ enum SpotlightIndexer {
         routeKey(from: searchableIdentifier).ratingKey
     }
 
-    private static func searchableItem(for item: MediaItem, server: URL) -> CSSearchableItem? {
+    private static func searchableItem(for item: MediaItem, backend: MediaBackendKind, server: URL) -> CSSearchableItem? {
         guard !item.isMusic, !item.title.isEmpty else { return nil }
 
         let attrs = CSSearchableItemAttributeSet(contentType: contentType(for: item))
@@ -76,13 +80,20 @@ enum SpotlightIndexer {
         attrs.keywords = [item.title, item.grandparentTitle, item.year.map(String.init)]
             .compactMap { $0 }
 
-        return CSSearchableItem(uniqueIdentifier: searchableIdentifier(for: item, server: server),
+        return CSSearchableItem(uniqueIdentifier: searchableIdentifier(for: item, backend: backend, server: server),
                                 domainIdentifier: domainIdentifier,
                                 attributeSet: attrs)
     }
 
-    private static func searchableIdentifier(for item: MediaItem, server: URL) -> String {
-        MediaSearchIdentifier.make(ratingKey: item.ratingKey, server: server)
+    private static func searchableIdentifier(for item: MediaItem, backend: MediaBackendKind, server: URL) -> String {
+        if backend == .plex {
+            // Keep Plex identifiers byte-compatible with the existing index while routing
+            // remains active-backend-checked in `RootView`.
+            return MediaSearchIdentifier.make(ratingKey: item.ratingKey, server: server)
+        }
+        return MediaSearchIdentifier.make(ratingKey: item.ratingKey,
+                                          server: server,
+                                          backend: backend.backendChoice)
     }
 
     private static func contentType(for item: MediaItem) -> UTType {
