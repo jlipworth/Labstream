@@ -684,7 +684,37 @@ shows the stamped Build ID, and normal in-app browsing still works.
 
 ---
 
-## E. Deferred / optional (tracked in issues)
+## E. Mobile iPhone/iPad target (GH #208/#209)
+
+Simulator build/smoke commands live in [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md). The
+items below are manual/mobile-system checks after the simulator build is green. Keep
+server names, account names, media titles, and device identifiers out of public notes.
+
+- [ ] **iPhone compact shell (GH #208)** — on an iPhone simulator/device, sign in to one
+      backend and verify Home, Libraries, Search, Detail, Settings, Offline, and Music use
+      readable compact-width layouts with no clipped primary controls or inaccessible
+      action buttons.
+- [ ] **iPhone video player system controls (GH #208)** — play video and verify the
+      compact chrome exposes AirPlay/PiP controls, seek/skip/menu controls remain tappable,
+      Now Playing metadata appears in the system surface, and remote play/pause/seek
+      commands control the app.
+- [ ] **Mobile background policy (GH #208)** — while playing on iPhone/iPad, backgrounding
+      pauses normal inline playback but continues when PiP is active or an external
+      AirPlay route owns playback. Validate on physical hardware where possible; simulator
+      behavior is not a complete gate.
+- [ ] **Cellular downloads default off (GH #208)** — Settings > Downloads shows cellular
+      downloads disabled by default; enabling it applies to fresh request-based transfer tasks only;
+      active/resume-data tasks keep their existing OS policy. Validate real cellular scheduling on physical iPhone/iPad.
+- [ ] **Mobile App Intents / Spotlight active backend (GH #208/#24)** — Shortcuts and
+      Spotlight suggestions/search resolve only media from the active signed-in backend,
+      exclude music, and fail cleanly while signed out.
+- [ ] **iPad regression pass (GH #209)** — repeat the primary mobile browse/detail/player
+      smoke on an iPad simulator/device after iPhone changes to ensure the sidebar and
+      regular-width chrome still fit.
+
+---
+
+## F. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
   direct-play `start.m3u8` when Default Quality is "Direct Play / Maximum" and PMS can copy the

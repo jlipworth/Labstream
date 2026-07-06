@@ -313,7 +313,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             pendingTempCleanupBytes: pendingCFNetworkTempBytes())
     }
 
-    private lazy var urlSession: URLSession = {
+    private lazy var urlSession: URLSession = makeURLSession()
+
+    private func makeURLSession() -> URLSession {
         let config: URLSessionConfiguration
         #if targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--vp-probe-background-download-session") {
@@ -349,11 +351,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // `handleEventsForBackgroundURLSession` is delivered to the app delegate.
         config.sessionSendsLaunchEvents = true
         #endif
-        // Downloads can be multi-GB and there is not yet policy UI for metered data. Default to
-        // Wi-Fi-only until Settings exposes an explicit cellular-download opt-in.
-        config.allowsCellularAccess = false
+        // Keep the background session itself permissive and stamp the cellular policy onto
+        // each freshly-created URLRequest. That lets new tasks observe the Settings toggle
+        // (defaulting off/Wi-Fi-only) without invalidating/recreating a background session
+        // with the same identifier; resume-data tasks keep the OS-archived policy.
+        config.allowsCellularAccess = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }()
+    }
+
+    private func requestApplyingCellularPolicy(_ request: URLRequest) -> URLRequest {
+        var policyRequest = request
+        policyRequest.allowsCellularAccess = PlaybackPreferences.allowsCellularDownloads()
+        return policyRequest
+    }
 
     #if DEBUG
     private static func debugRangeDropAfterBytesArgument() -> Int? {
@@ -945,6 +955,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func start(ratingKey: String, with request: URLRequest, to destination: URL,
                expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false,
                resetRangeRestartCounters: Bool = true) throws {
+        let policyRequest = requestApplyingCellularPolicy(request)
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
         // temp-then-move copy) when known, so a 5 GB download with 600 MB free fails
@@ -977,13 +988,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         lock.unlock()
         if byteRangeCheckpoint {
-            try startRangeChunk(ratingKey: ratingKey, with: request, to: destination,
+            try startRangeChunk(ratingKey: ratingKey, with: policyRequest, to: destination,
                                 expectedBytes: expectedBytes,
                                 resetsRetryCount: true)
             return
         }
 
-        let task = urlSession.downloadTask(with: request)
+        let task = urlSession.downloadTask(with: policyRequest)
         task.taskDescription = ratingKey
         lock.lock()
         retryCounts[ratingKey] = 0
@@ -992,11 +1003,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
         inflight[task.taskIdentifier] = (ratingKey, destination)
         lock.unlock()
-        let urlShape = DiagnosticRedactor.urlShape(request.url)
+        let urlShape = DiagnosticRedactor.urlShape(policyRequest.url)
         downloadLog.info("start ratingKey=\(ratingKey, privacy: .public) url_shape=\(urlShape, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.transfer_start", fields: [
             "download_id": .identifier(ratingKey),
-            "url_shape": .urlShape(request.url),
+            "url_shape": .urlShape(policyRequest.url),
+            "allows_cellular": .bool(policyRequest.allowsCellularAccess),
             "expected_bytes": .bytes(expectedBytes),
             "has_expected_bytes": .bool(expectedBytes != nil),
         ])
@@ -1201,6 +1213,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "chunk_size": .int(segmentKind == .backgroundCheckpoint ? Self.backgroundRangeChunkSize : Self.rangeChunkSize),
             "planned_segment_bytes": .bytes(segmentPlan.expectedSegmentBytes),
             "url_shape": .urlShape(ranged.url),
+            "allows_cellular": .bool(ranged.allowsCellularAccess),
         ])
         if segmentKind == .backgroundCheckpoint {
             AppDiagnostics.record(.downloads, "downloads.range_background_checkpoint_start", fields: [

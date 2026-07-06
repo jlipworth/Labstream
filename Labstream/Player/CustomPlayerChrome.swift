@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import PMSKit
 import SwiftUI
 import UIKit
@@ -22,10 +23,6 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
     // Self-clear the seek hold once the live clock has actually landed at/after the target (the
     // per-item readyToPlay fires once and may precede that, so the 500ms tick backstops it).
     controller.releaseSeekHoldIfLanded()
-    // Zombie-playback backstop: a starved rebuild can report `.playing` with a parked clock
-    // forever (no `.waiting`-keyed watchdog ever fires) — the tick polls for that and escalates
-    // to the visible reconnect path.
-    controller.detectZombiePlaybackIfStuck()
     if !scrubState.isDragging {
         // While a user seek is in flight (in-buffer native seek, or an out-of-buffer
         // rebuild/reopen), pass `holdCommittedTarget: true` so the committed target stays pinned:
@@ -57,8 +54,9 @@ struct CustomPlayerChrome: View {
     let title: String
     @Binding var scrubState: PlaybackScrubState
     let trickPlayProvider: (any TrickPlayThumbnailProviding)?
-    /// Drives the iOS Picture in Picture button; inert on visionOS.
-    let pipCoordinator: PlayerPiPCoordinator
+    #if os(iOS)
+    let mobileSystemCoordinator: MobilePlayerSystemCoordinator?
+    #endif
     let onRetry: () -> Void
     let onClose: (() -> Void)?
     let allowsRealityTheater: Bool
@@ -72,18 +70,11 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
-    /// True only between a Slider `onEditingChanged(true)` and its matching `(false)`. Guards the
-    /// scrubber binding's defensive `beginDrag` so a trailing value-set arriving after the commit
-    /// cannot re-open the drag (see `scrubberBinding`).
-    @State private var scrubEditingSessionActive = false
 
     init(controller: PlaybackController,
          title: String,
          scrubState: Binding<PlaybackScrubState>,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
-         // Defaulted so the visionOS Cinema/Theater call sites (which have no PiP) need no
-         // change; the iOS window path passes the shared coordinator from CustomPlayerView.
-         pipCoordinator: PlayerPiPCoordinator = PlayerPiPCoordinator(),
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?,
          allowsRealityTheater: Bool = false) {
@@ -91,12 +82,35 @@ struct CustomPlayerChrome: View {
         self.title = title
         _scrubState = scrubState
         self.trickPlayProvider = trickPlayProvider
-        self.pipCoordinator = pipCoordinator
+        #if os(iOS)
+        self.mobileSystemCoordinator = nil
+        #endif
         self.onRetry = onRetry
         self.onClose = onClose
         self.allowsRealityTheater = allowsRealityTheater
         _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
     }
+
+    #if os(iOS)
+    init(controller: PlaybackController,
+         title: String,
+         scrubState: Binding<PlaybackScrubState>,
+         trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         mobileSystemCoordinator: MobilePlayerSystemCoordinator?,
+         onRetry: @escaping () -> Void,
+         onClose: (() -> Void)?,
+         allowsRealityTheater: Bool = false) {
+        self.controller = controller
+        self.title = title
+        _scrubState = scrubState
+        self.trickPlayProvider = trickPlayProvider
+        self.mobileSystemCoordinator = mobileSystemCoordinator
+        self.onRetry = onRetry
+        self.onClose = onClose
+        self.allowsRealityTheater = allowsRealityTheater
+        _menuState = State(initialValue: PlayerMenuState(selectedBitrateKbps: controller.maxVideoBitrateKbps))
+    }
+    #endif
 
     var body: some View {
         ZStack {
@@ -122,7 +136,7 @@ struct CustomPlayerChrome: View {
 
             offlineSubtitleOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .padding(.horizontal, 80)
+                .padding(.horizontal, isCompactMobileChrome ? 18 : 80)
                 .padding(.bottom, chromeVisible ? 168 : 64)
                 .animation(.easeInOut(duration: 0.2), value: chromeVisible)
 
@@ -152,8 +166,8 @@ struct CustomPlayerChrome: View {
 
                 if shouldShowChrome {
                     controls
-                        .padding(.horizontal, 34)
-                        .padding(.bottom, 28)
+                        .padding(.horizontal, isCompactMobileChrome ? 14 : 34)
+                        .padding(.bottom, isCompactMobileChrome ? 18 : 28)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -169,8 +183,8 @@ struct CustomPlayerChrome: View {
                                                                                  available: geo.size.width),
                                                 onClose: { closeMenu() })
                             .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
-                            .padding(.horizontal, 54)
-                            .padding(.bottom, 176)
+                            .padding(.horizontal, isCompactMobileChrome ? 16 : 54)
+                            .padding(.bottom, isCompactMobileChrome ? 228 : 176)
                     }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -206,6 +220,14 @@ struct CustomPlayerChrome: View {
 
     private var shouldShowChrome: Bool {
         chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
+    }
+
+    private var isCompactMobileChrome: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
     }
 
     @ViewBuilder private var offlineSubtitleOverlay: some View {
@@ -282,10 +304,12 @@ struct CustomPlayerChrome: View {
                 // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
                 // circles at the top-trailing corner, opposite the close button. Backgrounding
                 // pauses ordinary video, but active AirPlay/PiP routes keep playing.
-                airPlayButton
-                    .padding(.top, 10)
+                if mobileSystemCoordinator != nil {
+                    airPlayButton
+                        .padding(.top, 10)
+                }
 
-                if pipCoordinator.isPossible {
+                if mobileSystemCoordinator?.isPictureInPicturePossible == true {
                     pipButton
                         .padding(.top, 10)
                 }
@@ -308,10 +332,11 @@ struct CustomPlayerChrome: View {
     private var pipButton: some View {
         Button {
             revealChrome(keepVisible: true)
-            pipCoordinator.toggle()
+            mobileSystemCoordinator?.togglePictureInPicture()
         } label: {
-            Label(pipCoordinator.isActive ? "Exit Picture in Picture" : "Picture in Picture",
-                  systemImage: pipCoordinator.isActive ? "pip.exit" : "pip.enter")
+            let isActive = mobileSystemCoordinator?.isPictureInPictureActive == true
+            Label(isActive ? "Exit Picture in Picture" : "Picture in Picture",
+                  systemImage: isActive ? "pip.exit" : "pip.enter")
                 .labelStyle(.iconOnly)
                 .font(.body.weight(.semibold))
                 .frame(width: 44, height: 44)
@@ -358,7 +383,22 @@ struct CustomPlayerChrome: View {
     }
     #endif
 
+    @ViewBuilder
     private var controls: some View {
+        if isCompactMobileChrome {
+            compactControls
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        } else {
+            regularControls
+                .padding(.horizontal, 22)
+                .padding(.vertical, 20)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        }
+    }
+
+    private var regularControls: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 10) {
                 Text(title)
@@ -400,23 +440,7 @@ struct CustomPlayerChrome: View {
             }
 
             HStack(spacing: 16) {
-                Button(action: {
-                    revealChrome()
-                    controller.togglePlayback()
-                    scheduleChromeHideIfNeeded()
-                }) {
-                    Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-                        .font(.title2.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                }
-                #if os(visionOS)
-                .buttonStyle(.borderedProminent)
-                #else
-                // Neutral symbol on the glass platter, like the system player's
-                // transport controls — the accent stays reserved for real CTAs.
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
-                #endif
+                playPauseButton
 
                 skipControls
 
@@ -436,9 +460,75 @@ struct CustomPlayerChrome: View {
                     .frame(width: 62, alignment: .leading)
             }
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 20)
-        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    private var compactControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+                    .accessibilityLabel(title)
+
+                Spacer(minLength: 8)
+            }
+
+            if scrubState.isDragging, trickPlayProvider != nil {
+                trickPlayPreview
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            HStack(spacing: 12) {
+                playPauseButton
+
+                VStack(spacing: 4) {
+                    Slider(value: scrubberBinding, in: 0...1) { editing in
+                        handleScrubEditingChanged(editing)
+                    }
+                    .disabled(scrubState.durationMs <= 0)
+
+                    HStack {
+                        Text(format(ms: scrubState.displayedPositionMs))
+                        Spacer()
+                        Text(format(ms: scrubState.durationMs))
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    skipControls
+                    menuStrip
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollClipDisabled()
+        }
+    }
+
+    private var playPauseButton: some View {
+        Button(action: {
+            revealChrome()
+            controller.togglePlayback()
+            scheduleChromeHideIfNeeded()
+        }) {
+            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+                .font(.title2.weight(.semibold))
+                .frame(width: 44, height: 44)
+        }
+        #if os(visionOS)
+        .buttonStyle(.borderedProminent)
+        #else
+        // Neutral symbol on the glass platter, like the system player's
+        // transport controls — the accent stays reserved for real CTAs.
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        #endif
     }
 
 
@@ -720,12 +810,6 @@ struct CustomPlayerChrome: View {
         } set: { fraction in
             revealChrome(keepVisible: true)
             if !scrubState.isDragging {
-                // On iPad a trailing Slider value-set can land AFTER onEditingChanged(false) has
-                // already committed the seek. Without this guard that set re-opens the drag with no
-                // editing session left to close it, so isDragging sticks true and the trickplay
-                // preview stays pinned on screen. Only honor the defensive begin inside a live
-                // editing session; ignore a stray trailing set.
-                guard scrubEditingSessionActive else { return }
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
@@ -734,7 +818,6 @@ struct CustomPlayerChrome: View {
     }
 
     private func handleScrubEditingChanged(_ editing: Bool) {
-        scrubEditingSessionActive = editing
         if editing {
             revealChrome(keepVisible: true)
             scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
@@ -909,6 +992,24 @@ struct CustomPlayerChrome: View {
         return String(format: "%d:%02d", minutes, seconds)
     }
 }
+
+#if os(iOS)
+private struct AirPlayRoutePickerButton: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView(frame: .zero)
+        view.prioritizesVideoDevices = true
+        view.tintColor = .white
+        view.activeTintColor = .white
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
+        uiView.tintColor = .white
+        uiView.activeTintColor = .white
+    }
+}
+#endif
 
 private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     case screen

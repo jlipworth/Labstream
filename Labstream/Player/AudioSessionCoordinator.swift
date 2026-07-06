@@ -29,6 +29,10 @@ final class AudioSessionCoordinator {
     /// decode/render in the background); false for music, which should keep playing.
     private let pausesOnBackground: Bool
 
+    /// Video normally pauses on app-background/resign-active, but iOS is allowed to keep
+    /// rendering/streaming when playback is explicitly externalized through PiP or AirPlay.
+    private let shouldContinueOnBackground: @MainActor () -> Bool
+
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
     private var resignActiveObserver: NSObjectProtocol?
@@ -42,10 +46,12 @@ final class AudioSessionCoordinator {
 
     init(player: AVPlayer,
          mode: AVAudioSession.Mode = .moviePlayback,
-         pausesOnBackground: Bool = true) {
+         pausesOnBackground: Bool = true,
+         shouldContinueOnBackground: @escaping @MainActor () -> Bool = { false }) {
         self.player = player
         self.mode = mode
         self.pausesOnBackground = pausesOnBackground
+        self.shouldContinueOnBackground = shouldContinueOnBackground
     }
 
     /// Configure and activate the shared `AVAudioSession` for playback.
@@ -214,12 +220,6 @@ final class AudioSessionCoordinator {
         }
     }
 
-    /// When set and returning true, `pauseForBackground()` becomes a no-op. iOS Picture in
-    /// Picture and AirPlay are the cases where losing the foreground must NOT pause: the
-    /// system keeps rendering externally, so the P5 "can't decode in the background"
-    /// rationale doesn't apply while either route is active.
-    var shouldSuppressBackgroundPause: (@MainActor () -> Bool)?
-
     /// Pause video when the app is backgrounded / loses the foreground (P5), unless the system
     /// is actively rendering it in PiP or over AirPlay. We deliberately do NOT auto-resume on
     /// foreground: resume is the user's choice on return. Do not set the interruption-resume
@@ -229,7 +229,7 @@ final class AudioSessionCoordinator {
         #if os(iOS)
         if player.isExternalPlaybackActive || isAirPlayRouteActive { return }
         #endif
-        if shouldSuppressBackgroundPause?() == true { return }
+        guard !shouldContinueOnBackground() else { return }
         if player.timeControlStatus != .paused {
             player.pause()
         }

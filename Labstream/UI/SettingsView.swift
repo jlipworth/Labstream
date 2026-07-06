@@ -47,6 +47,7 @@ struct SettingsView: View {
     @AppStorage(PlaybackPreferences.Keys.experimentalDVSignalling) private var experimentalDVSignalling = false
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
     @AppStorage(PlaybackPreferences.Keys.downloadStorageLimitBytes) private var downloadStorageLimitBytes = DownloadStorageLimit.unlimited
+    @AppStorage(PlaybackPreferences.Keys.allowCellularDownloads) private var allowCellularDownloads = PlaybackPreferences.defaultAllowCellularDownloads
     @AppStorage(PlaybackPreferences.Keys.prioritizeQuickDownloads) private var prioritizeQuickDownloads = PlaybackPreferences.defaultPrioritizeQuickDownloads
     @AppStorage(PlaybackPreferences.Keys.systemMediaSuggestionsEnabled) private var systemMediaSuggestionsEnabled = PlaybackPreferences.defaultSystemMediaSuggestionsEnabled
     /// Opt-in app diagnostics. Persisted, but the event buffer itself stays local/bounded.
@@ -541,6 +542,10 @@ struct SettingsView: View {
                 Label("Storage Limit", systemImage: "internaldrive")
             }
 
+            Toggle(isOn: $allowCellularDownloads) {
+                Label("Allow Cellular Downloads", systemImage: "antenna.radiowaves.left.and.right")
+            }
+
             Picker(selection: $prioritizeQuickDownloads) {
                 Text("Respect server queue order").tag(false)
                 Text("Prioritize quick downloads").tag(true)
@@ -577,7 +582,7 @@ struct SettingsView: View {
         } header: {
             Text("Downloads")
         } footer: {
-            Text("Download quality is the default for new downloads; Original still appears only when feasible. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads moves a new job ahead of pending conversions on the server (never the one already transcoding); it requires server admin permission.")
+            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular transfers are off by default on iPhone/iPad and apply to freshly created request-based tasks; active/resume-data tasks keep their existing OS policy. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads moves a new job ahead of pending conversions on the server (never the one already transcoding); it requires server admin permission.")
         }
         .confirmationDialog("Remove completed downloads?", isPresented: $confirmingRemoveCompletedDownloads, titleVisibility: .visible) {
             Button("Remove Completed", role: .destructive) {
