@@ -100,6 +100,12 @@ struct DetailView: View {
     @State private var macPlayerPresentationOwnerID = UUID()
     #endif
 
+    /// Playable trailers/extras for the "Trailers & Extras" shelf (#199). Plex delivers
+    /// them inline on the metadata payload (`includeExtras=1` → `relatedItems`);
+    /// Jellyfin/Emby fetch them when the full item's capability hints
+    /// (`relatedAvailability`) say any exist. Empty → the shelf is simply absent.
+    @State private var relatedShelf: [MediaItem] = []
+
     init(item: MediaItem, originBackend: MediaBackendKind? = nil) {
         self.item = item
         self.originBackend = originBackend
@@ -340,6 +346,16 @@ struct DetailView: View {
             .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
     }
 
+    /// Horizontal inset for the Trailers & Extras shelf (#199) so its content edge lines up
+    /// with the hero above — compact-width on iPhone/narrow iPad, the wide page inset elsewhere.
+    private var relatedShelfHorizontalPadding: CGFloat {
+        #if os(iOS)
+        return compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl
+        #else
+        return DS.Space.xxxl
+        #endif
+    }
+
     /// Hero sizes to the item's real artwork ratio when the backend reports one
     /// (e.g. a 16:9 episode still renders 16:9 instead of cropped 2:3); Plex and
     /// any item without a ratio keep the canonical 2:3 poster shape (GH #101).
@@ -446,6 +462,7 @@ struct DetailView: View {
                 playingItem = DetailPlaybackLauncher.itemWithResumeRewind(detailed, resumeRewindSeconds: resumeRewindSeconds)
                 await presentResolvedPlayer()
             }
+            await loadRelatedMedia()
         }
         // Resolve the collapsed versions' resolution/codec labels for the chooser (#108).
         // Keyed on `item.ratingKey` (the versions come from `item`, which is stable for this
@@ -496,14 +513,23 @@ struct DetailView: View {
 
     private var leafDetailScroll: some View {
         ScrollView {
-            #if os(iOS)
-            detailLayout
-                .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
-                .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
-            #else
-            detailLayout
-                .padding(DS.Space.xxxl)
-            #endif
+            VStack(alignment: .leading, spacing: 0) {
+                #if os(iOS)
+                detailLayout
+                    .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
+                    .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
+                #else
+                detailLayout
+                    .padding(DS.Space.xxxl)
+                #endif
+                if !relatedShelf.isEmpty {
+                    DetailRelatedMediaShelf(items: relatedShelf,
+                                            isBusy: isResolvingPlayback || presentingPlayer,
+                                            onPlay: playRelated)
+                        .padding(.horizontal, relatedShelfHorizontalPadding)
+                        .padding(.bottom, DS.Space.xxxl)
+                }
+            }
         }
     }
 
@@ -967,7 +993,10 @@ struct DetailView: View {
         metadataLoadingRatingKey == nil && detailed.ratingKey == activeVersionRatingKey
     }
 
-    private func startPlayback(requestID: UUID) async {
+    /// Resolve and present playback. `target` defaults to the page's own item (`detailed`);
+    /// a Trailers & Extras shelf passes its extra/trailer leaf instead (#199), reusing the
+    /// same per-backend launch path while the page's metadata stays untouched.
+    private func startPlayback(requestID: UUID, target: MediaItem? = nil) async {
         defer {
             if playbackRequestID == requestID {
                 isResolvingPlayback = false
@@ -975,21 +1004,26 @@ struct DetailView: View {
             }
         }
         guard playbackRequestID == requestID, metadataReadyForActions, !presentingPlayer else { return }
+        let subject = target ?? detailed
         // Defense-in-depth (#15): music is filtered from browse, but never let a music item
         // launch the video player. Unreachable in normal flow.
-        guard !detailed.isMusic else { return }
-        let launchRatingKey = detailed.ratingKey
+        guard !subject.isMusic else { return }
+        let launchRatingKey = subject.ratingKey
+        // The page must still show the same item when an async resolve lands; comparing
+        // against the page key (not the launch target) keeps the guard meaningful for
+        // shelf extras too.
+        let launchDetailKey = detailed.ratingKey
         let launchBackend = actionBackend
         let launchMediaIndex = selectedMediaIndex
         let span = PerformanceInstrumentation.begin(.playbackResolve,
                                                      backend: actionBackend.performanceLabel,
                                                      fields: [
-                                                        "resume": detailed.viewOffset ?? 0,
+                                                        "resume": subject.viewOffset ?? 0,
                                                         "quality_kbps": activeMaxVideoBitrateKbps,
                                                      ])
         playbackErrorMessage = nil
         musicPlayer.pauseForVideo()
-        playingItem = DetailPlaybackLauncher.itemWithResumeRewind(detailed, resumeRewindSeconds: resumeRewindSeconds)
+        playingItem = DetailPlaybackLauncher.itemWithResumeRewind(subject, resumeRewindSeconds: resumeRewindSeconds)
         switch launchBackend {
         case .plex:
             remotePlayback = nil
@@ -1234,6 +1268,47 @@ struct DetailView: View {
         }
         watchedOverride = nil
         span.end(fields: ["media_count": full.media?.count ?? 0])
+    }
+
+    // MARK: - Trailers & Extras shelf (#199)
+
+    /// Populate the shelf for the CURRENT `detailed` item. Plex is free (extras arrive
+    /// inline with the metadata refresh); Jellyfin/Emby fetch only when the full item's
+    /// capability hints say related media exists, so most detail opens cost no extra
+    /// requests. Failures/unsupported backends degrade to an absent shelf.
+    private func loadRelatedMedia() async {
+        let key = detailed.ratingKey
+        switch actionBackend {
+        case .plex:
+            relatedShelf = detailed.relatedItems ?? []
+        case .jellyfin:
+            guard shouldFetchRelatedMedia else { relatedShelf = []; return }
+            let items = await JellyfinBrowseService(appModel: appModel).relatedMedia(itemId: key)
+            guard detailed.ratingKey == key, !Task.isCancelled else { return }
+            relatedShelf = items
+        case .emby:
+            guard shouldFetchRelatedMedia else { relatedShelf = []; return }
+            let items = await EmbyBrowseService(appModel: appModel).relatedMedia(itemId: key)
+            guard detailed.ratingKey == key, !Task.isCancelled else { return }
+            relatedShelf = items
+        }
+    }
+
+    private var shouldFetchRelatedMedia: Bool {
+        guard let availability = detailed.relatedAvailability else { return false }
+        return availability.hasLocalTrailers
+            || availability.hasSpecialFeatures
+            || !availability.extraIds.isEmpty
+    }
+
+    /// Direct playback of a shelf extra/trailer: same request/guard lifecycle as the
+    /// primary Play button, but launched for the extra's own leaf item.
+    private func playRelated(_ extra: MediaItem) {
+        guard !isResolvingPlayback, !presentingPlayer, metadataReadyForActions else { return }
+        isResolvingPlayback = true
+        let requestID = UUID()
+        playbackRequestID = requestID
+        Task { await startPlayback(requestID: requestID, target: extra) }
     }
 }
 

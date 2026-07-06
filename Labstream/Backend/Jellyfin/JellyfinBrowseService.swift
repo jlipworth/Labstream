@@ -100,6 +100,32 @@ struct JellyfinBrowseService {
         return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
+    /// Playable related media for a detail page (#199): local trailers first, then special
+    /// features. Both endpoints return a bare `BaseItemDto` ARRAY (not an Items envelope).
+    /// Each endpoint degrades independently — a failed/unsupported call contributes an
+    /// empty list rather than sinking the whole shelf.
+    func relatedMedia(itemId: String) async -> [MediaItem] {
+        guard let context = try? context() else { return [] }
+        var items: [MediaItem] = []
+        if let req = try? JellyfinLibrary.localTrailersRequest(server: context.server,
+                                                               token: context.token,
+                                                               identity: jellyfinIdentity,
+                                                               userId: context.userID,
+                                                               itemId: itemId),
+           let rows = try? await send(req, as: [JellyfinBaseItemDto].self) {
+            items += rows.compactMap { $0.toMediaItem() }
+        }
+        if let req = try? JellyfinLibrary.specialFeaturesRequest(server: context.server,
+                                                                 token: context.token,
+                                                                 identity: jellyfinIdentity,
+                                                                 userId: context.userID,
+                                                                 itemId: itemId),
+           let rows = try? await send(req, as: [JellyfinBaseItemDto].self) {
+            items += rows.compactMap { $0.toMediaItem() }
+        }
+        return items
+    }
+
     /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
     func albumArtistsPage(parentId: String?,
                           startIndex: Int? = nil,
