@@ -178,6 +178,18 @@ struct CustomPlayerView: View {
             mobileOrientationCoordinator.enterLandscapeIfNeeded()
         }
         #endif
+        // The bounded attach poll below can expire before the SharePlay session finishes
+        // activating (e.g. the user lingers on the FaceTime activation sheet), so retrigger
+        // whenever the coordinator's state changes while a session is active. `state` is the
+        // observable hook here — `hasActiveSession` is derived from an @ObservationIgnored
+        // stored property and never fires onChange.
+        .onChange(of: watchTogetherCoordinator.state) {
+            guard let controller, watchTogetherCoordinator.hasActiveSession else { return }
+            watchTogetherAttachTask?.cancel()
+            watchTogetherAttachTask = Task { @MainActor in
+                await attachWatchTogetherCoordinatorWhenReady(for: controller)
+            }
+        }
         .onDisappear {
             #if os(iOS)
             mobileSystemCoordinator?.teardown()
