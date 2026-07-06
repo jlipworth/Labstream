@@ -412,14 +412,15 @@ struct DetailView: View {
     @ViewBuilder
     private var actionButtonStack: some View {
         if isCompactPhoneLayout {
-            VStack(alignment: .leading, spacing: DS.Space.md) {
+            // Full-width stacked buttons with CENTERED labels — the system idiom for a
+            // prominent full-width action (App Store "Get", TV "Play"); a left-aligned
+            // label in a full-width pill reads as a list row. The width stretch lives on
+            // each button's label so the glass pill itself spans the column.
+            VStack(spacing: DS.Space.md) {
                 playButton
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 downloadButton
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 if supportsWatchedToggle {
                     markWatchedButton
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .controlSize(.large)
@@ -450,7 +451,7 @@ struct DetailView: View {
                 }
             }
             .font(.title3.weight(.semibold))
-            .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil, alignment: .leading)
+            .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
             .padding(.horizontal, DS.Space.md)
             .padding(.vertical, DS.Space.xs)
         }
@@ -509,6 +510,7 @@ struct DetailView: View {
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
+                    .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
         } else {
@@ -517,6 +519,7 @@ struct DetailView: View {
             } label: {
                 Label(downloadLabel, systemImage: "arrow.down.circle")
                     .font(.title3)
+                    .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
             .disabled(isDownloading || !metadataReadyForActions)
@@ -535,6 +538,7 @@ struct DetailView: View {
             Label(isWatched ? "Mark Unwatched" : "Mark Watched",
                   systemImage: isWatched ? "minus.circle" : "checkmark.circle")
                 .font(.title3)
+                .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
         }
         .labstreamGlassButtonStyle()
         .disabled(isTogglingWatched)
