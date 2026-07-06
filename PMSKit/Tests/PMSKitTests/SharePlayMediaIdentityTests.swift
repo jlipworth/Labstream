@@ -83,6 +83,26 @@ struct SharePlayMediaIdentityTests {
         #expect(payload.displayTitle == "Dune: Part Two")
     }
 
+    /// The display heuristics (TLD-like tokens, timestamp-shaped text, filename shapes) must
+    /// NOT null the local comparable title: it never leaves the device unhashed, and nulling
+    /// it disables Watch Together entirely for provider-ID-less (Plex) items whose legitimate
+    /// titles merely look suspicious.
+    @Test func heuristicLookingTitlesKeepLocalIdentityAndCoordinatorIdentifier() throws {
+        for title in ["Startup.com", "11:14", "Movie.Name.2021.mkv"] {
+            let item = movie("1", title: title, providerIds: nil)
+            let identity = try #require(item.sharePlayMediaIdentity, "expected identity for: \(title)")
+            #expect(identity.normalizedTitle == title.lowercased(), "expected comparable title for: \(title)")
+            #expect(identity.coordinatorIdentifier != nil, "expected coordinator id for: \(title)")
+        }
+    }
+
+    @Test func hardSecretMarkersStillNullComparableTitle() throws {
+        let item = movie("1", title: "Movie X-Plex-Token=secret", providerIds: nil)
+        let identity = try #require(item.sharePlayMediaIdentity)
+        #expect(identity.normalizedTitle == nil)
+        #expect(identity.coordinatorIdentifier == nil)
+    }
+
     @Test func localIdentityNormalizesWhitelistedProviderIdsOnly() throws {
         let item = movie("rk", providerIds: [
             "Tmdb": " 438631 ",
