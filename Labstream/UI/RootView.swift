@@ -31,6 +31,11 @@ struct RootView: View {
     @State private var systemEntryGeneration = 0
     /// Incremented by the ⌘F shortcut to route to Search and (re-)focus its field.
     @State private var searchFocusRequest = 0
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Compact-width Settings presentation (see `usesCompactTabSet`).
+    @State private var showsSettingsSheet = false
+    #endif
 
     enum AppTab: Hashable, CaseIterable {
         case home, libraries, search, music, offline, settings
@@ -217,7 +222,7 @@ struct RootView: View {
     /// the tab bar minimizes on scroll so media rails keep the full height.
     private var mobileRootContent: some View {
         TabView(selection: $selection) {
-            ForEach(AppTab.allCases.filter { $0 != .search }, id: \.self) { tab in
+            ForEach(mobileTabs, id: \.self) { tab in
                 Tab(tab.title, systemImage: tab.systemImage, value: tab) {
                     tabContent(for: tab)
                 }
@@ -234,13 +239,60 @@ struct RootView: View {
         .tabViewBottomAccessory(isEnabled: musicPlayer.current != nil) {
             MiniPlayerBar()
         }
+        .sheet(isPresented: $showsSettingsSheet) {
+            NavigationStack {
+                SettingsView(authManager: authManager)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showsSettingsSheet = false }
+                        }
+                    }
+            }
+        }
+        // A compact↔regular flip (iPhone Max rotation, iPad split-view resize) can strand
+        // the selection on a Settings tab that no longer exists; fall back to Home and
+        // keep Settings reachable via the sheet.
+        .onChange(of: usesCompactTabSet) { _, isCompact in
+            if isCompact, selection == .settings {
+                selection = .home
+                showsSettingsSheet = true
+            }
+        }
+    }
+
+    /// A phone-width bottom bar holds ~5 items; six spills Offline/Settings into the system
+    /// "More" list. On compact width Settings moves out of the tab set to a Home nav-bar
+    /// gear (the iPhone idiom — Apple apps use a gear/profile control, not a Settings tab),
+    /// keeping the bar to four tabs plus the system search role. Regular width (iPad
+    /// sidebar, Max-phone landscape) keeps the full set.
+    private var usesCompactTabSet: Bool { horizontalSizeClass == .compact }
+
+    private var mobileTabs: [AppTab] {
+        AppTab.allCases.filter { tab in
+            if tab == .search { return false }
+            if tab == .settings, usesCompactTabSet { return false }
+            return true
+        }
     }
 
     @ViewBuilder
     private func tabContent(for tab: AppTab) -> some View {
         switch tab {
         case .home:
-            NavigationStack(path: $homePath) { HomeView() }
+            NavigationStack(path: $homePath) {
+                HomeView()
+                    .toolbar {
+                        if usesCompactTabSet {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button {
+                                    showsSettingsSheet = true
+                                } label: {
+                                    Label("Settings", systemImage: "gearshape")
+                                }
+                            }
+                        }
+                    }
+            }
                 .environment(\.cinemaOriginTab, .home)
                 .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
