@@ -86,14 +86,22 @@ struct JellyfinBrowseService {
     /// Children of a backend BoxSet/collection. Uses the generic Items + ParentId read
     /// path, not MediaBrowser collection-management endpoints.
     func collectionItems(collectionId: String) async throws -> [MediaItem] {
+        try await collectionItemsPage(collectionId: collectionId).items
+    }
+
+    func collectionItemsPage(collectionId: String,
+                             startIndex: Int? = nil,
+                             limit: Int? = nil) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
         let req = try JellyfinLibrary.collectionItemsRequest(server: context.server,
                                                              token: context.token,
                                                              identity: jellyfinIdentity,
                                                              userId: context.userID,
-                                                             collectionId: collectionId)
+                                                             collectionId: collectionId,
+                                                             startIndex: startIndex,
+                                                             limit: limit)
         let response = try await send(req, as: JellyfinItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
     /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.

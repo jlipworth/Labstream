@@ -23,6 +23,7 @@ struct ContainerBrowserView: View {
 
     @State private var children: [MediaItem] = []
     @State private var loadState: BrowseLoadState = .idle
+    @State private var collectionPaging = LibraryPagingModel()
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
@@ -35,6 +36,14 @@ struct ContainerBrowserView: View {
     private var isCollection: Bool { container.isCollection }
 
     var body: some View {
+        if isCollection {
+            collectionBody
+        } else {
+            tvBody
+        }
+    }
+
+    private var tvBody: some View {
         ScrollView {
             switch loadState {
             case .idle, .loading:
@@ -62,6 +71,59 @@ struct ContainerBrowserView: View {
         .navigationTitle(navigationTitle)
         .id(container.ratingKey)
         .task(id: container.ratingKey) { await load() }
+    }
+
+    private var collectionBody: some View {
+        ScrollViewReader { _ in
+            ScrollView {
+                switch collectionPaging.loadState {
+                case .idle, .loading:
+                    ProgressView("Loading collection…")
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, minHeight: 360)
+                case .failed(let message):
+                    ContentUnavailableView("Couldn’t load \(container.title)",
+                                           systemImage: "exclamationmark.triangle",
+                                           description: Text(message))
+                        .frame(maxWidth: .infinity, minHeight: 360)
+                case .loaded:
+                    if collectionPaging.slots.isEmpty {
+                        VStack(spacing: DS.Space.xl) {
+                            CollectionDetailHeader(collection: container, total: nil)
+                            ContentUnavailableView(emptyTitle,
+                                                   systemImage: emptySystemImage,
+                                                   description: Text(emptyDescription))
+                                .frame(maxWidth: .infinity, minHeight: 280)
+                        }
+                        .padding(DS.Space.xl)
+                    } else {
+                        VStack(alignment: .leading, spacing: DS.Space.xxl) {
+                            CollectionDetailHeader(collection: container, total: collectionPaging.total)
+                            LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+                                ForEach(Array(collectionPaging.slots.enumerated()), id: \.offset) { index, slot in
+                                    if let item = slot {
+                                        NavigationLink(value: item) {
+                                            PosterCell(item: item, width: DS.Poster.gridMin)
+                                        }
+                                        .cardLink()
+                                        .id(index)
+                                    } else {
+                                        CollectionPlaceholderPoster()
+                                            .id(index)
+                                            .onAppear { prefetchCollectionPage(containing: index) }
+                                    }
+                                }
+                            }
+                        }
+                        .padding(DS.Space.xl)
+                    }
+                }
+            }
+        }
+        .navigationTitle(container.title)
+        .id(collectionLoadIdentity)
+        .task(id: collectionLoadIdentity) { await loadCollection() }
+        .refreshable { await loadCollection(force: true) }
     }
 
     /// Seasons/collection items as a poster grid (same look as a library section).
@@ -127,6 +189,68 @@ struct ContainerBrowserView: View {
         #if DEBUG
         NSLog("%@", "container.children \(summary.consoleLine)")
         #endif
+    }
+
+    private var collectionPagingSource: LibraryPagingSource {
+        let backend = appModel.activeBackend
+        return LibraryPagingSource(
+            title: container.title,
+            identity: collectionLoadIdentity,
+            backendLabel: backend.displayName,
+            cacheEmptyFirstPage: true,
+            awaitAlphabetBeforeInitialLoad: false,
+            fetchPage: { start, limit in
+                switch backend {
+                case .plex:
+                    guard let server = appModel.serverBaseURL,
+                          let token = appModel.serverToken else {
+                        throw LibraryPagingError.missingPlexServer
+                    }
+                    let req = BrowseAPI.collectionItems(server: server,
+                                                        token: token,
+                                                        identity: appModel.identity,
+                                                        collectionId: container.ratingKey,
+                                                        containerStart: start,
+                                                        containerSize: limit)
+                    let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+                    return LibraryPagingPage(items: resp.mediaContainer.metadata,
+                                             reportedTotal: resp.mediaContainer.totalSize)
+                case .jellyfin:
+                    let page = try await JellyfinBrowseService(appModel: appModel)
+                        .collectionItemsPage(collectionId: container.ratingKey,
+                                             startIndex: start,
+                                             limit: limit)
+                    return LibraryPagingPage(items: page.items, reportedTotal: page.total)
+                case .emby:
+                    let page = try await EmbyBrowseService(appModel: appModel)
+                        .collectionItemsPage(collectionId: container.ratingKey,
+                                             startIndex: start,
+                                             limit: limit)
+                    return LibraryPagingPage(items: page.items, reportedTotal: page.total)
+                }
+            },
+            fetchAlphabetCounts: { [] }
+        )
+    }
+
+    private var collectionLoadIdentity: String {
+        "\(appModel.browseSessionKey(for: appModel.activeBackend)):collection:\(container.ratingKey)"
+    }
+
+    private func loadCollection(force: Bool = false) async {
+        let source = collectionPagingSource
+        await collectionPaging.load(source: source, force: force) {
+            collectionLoadIdentity == source.identity
+        }
+    }
+
+    private func prefetchCollectionPage(containing index: Int) {
+        let source = collectionPagingSource
+        Task {
+            await collectionPaging.prefetch(containing: index, source: source) {
+                collectionLoadIdentity == source.identity
+            }
+        }
     }
 
     private func load() async {
@@ -274,5 +398,51 @@ struct EpisodeRow: View {
 
     private var progressSliver: some View {
         ProgressSliver(offset: episode.viewOffset, duration: episode.duration)
+    }
+}
+
+private struct CollectionDetailHeader: View {
+    let collection: MediaItem
+    let total: Int?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: DS.Space.xl) {
+            PosterImage(path: collection.thumb,
+                        width: 160,
+                        height: CGFloat(Double(160) / collection.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
+                        cornerRadius: DS.Radius.poster)
+                .shadow(color: .black.opacity(0.25), radius: 12, x: 0, y: 8)
+
+            VStack(alignment: .leading, spacing: DS.Space.sm) {
+                Text(collection.title)
+                    .font(.largeTitle.weight(.semibold))
+                    .multilineTextAlignment(.leading)
+                if let total, total > 0 {
+                    Text("\(total) item\(total == 1 ? "" : "s")")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+                if let summary = collection.summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.body)
+                        .foregroundStyle(.primary.opacity(0.85))
+                        .lineLimit(4)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(DS.Space.lg)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+    }
+}
+
+private struct CollectionPlaceholderPoster: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+            .fill(.regularMaterial)
+            .frame(width: DS.Poster.gridMin, height: DS.Poster.height(for: DS.Poster.gridMin))
+            .overlay { ShimmerView() }
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
     }
 }
