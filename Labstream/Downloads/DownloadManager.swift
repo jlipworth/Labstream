@@ -1838,7 +1838,11 @@ public final class DownloadManager {
         let staleQueuedStaticPartials = fresh.filter { record in
             DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
-                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey)
+                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey),
+                // #210: a backend-unavailable static Range resume is intentionally preserved as a
+                // queued pending intent. Reprocessing it here re-enters resume/defer/refresh until
+                // the main-thread stack overflows during launch.
+                hasPendingResumeIntent: staticRangeRecovery.hasPendingResume(record.ratingKey)
             )
         }
         if !staleQueuedStaticPartials.isEmpty {
