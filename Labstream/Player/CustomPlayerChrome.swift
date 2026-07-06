@@ -217,6 +217,7 @@ struct CustomPlayerChrome: View {
         VStack {
             HStack(spacing: 14) {
                 if let onClose {
+                    #if os(visionOS)
                     Button(action: {
                         revealChrome()
                         onClose()
@@ -226,7 +227,23 @@ struct CustomPlayerChrome: View {
                             .font(.title3.weight(.semibold))
                             .frame(width: 52, height: 52)
                     }
-                    .labstreamGlassProminentButtonStyle()
+                    .buttonStyle(.borderedProminent)
+                    #else
+                    // iOS system players use a subdued monochrome glass circle for
+                    // dismiss, not a large accent-tinted platter.
+                    Button(action: {
+                        revealChrome()
+                        onClose()
+                    }) {
+                        Label("Close", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                            .font(.body.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .tint(.primary)
+                    #endif
                 }
 
                 Spacer()
@@ -281,7 +298,14 @@ struct CustomPlayerChrome: View {
                         .font(.title2.weight(.semibold))
                         .frame(width: 44, height: 44)
                 }
+                #if os(visionOS)
                 .buttonStyle(.borderedProminent)
+                #else
+                // Neutral symbol on the glass platter, like the system player's
+                // transport controls — the accent stays reserved for real CTAs.
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                #endif
 
                 skipControls
 
