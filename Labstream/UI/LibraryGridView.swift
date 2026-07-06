@@ -821,7 +821,8 @@ private struct LibraryGridSlot: View {
     }
 }
 
-private struct LibraryPlaceholderPoster: View {
+/// Shared shimmer placeholder for a paged poster slot (library grid + collection detail).
+struct LibraryPlaceholderPoster: View {
     let width: CGFloat
 
     var body: some View {

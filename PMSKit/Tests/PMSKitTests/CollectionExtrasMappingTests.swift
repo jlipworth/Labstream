@@ -134,7 +134,8 @@ struct CollectionExtrasMappingTests {
                 "Metadata": [{
                   "ratingKey": "extra-1",
                   "title": "Behind the Scenes",
-                  "type": "extra",
+                  "type": "clip",
+                  "subtype": "behindTheScenes",
                   "duration": 60000,
                   "thumb": "/library/metadata/extra-1/thumb",
                   "Media": [{
@@ -144,6 +145,12 @@ struct CollectionExtrasMappingTests {
                       "key": "/library/parts/11/file.mp4"
                     }]
                   }]
+                },
+                {
+                  "ratingKey": "extra-2",
+                  "title": "Official Trailer",
+                  "type": "clip",
+                  "subtype": "trailer"
                 }]
               }
             }]
@@ -152,11 +159,51 @@ struct CollectionExtrasMappingTests {
         """#.utf8))
 
         let movie = try #require(response.mediaContainer.metadata.first)
+        // Real Plex extras arrive as type "clip" with the classification in `subtype`.
         let extra = try #require(movie.relatedItems?.first)
         #expect(extra.ratingKey == "extra-1")
         #expect(extra.title == "Behind the Scenes")
         #expect(extra.kind == .extra)
         #expect(extra.isPlayableLeaf)
         #expect(extra.media?.first?.part.first?.key == "/library/parts/11/file.mp4")
+        let trailer = try #require(movie.relatedItems?.last)
+        #expect(trailer.kind == .trailer)
+        #expect(trailer.isPlayableLeaf)
+    }
+
+    /// Extras are secondary media: a malformed extras row (or a whole malformed `Extras`
+    /// subtree) must degrade to fewer/no extras — never fail the parent item's decode,
+    /// which the outer lossy row decode would turn into a silently missing movie.
+    @Test func plexMalformedExtrasRowsDoNotDropTheParentItem() throws {
+        let response = try JSONDecoder().decode(MetadataResponse.self, from: Data(#"""
+        {
+          "MediaContainer": {
+            "Metadata": [{
+              "ratingKey": "movie-1",
+              "title": "Redacted Movie",
+              "type": "movie",
+              "Extras": {
+                "Metadata": [
+                  { "title": "No ratingKey — malformed", "type": "extra" },
+                  { "ratingKey": "extra-2", "title": "Featurette", "type": "extra" }
+                ]
+              }
+            },
+            {
+              "ratingKey": "movie-2",
+              "title": "Other Movie",
+              "type": "movie",
+              "Extras": "not-an-object"
+            }]
+          }
+        }
+        """#.utf8))
+
+        #expect(response.mediaContainer.metadata.count == 2)
+        let first = try #require(response.mediaContainer.metadata.first)
+        #expect(first.relatedItems?.map(\.ratingKey) == ["extra-2"])
+        let second = try #require(response.mediaContainer.metadata.last)
+        #expect(second.ratingKey == "movie-2")
+        #expect(second.relatedItems == nil)
     }
 }

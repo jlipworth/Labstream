@@ -25,8 +25,8 @@ public enum JellyfinLibrary {
                                     limit: Int? = nil,
                                     searchTerm: String? = nil,
                                     nameStartsWith: String? = nil,
-                                    sortBy: String = "SortName",
-                                    sortOrder: String = "Ascending",
+                                    sortBy: String? = "SortName",
+                                    sortOrder: String? = "Ascending",
                                     includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                                     fields: String = fullItemFields,
                                     albumArtistIds: String? = nil,
@@ -81,7 +81,9 @@ public enum JellyfinLibrary {
 
     /// `GET /Items?parentId={boxSetId}` — read children of a BoxSet through the generic
     /// items endpoint. Do not use `/Collections/{id}/Items`, which is a collection
-    /// management endpoint in MediaBrowser-family APIs.
+    /// management endpoint in MediaBrowser-family APIs. No sort is sent so the server's
+    /// curated collection order is preserved (matching the Plex collection-items read);
+    /// `BoxSet` stays in the type list so nested collections render as containers.
     public static func collectionItemsRequest(server: URL,
                                               token: String,
                                               identity: JellyfinClientIdentity,
@@ -89,7 +91,7 @@ public enum JellyfinLibrary {
                                               collectionId: String,
                                               startIndex: Int? = nil,
                                               limit: Int? = nil,
-                                              fields: String = fullItemFields) throws -> URLRequest {
+                                              fields: String = gridItemFields) throws -> URLRequest {
         try itemsRequest(server: server,
                          token: token,
                          identity: identity,
@@ -98,9 +100,9 @@ public enum JellyfinLibrary {
                          recursive: false,
                          startIndex: startIndex,
                          limit: limit,
-                         sortBy: "SortName",
-                         sortOrder: "Ascending",
-                         includeItemTypes: "Movie,Series,Season,Episode,Video,Trailer",
+                         sortBy: nil,
+                         sortOrder: nil,
+                         includeItemTypes: "Movie,Series,Season,Episode,Video,Trailer,BoxSet",
                          fields: fields)
     }
 

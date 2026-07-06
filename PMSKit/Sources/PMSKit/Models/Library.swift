@@ -138,6 +138,9 @@ public struct MediaRelatedAvailability: Sendable, Equatable {
 }
 
 /// Plex wraps inline extras as `Extras.Metadata` when requested with `includeExtras=1`.
+/// Decodes LOSSILY, row by row, like the parent `MetadataResponse` rows: extras are
+/// secondary media, so one malformed extra must never throw the whole parent item away
+/// (the outer lossy decode would silently drop that movie from the page).
 private struct PlexRelatedMediaContainer: Decodable, Sendable {
     let metadata: [MediaItem]
 
@@ -147,7 +150,17 @@ private struct PlexRelatedMediaContainer: Decodable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        metadata = try c.decodeIfPresent([MediaItem].self, forKey: .metadata) ?? []
+        guard c.contains(.metadata) else { metadata = []; return }
+        var rows = try c.nestedUnkeyedContainer(forKey: .metadata)
+        var items: [MediaItem] = []
+        while !rows.isAtEnd {
+            if let item = try? rows.decode(MediaItem.self) {
+                items.append(item)
+            } else if (try? rows.decode(OpaqueRow.self)) == nil {
+                break
+            }
+        }
+        metadata = items
     }
 }
 
@@ -156,6 +169,10 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     public let key: String?
     public let title: String
     public let type: String
+    /// Plex's secondary type discriminator. Trailers/extras arrive as `type: "clip"` with
+    /// `subtype` carrying the real classification ("trailer", "behindTheScenes",
+    /// "deletedScene", ...); `kind` folds it into `.trailer`/`.extra`.
+    public let subtype: String?
     public let duration: Int?
     public let viewOffset: Int?
     public let viewCount: Int?
@@ -297,6 +314,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         case key
         case title
         case type
+        case subtype
         case duration
         case viewOffset
         case viewCount
@@ -344,6 +362,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         key = try c.decodeIfPresent(String.self, forKey: .key)
         title = try c.decode(String.self, forKey: .title)
         type = try c.decode(String.self, forKey: .type)
+        subtype = try c.decodeIfPresent(String.self, forKey: .subtype)
         duration = try c.decodeIfPresent(Int.self, forKey: .duration)
         viewOffset = try c.decodeIfPresent(Int.self, forKey: .viewOffset)
         viewCount = try c.decodeIfPresent(Int.self, forKey: .viewCount)
@@ -394,7 +413,9 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         // Plex payloads omit this key (→ nil → 2:3 fallback); Jellyfin/Emby supply it via
         // the synthetic mapper in MediaBrowserBaseItemDto.toMediaItem(). See GH #101.
         primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
-        let extras = try c.decodeIfPresent(PlexRelatedMediaContainer.self, forKey: .relatedItems)?.metadata ?? []
+        // `try?` on the whole subtree: an `Extras` value of an unexpected shape degrades
+        // to "no extras" instead of failing the parent item's decode.
+        let extras = ((try? c.decodeIfPresent(PlexRelatedMediaContainer.self, forKey: .relatedItems)) ?? nil)?.metadata ?? []
         relatedItems = extras.isEmpty ? nil : extras
         // `versions` is a client-side movie-grid grouping carrier (#108), never on the wire.
         versions = nil
@@ -409,6 +430,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
                 key: String? = nil,
                 title: String,
                 type: String,
+                subtype: String? = nil,
                 duration: Int? = nil,
                 viewOffset: Int? = nil,
                 viewCount: Int? = nil,
@@ -454,6 +476,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
         self.key = key
         self.title = title
         self.type = type
+        self.subtype = subtype
         self.duration = duration
         self.viewOffset = viewOffset
         self.viewCount = viewCount
@@ -504,6 +527,7 @@ public struct MediaItem: Decodable, Sendable, Identifiable {
     /// call site (finding 9). Used by the grid collapser on the surviving representative tile.
     public func with(versions: [MediaItem]?) -> MediaItem {
         MediaItem(ratingKey: ratingKey, key: key, title: title, type: type,
+                  subtype: subtype,
                   duration: duration, viewOffset: viewOffset, viewCount: viewCount,
                   year: year, summary: summary, thumb: thumb, art: art, media: media,
                   librarySectionID: librarySectionID, librarySectionKey: librarySectionKey,

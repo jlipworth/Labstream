@@ -74,49 +74,47 @@ struct ContainerBrowserView: View {
     }
 
     private var collectionBody: some View {
-        ScrollViewReader { _ in
-            ScrollView {
-                switch collectionPaging.loadState {
-                case .idle, .loading:
-                    ProgressView("Loading collection…")
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, minHeight: 360)
-                case .failed(let message):
-                    ContentUnavailableView("Couldn’t load \(container.title)",
-                                           systemImage: "exclamationmark.triangle",
-                                           description: Text(message))
-                        .frame(maxWidth: .infinity, minHeight: 360)
-                case .loaded:
-                    if collectionPaging.slots.isEmpty {
-                        VStack(spacing: DS.Space.xl) {
-                            CollectionDetailHeader(collection: container, total: nil)
-                            ContentUnavailableView(emptyTitle,
-                                                   systemImage: emptySystemImage,
-                                                   description: Text(emptyDescription))
-                                .frame(maxWidth: .infinity, minHeight: 280)
-                        }
-                        .padding(DS.Space.xl)
-                    } else {
-                        VStack(alignment: .leading, spacing: DS.Space.xxl) {
-                            CollectionDetailHeader(collection: container, total: collectionPaging.total)
-                            LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
-                                ForEach(Array(collectionPaging.slots.enumerated()), id: \.offset) { index, slot in
-                                    if let item = slot {
-                                        NavigationLink(value: item) {
-                                            PosterCell(item: item, width: DS.Poster.gridMin)
-                                        }
-                                        .cardLink()
-                                        .id(index)
-                                    } else {
-                                        CollectionPlaceholderPoster()
-                                            .id(index)
-                                            .onAppear { prefetchCollectionPage(containing: index) }
+        ScrollView {
+            switch collectionPaging.loadState {
+            case .idle, .loading:
+                ProgressView("Loading collection…")
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, minHeight: 360)
+            case .failed(let message):
+                ContentUnavailableView("Couldn’t load \(container.title)",
+                                       systemImage: "exclamationmark.triangle",
+                                       description: Text(message))
+                    .frame(maxWidth: .infinity, minHeight: 360)
+            case .loaded:
+                if collectionPaging.slots.isEmpty {
+                    VStack(spacing: DS.Space.xl) {
+                        CollectionDetailHeader(collection: container, total: nil)
+                        ContentUnavailableView(emptyTitle,
+                                               systemImage: emptySystemImage,
+                                               description: Text(emptyDescription))
+                            .frame(maxWidth: .infinity, minHeight: 280)
+                    }
+                    .padding(DS.Space.xl)
+                } else {
+                    VStack(alignment: .leading, spacing: DS.Space.xxl) {
+                        CollectionDetailHeader(collection: container, total: collectionPaging.total)
+                        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+                            ForEach(Array(collectionPaging.slots.enumerated()), id: \.offset) { index, slot in
+                                if let item = slot {
+                                    NavigationLink(value: item) {
+                                        PosterCell(item: item, width: DS.Poster.gridMin)
                                     }
+                                    .cardLink()
+                                    .id(index)
+                                } else {
+                                    LibraryPlaceholderPoster(width: DS.Poster.gridMin)
+                                        .id(index)
+                                        .onAppear { prefetchCollectionPage(containing: index) }
                                 }
                             }
                         }
-                        .padding(DS.Space.xl)
                     }
+                    .padding(DS.Space.xl)
                 }
             }
         }
@@ -261,13 +259,8 @@ struct ContainerBrowserView: View {
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                let service = JellyfinBrowseService(appModel: appModel)
-                let loaded: [MediaItem]
-                if isCollection {
-                    loaded = try await service.collectionItems(collectionId: container.ratingKey)
-                } else {
-                    loaded = try await service.items(parentId: container.ratingKey, recursive: false)
-                }
+                let loaded = try await JellyfinBrowseService(appModel: appModel)
+                    .items(parentId: container.ratingKey, recursive: false)
                 let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
                 recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Jellyfin")
                 children = normalized
@@ -280,13 +273,8 @@ struct ContainerBrowserView: View {
         if appModel.activeBackend == .emby {
             loadState = .loading
             do {
-                let service = EmbyBrowseService(appModel: appModel)
-                let loaded: [MediaItem]
-                if isCollection {
-                    loaded = try await service.collectionItems(collectionId: container.ratingKey)
-                } else {
-                    loaded = try await service.items(parentId: container.ratingKey, recursive: false)
-                }
+                let loaded = try await EmbyBrowseService(appModel: appModel)
+                    .items(parentId: container.ratingKey, recursive: false)
                 let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
                 recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Emby")
                 children = normalized
@@ -303,9 +291,7 @@ struct ContainerBrowserView: View {
         }
         loadState = .loading
         do {
-            let loaded = isCollection
-                ? try await service.collectionItems(collectionId: container.ratingKey)
-                : try await service.children(ratingKey: container.ratingKey)
+            let loaded = try await service.children(ratingKey: container.ratingKey)
             let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
             recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Plex")
             children = normalized
@@ -434,15 +420,5 @@ private struct CollectionDetailHeader: View {
         }
         .padding(DS.Space.lg)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-    }
-}
-
-private struct CollectionPlaceholderPoster: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
-            .fill(.regularMaterial)
-            .frame(width: DS.Poster.gridMin, height: DS.Poster.height(for: DS.Poster.gridMin))
-            .overlay { ShimmerView() }
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
     }
 }

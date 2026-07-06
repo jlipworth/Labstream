@@ -19,6 +19,12 @@ struct MediaBrowserLibraryGridPolicyTests {
         #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: "homevideos") == false)
     }
 
+    @Test func collectionsLibrariesListBoxSetsRecursively() {
+        #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: "boxsets") == "BoxSet")
+        #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: "boxsets") == true)
+        #expect(MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: "boxsets") == false)
+    }
+
     @Test func unknownLibrariesKeepImmediateChildrenAndMixedTypes() {
         #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: nil) == "Movie,Series,Season,Episode,Video")
         #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: nil) == false)

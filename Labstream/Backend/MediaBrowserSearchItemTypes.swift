@@ -18,6 +18,8 @@ func mediaBrowserSearchItemTypes(forCollectionType collectionType: String?) -> S
         return "Video"
     case "music":
         return "MusicArtist,MusicAlbum,Audio"
+    case "boxsets":
+        return "BoxSet"
     default:
         return "Movie,Series,Season,Episode,Video"
     }

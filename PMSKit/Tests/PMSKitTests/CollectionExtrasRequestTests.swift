@@ -24,8 +24,8 @@ struct CollectionExtrasRequestTests {
                                                             containerStart: 0,
                                                             containerSize: 200)
         #expect(children.url.path == "/library/collections/collection-1/items")
-        #expect(queryValue(children, "includeChapters") == "1")
-        #expect(queryValue(children, "includeMarkers") == "1")
+        // No sort param: the server's curated collection order must come back verbatim.
+        #expect(queryValue(children, "sort") == nil)
         #expect(queryValue(children, "X-Plex-Container-Size") == "200")
     }
 
@@ -65,7 +65,12 @@ struct CollectionExtrasRequestTests {
         #expect(!childURL.path.contains("/Collections"))
         #expect(try queryValue(children, "parentId") == "boxset-1")
         #expect(try queryValue(children, "recursive") == "false")
-        #expect(try queryValue(children, "includeItemTypes")?.contains("BoxSet") == false)
+        // Nested collections stay browsable as containers.
+        #expect(try queryValue(children, "includeItemTypes")?.contains("BoxSet") == true)
+        // No sort params: preserve the box set's curated child order.
+        #expect(try queryValue(children, "sortBy") == nil)
+        #expect(try queryValue(children, "sortOrder") == nil)
+        #expect(try queryValue(children, "fields") == JellyfinLibrary.gridItemFields)
     }
 
     @Test func embyCollectionsUseGenericUserItemsNotCollectionManagementEndpoint() throws {
@@ -93,7 +98,12 @@ struct CollectionExtrasRequestTests {
         #expect(!childURL.path.contains("/Collections"))
         #expect(try queryValue(children, "ParentId") == "boxset-1")
         #expect(try queryValue(children, "Recursive") == "false")
-        #expect(try queryValue(children, "IncludeItemTypes")?.contains("BoxSet") == false)
+        // Nested collections stay browsable as containers.
+        #expect(try queryValue(children, "IncludeItemTypes")?.contains("BoxSet") == true)
+        // No sort params: preserve the box set's curated child order.
+        #expect(try queryValue(children, "SortBy") == nil)
+        #expect(try queryValue(children, "SortOrder") == nil)
+        #expect(try queryValue(children, "Fields") == EmbyLibrary.gridItemFields)
     }
 
     @Test func jellyfinRelatedMediaHelpersTargetReadOnlyItemEndpoints() throws {

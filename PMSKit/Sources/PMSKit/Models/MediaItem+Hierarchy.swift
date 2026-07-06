@@ -43,7 +43,18 @@ extension MediaItem {
     }
 
     /// Strongly-typed item kind derived from the PMS `type` string.
-    public var kind: Kind { Kind(rawValue: type) }
+    ///
+    /// Plex never emits `type: "trailer"`/`"extra"`: its trailers and extras arrive as
+    /// `type: "clip"` with the real classification in `subtype` ("trailer",
+    /// "behindTheScenes", "deletedScene", ...). Fold that here so extras classify the
+    /// same across backends; a plain clip with no subtype keeps its legacy
+    /// `.other("clip")` behavior (still a playable leaf).
+    public var kind: Kind {
+        if type == "clip", let subtype, !subtype.isEmpty {
+            return subtype.lowercased() == "trailer" ? .trailer : .extra
+        }
+        return Kind(rawValue: type)
+    }
 
     /// True for music items — classifies `artist`/`album`/`track` PMS types so callers can
     /// branch on music vs. video content.
