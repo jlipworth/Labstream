@@ -48,8 +48,15 @@ enum DetailPlaybackLauncher {
     static func openEmby(item: MediaItem,
                          appModel: AppModel,
                          maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen<EmbyRemotePlayback> {
+        // Mirror openJellyfin: the initial PlaybackInfo must carry an explicit stream
+        // selection. Omitting SubtitleStreamIndex lets Emby's server-side user profile pick a
+        // default subtitle and burn it in while the app's picker shows "Off".
+        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item)
         let result = try await EmbyBrowseService(appModel: appModel)
-            .playbackOpen(item: item, maxVideoBitrateKbps: maxVideoBitrateKbps)
+            .playbackOpen(item: item,
+                          maxVideoBitrateKbps: maxVideoBitrateKbps,
+                          audioStreamIndex: selection.audioStreamIndex,
+                          subtitleStreamIndex: selection.subtitleStreamIndex)
         return DetailRemotePlaybackOpen(
             playback: EmbyRemotePlayback(url: result.url,
                                          headers: result.requiredHTTPHeaders,
@@ -94,7 +101,7 @@ enum DetailPlaybackLauncher {
                            initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
                                .preferredAudioStreamIndex(for: item),
                            initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                               .subtitleStreamIndex(),
+                               .preferredSubtitleStreamIndex(for: item),
                            maxVideoBitrateKbps: maxVideoBitrateKbps,
                            qualityDefaultsKey: qualityDefaultsKey)
     }
@@ -130,6 +137,13 @@ enum DetailPlaybackLauncher {
                                                           appModel: appModel,
                                                           request: request)
                            },
+                           // Seed the overrides with what openEmby actually sent, so the picker
+                           // and the first reopen agree with the running stream (mirror of
+                           // jellyfinPlaybackController).
+                           initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
+                               .preferredAudioStreamIndex(for: item),
+                           initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
+                               .preferredSubtitleStreamIndex(for: item),
                            maxVideoBitrateKbps: maxVideoBitrateKbps,
                            qualityDefaultsKey: qualityDefaultsKey)
     }
