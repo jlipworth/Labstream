@@ -542,6 +542,64 @@ final class PlaybackController {
         return pendingResumeMs ?? item.viewOffset ?? 0
     }
 
+    // MARK: - Zombie-playback detector (starved rebuild reporting `.playing`)
+
+    /// Live-clock baseline for the zombie-playback check: last observed position (ms) and when
+    /// it was recorded. A starved post-seek transcode can leave AVPlayer reporting `.playing`
+    /// while it reloads a segment-less playlist forever (kFigAssetError_TrackNotFound ~1/s,
+    /// seen live on iPad): the fake `.playing` transition cancels the stall watchdog, clears
+    /// the buffering overlay, AND releases the seek hold (the item clock parks at the target),
+    /// so every `.waiting`-keyed safety net goes dark. The 500ms scrubber tick polls this
+    /// instead: `.playing` with a clock that hasn't advanced for `zombiePlaybackTimeoutSeconds`
+    /// is not playback — escalate to the visible reconnect path (spinner now, Retry via the
+    /// 20s reconnect watchdog). Genuine recovery cancels it at the next real `.playing`
+    /// transition, and any clock advance re-seeds the baseline.
+    private var zombieClockBaselineMs: Int?
+    private var zombieClockBaselineAt: TimeInterval?
+    private let zombiePlaybackTimeoutSeconds: TimeInterval = 8
+    /// Minimum cumulative clock advance (ms) that counts as real progress. Cumulative, so slow
+    /// playback rates still clear it across ticks; jitter on a parked clock stays below it.
+    private let zombieClockAdvanceThresholdMs = 350
+
+    /// Called from the 500ms scrubber tick alongside `releaseSeekHoldIfLanded`.
+    func detectZombiePlaybackIfStuck() {
+        guard player.timeControlStatus == .playing,
+              !userWantsPaused, !transport.pauseRequested,
+              !isSeeking,
+              !playbackError.isFailed,
+              player.rate > 0 else {
+            zombieClockBaselineMs = nil
+            zombieClockBaselineAt = nil
+            return
+        }
+        let secs = player.currentTime().seconds
+        guard secs.isFinite else { return }
+        let nowMs = Int(secs * 1000)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let baseMs = zombieClockBaselineMs, let baseAt = zombieClockBaselineAt else {
+            zombieClockBaselineMs = nowMs
+            zombieClockBaselineAt = now
+            return
+        }
+        if abs(nowMs - baseMs) > zombieClockAdvanceThresholdMs {
+            zombieClockBaselineMs = nowMs
+            zombieClockBaselineAt = now
+            // The clock moving again after a zombie escalation IS the recovery: the player
+            // never left `.playing`, so no KVO transition will fire to clear the overlay —
+            // this tick is the only signal.
+            if reconnectInProgress { finishReconnectStatus() }
+            return
+        }
+        guard !reconnectInProgress, now - baseAt >= zombiePlaybackTimeoutSeconds else { return }
+        recordPlaybackDiagnostic("playback.zombie_playback_detected", fields: [
+            "position": .millisecondsBucket(nowMs),
+            "stuck_seconds": .int(Int(now - baseAt)),
+        ])
+        NSLog("PlaybackController: .playing with frozen clock for %.0fs — escalating to reconnect",
+              now - baseAt)
+        beginReconnectStatus()
+    }
+
     /// Whether this session is streaming (vs local file). Drives which menus the
     /// player surface offers (quality reload only makes sense for streaming).
     var isStreaming: Bool { localFile == nil && server != nil && token != nil }
@@ -2728,6 +2786,10 @@ final class PlaybackController {
         hasObservedPlayback = false
         currentTimeControlStatus = .paused
         hasObservedTimeControlStatus = false
+        // Fresh item, fresh zombie-clock baseline: a reload that resumes at the same parked
+        // position must not inherit the previous item's "clock hasn't moved" countdown.
+        zombieClockBaselineMs = nil
+        zombieClockBaselineAt = nil
         playbackError.clear()
         offlineSubtitleOverlay.set(nil)
         updateTransportStatus()
