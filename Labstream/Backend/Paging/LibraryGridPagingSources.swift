@@ -9,6 +9,8 @@ extension LibraryPagingSource {
         switch source {
         case .plex(let section):
             self = .plex(section: section, query: query, appModel: appModel)
+        case .plexCollections(let section):
+            self = .plexCollections(section: section, appModel: appModel)
         case .jellyfin(let view):
             self = .jellyfin(view: view, query: query, appModel: appModel)
         case .emby(let view):
@@ -44,6 +46,37 @@ extension LibraryPagingSource {
                 guard let service = try? PlexBrowseService(appModel: appModel) else { return [] }
                 return (try? await service.alphabetCounts(sectionKey: section.key)) ?? []
             }
+        )
+    }
+
+    /// Backend-defined Plex collections for one section (#199), via
+    /// `/library/sections/{key}/collections`. Collection grids deliberately keep the
+    /// default ordering and omit the alphabet jump because Plex's first-character
+    /// endpoint does not cover this route.
+    static func plexCollections(section: PlexSection, appModel: AppModel) -> LibraryPagingSource {
+        LibraryPagingSource(
+            title: section.title,
+            identity: "\(libraryPagingIdentity(libraryID: section.key, sessionKey: appModel.browseSessionKey(for: .plex))):collections",
+            backendLabel: "Plex",
+            cacheEmptyFirstPage: true,
+            awaitAlphabetBeforeInitialLoad: false,
+            supportsAlphabetRail: false,
+            fetchPage: { start, limit in
+                guard let server = appModel.serverBaseURL,
+                      let token = appModel.serverToken else {
+                    throw LibraryPagingError.missingPlexServer
+                }
+                let req = CollectionRequest.plexCollections(server: server,
+                                                            token: token,
+                                                            identity: appModel.identity,
+                                                            sectionKey: section.key,
+                                                            containerStart: start,
+                                                            containerSize: limit)
+                let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+                return LibraryPagingPage(items: resp.mediaContainer.metadata,
+                                         reportedTotal: resp.mediaContainer.totalSize)
+            },
+            fetchAlphabetCounts: { [] }
         )
     }
 

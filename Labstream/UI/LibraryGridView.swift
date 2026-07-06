@@ -49,6 +49,10 @@ struct LibrariesView: View {
             // against the source backend even after a backend switch.
             DetailView(item: item, originBackend: appModel.activeBackend)
         }
+        // Pushed from a Plex section grid's Collections toolbar entry (#199).
+        .navigationDestination(for: LibraryGridSource.self) { source in
+            LibraryGridView(source: source)
+        }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
         .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
@@ -290,12 +294,16 @@ struct LibraryRootItem: Identifiable, Hashable {
 
 enum LibraryGridSource: Hashable {
     case plex(PlexSection)
+    /// Backend-defined collections of one Plex section (#199). Plex exposes collections
+    /// per section, so this grid is pushed from that section's toolbar.
+    case plexCollections(PlexSection)
     case jellyfin(JellyfinLibraryLink)
     case emby(EmbyLibraryLink)
 
     var title: String {
         switch self {
         case .plex(let section): return section.title
+        case .plexCollections: return "Collections"
         case .jellyfin(let view): return view.title
         case .emby(let view): return view.title
         }
@@ -304,6 +312,7 @@ enum LibraryGridSource: Hashable {
     var capabilityIdentity: String {
         switch self {
         case .plex(let section): return "plex:\(section.key)"
+        case .plexCollections(let section): return "plex:\(section.key):collections"
         case .jellyfin(let view): return "jellyfin:\(view.id)"
         case .emby(let view): return "emby:\(view.id)"
         }
@@ -311,7 +320,7 @@ enum LibraryGridSource: Hashable {
 
     var backend: MediaBackendKind {
         switch self {
-        case .plex: return .plex
+        case .plex, .plexCollections: return .plex
         case .jellyfin: return .jellyfin
         case .emby: return .emby
         }
@@ -390,6 +399,8 @@ struct LibraryGridView: View {
         switch source {
         case .plex:
             return capabilityState.capabilities
+        case .plexCollections:
+            return .defaultOnly
         case .jellyfin(let view):
             return MediaBrowserLibraryGridPolicy.browseCapabilities(collectionType: view.collectionType)
         case .emby(let view):
@@ -430,6 +441,10 @@ struct LibraryGridView: View {
     private var alphabetRailVisible: Bool {
         guard case .loaded = paging.loadState else { return false }
         return paging.alphabetBuckets.count > 1
+    }
+
+    init(source: LibraryGridSource) {
+        self.source = source
     }
 
     init(section: PlexSection) {
@@ -505,7 +520,18 @@ struct LibraryGridView: View {
                 }
             }
         }
-        .navigationTitle(source.title)
+        .navigationTitle(navigationTitle)
+        .toolbar {
+            // Plex collections belong to movie/show sections rather than a standalone
+            // library, so the regular section grid carries the entry point.
+            if case .plex(let section) = source, section.type == "movie" || section.type == "show" {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: LibraryGridSource.plexCollections(section)) {
+                        Label("Collections", systemImage: "square.stack.3d.up")
+                    }
+                }
+            }
+        }
         .task(id: preferenceIdentity) { loadPreferences() }
         .task(id: capabilityIdentity) { await loadBrowseCapabilities() }
         .task(id: loadIdentity) { await load() }
@@ -643,6 +669,12 @@ struct LibraryGridView: View {
     }
 
     private var emptyState: some View {
+        if case .plexCollections(let section) = source {
+            return ContentUnavailableView("No collections",
+                                          systemImage: "rectangle.stack",
+                                          description: Text("\(section.title) has no collections on this server."))
+                .frame(maxWidth: .infinity, minHeight: 360)
+        }
         let title = filter == .all ? "Empty library" : "No matching items"
         let description = filter == .all
             ? "No items in \(source.title)."
@@ -651,6 +683,13 @@ struct LibraryGridView: View {
                                       systemImage: filter == .all ? "rectangle.stack" : "line.3.horizontal.decrease.circle",
                                       description: Text(description))
             .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private var navigationTitle: String {
+        if case .plexCollections(let section) = source {
+            return "\(section.title) · Collections"
+        }
+        return source.title
     }
 
     private var nonVisionAlphabetRailVisible: Bool {
@@ -682,6 +721,9 @@ struct LibraryGridView: View {
             case .loading:
                 break
             }
+        case .plexCollections:
+            sort = .titleAscending
+            filter = .all
         case .jellyfin, .emby:
             enforceCapabilities(availableCapabilities)
         }
