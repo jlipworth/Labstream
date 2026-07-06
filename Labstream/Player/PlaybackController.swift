@@ -338,19 +338,19 @@ final class PlaybackController {
 
     // MARK: - Extracted collaborators
 
+    /// iOS-only escape hatch for system-video surfaces. Regular video still pauses when
+    /// Labstream backgrounds/resigns active, but PiP/AirPlay sessions are allowed to continue.
+    var shouldContinueOnBackground: @MainActor () -> Bool = { false }
+
     /// Audio-session config + interruption / route-change / background handling (#17, P5).
     /// Activated and observer-registered once per controller lifetime (both idempotent
     /// across a Quality reload); torn down in `stop()`.
-    private lazy var audioSession = AudioSessionCoordinator(player: player)
-
-    /// Passthrough to the audio-session coordinator's background-pause suppression. The iOS
-    /// player view points this at its PiP/AirPlay state so externally rendered video keeps
-    /// playing when the app backgrounds (the coordinator otherwise pauses on
-    /// resign-active/background, which is correct for ordinary in-app video).
-    var suppressBackgroundPause: (@MainActor () -> Bool)? {
-        get { audioSession.shouldSuppressBackgroundPause }
-        set { audioSession.shouldSuppressBackgroundPause = newValue }
-    }
+    private lazy var audioSession = AudioSessionCoordinator(
+        player: player,
+        shouldContinueOnBackground: { [weak self] in
+            self?.shouldContinueOnBackground() ?? false
+        }
+    )
 
     /// Timeline heartbeats + scrobble reporting to PMS. Spans Quality reloads (its
     /// one-shot scrobble guard deliberately survives a stream rebuild); its readiness

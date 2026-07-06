@@ -131,6 +131,12 @@ struct HomeView: View {
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 mediaBrowserLibraries = content.libraries
                 mediaBrowserRails = content.rails
+                if let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) {
+                    SpotlightIndexer.index(content.rails.flatMap(\.items),
+                                           backend: appModel.activeBackend,
+                                           server: session.baseURL)
+                    LabstreamShortcuts.updateAppShortcutParameters()
+                }
                 // Only pin the loaded identity for a clean load. A degraded load (some rails
                 // errored) is shown but left unpinned so pop-back / the next `.task` re-fetches
                 // and can recover the missing rails without a manual pull-to-refresh (#93).

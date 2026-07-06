@@ -75,5 +75,5 @@ mindmap
 ## Tests and scripts
 
 - `PMSKit/Tests/PMSKitTests/` covers pure policies, request builders, decoders, and redaction.
-- `scripts/` contains simulator, deployment, docs, hygiene, and optional live-probe helpers. `scripts/worktree-sim.sh` can provision the default visionOS worktree simulator or an opt-in iPad simulator.
+- `scripts/` contains simulator, deployment, docs, hygiene, and optional live-probe helpers. `scripts/worktree-sim.sh` can provision the default visionOS worktree simulator or opt-in iPhone/iPad simulators.
 - `.woodpecker/` contains portable CI definitions.

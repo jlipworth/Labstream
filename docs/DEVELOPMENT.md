@@ -5,7 +5,7 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 ## Requirements
 
 - macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
-- The iOS SDK and a compatible iOS/iPadOS Simulator runtime for the `LabstreamMobile` target.
+- The iOS/iPadOS 27 SDK/runtime (or compatible beta platform) for the `LabstreamMobile` target.
 - An Apple Vision Pro simulator runtime compatible with the project deployment target.
 - Swift Package Manager for `PMSKit` tests.
 - `uv` for the repo's Python tooling checks.
@@ -31,13 +31,13 @@ xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 ```
 
-## Build and run on an iPad simulator
+## Build and run on an iPhone simulator
 
-The mobile target is named/schemed `LabstreamMobile` and builds a universal iPhone/iPad app whose displayed product name is still `Labstream`. Opt into an iPad simulator for the current linked worktree with either `LABSTREAM_SIM_PLATFORM=ipad`, `scripts/worktree-sim.sh --platform ipad ...`, or a gitignored `.simplatform` file.
+The mobile target is named/schemed `LabstreamMobile` and builds a universal iPhone/iPad app whose displayed product name is still `Labstream`. Opt into an iPhone simulator for the current linked worktree with either `LABSTREAM_SIM_PLATFORM=iphone`, `scripts/worktree-sim.sh --platform iphone ...`, or a gitignored `.simplatform` file. Use `ipad` instead when you need the iPad variant.
 
 ```sh
-printf 'ipad\n' > .simplatform
-SIMID=$(scripts/worktree-sim.sh id)   # reads .simid-ipad for this worktree
+printf 'iphone\n' > .simplatform
+SIMID=$(scripts/worktree-sim.sh id)   # reads .simid-iphone for this worktree
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 
 scripts/xcodebuild-versioned.sh \
@@ -53,7 +53,14 @@ xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 ```
 
-If Xcode says the iOS platform/runtime is missing, install the matching iOS Simulator runtime in Xcode Settings. A newer beta simulator runtime may not be usable with an older installed iOS SDK.
+For an iPad smoke, switch the worktree platform before resolving `$SIMID`:
+
+```sh
+printf 'ipad\n' > .simplatform
+SIMID=$(scripts/worktree-sim.sh id)   # reads .simid-ipad for this worktree
+```
+
+If Xcode says the iOS platform/runtime is missing or warns that the iOS 27 deployment target is newer than the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer beta simulator runtime may not be usable with an older installed iOS SDK.
 
 Both app targets use `com.jlipworth.Labstream` for the intended unified product identity. Local installs with that bundle identifier can replace an existing install and its app state.
 
