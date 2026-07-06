@@ -56,6 +56,43 @@ struct CollectionExtrasMappingTests {
         #expect(item.thumb == "emby://item/trailer-1/Primary?tag=trailer-poster")
     }
 
+    @Test func mediaBrowserVideoWithTrailerExtraTypeMapsToPlayableTrailerLeaf() throws {
+        let dto = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
+        {
+          "Id": "video-trailer-1",
+          "Name": "Local Trailer",
+          "Type": "Video",
+          "ExtraType": "Trailer",
+          "MediaSources": [{ "Id": "source-1", "Container": "mp4" }]
+        }
+        """#.utf8))
+
+        let item = try #require(dto.toMediaItem())
+        #expect(dto.extraType == "Trailer")
+        #expect(item.type == "trailer")
+        #expect(item.kind == .trailer)
+        #expect(item.isPlayableLeaf)
+    }
+
+    @Test func mediaBrowserVideoWithSpecialFeatureExtraTypeMapsToPlayableExtraLeaf() throws {
+        for extraType in ["Featurette", "DeletedScene", "BehindTheScenes", "Other"] {
+            let dto = try JSONDecoder().decode(EmbyBaseItemDto.self, from: Data("""
+            {
+              "Id": "video-extra-\(extraType)",
+              "Name": "Special Feature",
+              "Type": "Video",
+              "ExtraType": "\(extraType)",
+              "MediaSources": [{ "Id": "source-1", "Container": "mp4" }]
+            }
+            """.utf8))
+
+            let item = try #require(dto.toMediaItem())
+            #expect(item.type == "extra")
+            #expect(item.kind == .extra)
+            #expect(item.isPlayableLeaf)
+        }
+    }
+
     @Test func mediaBrowserFullItemDecodesRelatedMediaAvailabilityHints() throws {
         let dto = try JSONDecoder().decode(JellyfinBaseItemDto.self, from: Data(#"""
         {

@@ -82,6 +82,16 @@ enum BrowseAPI {
                                    identity: identity, ratingKey: ratingKey)
     }
 
+    /// `GET /library/collections/<collectionId>/items` — children of a Plex collection.
+    /// Collection detail must not reuse the TV `/metadata/{id}/children` endpoint.
+    static func collectionItems(server: URL, token: String, identity: ClientIdentity,
+                                collectionId: String) -> PlexRequest {
+        CollectionRequest.plexCollectionItems(server: server,
+                                              token: token,
+                                              identity: identity,
+                                              collectionId: collectionId)
+    }
+
     /// `GET /library/metadata/<ratingKey>` — full metadata for one item.
     ///
     /// Requests chapters, intro/credits markers and extras inline so the detail/player

@@ -111,6 +111,11 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     /// channel art, ~0.667 for a 2:3 movie poster. Surfaced on `MediaItem` so poster cells
     /// size to the real shape instead of force-cropping to 2:3. See GH #101.
     public let primaryImageAspectRatio: Double?
+    /// MediaBrowser marks trailers/special features that otherwise arrive as generic
+    /// `Type: Video` rows with `ExtraType` (for example `Trailer`, `Featurette`, or
+    /// `DeletedScene`). Preserve it so related-media shelves/playback route these as
+    /// secondary media instead of indistinguishable home videos.
+    public let extraType: String?
     /// Related-media capability hints available on full item payloads when requested via
     /// `MediaBrowserLibraryFields.fullItem`.
     public let extraIds: [String]
@@ -182,6 +187,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case indexNumber = "IndexNumber"
         case providerIds = "ProviderIds"
         case primaryImageAspectRatio = "PrimaryImageAspectRatio"
+        case extraType = "ExtraType"
         case extraIds = "ExtraIds"
         case localTrailerCount = "LocalTrailerCount"
         case specialFeatureCount = "SpecialFeatureCount"
@@ -230,6 +236,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         indexNumber = try c.decodeIfPresent(Int.self, forKey: .indexNumber)
         providerIds = try c.decodeIfPresent([String: String].self, forKey: .providerIds) ?? [:]
         primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
+        extraType = try c.decodeIfPresent(String.self, forKey: .extraType)
         extraIds = try c.decodeIfPresent([String].self, forKey: .extraIds) ?? []
         localTrailerCount = try c.decodeIfPresent(Int.self, forKey: .localTrailerCount)
         specialFeatureCount = try c.decodeIfPresent(Int.self, forKey: .specialFeatureCount)
@@ -375,7 +382,7 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case "Series": return "show"
         case "Season": return "season"
         case "Episode": return "episode"
-        case "Video": return "video"
+        case "Video": return mediaItemTypeForVideo
         case "BoxSet": return "collection"
         case "Trailer": return "trailer"
         // Music (#111): map MediaBrowser's music item types onto PMS music kinds so search/browse
@@ -385,6 +392,19 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case "Audio": return "track"
         case "Playlist": return "playlist"
         default: return nil
+        }
+    }
+
+    private var mediaItemTypeForVideo: String {
+        guard let extraType = extraType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !extraType.isEmpty else {
+            return "video"
+        }
+        switch extraType.lowercased() {
+        case "trailer":
+            return "trailer"
+        default:
+            return "extra"
         }
     }
 
