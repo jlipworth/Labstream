@@ -33,7 +33,7 @@ Options:
   --no-install                      Reuse the already installed app.
   -h, --help                        Show this help.
 
-The target simulator defaults to scripts/worktree-sim.sh id (or SIMID if set).
+The target simulator defaults to scripts/worktree-sim.sh --platform visionos id (or SIMID if set).
 Output logs are written under build/probes/plex-range-drop/<timestamp>/.
 USAGE
 }
@@ -117,7 +117,7 @@ if ! is_positive_int "$observe_seconds" || ! is_positive_int "$pause_after_secon
   exit 2
 fi
 
-simid=${SIMID:-$(scripts/worktree-sim.sh id)}
+simid=${SIMID:-$(scripts/worktree-sim.sh --platform visionos id)}
 derived_data=${LABSTREAM_PROBE_DERIVED_DATA:-build/DerivedData/PlexRangeDropProbe}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 out_dir=${LABSTREAM_PROBE_OUTPUT_DIR:-build/probes/plex-range-drop/$timestamp}

@@ -1,6 +1,6 @@
 # Architecture overview
 
-Labstream is a SwiftUI visionOS app with backend-specific service lanes and a pure Swift package, `PMSKit`, for request builders, response models, and policy decisions.
+Labstream is a SwiftUI Apple-platform app with backend-specific service lanes and a pure Swift package, `PMSKit`, for request builders, response models, and policy decisions. The repo contains the `Labstream` visionOS target and the `LabstreamMobile` universal iOS/iPadOS target.
 
 ```mermaid
 flowchart LR
@@ -35,7 +35,7 @@ flowchart LR
 
 | Area | Owner | Responsibility |
 | --- | --- | --- |
-| App lifecycle | `Labstream/App` | Object creation, restore flow, window routing. |
+| App lifecycle | `Labstream/App` | Object creation, restore flow, target-specific app entry points, and window/routing setup. |
 | Session state | `AppModel` | Active backend, selected server/session, browse readiness. |
 | Authentication | `AuthManager` | Sign-in, restore, sign-out, Keychain persistence. |
 | Browsing | Backend services | Plex/Jellyfin/Emby browse APIs mapped to shared app models. |
@@ -44,6 +44,13 @@ flowchart LR
 | Music | `MusicPlayerController` and providers | Music browse, queue, and audio playback. |
 | System surfaces | `SystemEntryRouter` and integration files | App Intents, Spotlight, user activities. |
 | Pure policies | `PMSKit` | Request builders, DTOs, redaction, download/playback policies, tests. |
+
+## Target split
+
+- `Labstream` is the visionOS scheme/target. It owns the immersive spaces and app-owned Cinema surface.
+- `LabstreamMobile` is the universal iOS/iPadOS scheme/target. It shares the source tree and package but starts from `LabstreamMobile.swift`, uses the same product name and bundle identifier, and switches `RootView` into an iPad sidebar or iPhone tab shell.
+- Platform-only code is guarded with `#if os(visionOS)` / `#if os(iOS)` instead of forking backend, playback, download, or diagnostics logic.
+- `PMSKit` declares iOS, visionOS, and macOS support so request builders and policy tests remain platform-neutral.
 
 ## Main runtime flow
 

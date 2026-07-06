@@ -43,9 +43,11 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
+    #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissWindow) private var dismissWindow
+    #endif
 
     let controller: PlaybackController
     let title: String
@@ -121,7 +123,7 @@ struct CustomPlayerChrome: View {
                         } label: {
                             Label(marker.kind.label, systemImage: marker.kind.systemImage)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .labstreamGlassProminentButtonStyle()
                     }
                     .padding(.horizontal, 34)
                     .padding(.bottom, 14)
@@ -224,7 +226,7 @@ struct CustomPlayerChrome: View {
                             .font(.title3.weight(.semibold))
                             .frame(width: 52, height: 52)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .labstreamGlassProminentButtonStyle()
                 }
 
                 Spacer()
@@ -301,7 +303,7 @@ struct CustomPlayerChrome: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
 
@@ -374,6 +376,7 @@ struct CustomPlayerChrome: View {
     }
 
     @ViewBuilder private var cinemaButton: some View {
+        #if os(visionOS)
         // Shipping Cinema uses the custom-player ImmersiveSpace. The separate RealityKit theater
         // prototype has its own feature/session boundary and remains gated until device-ready.
         if !CustomCinemaMode.isUserVisible {
@@ -407,10 +410,14 @@ struct CustomPlayerChrome: View {
             .controlSize(.small)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
         }
+        #else
+        EmptyView()
+        #endif
     }
 
 
     @ViewBuilder private var cinemaScreenButton: some View {
+        #if os(visionOS)
         if CustomCinemaMode.isUserVisible && cinemaSession.presentationState == .open {
             Button {
                 openMenu(.screen)
@@ -426,10 +433,14 @@ struct CustomPlayerChrome: View {
             .accessibilityLabel("Screen position")
             .help("Adjust Cinema screen position")
         }
+        #else
+        EmptyView()
+        #endif
     }
 
 
     @ViewBuilder private var realityTheaterDeveloperButton: some View {
+        #if os(visionOS)
         if allowsRealityTheater
             && (RealityTheaterFeature.isDeviceTestingEntryPointVisible
                 || RealityTheaterFeature.isDeveloperEntryPointEnabled()
@@ -451,6 +462,9 @@ struct CustomPlayerChrome: View {
             .disabled(realityTheaterSession.phase == .opening)
             .help("RealityKit cinema prototype for #12 headset testing")
         }
+        #else
+        EmptyView()
+        #endif
     }
 
 
@@ -515,7 +529,7 @@ struct CustomPlayerChrome: View {
             .buttonStyle(.borderedProminent)
         }
         .padding(18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var scrubberBinding: Binding<Double> {
@@ -598,6 +612,7 @@ struct CustomPlayerChrome: View {
     }
 
     private func toggleCinemaMode() async {
+        #if os(visionOS)
         switch cinemaSession.presentationState {
         case .closed:
             cinemaSession.presentationState = .inTransition
@@ -622,10 +637,12 @@ struct CustomPlayerChrome: View {
         case .inTransition:
             break
         }
+        #endif
     }
 
 
     private func toggleRealityTheaterMode() async {
+        #if os(visionOS)
         switch realityTheaterSession.phase {
         case .inactive, .prepared:
             realityTheaterSession.prepare(title: title,
@@ -646,6 +663,7 @@ struct CustomPlayerChrome: View {
         case .opening:
             break
         }
+        #endif
     }
 
     /// Chapters is a horizontal filmstrip; unlike the small fixed menus it should fill most of the
@@ -815,14 +833,18 @@ private struct CustomPlayerMenuPopover: View {
         }
         .padding(22)
         .frame(width: size.width + 44, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .labstreamOverlayPlatter(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(radius: 24)
     }
 
     @ViewBuilder private var menuContent: some View {
         switch menu {
         case .screen:
+            #if os(visionOS)
             CinemaScreenAdjustmentView(session: cinemaSession)
+            #else
+            EmptyView()
+            #endif
         case .quality:
             QualityTabView(state: menuState) { kbps in
                 controller.reload(bitrateKbps: kbps)
@@ -869,6 +891,7 @@ private struct CustomPlayerMenuPopover: View {
 }
 
 
+#if os(visionOS)
 private struct CinemaScreenAdjustmentView: View {
     let session: CustomCinemaSessionStore
 
@@ -1015,6 +1038,8 @@ private struct CinemaScreenAdjustmentView: View {
     }
 }
 
+#endif
+
 struct CustomTransportStatusOverlay: View {
     let status: PlaybackTransportStatus
     let onRetry: () -> Void
@@ -1104,7 +1129,7 @@ struct CustomTransportStatusOverlay: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 22)
         .frame(width: 340)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(radius: 18)
     }
 

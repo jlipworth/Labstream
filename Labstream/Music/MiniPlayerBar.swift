@@ -13,8 +13,13 @@ struct MiniPlayerBar: View {
     /// queue button's behavior); reset on dismiss so a plain tap opens at the top.
     @State private var scrollToQueue = false
 
-    /// Artwork size inside the ~64-pt bar.
+    /// Artwork size inside the bar (64-pt visionOS ornament; the iOS 26 tab-view
+    /// bottom accessory is shorter, so its art is smaller).
+    #if os(visionOS)
     private let artSize: CGFloat = 44
+    #else
+    private let artSize: CGFloat = 34
+    #endif
 
     var body: some View {
         // The sheet must hang off a node that stays in the hierarchy while the bar
@@ -26,6 +31,14 @@ struct MiniPlayerBar: View {
             }
         }
         .sheet(isPresented: $presentNowPlaying, onDismiss: { scrollToQueue = false }) {
+            #if os(iOS)
+            // Mobile: standard resizable sheet with system drag-to-dismiss. The fixed
+            // 620×700 platter and explicit close/stop overlays below are visionOS
+            // affordances (its sheets have no system dismiss control); stop stays on
+            // the bar's ✕ here.
+            NowPlayingView(scrollToQueue: scrollToQueue)
+                .presentationDragIndicator(.visible)
+            #else
             NowPlayingView(scrollToQueue: scrollToQueue)
                 // Fixed content size + .fitted: the default sheet (and .form —
                 // live-tested, no effect on visionOS) tracks the wide window and
@@ -68,10 +81,42 @@ struct MiniPlayerBar: View {
                     .accessibilityLabel("Stop music")
                 }
                 .presentationSizing(.fitted)
+            #endif
         }
     }
 
+    @ViewBuilder
     private func bar(for current: MediaItem) -> some View {
+        #if os(visionOS)
+        barContent(for: current)
+            .padding(.horizontal, DS.Space.lg)
+            .frame(height: 64)
+            .frame(maxWidth: 560)
+            // Passive progress hairline along the bottom edge — explicitly NOT a
+            // scrub target (a 3-pt drag violates the 60-pt rule; scrubbing lives in
+            // the sheet — MUSIC-DESIGN §4.1). Inset past the glass corner radius so
+            // it never pokes outside the platter shape.
+            .overlay(alignment: .bottom) { progressHairline }
+            // Ornament content gets its platter look from glassBackgroundEffect —
+            // material backgrounds render flat and z-fight the window edge here.
+            .labstreamGlassBackground(in: RoundedRectangle(cornerRadius: DS.Radius.card,
+                                                           style: .continuous))
+            // Whole bar opens Now Playing; the explicit Buttons above still win the tap.
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            .onTapGesture { presentNowPlaying = true }
+            .hoverEffect(.highlight)
+        #else
+        // Inside the iOS 26 tab-view bottom accessory: the system supplies the Liquid
+        // Glass capsule, so the bar renders bare content — no platter of its own.
+        barContent(for: current)
+            .padding(.horizontal, DS.Space.md)
+            .overlay(alignment: .bottom) { progressHairline }
+            .contentShape(Rectangle())
+            .onTapGesture { presentNowPlaying = true }
+        #endif
+    }
+
+    private func barContent(for current: MediaItem) -> some View {
         HStack(spacing: DS.Space.md) {
                 PosterImage(path: current.musicArtPath,
                             width: artSize, height: artSize,
@@ -92,6 +137,10 @@ struct MiniPlayerBar: View {
 
                 Spacer(minLength: DS.Space.lg)
 
+                // The compact iOS accessory keeps only play/pause · next · stop
+                // (Apple Music accessory density); previous and the queue shortcut
+                // live in the Now Playing sheet there.
+                #if os(visionOS)
                 Button {
                     player.previous()
                 } label: {
@@ -99,6 +148,7 @@ struct MiniPlayerBar: View {
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
+                #endif
 
                 Button {
                     player.togglePlayPause()
@@ -117,6 +167,7 @@ struct MiniPlayerBar: View {
                 .buttonStyle(.plain)
 
                 // Queue shortcut: same sheet as a bar tap, pre-scrolled to Up Next.
+                #if os(visionOS)
                 Button {
                     scrollToQueue = true
                     presentNowPlaying = true
@@ -126,6 +177,7 @@ struct MiniPlayerBar: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Queue")
+                #endif
 
                 // "Turn the music off": full teardown — clears the queue, so the bar
                 // (current == nil) removes itself.
@@ -140,22 +192,6 @@ struct MiniPlayerBar: View {
                 .padding(.leading, DS.Space.sm)
                 .accessibilityLabel("Stop music")
             }
-            .padding(.horizontal, DS.Space.lg)
-            .frame(height: 64)
-            .frame(maxWidth: 560)
-            // Passive progress hairline along the bottom edge — explicitly NOT a
-            // scrub target (a 3-pt drag violates the 60-pt rule; scrubbing lives in
-            // the sheet — MUSIC-DESIGN §4.1). Inset past the glass corner radius so
-            // it never pokes outside the platter shape.
-            .overlay(alignment: .bottom) { progressHairline }
-            // Ornament content gets its platter look from glassBackgroundEffect —
-            // material backgrounds render flat and z-fight the window edge here.
-            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: DS.Radius.card,
-                                                        style: .continuous))
-            // Whole bar opens Now Playing; the explicit Buttons above still win the tap.
-            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .onTapGesture { presentNowPlaying = true }
-            .hoverEffect(.highlight)
     }
 
     /// 3-pt elapsed-time sliver pinned to the bar's bottom edge. Purely decorative:

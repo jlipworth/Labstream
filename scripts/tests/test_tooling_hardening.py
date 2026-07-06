@@ -149,6 +149,78 @@ class ToolingHardeningTests(unittest.TestCase):
                 generated_name = clone_name.read_text().strip()
                 self.assertRegex(generated_name, r"^vpwt-feature-collision-[0-9a-f]{8}$")
 
+
+    def test_worktree_sim_ipad_platform_creates_ipad_sim_without_golden_clone(self):
+        with self.make_repo() as root:
+            self.copy_script(root, "worktree-sim.sh")
+            (root / ".simid").write_text("GOLDEN-0000-0000-0000-000000000000\n")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
+            self.commit_all(root)
+            with tempfile.TemporaryDirectory(prefix=f"{root.name}-linked-", dir=root.parent) as linked_tmp:
+                linked = Path(linked_tmp)
+                subprocess.run(["git", "worktree", "add", "-q", "-b", "feature/ipad", str(linked)], cwd=root, check=True)
+                (linked / ".simplatform").write_text("ipad\n")
+                # The fake repo's golden .simid is committed for fixture simplicity, but the real
+                # repo git-ignores simulator ids. Match production behavior so the iPad platform
+                # proves it writes only .simid-ipad and does not clone the visionOS golden.
+                (linked / ".simid").unlink(missing_ok=True)
+
+                state = root / "xcrun-state"
+                create_args = root / "xcrun-create-args"
+                fakebin = root / "fakebin"
+                fakebin.mkdir()
+                (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    state={state}
+                    create_args={create_args}
+                    if [ "$1 $2 $3" = "simctl list devices" ] && [ "${{4:-}}" = "-j" ]; then
+                      if [ -f "$state" ]; then
+                        extra=',{{"name":"ipadwt-feature-ipad-created","udid":"IPAD-0000-0000-0000-000000000000","state":"Shutdown"}}'
+                      else
+                        extra=''
+                      fi
+                      printf '{{"devices":{{"com.apple.CoreSimulator.SimRuntime.iOS-27-0":[{{"name":"iPad Pro 13-inch (M5)","udid":"STOCK-IPAD-0000-0000-000000000000","state":"Shutdown"}}%s],"com.apple.CoreSimulator.SimRuntime.xrOS-26-5":[{{"name":"Golden","udid":"GOLDEN-0000-0000-0000-000000000000","state":"Shutdown"}}]}}}}\n' "$extra"
+                      exit 0
+                    fi
+                    if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${{4:-}}" = "-j" ]; then
+                      printf '{{"runtimes":[{{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","version":"27.0","isAvailable":true}}]}}\n'
+                      exit 0
+                    fi
+                    if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${{4:-}}" = "-j" ]; then
+                      printf '{{"devicetypes":[{{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB","name":"iPad Pro 13-inch (M5)","isAvailable":true}}]}}\n'
+                      exit 0
+                    fi
+                    if [ "$1 $2" = "simctl create" ]; then
+                      printf '%s\n' "$@" > "$create_args"
+                      printf '%s\n' created > "$state"
+                      printf '%s\n' "IPAD-0000-0000-0000-000000000000"
+                      exit 0
+                    fi
+                    if [ "$1 $2" = "simctl clone" ]; then
+                      echo "unexpected golden clone for iPad platform" >&2
+                      exit 2
+                    fi
+                    if [ "$1 $2" = "simctl shutdown" ] || [ "$1 $2" = "simctl boot" ]; then
+                      exit 0
+                    fi
+                    echo "unexpected xcrun $*" >&2
+                    exit 2
+                    """))
+                (fakebin / "xcrun").chmod(0o755)
+                env = os.environ.copy()
+                env["PATH"] = f"{fakebin}:{env['PATH']}"
+
+                result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=linked, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                self.assertEqual(result.stdout.strip(), "IPAD-0000-0000-0000-000000000000")
+                self.assertEqual((linked / ".simid-ipad").read_text().strip(), "IPAD-0000-0000-0000-000000000000")
+                self.assertFalse((linked / ".simid").exists())
+                args = create_args.read_text()
+                self.assertIn("simctl\ncreate", args)
+                self.assertIn("ipadwt-feature-ipad-", args)
+                self.assertIn("com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB", args)
+                self.assertIn("com.apple.CoreSimulator.SimRuntime.iOS-27-0", args)
+
     def test_deploy_masks_device_and_team_ids_by_default(self):
         device = "12345678-1234-1234-1234-123456789ABC"
         team = "TEAMID1234"

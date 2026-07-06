@@ -6,8 +6,8 @@ public enum PlexHeaders {
             "X-Plex-Client-Identifier": identity.clientIdentifier,
             "X-Plex-Product": identity.product,
             "X-Plex-Version": identity.version,
-            "X-Plex-Platform": "visionOS",
-            "X-Plex-Device": "Apple Vision Pro",
+            "X-Plex-Platform": identity.platform,
+            "X-Plex-Device": identity.device,
             "X-Plex-Device-Name": identity.deviceName,
             "Accept": "application/json",
         ]

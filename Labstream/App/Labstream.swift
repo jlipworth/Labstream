@@ -1,3 +1,4 @@
+#if os(visionOS)
 import Foundation
 import PMSKit
 import SwiftUI
@@ -35,12 +36,7 @@ struct Labstream: App {
         // Build a stable identity from the persisted client identifier. Version comes from the
         // bundle (#26) so the X-Plex-Version header can't silently drift from the marketing version.
         let keychain = KeychainStore()
-        let identity = ClientIdentity(
-            clientIdentifier: keychain.clientIdentifier(),
-            product: "Labstream",
-            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
-            deviceName: "Apple Vision Pro"
-        )
+        let identity = PlatformClientIdentity.make(clientIdentifier: keychain.clientIdentifier())
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         _appModel = State(initialValue: model)
         _authManager = State(initialValue: AuthManager(appModel: model, keychain: keychain))
@@ -110,3 +106,5 @@ struct Labstream: App {
         downloadManager.noteAppScenePhase(label)
     }
 }
+
+#endif

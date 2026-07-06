@@ -115,8 +115,8 @@ public enum TimelineRequest {
             .init(name: "X-Plex-Client-Identifier", value: identity.clientIdentifier),
             .init(name: "X-Plex-Product", value: identity.product),
             .init(name: "X-Plex-Version", value: identity.version),
-            .init(name: "X-Plex-Platform", value: "visionOS"),
-            .init(name: "X-Plex-Device", value: "Apple Vision Pro"),
+            .init(name: "X-Plex-Platform", value: identity.platform),
+            .init(name: "X-Plex-Device", value: identity.device),
             .init(name: "X-Plex-Device-Name", value: identity.deviceName),
         ]
     }
