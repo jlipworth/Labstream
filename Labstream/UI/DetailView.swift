@@ -686,7 +686,9 @@ struct DetailView: View {
                 .padding(.vertical, DS.Space.xs)
         }
         .buttonStyle(.bordered)
-        .disabled(isResolvingPlayback || !metadataReadyForActions || detailed.sharePlayActivityPayload == nil)
+        .disabled(isResolvingPlayback
+                  || !metadataReadyForActions
+                  || detailed.sharePlayMediaIdentity?.coordinatorIdentifier == nil)
     }
 
     @ViewBuilder
