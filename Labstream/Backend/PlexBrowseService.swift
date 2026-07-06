@@ -88,17 +88,6 @@ struct PlexBrowseService {
         return response.mediaContainer.metadata
     }
 
-    /// Children of a Plex collection via `/library/collections/<id>/items`. Collection detail
-    /// must not reuse the TV `/metadata/{id}/children` endpoint (see `BrowseAPI.collectionItems`).
-    func collectionItems(collectionId: String) async throws -> [MediaItem] {
-        let request = BrowseAPI.collectionItems(server: session.baseURL,
-                                                token: session.token,
-                                                identity: identity,
-                                                collectionId: collectionId)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata
-    }
-
     func libraries() async throws -> [PlexSection] {
         let request = BrowseAPI.sections(server: session.baseURL,
                                          token: session.token,

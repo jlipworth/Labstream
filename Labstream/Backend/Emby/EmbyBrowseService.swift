@@ -88,10 +88,6 @@ struct EmbyBrowseService {
 
     /// Children of a backend BoxSet/collection. Uses the generic Items + ParentId read
     /// path, not MediaBrowser collection-management endpoints.
-    func collectionItems(collectionId: String) async throws -> [MediaItem] {
-        try await collectionItemsPage(collectionId: collectionId).items
-    }
-
     func collectionItemsPage(collectionId: String,
                              startIndex: Int? = nil,
                              limit: Int? = nil) async throws -> (items: [MediaItem], total: Int?) {

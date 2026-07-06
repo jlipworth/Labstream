@@ -53,8 +53,8 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
                       limit: Int? = nil,
                       searchTerm: String? = nil,
                       nameStartsWith: String? = nil,
-                      sortBy: String = "SortName",
-                      sortOrder: String = "Ascending",
+                      sortBy: String? = "SortName",
+                      sortOrder: String? = "Ascending",
                       includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                       fields: String = MediaBrowserLibraryFields.fullItem,
                       albumArtistIds: String? = nil,
@@ -92,8 +92,10 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
         if !filters.isEmpty {
             query.append(dialect.queryItem(.filters, value: filters.joined(separator: ",")))
         }
-        replaceQueryItem(.sortBy, with: sortBy, in: &query)
-        replaceQueryItem(.sortOrder, with: sortOrder, in: &query)
+        // A `nil` sort strips the seeded default entirely so the server's own ordering wins
+        // (a BoxSet's curated child order has no SortBy equivalent).
+        setOrRemoveQueryItem(.sortBy, value: sortBy, in: &query)
+        setOrRemoveQueryItem(.sortOrder, value: sortOrder, in: &query)
 
         return MediaBrowserLibraryRequestShape(
             path: dialect.path(.items(userId: userId)),
@@ -325,5 +327,18 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
         let wireName = dialect.queryName(name)
         query.removeAll { $0.name == wireName }
         query.append(URLQueryItem(name: wireName, value: value))
+    }
+
+    /// Replace the query item when `value` is non-nil, or remove it entirely when `value` is
+    /// nil (used to drop a seeded default so the server's own ordering applies).
+    private func setOrRemoveQueryItem(_ name: MediaBrowserLibraryQueryName,
+                                      value: String?,
+                                      in query: inout [URLQueryItem]) {
+        if let value {
+            replaceQueryItem(name, with: value, in: &query)
+        } else {
+            let wireName = dialect.queryName(name)
+            query.removeAll { $0.name == wireName }
+        }
     }
 }

@@ -15,6 +15,10 @@ public enum MediaBrowserLibraryGridPolicy {
             return "Series"
         case "homevideos", "livetv":
             return "Video"
+        case "boxsets":
+            // Collections view: the grid lists the box sets themselves; children load via
+            // the collection detail read path (generic Items + ParentId).
+            return "BoxSet"
         default:
             return "Movie,Series,Season,Episode,Video"
         }
@@ -45,6 +49,11 @@ public enum MediaBrowserLibraryGridPolicy {
             // Emby can report a Movies view with zero direct Movie children while recursive lookup
             // returns the real contents (GH #99). Jellyfin tolerates the same shape, so keep both
             // MediaBrowser backends aligned for flat movie libraries.
+            return true
+        case "boxsets":
+            // Same flat-view shape as movies: the IncludeItemTypes=BoxSet filter keeps a
+            // recursive query scoped to box sets, and box sets don't nest, so recursive is
+            // safe and tolerates servers whose view root has no direct children.
             return true
         default:
             // TV libraries intentionally show Series at the root; folder-like/collection roots keep

@@ -21,17 +21,15 @@ public enum CollectionRequest {
 
     /// `GET /library/collections/{collectionId}/items` — list children in a Plex
     /// collection. This is a read endpoint, distinct from MediaBrowser-family collection
-    /// management paths.
+    /// management paths. No sort/extra payload params: the grid only needs poster rows,
+    /// and the server's curated collection order must be preserved.
     public static func plexCollectionItems(server: URL,
                                            token: String,
                                            identity: ClientIdentity,
                                            collectionId: String,
                                            containerStart: Int? = nil,
                                            containerSize: Int? = nil) -> PlexRequest {
-        var queryItems: [URLQueryItem] = [
-            .init(name: "includeChapters", value: "1"),
-            .init(name: "includeMarkers", value: "1"),
-        ]
+        var queryItems: [URLQueryItem] = []
         appendPlexPaging(start: containerStart, size: containerSize, to: &queryItems)
         return PlexRequest(url: server.appendingPathComponent("/library/collections/\(collectionId)/items"),
                            method: "GET",
