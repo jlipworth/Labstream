@@ -58,6 +58,98 @@ public enum EmbyLibrary {
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
+    /// `GET /Users/{UserId}/Items?IncludeItemTypes=BoxSet` — list backend-defined
+    /// collections/box sets.
+    public static func collectionsRequest(server: URL,
+                                          token: String,
+                                          identity: EmbyClientIdentity,
+                                          userId: String,
+                                          parentId: String? = nil,
+                                          startIndex: Int? = nil,
+                                          limit: Int? = nil,
+                                          fields: String = gridItemFields) throws -> URLRequest {
+        try itemsRequest(server: server,
+                         token: token,
+                         identity: identity,
+                         userId: userId,
+                         parentId: parentId,
+                         recursive: true,
+                         startIndex: startIndex,
+                         limit: limit,
+                         sortBy: "SortName",
+                         sortOrder: "Ascending",
+                         includeItemTypes: "BoxSet",
+                         fields: fields)
+    }
+
+    /// `GET /Users/{UserId}/Items?ParentId={boxSetId}` — read BoxSet children through
+    /// the generic items endpoint. Do not use `/Collections/{id}/Items`, which is a
+    /// collection management endpoint in MediaBrowser-family APIs.
+    public static func collectionItemsRequest(server: URL,
+                                              token: String,
+                                              identity: EmbyClientIdentity,
+                                              userId: String,
+                                              collectionId: String,
+                                              startIndex: Int? = nil,
+                                              limit: Int? = nil,
+                                              fields: String = fullItemFields) throws -> URLRequest {
+        try itemsRequest(server: server,
+                         token: token,
+                         identity: identity,
+                         userId: userId,
+                         parentId: collectionId,
+                         recursive: false,
+                         startIndex: startIndex,
+                         limit: limit,
+                         sortBy: "SortName",
+                         sortOrder: "Ascending",
+                         includeItemTypes: "Movie,Series,Season,Episode,Video,Trailer",
+                         fields: fields)
+    }
+
+    /// `GET /Users/{UserId}/Items/{Id}/LocalTrailers` — playable local trailers.
+    public static func localTrailersRequest(server: URL,
+                                            token: String,
+                                            identity: EmbyClientIdentity,
+                                            userId: String,
+                                            itemId: String) throws -> URLRequest {
+        try relatedItemsRequest(server: server,
+                                token: token,
+                                identity: identity,
+                                userId: userId,
+                                itemId: itemId,
+                                relationPath: "LocalTrailers")
+    }
+
+    /// `GET /Users/{UserId}/Items/{Id}/SpecialFeatures` — playable special features.
+    public static func specialFeaturesRequest(server: URL,
+                                              token: String,
+                                              identity: EmbyClientIdentity,
+                                              userId: String,
+                                              itemId: String) throws -> URLRequest {
+        try relatedItemsRequest(server: server,
+                                token: token,
+                                identity: identity,
+                                userId: userId,
+                                itemId: itemId,
+                                relationPath: "SpecialFeatures")
+    }
+
+    /// `GET /Users/{UserId}/Items/{Id}/Intros` — optional read-only intro candidates.
+    /// App playback must remain setting-gated; this helper only fetches candidates.
+    public static func introsRequest(server: URL,
+                                     token: String,
+                                     identity: EmbyClientIdentity,
+                                     userId: String,
+                                     itemId: String) throws -> URLRequest {
+        try relatedItemsRequest(server: server,
+                                token: token,
+                                identity: identity,
+                                userId: userId,
+                                itemId: itemId,
+                                relationPath: "Intros")
+    }
+
     /// Album artists for a music library (#111) — see the Jellyfin twin for why this uses
     /// `/Artists/AlbumArtists` rather than a `MusicArtist` items browse.
     public static func albumArtistsRequest(server: URL,
@@ -454,6 +546,23 @@ public enum EmbyLibrary {
         var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
         req.httpMethod = "GET"
         return req
+    }
+
+    private static func relatedItemsRequest(server: URL,
+                                            token: String,
+                                            identity: EmbyClientIdentity,
+                                            userId: String,
+                                            itemId: String,
+                                            relationPath: String) throws -> URLRequest {
+        let dialect = requestFactory.dialect
+        let url = try url(server: server,
+                          path: "/Users/\(userId)/Items/\(itemId)/\(relationPath)",
+                          queryItems: [
+                              dialect.queryItem(.fields, value: fullItemFields),
+                              dialect.queryItem(.enableUserData, value: "true"),
+                              dialect.queryItem(.enableImages, value: "true"),
+                          ])
+        return get(url: url, token: token, identity: identity, userId: userId)
     }
 
     public static let gridItemFields = MediaBrowserLibraryFields.gridItem

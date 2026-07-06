@@ -149,6 +149,8 @@ private enum MediaTypeBucket: String, Hashable, CaseIterable {
     case seasons
     case episodes
     case videos
+    case collections
+    case trailersAndExtras
     case artists
     case albums
     case songs
@@ -156,7 +158,7 @@ private enum MediaTypeBucket: String, Hashable, CaseIterable {
     case other
 
     static let displayOrder: [MediaTypeBucket] = [
-        .movies, .shows, .seasons, .episodes, .videos,
+        .movies, .shows, .seasons, .episodes, .videos, .collections, .trailersAndExtras,
         .artists, .albums, .songs, .playlists, .other,
     ]
 
@@ -170,6 +172,8 @@ private enum MediaTypeBucket: String, Hashable, CaseIterable {
         case .album: self = .albums
         case .track: self = .songs
         case .playlist: self = .playlists
+        case .collection: self = .collections
+        case .trailer, .extra: self = .trailersAndExtras
         case .other(let raw) where raw == "video": self = .videos
         case .other: self = .other
         }
@@ -182,6 +186,8 @@ private enum MediaTypeBucket: String, Hashable, CaseIterable {
         case .seasons: return "Seasons"
         case .episodes: return "Episodes"
         case .videos: return "Videos"
+        case .collections: return "Collections"
+        case .trailersAndExtras: return "Trailers & Extras"
         case .artists: return "Artists"
         case .albums: return "Albums"
         case .songs: return "Songs"
@@ -197,6 +203,8 @@ private enum MediaTypeBucket: String, Hashable, CaseIterable {
         case .seasons: return "season"
         case .episodes: return "episode"
         case .videos: return "video"
+        case .collections: return "collection"
+        case .trailersAndExtras: return "extra"
         case .artists: return "artist"
         case .albums: return "album"
         case .songs: return "track"

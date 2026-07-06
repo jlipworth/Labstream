@@ -111,6 +111,12 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
     /// channel art, ~0.667 for a 2:3 movie poster. Surfaced on `MediaItem` so poster cells
     /// size to the real shape instead of force-cropping to 2:3. See GH #101.
     public let primaryImageAspectRatio: Double?
+    /// Related-media capability hints available on full item payloads when requested via
+    /// `MediaBrowserLibraryFields.fullItem`.
+    public let extraIds: [String]
+    public let localTrailerCount: Int?
+    public let specialFeatureCount: Int?
+    public let remoteTrailers: [MediaRemoteTrailer]
 
     // MARK: - Parent/series image tags (artwork fallback — see #86)
     //
@@ -176,6 +182,10 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case indexNumber = "IndexNumber"
         case providerIds = "ProviderIds"
         case primaryImageAspectRatio = "PrimaryImageAspectRatio"
+        case extraIds = "ExtraIds"
+        case localTrailerCount = "LocalTrailerCount"
+        case specialFeatureCount = "SpecialFeatureCount"
+        case remoteTrailers = "RemoteTrailers"
         case seriesPrimaryImageTag = "SeriesPrimaryImageTag"
         case parentThumbItemId = "ParentThumbItemId"
         case parentThumbImageTag = "ParentThumbImageTag"
@@ -220,6 +230,10 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         indexNumber = try c.decodeIfPresent(Int.self, forKey: .indexNumber)
         providerIds = try c.decodeIfPresent([String: String].self, forKey: .providerIds) ?? [:]
         primaryImageAspectRatio = try c.decodeIfPresent(Double.self, forKey: .primaryImageAspectRatio)
+        extraIds = try c.decodeIfPresent([String].self, forKey: .extraIds) ?? []
+        localTrailerCount = try c.decodeIfPresent(Int.self, forKey: .localTrailerCount)
+        specialFeatureCount = try c.decodeIfPresent(Int.self, forKey: .specialFeatureCount)
+        remoteTrailers = try c.decodeIfPresent([MediaRemoteTrailer].self, forKey: .remoteTrailers) ?? []
         seriesPrimaryImageTag = try c.decodeIfPresent(String.self, forKey: .seriesPrimaryImageTag)
         parentThumbItemId = try c.decodeIfPresent(String.self, forKey: .parentThumbItemId)
         parentThumbImageTag = try c.decodeIfPresent(String.self, forKey: .parentThumbImageTag)
@@ -320,7 +334,8 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             // subtitle on the Playlists list (#111).
             leafCount: childCount,
             primaryImageAspectRatio: primaryImageAspectRatio,
-            providerIds: providerIds.isEmpty ? nil : providerIds)
+            providerIds: providerIds.isEmpty ? nil : providerIds,
+            relatedAvailability: relatedAvailability)
     }
 
     /// Album-poster fallback for a track (#111): `AlbumPrimaryImageTag` minted against `AlbumId`.
@@ -361,6 +376,8 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case "Season": return "season"
         case "Episode": return "episode"
         case "Video": return "video"
+        case "BoxSet": return "collection"
+        case "Trailer": return "trailer"
         // Music (#111): map MediaBrowser's music item types onto PMS music kinds so search/browse
         // can facet and route them (artist/album → music nav, track → music playback).
         case "MusicArtist", "AlbumArtist": return "artist"
@@ -369,6 +386,14 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         case "Playlist": return "playlist"
         default: return nil
         }
+    }
+
+    private var relatedAvailability: MediaRelatedAvailability? {
+        let availability = MediaRelatedAvailability(extraIds: extraIds,
+                                                    localTrailerCount: localTrailerCount,
+                                                    specialFeatureCount: specialFeatureCount,
+                                                    remoteTrailers: remoteTrailers)
+        return availability.hasAnyRelatedMedia ? availability : nil
     }
 
     private var shouldExposeCommunityRating: Bool {

@@ -19,6 +19,9 @@ extension MediaItem {
         case album
         case track
         case playlist
+        case collection
+        case trailer
+        case extra
         case other(String)
 
         init(rawValue: String) {
@@ -31,6 +34,9 @@ extension MediaItem {
             case "album": self = .album
             case "track": self = .track
             case "playlist": self = .playlist
+            case "collection": self = .collection
+            case "trailer": self = .trailer
+            case "extra", "specialFeature": self = .extra
             default: self = .other(rawValue)
             }
         }
@@ -50,17 +56,21 @@ extension MediaItem {
     /// drilled into before anything can be transcoded.
     public var isPlayableLeaf: Bool {
         switch kind {
-        case .show, .season: return false
+        case .show, .season, .collection: return false
         // Music containers: an artist/album/playlist owns no Part; drill to tracks.
         case .artist, .album, .playlist: return false
-        case .movie, .episode, .track: return true
+        case .movie, .episode, .track, .trailer, .extra: return true
         case .other: return true // be permissive for clip/etc; they carry Parts.
         }
     }
 
     /// True when this item is a container whose children must be loaded before playback
     /// (a show → seasons, a season → episodes).
-    public var isContainer: Bool { kind == .show || kind == .season }
+    public var isContainer: Bool { kind == .show || kind == .season || kind == .collection }
+
+    /// True for backend-defined collection/box-set rows. Collection children must be
+    /// fetched through backend-native collection child/read endpoints before playback.
+    public var isCollection: Bool { kind == .collection }
 
     /// True for music containers (an `artist` → albums, an `album` → tracks). Music
     /// navigation routes these to dedicated music views; `isContainer`'s routing in
