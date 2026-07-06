@@ -50,6 +50,51 @@ stateDiagram-v2
   Complete --> [*]
 ```
 
+## Background ("off-head") downloads on visionOS
+
+Downloading with the headset off is fundamentally constrained by the platform, not by the
+server or the app:
+
+- **The device sleeps within seconds of coming off.** Only true background
+  `URLSessionDownloadTask`s owned by the system daemon (`nsurlsessiond`) keep transferring;
+  all app-side work (server-prep polling, keepalives, timers) is frozen.
+- **Background transfers are deprioritized.** visionOS gives real-time Wi-Fi features priority
+  over background bulk transfers, so off-head throughput can be several times slower than the
+  same download with the app active.
+- **Background app wake-ups are rate-limited.** Each time the system relaunches the app for a
+  background-session event, it doubles the delay before the next task may start. Any design
+  that needs an app wake-up per chunk therefore stalls after a handful of chunks regardless of
+  chunk size.
+- **Transfers started while backgrounded are treated as discretionary** — the system schedules
+  them at its own pace regardless of configuration.
+
+Labstream's static byte-range lane is shaped around these limits:
+
+- **Active app**: bounded 64 MB `Range` chunks, each appended to the durable partial — frequent
+  real checkpoints, safe against force-quit.
+- **Going off-head** (scene inactive/background): the next segment is **one open-ended
+  remainder request** (`bytes=offset-`) so the daemon can finish the whole file without waking
+  the app per chunk. Its in-flight bytes are non-durable until completion, so:
+  - **Pause** cancels by producing URLSession *resume data*, preserving the transferred bytes;
+    Resume continues from them.
+  - **Transient failures** (a brief network blip) re-resume from the resume data the system
+    hands back, budget-bounded — a five-second blip does not restart a multi-GB transfer. The
+    system daemon also rides out short connectivity losses on its own.
+  - Every completed body is still validated against the durable partial's offset and the pinned
+    HTTP validator before it is appended, so a strangely-resumed transfer degrades to a wasted
+    fetch, never a corrupt file.
+- **Returning to the foreground**: a remainder that has only just started demotes back to
+  bounded checkpoint chunks; one with substantial progress keeps running rather than discard
+  its bytes.
+
+User-facing expectations worth setting (the "downloads disclaimer"):
+
+- Very large off-head downloads are best-effort on this platform. Keeping the device on power
+  helps; briefly putting the headset back on (foregrounding the app) resets the system's
+  background rate limiter and lets the app fold finished work into durable checkpoints.
+- Server-rendered routes (optimize/convert) need the app awake for their *preparation* phase;
+  only the byte transfer itself survives off-head.
+
 ## Module ownership
 
 | Component | Owns |

@@ -31,6 +31,24 @@ public enum DownloadRetryPreparationPolicy {
         status == .paused && supportsPersistedResumeData && hasResumeData
     }
 
+    /// Which transfer lane a persisted URLSession resume blob must be resumed on. Range-checkpoint
+    /// rows (static byte-range, and the static half of server-prep) accumulate a Range segment's
+    /// body in the blob's task; registering that task in the opaque lane would move its
+    /// partial-body temp as a whole file at completion and corrupt the download.
+    public enum PersistedResumeLane: Sendable, Equatable {
+        case rangeCheckpoint
+        case opaque
+    }
+
+    public static func persistedResumeDataLane(resumeMode: DownloadResumeMode?) -> PersistedResumeLane {
+        switch resumeMode {
+        case .staticByteRange, .serverPrepThenStatic:
+            return .rangeCheckpoint
+        case .liveForwardOnly, nil:
+            return .opaque
+        }
+    }
+
     public static func shouldResumePausedPlexServerPrep(status: DownloadStatus,
                                                         resumeMode: DownloadResumeMode?,
                                                         isJellyfinRecord: Bool,
