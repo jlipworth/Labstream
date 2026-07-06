@@ -4,15 +4,16 @@ import PMSKit
 import UIKit
 #endif
 
+// @MainActor because `deviceName` reads `UIDevice.current` on iOS. Every caller is a
+// SwiftUI App/View init (already main-actor); the annotation makes an off-main caller a
+// compile error instead of the runtime crash `MainActor.assumeIsolated` would have been.
 @MainActor
 enum PlatformClientIdentity {
     static var deviceName: String {
         #if os(visionOS)
         "Apple Vision Pro"
         #elseif os(iOS)
-        MainActor.assumeIsolated {
-            UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
-        }
+        UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         #else
         "Apple Device"
         #endif
