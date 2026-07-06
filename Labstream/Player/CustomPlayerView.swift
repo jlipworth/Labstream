@@ -302,10 +302,10 @@ struct CustomPlayerView: View {
     #if os(visionOS)
     @MainActor
     private func attachWatchTogetherCoordinatorWhenReady(for playback: PlaybackController) async {
-        for _ in 0..<100 {
+        for _ in 0..<300 {
             guard !Task.isCancelled else { return }
-            guard controller === playback, watchTogetherCoordinator.hasActiveSession else { return }
-            if playback.player.currentItem != nil {
+            guard controller === playback else { return }
+            if playback.player.currentItem != nil, watchTogetherCoordinator.hasActiveSession {
                 _ = watchTogetherCoordinator.attachPlaybackCoordinatorIfReady(player: playback.player,
                                                                               item: item)
                 return
