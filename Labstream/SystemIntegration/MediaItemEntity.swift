@@ -36,14 +36,6 @@ struct MediaItemEntity: AppEntity {
         }
     }
 
-    init(item: MediaItem) {
-        self.id = item.ratingKey
-        let fields = Self.displayFields(for: item)
-        self.type = fields.type
-        self.title = fields.title
-        self.subtitle = fields.subtitle
-    }
-
     init(item: MediaItem, backend: MediaBackendKind, server: URL) {
         self.id = MediaSearchIdentifier.make(ratingKey: item.ratingKey,
                                              server: server,
