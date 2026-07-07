@@ -465,6 +465,7 @@ private struct MusicTrackRail: View {
 /// provider-backed `PlaylistDetailView` via `musicDestination`.
 struct MusicPlaylistsPivot: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var playlists: [MediaItem] = []
     @State private var loadState: BrowseLoadState = .idle
@@ -488,7 +489,7 @@ struct MusicPlaylistsPivot: View {
                         .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
                     playlistList
-                        .padding(.horizontal, DS.Space.xxl)
+                        .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxl)
                         .padding(.vertical, DS.Space.xl)
                 }
             }

@@ -101,6 +101,11 @@ struct MusicPagedGrid: View {
                 }
             }
             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+            // On compact the 16-pt page padding leaves the last column under the
+            // A-Z rail's capsule (34-pt rail + 10-pt inset), which intercepts taps —
+            // reserve the rail's width instead of overlapping (same fix as the
+            // video LibraryGridView).
+            .padding(.trailing, compactWidth && paging.alphabetBuckets.count > 1 ? 34 : 0)
         }
         .padding(.vertical, DS.Space.xl)
     }
