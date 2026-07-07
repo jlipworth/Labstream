@@ -146,10 +146,12 @@ struct CustomPlayerView: View {
             playback.onPlaybackEnded = onClose
             controller = playback
             #if os(iOS)
-            // Keep playing into the PiP window when the app backgrounds; without this the
-            // coordinator's resign-active pause freezes the PiP tile the moment the user
-            // swipes Home.
-            playback.suppressBackgroundPause = { [pipCoordinator] in pipCoordinator.isActive }
+            // Keep playing into the PiP window or an active AirPlay route when the app
+            // backgrounds; otherwise the coordinator's resign-active pause is correct for
+            // ordinary in-app video.
+            playback.suppressBackgroundPause = { [pipCoordinator, weak playback] in
+                pipCoordinator.isActive || playback?.player.isExternalPlaybackActive == true
+            }
             #endif
             #if os(visionOS)
             cinemaSession.activate(title: item.title,

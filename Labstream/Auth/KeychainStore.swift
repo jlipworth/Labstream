@@ -9,7 +9,7 @@ import Security
 ///
 /// Values are stored as generic passwords keyed by `account`, scoped to this
 /// app's service. `kSecAttrAccessibleAfterFirstUnlock` lets background URLSession
-/// downloads read the token while the headset is locked.
+/// downloads read the token while the device is locked.
 ///
 /// ## iCloud Keychain sync (shared sign-in across the user's devices)
 ///
@@ -31,6 +31,8 @@ import Security
 ///
 /// Note the flip side: deleting the synced token (manual sign-out or a 401 wipe) signs
 /// ALL devices out, which matches how an account-level token actually dies.
+/// When a synced Plex token is successfully read, any pre-sync device-local Plex token is
+/// deleted so a later synced/global sign-out cannot re-promote stale local credentials.
 final class KeychainStore {
     static let tokenKey = "token"
     static let clientIdentifierKey = "clientIdentifier"
@@ -118,16 +120,32 @@ final class KeychainStore {
         let synced = isSynchronized(account)
         let primary = readItem(account, synchronizable: synced)
         if let value = primary.value {
+            if KeychainSynchronizedCredentialMigrationPolicy.actions(
+                isSynchronized: synced,
+                primaryValueFound: true,
+                legacyLocalValueFound: false).shouldDeleteLegacyLocal {
+                // Once this install has observed the synced credential, any pre-sync local
+                // copy is stale. Retire it immediately so a later iCloud/global delete can't
+                // make `read` fall back to and re-promote the old device-local token.
+                deleteLegacyLocalItem(for: account)
+            }
             cleanupFallback(for: account)
             return value
         }
 
-        if synced, let legacyValue = readItem(account, synchronizable: false).value {
-            // Pre-sync install: promote the device-local item to the synchronizable one.
-            // The keychain can't flip the attribute in place, so `save` re-adds the item
-            // as synced and retires the local copy; the value is good either way.
-            _ = save(legacyValue, for: account)
-            return legacyValue
+        if synced {
+            let legacy = readItem(account, synchronizable: false)
+            let migration = KeychainSynchronizedCredentialMigrationPolicy.actions(
+                isSynchronized: synced,
+                primaryValueFound: false,
+                legacyLocalValueFound: legacy.value != nil)
+            if migration.shouldPromoteLegacyLocal, let legacyValue = legacy.value {
+                // Pre-sync install: promote the device-local item to the synchronizable one.
+                // The keychain can't flip the attribute in place, so `save` re-adds the item
+                // as synced and retires the local copy; the value is good either way.
+                _ = save(legacyValue, for: account)
+                return legacyValue
+            }
         }
 
         if primary.status != errSecItemNotFound, !fallbackPolicy.allowsSecretFileFallback {
@@ -148,6 +166,10 @@ final class KeychainStore {
               let data = result as? Data,
               let value = String(data: data, encoding: .utf8) else { return (status, nil) }
         return (status, value)
+    }
+
+    private func deleteLegacyLocalItem(for account: String) {
+        SecItemDelete(baseQuery(for: account, synchronizable: false) as CFDictionary)
     }
 
     /// Remove the value for `account` (no-op if absent). For synced accounts this deletes

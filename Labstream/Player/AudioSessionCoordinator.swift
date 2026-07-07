@@ -13,10 +13,9 @@ import UIKit
 /// releases the session, notifying other audio apps so they can resume.
 ///
 /// Shared by video (`PlaybackController`, the defaults: `.moviePlayback` mode,
-/// pause on background) and music (`MusicPlayerController`: `.default` mode,
-/// `pausesOnBackground: false` so audio keeps playing when the app loses the
-/// foreground / the headset chrome changes). The interruption and route-change
-/// handling is identical for both.
+/// pause on background unless PiP/AirPlay is active) and music (`MusicPlayerController`:
+/// `.default` mode, `pausesOnBackground: false` so audio keeps playing when the app
+/// loses the foreground). The interruption and route-change handling is identical for both.
 @MainActor
 final class AudioSessionCoordinator {
 
@@ -120,10 +119,10 @@ final class AudioSessionCoordinator {
             }
         }
 
-        // Background-aware playback (P5): on visionOS the immersive player loses the active
-        // scene when the user leaves; video can't decode/render in the background and a live
-        // transcode session would keep churning. Pause on resign-active / background. We do
-        // NOT auto-resume on return — that's the user's choice. Music sessions opt out
+        // Background-aware playback (P5): video can't decode/render in the background and a
+        // live transcode session would keep churning unless the system is rendering via PiP
+        // or AirPlay. Pause on resign-active / background for ordinary video. We do NOT
+        // auto-resume on return — that's the user's choice. Music sessions opt out
         // (`pausesOnBackground: false`): audio-only playback keeps going in the background.
         if pausesOnBackground {
             resignActiveObserver = center.addObserver(
@@ -216,20 +215,31 @@ final class AudioSessionCoordinator {
     }
 
     /// When set and returning true, `pauseForBackground()` becomes a no-op. iOS Picture in
-    /// Picture is the one case where losing the foreground must NOT pause: the system keeps
-    /// rendering the video in the PiP window, so the P5 "can't decode in the background"
-    /// rationale doesn't apply while PiP is active.
+    /// Picture and AirPlay are the cases where losing the foreground must NOT pause: the
+    /// system keeps rendering externally, so the P5 "can't decode in the background"
+    /// rationale doesn't apply while either route is active.
     var shouldSuppressBackgroundPause: (@MainActor () -> Bool)?
 
-    /// Pause video when the app is backgrounded / loses the foreground (P5). Video can't
-    /// decode/render in the background and a live transcode would keep running, so we always
-    /// pause. We deliberately do NOT auto-resume on foreground: resume is the user's choice
-    /// on return. Do not set the interruption-resume flag here, or a later
-    /// interruption-ended notification with `.shouldResume` can restart playback.
+    /// Pause video when the app is backgrounded / loses the foreground (P5), unless the system
+    /// is actively rendering it in PiP or over AirPlay. We deliberately do NOT auto-resume on
+    /// foreground: resume is the user's choice on return. Do not set the interruption-resume
+    /// flag here, or a later interruption-ended notification with `.shouldResume` can restart
+    /// playback.
     private func pauseForBackground() {
+        #if os(iOS)
+        if player.isExternalPlaybackActive || isAirPlayRouteActive { return }
+        #endif
         if shouldSuppressBackgroundPause?() == true { return }
         if player.timeControlStatus != .paused {
             player.pause()
         }
     }
+
+    #if os(iOS)
+    private var isAirPlayRouteActive: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { output in
+            output.portType == .airPlay
+        }
+    }
+    #endif
 }
