@@ -18,7 +18,8 @@ extension DownloadManager {
     public func downloadJellyfin(_ item: MediaItem, choice: DownloadChoice,
                                  mediaIndex: Int = 0,
                                  partIndex: Int = 0,
-                                 mediaSourceIDOverride: String? = nil) async {
+                                 mediaSourceIDOverride: String? = nil,
+                                 allowReplacingExistingActiveRow: Bool = false) async {
         let itemId = item.ratingKey
         let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .jellyfin)
         // #84: capture the Jellyfin session from its own lane; never re-read `appModel.jellyfin*`
@@ -34,7 +35,9 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Jellyfin") else { return }
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
+                                          backend: "Jellyfin",
+                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime fix as the Plex path:
         // `session.start` only kicks off the transfer, so protection is released terminally
@@ -245,6 +248,7 @@ extension DownloadManager {
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return

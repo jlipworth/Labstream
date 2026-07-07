@@ -65,11 +65,14 @@ public enum DownloadCompletionValidation {
 
     /// The terminal outcome for a finished transfer, derived from the playability-probe result plus
     /// the source/decoded durations. The session maps each case to a row status + diagnostics:
-    /// `.complete` → `.complete`; `.truncated` → delete file + `.failed`; `.unverified` → keep the
-    /// file playable but `.unverified` (the #98 leniency: the probe is an intermittent
-    /// false-negative on COMPLETE files, so never delete/`.failed` good bytes on a probe miss).
+    /// `.complete` → `.complete`; `.emptyFile` / `.truncated` → delete file + `.failed`;
+    /// `.unverified` → keep the file playable but `.unverified` (the #98 leniency: the probe is an
+    /// intermittent false-negative on COMPLETE files, so never delete/`.failed` good bytes on a
+    /// probe miss). Zero-byte "downloads" are not good bytes; they are a transfer failure and must
+    /// stay retryable instead of becoming a playable unverified row.
     public enum CompletionOutcome: Equatable, Sendable {
         case complete
+        case emptyFile
         case truncated(actualDurationMs: Int, expectedDurationMs: Int)
         case unverified(reason: String)
     }
@@ -80,7 +83,11 @@ public enum DownloadCompletionValidation {
     public static func outcome(played: Bool,
                                probeReason: String,
                                expectedDurationMs: Int?,
-                               actualDurationMs: Int?) -> CompletionOutcome {
+                               actualDurationMs: Int?,
+                               downloadedBytes: Int? = nil) -> CompletionOutcome {
+        if let downloadedBytes, downloadedBytes <= 0 {
+            return .emptyFile
+        }
         guard played else { return .unverified(reason: probeReason) }
         if isTruncated(expectedDurationMs: expectedDurationMs, actualDurationMs: actualDurationMs),
            let expectedDurationMs, let actualDurationMs {

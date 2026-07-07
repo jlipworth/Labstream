@@ -13,8 +13,13 @@ public enum DownloadStartSlotPolicy {
         case recoverStaleSlotAndAccept
     }
 
-    public static func decision(existingRecordStatus: DownloadStatus?, hasActiveSlot: Bool) -> Decision {
+    public static func decision(existingRecordStatus: DownloadStatus?,
+                                hasActiveSlot: Bool,
+                                allowReplacingExistingActiveRow: Bool = false) -> Decision {
         if let existingRecordStatus, existingRecordStatus.isActiveWork {
+            if allowReplacingExistingActiveRow && !hasActiveSlot {
+                return .accept
+            }
             return .rejectExistingActiveRow(status: existingRecordStatus)
         }
         if hasActiveSlot {
