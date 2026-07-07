@@ -141,7 +141,7 @@ public struct OfflineLibraryView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .overlay {
             Capsule()
-                .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                .strokeBorder(.primary.opacity(0.16), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
         .fixedSize(horizontal: true, vertical: true)

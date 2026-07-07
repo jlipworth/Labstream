@@ -41,7 +41,7 @@ struct LibrarySectionCard: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+                .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
         )
         .posterHover()
     }

@@ -58,7 +58,7 @@ struct PosterImage: View {
         .overlay(
             // Hairline inner edge gives the artwork a crisp, framed finish on glass.
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(.white.opacity(0.08), lineWidth: 0.5)
+                .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
         )
     }
 

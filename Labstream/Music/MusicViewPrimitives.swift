@@ -35,10 +35,27 @@ struct MusicArtBackdrop: View {
 
     var body: some View {
         if let art, !art.isEmpty {
-            PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .blur(radius: 60)
-                .opacity(0.30)
+            // Color.clear.overlay, NOT a bare PosterImage: the 900×600 poster frame
+            // is an intrinsic size, and a ZStack consulting it inflates the WHOLE
+            // page to ~900 pt (live on iPhone: album title and track card laid out
+            // at 900 pt and bled off both screen edges; same mechanism as the
+            // NowPlayingView sheet-overflow note). Zero-ideal-size + clipped keeps
+            // the wash purely decorative at any window width.
+            Color.clear
+                .overlay {
+                    // Scale the fixed-size wash up to cover the container: a bare
+                    // 900×600 leaves un-washed bands on tall phone screens while the
+                    // full-height gradient keeps going.
+                    GeometryReader { geo in
+                        let scale = max(geo.size.width / 900, geo.size.height / 600, 1)
+                        PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
+                            .scaleEffect(scale)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .blur(radius: 60)
+                            .opacity(0.30)
+                    }
+                }
+                .clipped()
                 .overlay(
                     LinearGradient(colors: [.clear, .black.opacity(0.55)],
                                    startPoint: .top, endPoint: .bottom)

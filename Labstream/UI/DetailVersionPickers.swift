@@ -27,6 +27,10 @@ struct DetailMovieVersionPicker: View {
                 Label("Version: \(label(for: currentVersion, index: currentVersionIndex))",
                       systemImage: "square.stack.3d.up")
                     .font(.callout)
+                    // Server-derived label, unbounded length — keep the header row
+                    // one line; the dropdown shows the full text.
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .menuStyle(.borderlessButton)
             #if os(iOS)
@@ -83,6 +87,8 @@ struct DetailMediaVersionPicker: View {
                 Label("Version: \(MediaVersionLabel.versionLabel(for: media[safe: selectedMediaIndex] ?? media[0]))",
                       systemImage: "rectangle.stack.badge.play")
                     .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .menuStyle(.borderlessButton)
             #if os(iOS)

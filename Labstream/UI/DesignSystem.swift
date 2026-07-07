@@ -203,6 +203,6 @@ struct SpecChip: View {
             .padding(.horizontal, DS.Space.md)
             .padding(.vertical, DS.Space.xs + 1)
             .background(.thinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
+            .overlay(Capsule().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
     }
 }

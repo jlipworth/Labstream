@@ -155,6 +155,8 @@ struct MiniPlayerBar: View {
                 } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
+                        .frame(minWidth: Self.transportHit, minHeight: Self.transportHit)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -163,6 +165,8 @@ struct MiniPlayerBar: View {
                 } label: {
                     Image(systemName: "forward.fill")
                         .font(.title3)
+                        .frame(minWidth: Self.transportHit, minHeight: Self.transportHit)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -187,12 +191,24 @@ struct MiniPlayerBar: View {
                     Image(systemName: "xmark")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .frame(minWidth: Self.transportHit, minHeight: Self.transportHit)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, DS.Space.sm)
                 .accessibilityLabel("Stop music")
             }
     }
+
+    /// Minimum hit side for the bar's transport buttons. On touch platforms the bare
+    /// title3/footnote glyphs are far under the 44-pt HIG minimum and near-misses fall
+    /// through to the whole-bar tap (opening the sheet instead); visionOS keeps the
+    /// ornament's density — gaze targeting doesn't need the padding.
+    #if os(visionOS)
+    private static let transportHit: CGFloat = 0
+    #else
+    private static let transportHit: CGFloat = 44
+    #endif
 
     /// 3-pt elapsed-time sliver pinned to the bar's bottom edge. Purely decorative:
     /// never hit-testable, no thumb, no drag.
@@ -203,7 +219,9 @@ struct MiniPlayerBar: View {
                 ? min(1, max(0, player.elapsedSeconds / duration))
                 : 0
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.12))
+                // .primary, not .white: over the bar's light material in light
+                // mode a white track is invisible; .primary adapts (white on dark).
+                Capsule().fill(.primary.opacity(0.12))
                 Capsule().fill(.tint)
                     .frame(width: geo.size.width * fraction)
             }
