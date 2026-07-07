@@ -94,15 +94,15 @@ struct ContainerBrowserView: View {
                                                description: Text(emptyDescription))
                             .frame(maxWidth: .infinity, minHeight: 280)
                     }
-                    .padding(DS.Space.xl)
+                    .padding(DS.pagePadding(compact: compactWidth))
                 } else {
                     VStack(alignment: .leading, spacing: DS.Space.xxl) {
                         CollectionDetailHeader(collection: container, total: collectionPaging.total)
-                        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+                        LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
                             ForEach(Array(collectionPaging.slots.enumerated()), id: \.offset) { index, slot in
                                 if let item = slot {
                                     NavigationLink(value: item) {
-                                        PosterCell(item: item, width: DS.Poster.gridMin)
+                                        PosterCell(item: item, width: DS.Poster.gridMin(compact: compactWidth))
                                     }
                                     .cardLink()
                                     .id(index)
@@ -114,7 +114,7 @@ struct ContainerBrowserView: View {
                             }
                         }
                     }
-                    .padding(DS.Space.xl)
+                    .padding(DS.pagePadding(compact: compactWidth))
                 }
             }
         }
@@ -388,37 +388,60 @@ struct EpisodeRow: View {
 }
 
 private struct CollectionDetailHeader: View {
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     let collection: MediaItem
     let total: Int?
 
-    var body: some View {
-        HStack(alignment: .top, spacing: DS.Space.xl) {
-            PosterImage(path: collection.thumb,
-                        width: 160,
-                        height: CGFloat(Double(160) / collection.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
-                        cornerRadius: DS.Radius.poster)
-                .shadow(color: .black.opacity(0.25), radius: 12, x: 0, y: 8)
+    /// Compact phones shrink the 160-pt poster to keep it from crowding the title beside it.
+    private var posterWidth: CGFloat { compactWidth ? 120 : 160 }
 
-            VStack(alignment: .leading, spacing: DS.Space.sm) {
-                Text(collection.title)
-                    .font(.largeTitle.weight(.semibold))
-                    .multilineTextAlignment(.leading)
-                if let total, total > 0 {
-                    Text("\(total) item\(total == 1 ? "" : "s")")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
+    var body: some View {
+        // Compact width stacks the poster above the text (like the leaf detail hero) so the
+        // title/summary get the full pane; regular width keeps the side-by-side layout.
+        Group {
+            if compactWidth {
+                VStack(alignment: .leading, spacing: DS.Space.md) {
+                    poster
+                    metadata
                 }
-                if let summary = collection.summary, !summary.isEmpty {
-                    Text(summary)
-                        .font(.body)
-                        .foregroundStyle(.primary.opacity(0.85))
-                        .lineLimit(4)
-                        .multilineTextAlignment(.leading)
+            } else {
+                HStack(alignment: .top, spacing: DS.Space.xl) {
+                    poster
+                    metadata
+                    Spacer(minLength: 0)
                 }
             }
-            Spacer(minLength: 0)
         }
         .padding(DS.Space.lg)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+    }
+
+    private var poster: some View {
+        PosterImage(path: collection.thumb,
+                    width: posterWidth,
+                    height: CGFloat(Double(posterWidth) / collection.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
+                    cornerRadius: DS.Radius.poster)
+            .shadow(color: .black.opacity(0.25), radius: 12, x: 0, y: 8)
+    }
+
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            Text(collection.title)
+                .font(compactWidth ? .title2.weight(.semibold) : .largeTitle.weight(.semibold))
+                .multilineTextAlignment(.leading)
+            if let total, total > 0 {
+                Text("\(total) item\(total == 1 ? "" : "s")")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+            if let summary = collection.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.body)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(4)
+                    .multilineTextAlignment(.leading)
+            }
+        }
     }
 }

@@ -7,20 +7,26 @@ import PMSKit
 /// primary item's metadata and actions are untouched. The shelf is only rendered when
 /// there is something to show, so "no extras" is simply an absent section.
 struct DetailRelatedMediaShelf: View {
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     let items: [MediaItem]
     /// True while the page is already resolving/presenting playback; cards disable so a
     /// second tap can't race the in-flight launch.
     let isBusy: Bool
     let onPlay: (MediaItem) -> Void
 
-    /// Extras are clips: 16:9 thumbs unless the backend reports a real ratio.
+    /// Extras are clips: 16:9 thumbs unless the backend reports a real ratio. Compact phones
+    /// shrink the card so more than one is visible on a ~390-pt rail.
     private static let cardWidth: CGFloat = 280
+    private static let compactCardWidth: CGFloat = 200
     private static let clipAspect = 16.0 / 9.0
+
+    private var cardWidth: CGFloat { compactWidth ? Self.compactCardWidth : Self.cardWidth }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text("Trailers & Extras")
-                .font(.title2.weight(.semibold))
+                .font(compactWidth ? .title3.weight(.semibold) : .title2.weight(.semibold))
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: DS.Space.lg) {
@@ -38,8 +44,8 @@ struct DetailRelatedMediaShelf: View {
         } label: {
             VStack(alignment: .leading, spacing: DS.Space.sm) {
                 PosterImage(path: item.thumb,
-                            width: Self.cardWidth,
-                            height: CGFloat(Double(Self.cardWidth) / item.resolvedPosterAspect(fallback: Self.clipAspect)))
+                            width: cardWidth,
+                            height: CGFloat(Double(cardWidth) / item.resolvedPosterAspect(fallback: Self.clipAspect)))
                     .overlay {
                         Image(systemName: "play.circle.fill")
                             .font(.system(size: 44))
@@ -58,7 +64,7 @@ struct DetailRelatedMediaShelf: View {
                         .lineLimit(1)
                 }
             }
-            .frame(width: Self.cardWidth, alignment: .leading)
+            .frame(width: cardWidth, alignment: .leading)
         }
         .buttonStyle(.plain)
         .disabled(isBusy)
