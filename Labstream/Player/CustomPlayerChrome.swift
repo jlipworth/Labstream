@@ -280,7 +280,8 @@ struct CustomPlayerChrome: View {
 
                 #if os(iOS)
                 // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
-                // circles at the top-trailing corner, opposite the close button.
+                // circles at the top-trailing corner, opposite the close button. Backgrounding
+                // pauses ordinary video, but active AirPlay/PiP routes keep playing.
                 airPlayButton
                     .padding(.top, 10)
 

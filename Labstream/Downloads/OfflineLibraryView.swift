@@ -5,9 +5,9 @@ import UIKit
 /// Lists offline downloads with live progress + delete, and plays a completed
 /// file through the custom player (`CustomPlayerView(localFile:item:)`).
 ///
-/// Surfaces the offline-transfer reality (research/10): background transfers on
-/// visionOS pause while the headset is off and resume when it's worn again, so an
-/// in-progress download may appear "stuck" until the user puts the headset back on.
+/// Surfaces the offline-transfer reality (research/10): background transfers may be
+/// deferred while the app is backgrounded or the device is locked/asleep, then resume
+/// when the app or system transfer daemon is allowed to run again.
 public struct OfflineLibraryView: View {
     @Environment(MusicPlayerController.self) private var musicPlayer
     @State private var manager: DownloadManager
@@ -33,7 +33,7 @@ public struct OfflineLibraryView: View {
                         "No Offline Downloads",
                         systemImage: "arrow.down.circle",
                         description: Text("Download a movie or episode to watch it offline. "
-                                          + "Transfers pause while the headset is off and resume when it's worn again.")
+                                          + "Transfers may pause while the app is backgrounded or the device sleeps.")
                     )
                 } else {
                     List {

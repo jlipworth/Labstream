@@ -681,8 +681,8 @@ struct DownloadOptionsSheet: View {
     private var infoSection: some View {
         SwiftUI.Section {
             Label {
-                Text("Transfers continue in the background and pause while the headset "
-                     + "is off, resuming when it's worn again.")
+                Text("Transfers can continue in the background, but the system may pause "
+                     + "them while the app is backgrounded or the device sleeps.")
                     .font(.footnote).foregroundStyle(.secondary)
             } icon: { Image(systemName: "wifi") }
         }

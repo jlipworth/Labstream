@@ -26,7 +26,7 @@ struct PairingCodeCells: View {
     }
 }
 
-/// Shared "enter this code / waiting for authorization" screen used by headset-friendly
+/// Shared "enter this code / waiting for authorization" screen used by device-friendly
 /// backend pairing-code flows. Callers provide backend-specific instructions and fallback action.
 struct PairingCodeView<Header: View>: View {
     let code: String

@@ -9,7 +9,7 @@ import SwiftUI
 /// method-chooser's 340-pt width, so the Plex, Jellyfin, and Emby entry buttons read as
 /// the same control instead of a mix of text-hugging pills and full-width blocks. The
 /// 340-pt cap fits a compact iPhone column (390 − page padding) and matches the width
-/// the visionOS chooser has always used.
+/// used by the cross-platform chooser.
 private struct BackendPrimaryCTALabel: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -72,7 +72,7 @@ struct BackendAuthErrorBanner: View {
 
 struct PlexLinkCodeView: View {
     let code: String
-    let onOpenInHeadset: () -> Void
+    let onOpenOnDevice: () -> Void
 
     var body: some View {
         VStack(spacing: DS.Space.lg) {
@@ -94,7 +94,7 @@ struct PlexLinkCodeView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("Open Plex sign-in in this headset instead", action: onOpenInHeadset)
+            Button("Open Plex sign-in on this device instead", action: onOpenOnDevice)
                 .labstreamGlassButtonStyle()
         }
     }
@@ -299,7 +299,7 @@ struct EmbySignInFlow: View {
         }
     }
 
-    /// Emby Connect PIN is the headset-friendly primary path (needs no server address);
+    /// Emby Connect PIN is the device-friendly primary path (needs no server address);
     /// the server-URL + username/password form is the secondary option.
     private var methodChooser: some View {
         BackendSignInMethodChooser(
