@@ -276,6 +276,7 @@ private struct SearchSongsSection: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(MusicPlayerController.self) private var player
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var showAll = false
     @State private var isStarting = false
@@ -288,8 +289,8 @@ private struct SearchSongsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text("Songs")
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             VStack(spacing: 0) {
                 ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
@@ -343,13 +344,13 @@ private struct SearchSongsSection: View {
             .padding(.vertical, DS.Space.sm)
             .background(.regularMaterial,
                         in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .padding(.horizontal, DS.Space.xxl)
+            .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             if let playError {
                 Label(playError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.yellow)
-                    .padding(.horizontal, DS.Space.xxl)
+                    .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
             }
         }
     }

@@ -44,6 +44,10 @@ struct ArtistDetailView: View {
     /// Compact shrinks it so the name/buttons column keeps usable width beside it.
     private var portraitSize: CGFloat { compactWidth ? 110 : 160 }
 
+    /// Readable-measure cap for the bio so it doesn't stretch to ~1000-pt lines on wide
+    /// iPad/visionOS windows (mirrors DetailView's readable metadata column).
+    private static let readableBioWidth: CGFloat = 640
+
     private var isEmpty: Bool {
         popular.isEmpty && albums.isEmpty && categorized.isEmpty
             && appearsOn.isEmpty && similar.isEmpty
@@ -79,9 +83,14 @@ struct ArtistDetailView: View {
         .task { await load() }
     }
 
-    /// Portrait + name + short bio.
+    /// Portrait + name + short bio. Side-by-side on regular width; compact stacks the
+    /// portrait above a full-width name/buttons column — the Play/Shuffle pair can't fit
+    /// the ~224-pt column left beside the portrait on a phone.
     private var header: some View {
-        HStack(alignment: .top, spacing: DS.Space.xl) {
+        let layout = compactWidth
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Space.lg))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: DS.Space.xl))
+        return layout {
             PosterImage(path: artist.thumb, width: portraitSize, height: portraitSize,
                         cornerRadius: DS.Radius.poster)
 
@@ -93,6 +102,10 @@ struct ArtistDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
+                        // Cap the bio to a readable measure so it doesn't stretch to
+                        // ~1000 pt on wide iPad/visionOS windows (mirrors DetailView's
+                        // readable metadata column).
+                        .frame(maxWidth: Self.readableBioWidth, alignment: .leading)
                 }
 
                 // Play/Shuffle the whole discography via `allLeaves` (MUSIC-DESIGN

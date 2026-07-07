@@ -195,12 +195,17 @@ private extension Array where Element == MediaItem {
 /// with a continue-watching sliver when the episode carries a resume offset.
 struct EpisodeRow: View {
     let episode: MediaItem
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
-        HStack(alignment: .top, spacing: DS.Space.lg) {
+        // Shrink the 16:9 thumbnail on compact width so the title/summary column
+        // isn't squeezed to a sliver on a narrow phone.
+        let thumbWidth: CGFloat = compactWidth ? 128 : 200
+        let thumbHeight = round(thumbWidth * 9 / 16)
+        HStack(alignment: .top, spacing: compactWidth ? DS.Space.md : DS.Space.lg) {
             PosterImage(path: episode.thumb ?? episode.parentThumb,
-                        width: 200,
-                        height: 112,
+                        width: thumbWidth,
+                        height: thumbHeight,
                         cornerRadius: DS.Radius.poster)
                 .overlay(alignment: .bottom) { progressSliver }
 

@@ -20,6 +20,26 @@ struct AlbumDetailView: View {
     /// mirroring `DetailView`'s compact poster).
     private var coverSize: CGFloat { compactWidth ? 220 : 300 }
 
+    #if os(iOS)
+    /// Readable-measure cap for the track list and header text column in regular width
+    /// (iPad), mirroring `DetailView.readableMetadataWidth`. Without it the track rows
+    /// stretch edge-to-edge on a 13" iPad and the duration label floats ~1200 pt from the
+    /// title. Compact widths (iPhone, narrow split) stay full-bleed; visionOS keeps its
+    /// fixed-window layout uncapped.
+    private static let readableContentWidth: CGFloat = 680
+    #endif
+
+    /// The readable-width cap applied to the header metadata column and the track list:
+    /// the readable measure on regular-width iOS, `nil` (uncapped) on compact iOS and on
+    /// visionOS. Leading-aligned so the capped block stays flush left, not centered.
+    private var contentMaxWidth: CGFloat? {
+        #if os(iOS)
+        compactWidth ? nil : Self.readableContentWidth
+        #else
+        nil
+        #endif
+    }
+
     /// On an *album* item, `parentTitle` is the artist name (PMS hierarchy:
     /// artist → album → track).
     private var albumArtist: String? { album.parentTitle }
@@ -84,73 +104,114 @@ struct AlbumDetailView: View {
 
     // MARK: - Header
 
-    /// Cover + title/artist/year + Play / Shuffle actions. Side-by-side on regular
-    /// width; compact phones stack the cover (centered) above the metadata — the
-    /// 300-pt cover + large-title text row cannot fit a 390-pt screen.
+    /// Cover + title/artist/year + Play / Shuffle actions. Side-by-side on regular width;
+    /// compact phones stack the cover (centered) above the metadata — the 300-pt cover +
+    /// large-title text row cannot fit a 390-pt screen. On regular width, `ViewThatFits`
+    /// keeps the side-by-side layout while it fits (visionOS wide windows, full-screen
+    /// iPad) and falls back to the same stacked layout when the pane is too tight — e.g.
+    /// a ~507-pt iPad Split View column, which is a REGULAR size class but too narrow for
+    /// the 300-pt cover beside the metadata + buttons.
+    @ViewBuilder
     private var header: some View {
-        let layout = compactWidth
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Space.lg))
-            : AnyLayout(HStackLayout(alignment: .bottom, spacing: DS.Space.xxl))
-        return layout {
-            PosterImage(path: album.thumb, width: coverSize, height: coverSize,
-                        cornerRadius: DS.Radius.poster)
-                .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
-                                                             style: .continuous)))
-                .frame(maxWidth: compactWidth ? .infinity : nil)
+        if compactWidth {
+            stackedHeader
+        } else {
+            // iOS-only ViewThatFits: it measures the side-by-side variant's IDEAL
+            // width, which includes the unwrapped single-line title, so a long album
+            // title would flip visionOS to the stacked fallback where it previously
+            // just wrapped. Only iPad panes actually get too narrow to seat the hero.
+            #if os(iOS)
+            ViewThatFits(in: .horizontal) {
+                sideBySideHeader
+                stackedHeader
+            }
+            #else
+            sideBySideHeader
+            #endif
+        }
+    }
 
-            VStack(alignment: .leading, spacing: DS.Space.sm) {
-                Text(album.title)
-                    .font(.largeTitle.bold())
-                if let artist = albumArtist, !artist.isEmpty {
-                    // Tappable like Now Playing's "go to artist" — this view already
-                    // lives in the music stack, so a plain value link pushes directly.
-                    if let artistItem {
-                        NavigationLink(value: artistItem) {
-                            Text(artist)
-                                .font(.title3)
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, DS.Space.sm)
-                                .contentShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .hoverEffect(.highlight)
-                        .padding(.leading, -DS.Space.sm) // keep text flush with the title
-                    } else {
+    /// Cover beside the metadata column (canonical wide layout).
+    private var sideBySideHeader: some View {
+        HStack(alignment: .bottom, spacing: DS.Space.xxl) {
+            headerCover(centered: false)
+            headerMetadata
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Cover centered above the metadata column — the compact idiom, reused as the
+    /// regular-width `ViewThatFits` fallback for a too-narrow Split View pane.
+    private var stackedHeader: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            headerCover(centered: true)
+            headerMetadata
+        }
+    }
+
+    private func headerCover(centered: Bool) -> some View {
+        PosterImage(path: album.thumb, width: coverSize, height: coverSize,
+                    cornerRadius: DS.Radius.poster)
+            .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
+                                                         style: .continuous)))
+            .frame(maxWidth: centered ? .infinity : nil)
+    }
+
+    private var headerMetadata: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            Text(album.title)
+                .font(.largeTitle.bold())
+            if let artist = albumArtist, !artist.isEmpty {
+                // Tappable like Now Playing's "go to artist" — this view already
+                // lives in the music stack, so a plain value link pushes directly.
+                if let artistItem {
+                    NavigationLink(value: artistItem) {
                         Text(artist)
                             .font(.title3)
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal, DS.Space.sm)
+                            .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
+                    .hoverEffect(.highlight)
+                    .padding(.leading, -DS.Space.sm) // keep text flush with the title
+                } else {
+                    Text(artist)
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
                 }
-                if let year = album.year {
-                    Text(String(year))
-                        .font(.subheadline)
-                        .foregroundStyle(.tertiary)
-                }
-
-                HStack(spacing: DS.Space.lg) {
-                    Button {
-                        player.play(tracks: tracks, startingAt: 0)
-                    } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .font(.title3.weight(.semibold))
-                            .padding(.horizontal, DS.Space.md)
-                            .padding(.vertical, DS.Space.xs)
-                    }
-                    .labstreamGlassProminentButtonStyle()
-
-                    Button {
-                        player.playAlbumShuffled(tracks: tracks)
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .font(.title3)
-                    }
-                    .labstreamGlassButtonStyle()
-                }
-                .disabled(tracks.isEmpty)
-                .padding(.top, DS.Space.md)
             }
-            Spacer(minLength: 0)
+            if let year = album.year {
+                Text(String(year))
+                    .font(.subheadline)
+                    .foregroundStyle(.tertiary)
+            }
+
+            HStack(spacing: DS.Space.lg) {
+                Button {
+                    player.play(tracks: tracks, startingAt: 0)
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.md)
+                        .padding(.vertical, DS.Space.xs)
+                }
+                .labstreamGlassProminentButtonStyle()
+
+                Button {
+                    player.playAlbumShuffled(tracks: tracks)
+                } label: {
+                    Label("Shuffle", systemImage: "shuffle")
+                        .font(.title3)
+                }
+                .labstreamGlassButtonStyle()
+            }
+            .disabled(tracks.isEmpty)
+            .padding(.top, DS.Space.md)
         }
+        // Cap the metadata column to a readable measure on regular-width iPad so the title
+        // and actions don't stretch across a 13" landscape pane (no-op on compact/visionOS).
+        .frame(maxWidth: contentMaxWidth, alignment: .leading)
     }
 
     // MARK: - Track list
@@ -182,6 +243,9 @@ struct AlbumDetailView: View {
         .padding(.vertical, DS.Space.sm)
         .background(.regularMaterial,
                     in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        // Cap the card to a readable measure on regular-width iPad so rows don't stretch
+        // ~1370 pt (no-op on compact/visionOS). Leading-aligned within the page column.
+        .frame(maxWidth: contentMaxWidth, alignment: .leading)
     }
 
     /// Shimmering row placeholders keeping the card's footprint while tracks load.
