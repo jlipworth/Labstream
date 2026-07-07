@@ -62,6 +62,15 @@ struct LoginView: View {
         }
     }
 
+    /// The floating glass sign-in card used at regular width (iPad, visionOS).
+    private var loginCard: some View {
+        formStack
+            .padding(.horizontal, DS.Space.xxxl)
+            .padding(.vertical, DS.Space.xxl)
+            .frame(maxWidth: 560)
+            .background(LoginPanelBackground())
+    }
+
     var body: some View {
         Group {
             if isCompactWidth {
@@ -75,11 +84,23 @@ struct LoginView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
             } else {
-                formStack
-                    .padding(.horizontal, DS.Space.xxxl)
-                    .padding(.vertical, DS.Space.xxl)
-                    .frame(maxWidth: 560)
-                    .background(LoginPanelBackground())
+                #if os(iOS)
+                // iPad regular width: the fixed 560-pt card overflows once the
+                // software keyboard shrinks the safe area (Jellyfin/Emby credential
+                // fields, especially landscape) or the Emby Connect server list grows.
+                // Wrap it in a ScrollView so it can scroll instead of clipping; the
+                // GeometryReader-backed minHeight keeps the card vertically centered
+                // whenever the content fits, and .basedOnSize keeps it inert until then.
+                GeometryReader { proxy in
+                    ScrollView {
+                        loginCard
+                            .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                }
+                #else
+                loginCard
+                #endif
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

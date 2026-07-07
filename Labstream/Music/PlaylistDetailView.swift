@@ -21,6 +21,13 @@ struct PlaylistDetailView: View {
     /// Hero art size, matching the album detail header (220 on compact).
     private var coverSize: CGFloat { compactWidth ? 220 : 300 }
 
+    #if os(iOS)
+    /// Readable-measure cap for the header + track list in regular width (iPad). Mirrors
+    /// `DetailView.readableMetadataWidth`; keeps rows from stretching edge-to-edge on a wide
+    /// landscape iPad. visionOS keeps its uncapped fixed-window layout.
+    private static let readableContentWidth: CGFloat = 800
+    #endif
+
     var body: some View {
         ZStack {
             artBackdrop
@@ -50,6 +57,13 @@ struct PlaylistDetailView: View {
                 }
                 .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                 .padding(.vertical, DS.Space.xl)
+                #if os(iOS)
+                // Cap the header + track list to a readable measure on regular-width iOS
+                // (13" landscape iPad would otherwise stretch rows edge-to-edge, floating the
+                // duration far from the title) and center it. Compact and visionOS stay full width.
+                .frame(maxWidth: compactWidth ? .infinity : Self.readableContentWidth)
+                .frame(maxWidth: .infinity)
+                #endif
             }
         }
         .navigationTitle(playlist.title)
@@ -67,51 +81,88 @@ struct PlaylistDetailView: View {
     // MARK: - Header
 
     /// Composite art + title + "N tracks · duration" + Play / Shuffle actions.
-    /// Side-by-side on regular width; compact stacks the art above the metadata
-    /// (same rationale as `AlbumDetailView.header`).
+    /// Compact widths stack the art above the metadata. Regular widths prefer the
+    /// side-by-side layout but fall back to the stacked one when the window is too
+    /// narrow to seat both without crushing the metadata column — an iPad 50/50
+    /// Split View pane is regular size class yet only ~507 pt wide, below the
+    /// ~580 pt the hero + fixed action row needs. `ViewThatFits` picks side-by-side
+    /// whenever it fits (so visionOS wide windows keep it) and stacks otherwise.
+    @ViewBuilder
     private var header: some View {
-        let layout = compactWidth
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Space.lg))
-            : AnyLayout(HStackLayout(alignment: .bottom, spacing: DS.Space.xxl))
-        return layout {
-            PosterImage(path: playlist.musicArtPath, width: coverSize, height: coverSize,
-                        cornerRadius: DS.Radius.poster)
-                .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
-                                                             style: .continuous)))
-                .frame(maxWidth: compactWidth ? .infinity : nil)
-
-            VStack(alignment: .leading, spacing: DS.Space.sm) {
-                Text(playlist.title)
-                    .font(.largeTitle.bold())
-                if let credits {
-                    Text(credits)
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: DS.Space.lg) {
-                    Button {
-                        player.play(tracks: tracks, startingAt: 0)
-                    } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .font(.title3.weight(.semibold))
-                            .padding(.horizontal, DS.Space.md)
-                            .padding(.vertical, DS.Space.xs)
-                    }
-                    .labstreamGlassProminentButtonStyle()
-
-                    Button {
-                        player.playAlbumShuffled(tracks: tracks)
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .font(.title3)
-                    }
-                    .labstreamGlassButtonStyle()
-                }
-                .disabled(tracks.isEmpty)
-                .padding(.top, DS.Space.md)
+        if compactWidth {
+            stackedHeader
+        } else {
+            // iOS-only ViewThatFits: it measures the side-by-side variant's IDEAL
+            // width, which includes the unwrapped single-line title, so a long
+            // playlist title would flip visionOS to the stacked fallback where it
+            // previously just wrapped. Only iPad panes get too narrow for the hero.
+            #if os(iOS)
+            ViewThatFits(in: .horizontal) {
+                sideBySideHeader
+                stackedHeader
             }
+            #else
+            sideBySideHeader
+            #endif
+        }
+    }
+
+    /// Hero beside the metadata column — the canonical wide layout.
+    private var sideBySideHeader: some View {
+        HStack(alignment: .bottom, spacing: DS.Space.xxl) {
+            headerCover(fillWidth: false)
+            headerMetadata
             Spacer(minLength: 0)
+        }
+    }
+
+    /// Hero centered above the metadata column — compact, and the narrow-regular fallback.
+    private var stackedHeader: some View {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            headerCover(fillWidth: true)
+            headerMetadata
+        }
+    }
+
+    private func headerCover(fillWidth: Bool) -> some View {
+        PosterImage(path: playlist.musicArtPath, width: coverSize, height: coverSize,
+                    cornerRadius: DS.Radius.poster)
+            .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
+                                                         style: .continuous)))
+            .frame(maxWidth: fillWidth ? .infinity : nil)
+    }
+
+    private var headerMetadata: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            Text(playlist.title)
+                .font(.largeTitle.bold())
+            if let credits {
+                Text(credits)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: DS.Space.lg) {
+                Button {
+                    player.play(tracks: tracks, startingAt: 0)
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                        .font(.title3.weight(.semibold))
+                        .padding(.horizontal, DS.Space.md)
+                        .padding(.vertical, DS.Space.xs)
+                }
+                .labstreamGlassProminentButtonStyle()
+
+                Button {
+                    player.playAlbumShuffled(tracks: tracks)
+                } label: {
+                    Label("Shuffle", systemImage: "shuffle")
+                        .font(.title3)
+                }
+                .labstreamGlassButtonStyle()
+            }
+            .disabled(tracks.isEmpty)
+            .padding(.top, DS.Space.md)
         }
     }
 
@@ -149,7 +200,9 @@ struct PlaylistDetailView: View {
                 .contextMenu { TrackQueueMenu(track: track, player: player) }
 
                 if index < tracks.count - 1 {
-                    Divider().padding(.leading, DS.Space.xxl + DS.Space.lg + 44)
+                    // Align the hairline to where PlaylistTrackRow's text starts:
+                    // outer inset (sm) + inner padding (lg) + 44-pt art + art→text spacing (lg).
+                    Divider().padding(.leading, DS.Space.sm + DS.Space.lg + 44 + DS.Space.lg)
                 }
             }
         }

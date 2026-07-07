@@ -168,7 +168,7 @@ struct CustomPlayerChrome: View {
 
                 if controller.upNext.isShown, let next = controller.upNext.nextItem {
                     upNextCard(next)
-                        .padding(.horizontal, 34)
+                        .padding(.horizontal, isCompactMobileChrome ? 14 : 34)
                         .padding(.bottom, 14)
                 }
 
@@ -189,6 +189,9 @@ struct CustomPlayerChrome: View {
                                                 menuState: menuState,
                                                 widthOverride: adaptiveMenuWidth(for: selectedMenu,
                                                                                  available: geo.size.width),
+                                                maxPopoverHeight: isCompactMobileChrome
+                                                    ? max(160, geo.size.height - 228 - 16)
+                                                    : nil,
                                                 onClose: { closeMenu() })
                             .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
                             .padding(.horizontal, isCompactMobileChrome ? 16 : 54)
@@ -273,7 +276,8 @@ struct CustomPlayerChrome: View {
                                          onTogglePause: {
                                              revealChrome(keepVisible: true)
                                              controller.togglePlayback()
-                                         })
+                                         },
+                                         isCompact: isCompactMobileChrome)
         }
     }
 
@@ -818,7 +822,7 @@ struct CustomPlayerChrome: View {
             }
             .labstreamGlassProminentButtonStyle()
         }
-        .padding(18)
+        .padding(isCompactMobileChrome ? 14 : 18)
         .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
@@ -966,12 +970,22 @@ struct CustomPlayerChrome: View {
     /// Chapters is a horizontal filmstrip; unlike the small fixed menus it should fill most of the
     /// player width and stay centered. A fixed 1120-pt width looked right in the windowed player but
     /// narrow and right-shifted on the much wider Cinema canvas, so size it to the available width
-    /// (capped) to keep the same proportion in both. Returns nil for menus that keep a fixed size.
+    /// (capped) to keep the same proportion in both. On a compact phone the small fixed-width menus
+    /// (Stats 470, Subtitles/Audio 390, Quality 340) plus the popover's +44 frame also overflow a
+    /// 390-pt screen, so clamp every menu to the available width there. Returns nil for menus that
+    /// keep their authored fixed size (regular width / visionOS).
     private func adaptiveMenuWidth(for menu: CustomPlayerMenuKind, available: CGFloat) -> CGFloat? {
-        guard menu == .chapters, available > 0 else { return nil }
-        // Footprint outside the content: the popover's internal +44 frame and 54-pt padding each side.
-        let chrome: CGFloat = 44 + 54 * 2
-        return min(1680, max(720, available - chrome))
+        guard available > 0 else { return nil }
+        // Footprint outside the content: the popover's internal +44 frame and the horizontal
+        // padding applied to the popover on each side (16 pt compact, 54 pt regular).
+        let pad: CGFloat = isCompactMobileChrome ? 16 : 54
+        let chrome: CGFloat = 44 + pad * 2
+        if menu == .chapters {
+            return min(1680, max(isCompactMobileChrome ? 0 : 720, available - chrome))
+        }
+        guard isCompactMobileChrome else { return nil }
+        // Compress the fixed-width menus to fit, but never below their authored width.
+        return min(menu.popoverSize.width, max(0, available - chrome))
     }
 
     private func openMenu(_ menu: CustomPlayerMenuKind) {
@@ -1117,14 +1131,19 @@ private struct CustomPlayerMenuPopover: View {
     let menu: CustomPlayerMenuKind
     let controller: PlaybackController
     @Bindable var menuState: PlayerMenuState
-    /// When set (Chapters), overrides the menu's fixed authored width so a horizontal filmstrip can
-    /// fill the available player width instead of sitting narrow on the wider Cinema canvas.
+    /// When set (Chapters, or any menu on a compact phone), overrides the menu's fixed authored
+    /// width so a horizontal filmstrip can fill the available player width instead of sitting narrow
+    /// on the wider Cinema canvas — and so the small menus stop overflowing a 390-pt phone.
     var widthOverride: CGFloat? = nil
+    /// When set (compact phone), caps the popover's overall height so its header/close button stays
+    /// on-screen in landscape, where the fixed authored heights would otherwise push the top off the
+    /// top edge. Each menu's content already scrolls internally, so the reduced height just scrolls.
+    var maxPopoverHeight: CGFloat? = nil
     let onClose: () -> Void
 
     var body: some View {
         let base = menu.popoverSize
-        let size = CGSize(width: widthOverride ?? base.width, height: base.height)
+        let size = CGSize(width: widthOverride ?? base.width, height: clampedContentHeight(base: base.height))
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Label(menu.title, systemImage: menu.systemImage)
@@ -1150,6 +1169,15 @@ private struct CustomPlayerMenuPopover: View {
         .frame(width: size.width + 44, alignment: .leading)
         .labstreamOverlayPlatter(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(radius: 24)
+    }
+
+    /// Shrinks the content frame to fit `maxPopoverHeight` when the popover is height-constrained
+    /// (compact phone in landscape). Chrome = outer padding (22×2), header (~36), divider, and the
+    /// VStack's inter-row spacing (14×2). Unset → the authored height passes through unchanged.
+    private func clampedContentHeight(base: CGFloat) -> CGFloat {
+        guard let maxPopoverHeight else { return base }
+        let chrome: CGFloat = 22 * 2 + 36 + 14 * 2 + 1
+        return min(base, max(120, maxPopoverHeight - chrome))
     }
 
     @ViewBuilder private var menuContent: some View {
@@ -1360,6 +1388,10 @@ struct CustomTransportStatusOverlay: View {
     let onRetry: () -> Void
     let onClose: (() -> Void)?
     let onTogglePause: () -> Void
+    /// On a compact phone (and a 320-pt Slide Over pane) a fixed 340-pt platter overflows the
+    /// 40-pt-padded region, so cap instead of pinning the width there. Regular width / visionOS
+    /// keep the exact 340-pt platter.
+    var isCompact: Bool = false
 
     private var title: String {
         switch status {
@@ -1443,7 +1475,8 @@ struct CustomTransportStatusOverlay: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 22)
-        .frame(width: 340)
+        .frame(maxWidth: isCompact ? 340 : nil)
+        .frame(width: isCompact ? nil : 340)
         .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(radius: 18)
     }

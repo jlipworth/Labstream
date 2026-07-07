@@ -10,6 +10,7 @@ import UIKit
 /// when the app or system transfer daemon is allowed to run again.
 public struct OfflineLibraryView: View {
     @Environment(MusicPlayerController.self) private var musicPlayer
+    @Environment(\.labstreamCompactWidth) private var compactWidth
     @State private var manager: DownloadManager
     @State private var playing: DownloadRecord?
     @Binding private var focusedRatingKey: String?
@@ -230,14 +231,19 @@ public struct OfflineLibraryView: View {
                               isUnverified: isUnverified)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(displayTitle(for: record)).font(.headline)
-                    downloadLaneBadge(for: record)
-                    // Only label the backend when the library mixes them, so a
-                    // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
-                    // and single-backend libraries carry no visual noise.
-                    if rowSnapshot.showBackendBadge {
-                        backendBadge(name: rowSnapshot.backendName)
+                // On compact width (iPhone) the title column is too narrow to share a line with
+                // the lane + backend capsules — they crush a long episode string — so drop the
+                // badges onto their own row beneath a 2-line-truncating title. Regular/visionOS
+                // keep the single-line title-plus-badges HStack.
+                if compactWidth {
+                    Text(displayTitle(for: record)).font(.headline).lineLimit(2)
+                    HStack(spacing: 8) {
+                        titleBadges(for: record, rowSnapshot: rowSnapshot)
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Text(displayTitle(for: record)).font(.headline)
+                        titleBadges(for: record, rowSnapshot: rowSnapshot)
                     }
                 }
                 if let subtitle = subtitle(for: record) {
@@ -416,6 +422,20 @@ public struct OfflineLibraryView: View {
     private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
         record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
             ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+    }
+
+    /// The lane + (mixed-library only) backend capsules that sit with the title. Factored out
+    /// so the compact stacked layout and the regular inline HStack share one definition.
+    @ViewBuilder
+    private func titleBadges(for record: DownloadRecord,
+                             rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
+        downloadLaneBadge(for: record)
+        // Only label the backend when the library mixes them, so a
+        // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
+        // and single-backend libraries carry no visual noise.
+        if rowSnapshot.showBackendBadge {
+            backendBadge(name: rowSnapshot.backendName)
+        }
     }
 
     /// A subtle source chip ("Plex" / "Jellyfin" / "Emby") shown beside the title
@@ -597,11 +617,17 @@ private final class OfflinePosterImageCache {
 }
 
 private struct OfflineRowActionControlModifier: ViewModifier {
+    // visionOS/iPad ride the gaze-sized 56×56 / 34-pt glyph; compact width (iPhone) shrinks to
+    // a 44-pt frame (the HIG touch minimum) with a 24-pt glyph so two controls plus spacing no
+    // longer eat ~124 pt of a ~358-pt phone row.
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     func body(content: Content) -> some View {
+        let size = compactWidth ? 44 : OfflineLibraryView.rowActionControlSize
+        let glyphSize: CGFloat = compactWidth ? 24 : 34
         content
-            .font(.system(size: 34, weight: .semibold))
-            .frame(width: OfflineLibraryView.rowActionControlSize,
-                   height: OfflineLibraryView.rowActionControlSize)
+            .font(.system(size: glyphSize, weight: .semibold))
+            .frame(width: size, height: size)
             .contentShape(Circle())
     }
 }

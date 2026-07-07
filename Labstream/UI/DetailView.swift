@@ -37,6 +37,11 @@ struct DetailView: View {
     /// narrow iPad split view can still stack the regular poster/metadata layout.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
+    /// True in ANY iOS compact-width context — iPhone AND a narrow iPad window (Split View /
+    /// Slide Over), which reports compact width but is not the phone idiom. Sizing decisions
+    /// that must also shrink for a compact iPad pane key on this rather than
+    /// `isCompactPhoneLayout`. Always false on visionOS, so its metrics stay untouched.
+    @Environment(\.labstreamCompactWidth) private var compactWidth
     /// The browse tab this detail lives under, injected by RootView, so Cinema exit returns to the
     /// originating tab's detail instead of always Home (#87). `nil` → fall back to the system-entry
     /// (Home) path, preserving prior behavior.
@@ -206,8 +211,12 @@ struct DetailView: View {
                 metadataColumn
             }
         } else if horizontalSizeClass == .compact {
+            // Compact-width iPad (Split View / Slide Over): stack like the phone layout, but
+            // the 300-pt regular hero plus page padding overflows a ~320-pt pane, so use the
+            // 220-pt compact hero, centered as in the phone branch above.
             VStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                posterHero
+                detailPoster(width: DS.Poster.detailWidth(compact: true))
+                    .frame(maxWidth: .infinity, alignment: .center)
                 metadataColumn
             }
         } else {
@@ -296,7 +305,7 @@ struct DetailView: View {
         ScrollView {
             #if os(iOS)
             detailLayout
-                .padding(.horizontal, isCompactPhoneLayout ? DS.Space.lg : DS.Space.xxxl)
+                .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
                 .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
             #else
             detailLayout
@@ -411,7 +420,7 @@ struct DetailView: View {
 
     @ViewBuilder
     private var actionButtonStack: some View {
-        if isCompactPhoneLayout {
+        if compactWidth {
             // Full-width stacked buttons with CENTERED labels — the system idiom for a
             // prominent full-width action (App Store "Get", TV "Play"); a left-aligned
             // label in a full-width pill reads as a list row. The width stretch lives on
@@ -451,7 +460,7 @@ struct DetailView: View {
                 }
             }
             .font(.title3.weight(.semibold))
-            .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
+            .frame(maxWidth: compactWidth ? .infinity : nil)
             .padding(.horizontal, DS.Space.md)
             .padding(.vertical, DS.Space.xs)
         }
@@ -510,7 +519,7 @@ struct DetailView: View {
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
-                    .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
+                    .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
         } else {
@@ -519,7 +528,7 @@ struct DetailView: View {
             } label: {
                 Label(downloadLabel, systemImage: "arrow.down.circle")
                     .font(.title3)
-                    .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
+                    .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
             .disabled(isDownloading || !metadataReadyForActions)
@@ -538,7 +547,7 @@ struct DetailView: View {
             Label(isWatched ? "Mark Unwatched" : "Mark Watched",
                   systemImage: isWatched ? "minus.circle" : "checkmark.circle")
                 .font(.title3)
-                .frame(maxWidth: isCompactPhoneLayout ? .infinity : nil)
+                .frame(maxWidth: compactWidth ? .infinity : nil)
         }
         .labstreamGlassButtonStyle()
         .disabled(isTogglingWatched)

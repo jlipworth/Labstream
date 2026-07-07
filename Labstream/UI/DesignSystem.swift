@@ -73,11 +73,15 @@ enum DS {
             static let railWidth: CGFloat = 110
             static let gridMin: CGFloat = 104
             static let gridMax: CGFloat = 150
+            /// Compact detail/now-playing hero — the 300-pt hero plus page padding
+            /// overflows a 390-pt screen.
+            static let detailWidth: CGFloat = 220
         }
 
         static func railWidth(compact: Bool) -> CGFloat { compact ? Compact.railWidth : railWidth }
         static func gridMin(compact: Bool) -> CGFloat { compact ? Compact.gridMin : gridMin }
         static func gridMax(compact: Bool) -> CGFloat { compact ? Compact.gridMax : gridMax }
+        static func detailWidth(compact: Bool) -> CGFloat { compact ? Compact.detailWidth : detailWidth }
 
         /// Height for a given poster width at the canonical 2:3 ratio.
         static func height(for width: CGFloat) -> CGFloat { width / aspect }
@@ -225,9 +229,27 @@ extension View {
 
     /// Shared media-rail scroll content insets. Use with
     /// `ScrollView(.horizontal, showsIndicators: false)` to keep horizontal rails consistent.
-    func mediaRailScrollStyle(horizontalMargin: CGFloat = DS.Scroll.railHorizontalMargin,
+    /// With no explicit margin the modifier resolves the compact-aware default from the
+    /// environment, so a bare `.mediaRailScrollStyle()` can't silently burn the 32-pt
+    /// regular margin on a 390-pt phone.
+    func mediaRailScrollStyle(horizontalMargin: CGFloat? = nil,
                               clipDisabled: Bool = true) -> some View {
-        contentMargins(.horizontal, horizontalMargin, for: .scrollContent)
+        modifier(MediaRailScrollStyleModifier(horizontalMargin: horizontalMargin,
+                                              clipDisabled: clipDisabled))
+    }
+}
+
+private struct MediaRailScrollStyleModifier: ViewModifier {
+    let horizontalMargin: CGFloat?
+    let clipDisabled: Bool
+
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    func body(content: Content) -> some View {
+        content
+            .contentMargins(.horizontal,
+                            horizontalMargin ?? DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                            for: .scrollContent)
             .scrollClipDisabled(clipDisabled)
     }
 }

@@ -30,6 +30,8 @@ struct LoginBrandHeader: View {
                     .foregroundStyle(DS.Brand.amber)
             }
             .font(.largeTitle.bold())
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Labstream")
         }

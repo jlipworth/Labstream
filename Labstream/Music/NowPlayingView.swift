@@ -12,6 +12,7 @@ struct NowPlayingView: View {
 
     @Environment(MusicPlayerController.self) private var player
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     /// While true, the slider shows `scrubSeconds` instead of the live elapsed time
     /// so the thumb tracks the user's finger; the seek fires once on release.
@@ -33,8 +34,10 @@ struct NowPlayingView: View {
 
     /// Hero artwork size — small enough that title, scrubber and transport all fit
     /// in the sheet without scrolling (420 pushed the controls below the fold; a
-    /// GeometryReader-driven size broke the sheet's centering — keep this fixed).
-    private let artSize: CGFloat = 300
+    /// GeometryReader-driven size broke the sheet's centering, so this stays a fixed
+    /// value rather than measuring). 300 pt overflows a 390-pt phone sheet with the
+    /// content padding, so compact width drops to the 220-pt hero.
+    private var artSize: CGFloat { DS.Poster.detailWidth(compact: compactWidth) }
 
     var body: some View {
         ZStack {
@@ -60,7 +63,10 @@ struct NowPlayingView: View {
                                 .id(upNextAnchorID)
                         }
                     }
-                    .padding(DS.Space.xxl)
+                    // Compact tightens the horizontal inset to the phone page padding;
+                    // the 32-pt regular inset burns too much of a 390-pt sheet column.
+                    .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxl)
+                    .padding(.vertical, DS.Space.xxl)
                     .frame(maxWidth: .infinity)
                 }
                 .onAppear {
@@ -105,6 +111,7 @@ struct NowPlayingView: View {
             Text(player.current?.title ?? "Nothing Playing")
                 .font(.title2.bold())
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
             // On a track, grandparentTitle == artist and parentTitle == album.
             if let artist = player.current?.grandparentTitle {
                 Button {
@@ -137,6 +144,7 @@ struct NowPlayingView: View {
                 .disabled(albumItem == nil)
             }
         }
+        .frame(maxWidth: .infinity)
         .multilineTextAlignment(.center)
     }
 
@@ -212,7 +220,7 @@ struct NowPlayingView: View {
 
     /// Shuffle · previous · play/pause · next · repeat.
     private var transportRow: some View {
-        HStack(spacing: DS.Space.xxl) {
+        HStack(spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
             Button {
                 player.toggleShuffle()
             } label: {
@@ -235,7 +243,7 @@ struct NowPlayingView: View {
                 player.togglePlayPause()
             } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 72))
+                    .font(.system(size: compactWidth ? 56 : 72))
                     .symbolRenderingMode(.hierarchical)
             }
             .buttonStyle(.plain)

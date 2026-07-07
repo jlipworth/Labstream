@@ -120,11 +120,18 @@ struct ChapterCard: View {
     let thumbnailRequest: URLRequest?
     var onTap: (Int) -> Void
 
-    // Large enough for the custom-player Chapters popover to feel like the old AVP rail while
-    // still fitting the custom chrome. The popover is intentionally wide so
-    // several chapters remain visible during horizontal scrolling.
-    private static let thumbWidth: CGFloat = 286
-    private static let thumbHeight: CGFloat = 161  // 16:9-ish, rounded for whole pixels
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    // Regular (visionOS/iPad) is large enough for the Chapters popover to feel like the old AVP
+    // rail while still fitting the custom chrome; the popover is intentionally wide so several
+    // chapters remain visible during horizontal scrolling. On a compact iPhone width a 286-pt
+    // card barely fits one at a time with no next-card peek, so we narrow it — mirroring how
+    // `DS.Poster.railWidth(compact:)` parameterizes rail cards.
+    private static let regularThumbWidth: CGFloat = 286
+    private static let compactThumbWidth: CGFloat = 180
+    private var thumbWidth: CGFloat { compactWidth ? Self.compactThumbWidth : Self.regularThumbWidth }
+    // 16:9, rounded for whole pixels (286 → 161, unchanged for regular).
+    private var thumbHeight: CGFloat { (thumbWidth * 9 / 16).rounded() }
 
     var body: some View {
         Button {
@@ -132,7 +139,7 @@ struct ChapterCard: View {
         } label: {
             VStack(alignment: .leading, spacing: DS.Space.xs) {
                 thumbnail
-                    .frame(width: Self.thumbWidth, height: Self.thumbHeight)
+                    .frame(width: thumbWidth, height: thumbHeight)
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
@@ -151,7 +158,7 @@ struct ChapterCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: Self.thumbWidth, alignment: .leading)
+            .frame(width: thumbWidth, alignment: .leading)
             .opacity(isCurrent ? 1.0 : 0.7)
             .contentShape(Rectangle())
         }
@@ -180,7 +187,7 @@ struct ChapterCard: View {
             .fill(.regularMaterial)
             .overlay {
                 Image(systemName: "film")
-                    .font(.system(size: Self.thumbHeight * 0.3))
+                    .font(.system(size: thumbHeight * 0.3))
                     .foregroundStyle(.secondary)
             }
     }

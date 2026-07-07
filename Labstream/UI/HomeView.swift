@@ -107,7 +107,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .padding(.vertical, DS.Space.xl)
+            .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
         }
     }
 
@@ -391,7 +391,7 @@ struct SkeletonRails: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.xxxl) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
             ForEach(0..<2, id: \.self) { _ in
                 VStack(alignment: .leading, spacing: DS.Space.lg) {
                     RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
@@ -419,7 +419,7 @@ struct SkeletonRails: View {
                 }
             }
         }
-        .padding(.vertical, DS.Space.xl)
+        .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
     }
 }
 
