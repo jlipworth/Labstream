@@ -731,7 +731,7 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
     var isLowRiskTranscodeAudio: Bool {
         guard type == "Audio", let codec = codec?.lowercased() else { return false }
         guard ["aac", "ac3", "eac3"].contains(codec) else { return false }
-        return (channels ?? 0) <= 6 || channels == nil
+        return (channels ?? 0) <= 6
     }
 
     var looksLikeCommentaryOrDescriptiveAudio: Bool {
@@ -741,6 +741,37 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         return text.contains("commentary") ||
             text.contains("description") ||
             text.contains("descriptive")
+    }
+}
+
+extension [MediaBrowserItemMediaStreamDto] {
+    /// For a bitrate-capped transcode, the `MediaStream.Index` of an audio track the server can
+    /// cheaply/reliably encode from — or nil when the current (default/first) track is already
+    /// low-risk, or when no low-risk alternate exists. Prefers a same-language alternate and
+    /// skips commentary/descriptive tracks when possible. Shared by the Jellyfin and Emby
+    /// `resolveStream` paths so the steering logic can't diverge between the backends.
+    func preferredCompatibleAudioStreamIndexForCappedTranscode() -> Int? {
+        let audioStreams = filter { $0.type == "Audio" }
+        guard !audioStreams.isEmpty else { return nil }
+
+        let current = audioStreams.first { $0.isDefault == true } ?? audioStreams.first
+        if let current, current.isLowRiskTranscodeAudio {
+            return nil
+        }
+
+        let compatible = audioStreams.filter(\.isLowRiskTranscodeAudio)
+        guard !compatible.isEmpty else { return nil }
+
+        let currentLanguage = current?.language?.lowercased()
+        let sameLanguage = compatible.filter { stream in
+            guard let currentLanguage, !currentLanguage.isEmpty else { return false }
+            return stream.language?.lowercased() == currentLanguage
+        }
+
+        return (sameLanguage.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
+                sameLanguage.first ??
+                compatible.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
+                compatible.first)?.index
     }
 }
 

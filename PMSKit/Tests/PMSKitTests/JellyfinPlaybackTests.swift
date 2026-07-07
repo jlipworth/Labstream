@@ -49,7 +49,8 @@ struct JellyfinPlaybackTests {
         #expect(hlsProfile["Protocol"] as? String == "hls")
         // h264 first (encode target); hevc enables MKV HEVC video-copy remux (GH #196).
         #expect(hlsProfile["VideoCodec"] as? String == "h264,hevc")
-        #expect(hlsProfile["AudioCodec"] as? String == "aac")
+        // aac,ac3 mirrors Emby: ac3 keeps 5.1 surround on uncapped transcodes.
+        #expect(hlsProfile["AudioCodec"] as? String == "aac,ac3")
         #expect(hlsProfile["BreakOnNonKeyFrames"] as? Bool == false)
     }
 

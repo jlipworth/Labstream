@@ -338,14 +338,19 @@ public enum EmbyLibrary {
                                                       mediaSourceId: String,
                                                       playSessionId: String,
                                                       videoCodec: String,
+                                                      audioCodec: String? = nil,
                                                       copyAudio: Bool,
                                                       audioBitrate: Int) throws -> URLRequest {
         let videoCodecList = videoCodec == "h264" ? "h264" : "\(videoCodec),h264"
+        // Stream copy requires the source audio codec in the requested list (see
+        // DownloadAudioCodecList) — `AllowAudioStreamCopy` alone never copied ac3/eac3.
+        let audioCodecList = DownloadAudioCodecList.forRemux(sourceAudioCodec: audioCodec,
+                                                             copyAudio: copyAudio)
         let query: [URLQueryItem] = [
             URLQueryItem(name: "Static", value: "false"),
             URLQueryItem(name: "Container", value: "mp4"),
             URLQueryItem(name: "VideoCodec", value: videoCodecList),
-            URLQueryItem(name: "AudioCodec", value: "aac"),
+            URLQueryItem(name: "AudioCodec", value: audioCodecList),
             URLQueryItem(name: "AudioBitrate", value: String(audioBitrate)),
             URLQueryItem(name: "AllowVideoStreamCopy", value: "true"),
             URLQueryItem(name: "AllowAudioStreamCopy", value: copyAudio ? "true" : "false"),

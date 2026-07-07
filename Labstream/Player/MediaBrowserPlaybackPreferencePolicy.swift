@@ -79,8 +79,8 @@ enum MediaBrowserPlaybackPreferencePolicy {
 
     /// Whether the source's active (selected/default/first) audio track differs from the
     /// user's preferred audio language — the trigger for the "Shown with Foreign Audio"
-    /// subtitle mode. Mirrors `PlaybackController.sourceAudioIsForeign`.
-    private static func sourceAudioIsForeign(part: Part, defaults: UserDefaults) -> Bool {
+    /// subtitle mode. Internal so `PlaybackController` shares this single implementation.
+    static func sourceAudioIsForeign(part: Part, defaults: UserDefaults) -> Bool {
         let preferredAudio = defaults.string(forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
             ?? Locale.current.language.languageCode?.identifier
         guard let preferredAudio, !preferredAudio.isEmpty,
@@ -103,10 +103,12 @@ enum MediaBrowserPlaybackPreferencePolicy {
         return media?.part.first
     }
 
-    private static func languageMatches(languageTag: String?,
-                                        languageCode: String?,
-                                        language: String?,
-                                        preferredLanguage: String) -> Bool {
+    /// Internal (not private) so `PlaybackController` shares this single implementation —
+    /// it, `normalizedLanguageCodes`, and the ISO table were previously duplicated there.
+    static func languageMatches(languageTag: String?,
+                                languageCode: String?,
+                                language: String?,
+                                preferredLanguage: String) -> Bool {
         let preferred = normalizedLanguageCodes(for: preferredLanguage)
         guard !preferred.isEmpty else { return false }
         let candidates = [languageTag, languageCode, language]
@@ -134,4 +136,18 @@ enum MediaBrowserPlaybackPreferencePolicy {
         "ita": "it", "por": "pt", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh",
         "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi",
     ]
+
+    /// Normalize a track's language identifiers to the base two-letter code the Settings
+    /// picker uses as its ids ("en", not "en-US"/"eng"/"English"). Persisting anything else
+    /// still plays back correctly (`languageMatches` normalizes) but desyncs the Settings
+    /// checkmark, which matches on the exact stored string. nil when no code-like value exists.
+    static func persistableLanguageCode(languageTag: String?, languageCode: String?) -> String? {
+        for raw in [languageTag, languageCode] {
+            guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !raw.isEmpty else { continue }
+            let base = raw.split(separator: "-").first.map(String.init) ?? raw
+            return iso639ThreeToTwo[base] ?? base
+        }
+        return nil
+    }
 }
