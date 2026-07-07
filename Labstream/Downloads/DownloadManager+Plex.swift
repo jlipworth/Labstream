@@ -106,12 +106,13 @@ extension DownloadManager {
             case .noExistingVersionPart:
                 lastError[ratingKey] = .transferFailed("No server version part to download.")
             }
-            clearStaticRangePendingResume(ratingKey: ratingKey)
+            markStartAbortedBeforeTransfer(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             return
 
         case .preflightOriginal:
             guard let part = staticPart else {
+                markStartAbortedBeforeTransfer(ratingKey: ratingKey)
                 releaseInFlight(ratingKey: ratingKey)
                 return
             }
@@ -144,6 +145,7 @@ extension DownloadManager {
             // server version, so we DELIBERATELY skip the original direct-play preflight (the
             // version is already a server-prepared file) and NEVER touch the optimize queue.
             guard let part = staticPart else {
+                markStartAbortedBeforeTransfer(ratingKey: ratingKey)
                 releaseInFlight(ratingKey: ratingKey)
                 return
             }

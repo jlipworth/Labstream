@@ -1922,24 +1922,45 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onChange?()
 
         case .alreadyComplete:
-            // HTTP 416: only "already complete" if the durable partial matches the server's
-            // reported total. If the server says more bytes exist, keep requesting from the real
+            // HTTP 416: only "already complete" if the durable partial matches a total we know.
+            // Prefer the response's `Content-Range: bytes */TOTAL`; when the server omits it
+            // (headset evidence: reattached Plex chunks 416'd with no total and one 64 MB chunk of
+            // a 5.9 GB part was finalized straight to `.complete`), fall back to the expected size
+            // the transfer was started with. If more bytes exist, keep requesting from the real
             // checkpoint instead of validating a truncated partial.
             let durableBytes = fileSize(at: entry.destination) ?? entry.baseOffset
             let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
             if let contentRangeTotal {
                 store.setSourcePartSize(ratingKey: entry.ratingKey, contentRangeTotal)
             }
-            let effectiveEntry = entry.replacingExpectedBytes(contentRangeTotal ?? entry.expectedBytes)
-            if let contentRangeTotal, durableBytes != contentRangeTotal {
+            let knownTotal = contentRangeTotal
+                ?? entry.expectedBytes.flatMap { $0 > 0 ? $0 : nil }
+                ?? store.sourceExactBytes(ratingKey: entry.ratingKey)
+            let effectiveEntry = entry.replacingExpectedBytes(knownTotal ?? entry.expectedBytes)
+            if let knownTotal, durableBytes != knownTotal {
                 AppDiagnostics.record(.downloads, "downloads.range_416_mismatch", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "segment_kind": .label(entry.segmentKind.rawValue),
                     "durable_bytes": .bytes(durableBytes),
-                    "server_total_bytes": .bytes(contentRangeTotal),
+                    "server_total_bytes": .bytes(knownTotal),
+                    "total_source": .label(contentRangeTotal != nil ? "content_range" : "expected_bytes"),
                 ])
-                if durableBytes < contentRangeTotal {
-                    continueRangeAfterChunk(entry: effectiveEntry, partialSize: durableBytes)
+                if durableBytes < knownTotal {
+                    if contentRangeTotal != nil {
+                        // Server-confirmed total: same continuation semantics as before.
+                        continueRangeAfterChunk(entry: effectiveEntry, partialSize: durableBytes)
+                    } else if !retryRangeOffsetMismatch(entry: effectiveEntry,
+                                                        durableBytes: durableBytes,
+                                                        serverOffset: nil) {
+                        // No server total, only our expected size — and the server keeps 416ing
+                        // the checkpoint offset. Bound the retries (offset-mismatch budget) and
+                        // then fail retryable, KEEPING the durable partial as the checkpoint,
+                        // instead of either looping 416s or finalizing a truncated file.
+                        store.setStatus(ratingKey: entry.ratingKey, .failed)
+                        onError?(entry.ratingKey, .transferFailed(
+                            "Server no longer serves this download's range. Retry to continue."))
+                        onChange?()
+                    }
                 } else {
                     restartRangeFromChangedResource(entry: effectiveEntry)
                 }
@@ -2504,12 +2525,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         beginPendingBackgroundCompletionOperation()
         publishTransferFinalizing(ratingKey: ratingKey, bytes: bytes)
         let destination = record.localURL
+        let expectedExactBytes = store.sourceExactBytes(ratingKey: ratingKey)
         Task { [self] in
             defer { endPendingBackgroundCompletionOperation() }
             await finalizeTransferredFile(ratingKey: ratingKey,
                                           destination: destination,
                                           bytes: bytes,
-                                          validationLabel: validationLabel)
+                                          validationLabel: validationLabel,
+                                          expectedExactBytes: expectedExactBytes)
         }
         return true
     }
@@ -2541,6 +2564,36 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onChange?()
             return true
         }
+        // Short-circuit BEFORE the probe when the durable bytes provably fall short of the
+        // source's exact size: the probe can never rescue an incomplete static file (it either
+        // false-passes off the leading moov or misses forever), and re-probing it on every
+        // session/scene edge is what kept truncated rows looping as `.unverified` for hours.
+        // Preserve the partial — it is the resume checkpoint.
+        if let expectedExactBytes = store.sourceExactBytes(ratingKey: ratingKey),
+           DownloadCompletionValidation.isIncomplete(downloadedBytes: bytes,
+                                                     expectedExactBytes: expectedExactBytes) {
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("incomplete_bytes"),
+                "bytes": .bytes(bytes),
+                "expected_bytes": .bytes(expectedExactBytes),
+                "preserved": .bool(true),
+                "validation": .label(validationLabel),
+            ])
+            _ = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey,
+                                                                  expectedBytes: expectedExactBytes)
+            clearRetryCount(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .failed)
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: "failed_incomplete_bytes",
+                                   validationLabel: validationLabel,
+                                   durationMs: 0,
+                                   bytes: bytes)
+            onError?(ratingKey, .transferFailed(
+                "Download is incomplete (\(bytes / 1_000_000) of \(expectedExactBytes / 1_000_000) MB). Retry to continue."))
+            onChange?()
+            return true
+        }
         AppDiagnostics.record(.downloads, "downloads.unverified_revalidate", fields: [
             "download_id": .identifier(ratingKey),
             "bytes": .bytes(bytes),
@@ -2550,7 +2603,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             await finalizeTransferredFile(ratingKey: ratingKey,
                                           destination: destination,
                                           bytes: bytes,
-                                          validationLabel: validationLabel)
+                                          validationLabel: validationLabel,
+                                          expectedExactBytes: store.sourceExactBytes(ratingKey: ratingKey))
         }
         return true
     }
@@ -2563,12 +2617,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         publishTransferFinalizing(ratingKey: entry.ratingKey, bytes: bytes)
         let destination = entry.destination
         let ratingKey = entry.ratingKey
+        // The range lane knows the source's exact size; the finalize byte-completeness guard
+        // depends on it (headset evidence: a 416'd chunk finalized one 64 MB chunk of a 5.9 GB
+        // file straight to `.complete` because the moov-led MP4 passed the probe).
+        let expectedExactBytes = entry.expectedBytes ?? store.sourceExactBytes(ratingKey: ratingKey)
         Task { [self] in
             defer { endPendingBackgroundCompletionOperation() }
             await finalizeTransferredFile(ratingKey: ratingKey,
                                           destination: destination,
                                           bytes: bytes,
-                                          validationLabel: "range_checkpoint")
+                                          validationLabel: "range_checkpoint",
+                                          expectedExactBytes: expectedExactBytes)
         }
     }
 
@@ -2722,7 +2781,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func finalizeTransferredFile(ratingKey: String,
                                          destination: URL,
                                          bytes: Int,
-                                         validationLabel: String) async {
+                                         validationLabel: String,
+                                         expectedExactBytes: Int? = nil) async {
         let shouldFinalize = finalizationStateQueue.sync { () -> Bool in
             guard !finalizingRatingKeys.contains(ratingKey) else { return false }
             finalizingRatingKeys.insert(ratingKey)
@@ -2800,7 +2860,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                            probeReason: validation.reason,
                                                            expectedDurationMs: expectedDurationMs,
                                                            actualDurationMs: validation.durationMs,
-                                                           downloadedBytes: bytes)
+                                                           downloadedBytes: bytes,
+                                                           expectedExactBytes: expectedExactBytes)
         let finalizationResult = BackgroundFinalizationResultPolicy.result(for: outcome)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         switch outcome {
@@ -2818,6 +2879,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             clearRetryCount(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, finalizationResult.status)
             onError?(ratingKey, .transferFailed(finalizationResult.userFacingErrorMessage ?? "Downloaded file is empty."))
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: finalizationResult.resultLabel,
+                                   validationLabel: validationLabel,
+                                   durationMs: finalizationDurationMs,
+                                   bytes: bytes)
+        case .incompleteBytes(let actualBytes, let expectedTotalBytes):
+            downloadLog.error("incomplete-download ratingKey=\(ratingKey, privacy: .public) bytes=\(actualBytes, privacy: .public) expected=\(expectedTotalBytes, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(finalizationResult.validationFailureReason ?? "incomplete_bytes"),
+                "bytes": .bytes(actualBytes),
+                "expected_bytes": .bytes(expectedTotalBytes),
+                "preserved": .bool(true),
+            ])
+            // Keep the partial as the resume checkpoint (shouldDeleteFile is false) and pull the
+            // published 100% "finalizing" progress back to the durable byte count so the row shows
+            // its real position again.
+            _ = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: ratingKey,
+                                                                  expectedBytes: expectedTotalBytes)
+            clearRetryCount(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, finalizationResult.status)
+            onError?(ratingKey, .transferFailed(finalizationResult.userFacingErrorMessage ?? "Download is incomplete."))
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: finalizationResult.resultLabel,
                                    validationLabel: validationLabel,
