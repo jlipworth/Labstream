@@ -5,7 +5,13 @@ import Foundation
 /// Spotlight, App Intents, and deep-link routes use this single backend-scoped shape
 /// instead of passing a raw `ratingKey` plus out-of-band active-backend state.
 public struct BackendScopedMediaID: Sendable, Hashable, Codable {
-    public static let currentPrefix = "vp1"
+    /// Version prefix generated for new backend-scoped system-entry ids.
+    ///
+    /// Older #208/#209 mobile-preview builds generated `vp1`, which may already be
+    /// persisted in Spotlight entries or saved Shortcuts. Keep accepting that legacy
+    /// alias, but generate a neutral Labstream prefix going forward.
+    public static let currentPrefix = "ls1"
+    public static let legacyPrefixes: Set<String> = ["vp1"]
 
     public let backend: MediaBackendChoice
     public let serverNamespace: String?
@@ -42,7 +48,7 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
                                       omittingEmptySubsequences: false)
             .map(String.init)
         if pieces.count == 4,
-           pieces[0] == Self.currentPrefix,
+           Self.isSupportedBackendScopedPrefix(pieces[0]),
            let backend = MediaBackendChoice(rawValue: pieces[1]) {
             self.init(backend: backend,
                       serverNamespace: pieces[2].isEmpty ? nil : pieces[2],
@@ -69,6 +75,10 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
             return "\(host):\(port)"
         }
         return host
+    }
+
+    private static func isSupportedBackendScopedPrefix(_ prefix: String) -> Bool {
+        prefix == currentPrefix || legacyPrefixes.contains(prefix)
     }
 }
 

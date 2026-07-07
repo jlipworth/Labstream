@@ -36,7 +36,7 @@ mindmap
 ## App shell and lifecycle
 
 - `Labstream/App/` creates app-lifetime objects and handles launch/bootstrap state. `Labstream.swift` is the visionOS entry point; `LabstreamMobile.swift` is the iOS/iPadOS entry point.
-- `Labstream/UI/ContentView.swift` switches between restore, login, and browse states.
+- `Labstream/App/ContentView.swift` switches between restore, login, and browse states.
 - `Labstream/UI/RootView.swift` contains the shared section routing plus the iPad sidebar and iPhone tab shell.
 - `Labstream/SystemIntegration/` routes Spotlight, App Intents, and user activities into the main window.
 

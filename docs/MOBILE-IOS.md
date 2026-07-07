@@ -9,7 +9,7 @@ Labstream has two native Apple app targets:
 
 `LabstreamMobile` is the universal iPhone/iPad target. It shares the app source tree and
 `PMSKit` package with the visionOS target, but uses the mobile app entry point and an
-adaptive mobile shell. The mobile deployment target is iOS/iPadOS 27.
+adaptive mobile shell. The public mobile support floor is iOS/iPadOS 26+.
 
 ## Current mobile behavior
 
@@ -26,9 +26,11 @@ adaptive mobile shell. The mobile deployment target is iOS/iPadOS 27.
   `glassBackgroundEffect`/material look.
 - The custom AVFoundation video player exposes mobile system hooks for Picture in Picture,
   AirPlay route picking, video Now Playing metadata, and remote play/pause/seek commands.
-  The iOS chrome keeps AirPlay/PiP in top-trailing system-style glass buttons, collapses
-  secondary menus behind the `ellipsis.circle` menu, and registers hardware-keyboard
-  shortcuts (Space play/pause, ←/→ skip 10s/30s, Esc close). `UIBackgroundModes = audio`
+  The iOS chrome keeps AirPlay/PiP in top-trailing system-style glass buttons, keeps
+  Quality/Chapters/Speed/Stats as labeled glass pills, and lets the pill strip scroll
+  horizontally when the row is too narrow instead of hiding controls behind an ellipsis
+  menu. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
+  10s/30s, Esc close). `UIBackgroundModes = audio`
   is set on `LabstreamMobile`; playback still pauses when the app backgrounds unless it is
   continuing through PiP or an external AirPlay route.
 - Cellular downloads default to **off**. The Settings download toggle controls the
@@ -87,10 +89,10 @@ xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 ```
 
-A compatible installed iOS Simulator runtime is required. The source target is iOS/iPadOS
-27, so older local Xcode/SDK installations may report deployment-target warnings or fail
-before app code compiles; install the matching beta platform/runtime in Xcode Settings
-before treating the mobile target as broken.
+A compatible installed iOS Simulator runtime is required. The mobile target is iOS/iPadOS
+26+, so older local Xcode/SDK installations may report deployment-target warnings or fail
+before app code compiles; install the matching platform/runtime in Xcode Settings before
+treating the mobile target as broken.
 
 ## Install on a physical iPhone or iPad
 
