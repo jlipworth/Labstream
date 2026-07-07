@@ -205,29 +205,9 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         playbackSourceMetadata()
     }
 
-    func preferredCompatibleAudioStreamIndexForCappedTranscode() -> Int? {
-        let audioStreams = mediaStreams.filter { $0.type == "Audio" }
-        guard !audioStreams.isEmpty else { return nil }
-
-        let current = audioStreams.first { $0.isDefault == true } ?? audioStreams.first
-        if let current, current.isLowRiskTranscodeAudio {
-            return nil
-        }
-
-        let compatible = audioStreams.filter(\.isLowRiskTranscodeAudio)
-        guard !compatible.isEmpty else { return nil }
-
-        let currentLanguage = current?.language?.lowercased()
-        let sameLanguage = compatible.filter { stream in
-            guard let currentLanguage, !currentLanguage.isEmpty else { return false }
-            return stream.language?.lowercased() == currentLanguage
-        }
-
-        return (sameLanguage.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
-                sameLanguage.first ??
-                compatible.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
-                compatible.first)?.index
-    }
+    /// Shared steering logic lives on `[MediaBrowserItemMediaStreamDto]`
+    /// (`preferredCompatibleAudioStreamIndexForCappedTranscode`) — one implementation for
+    /// Jellyfin and Emby.
 }
 
 public enum EmbyPlaybackError: Error, Sendable, Equatable {
@@ -535,8 +515,13 @@ public enum EmbyPlayback {
         // Prefer the server-generated transcode URL (HLS). Token rides in api_key query.
         if let transcodingURL = source.transcodingURL, !transcodingURL.isEmpty {
             let resolvedAudioStreamIndex = audioStreamIndex ??
-                (audioBitrate == nil ? nil : source.preferredCompatibleAudioStreamIndexForCappedTranscode())
-            let url = try embyURL(server: server, pathOrURLString: transcodingURL)
+                (audioBitrate == nil ? nil : source.mediaStreams.preferredCompatibleAudioStreamIndexForCappedTranscode())
+            // The compatible-audio steering above is resolved client-side AFTER the server minted
+            // this URL, so the URL still points at the server-default track. Pin the chosen track
+            // on the master URL (child playlists/segments inherit its query) — the Emby twin of
+            // Jellyfin's appendTranscodeOverrides audio handling.
+            let url = try applyingAudioStreamIndex(resolvedAudioStreamIndex,
+                                                   to: embyURL(server: server, pathOrURLString: transcodingURL))
             return EmbyPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
@@ -617,6 +602,20 @@ public enum EmbyPlayback {
             sources.first(where: { $0.supportsDirectPlay }) ??
             sources.first(where: { $0.supportsDirectStream }) ??
             sources.first
+    }
+
+    /// Replace/append `AudioStreamIndex` on a server-minted transcode URL. No-op when nil.
+    private static func applyingAudioStreamIndex(_ audioStreamIndex: Int?, to url: URL) throws -> URL {
+        guard let audioStreamIndex, audioStreamIndex >= 0 else { return url }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw EmbyPlaybackError.invalidURL
+        }
+        var items = comps.queryItems ?? []
+        items.removeAll { $0.name.caseInsensitiveCompare("AudioStreamIndex") == .orderedSame }
+        items.append(URLQueryItem(name: "AudioStreamIndex", value: String(audioStreamIndex)))
+        comps.queryItems = items
+        guard let updated = comps.url else { throw EmbyPlaybackError.invalidURL }
+        return updated
     }
 
     private static func ensureApiKey(on url: URL, token: String) throws -> URL {

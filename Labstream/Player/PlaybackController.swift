@@ -1383,10 +1383,13 @@ final class PlaybackController {
     /// chosen track's language code — NOT the option itself (non-`Sendable`, item-specific).
     /// Called from the Audio tab via `selectAudio`. Unlike subtitles there is no "Off" state.
     private func persistAudioPreference(for option: AVMediaSelectionOption) {
-        let code = option.extendedLanguageTag
-            ?? option.locale?.language.languageCode?.identifier
+        // Normalize to the base two-letter code the Settings picker uses as its ids —
+        // storing e.g. a raw "en-US" tag plays back fine but desyncs the Settings checkmark.
+        let code = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
+            languageTag: option.extendedLanguageTag,
+            languageCode: option.locale?.language.languageCode?.identifier)
         let defaults = UserDefaults.standard
-        if let code, !code.isEmpty {
+        if let code {
             defaults.set(code, forKey: AudioPrefKey.language)
         } else {
             defaults.removeObject(forKey: AudioPrefKey.language)
@@ -1475,19 +1478,9 @@ final class PlaybackController {
     }
 
     private func sourceAudioIsForeign(toPreferredLanguage defaults: UserDefaults) -> Bool {
-        let preferredAudio = defaults.string(forKey: AudioPrefKey.language)
-            ?? Locale.current.language.languageCode?.identifier
-        guard let preferredAudio, !preferredAudio.isEmpty,
-              let part = sourcePartForCurrentMedia(),
-              let sourceAudio = part.audioStreams.first(where: { $0.selected == true })
-                ?? part.audioStreams.first(where: { $0.isDefault == true })
-                ?? part.audioStreams.first else {
-            return false
-        }
-        return !Self.languageMatches(languageTag: sourceAudio.languageTag,
-                                     languageCode: sourceAudio.languageCode,
-                                     language: sourceAudio.language,
-                                     preferredLanguage: preferredAudio)
+        guard let part = sourcePartForCurrentMedia() else { return false }
+        return MediaBrowserPlaybackPreferencePolicy.sourceAudioIsForeign(part: part,
+                                                                         defaults: defaults)
     }
 
     private func effectiveRemoteAudioStreamIndex() -> Int? {
@@ -1519,37 +1512,17 @@ final class PlaybackController {
             || codec.contains("image")
     }
 
+    /// Delegates to the shared preference policy — the matching/normalization logic (and its
+    /// ISO-639 table) was previously duplicated here verbatim and had to be fixed twice.
     private static func languageMatches(languageTag: String?,
                                         languageCode: String?,
                                         language: String?,
                                         preferredLanguage: String) -> Bool {
-        let preferred = normalizedLanguageCodes(for: preferredLanguage)
-        guard !preferred.isEmpty else { return false }
-        let candidates = [languageTag, languageCode, language]
-            .compactMap { $0 }
-            .flatMap { normalizedLanguageCodes(for: $0) }
-        return candidates.contains { preferred.contains($0) }
+        MediaBrowserPlaybackPreferencePolicy.languageMatches(languageTag: languageTag,
+                                                             languageCode: languageCode,
+                                                             language: language,
+                                                             preferredLanguage: preferredLanguage)
     }
-
-    private static func normalizedLanguageCodes(for raw: String) -> Set<String> {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty else { return [] }
-        let base = value.split(separator: "-").first.map(String.init) ?? value
-        var codes: Set<String> = [value, base]
-        if let twoLetter = iso639ThreeToTwo[base] {
-            codes.insert(twoLetter)
-        }
-        if let localized = Locale.current.localizedString(forLanguageCode: base)?.lowercased() {
-            codes.insert(localized)
-        }
-        return codes
-    }
-
-    private static let iso639ThreeToTwo: [String: String] = [
-        "eng": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
-        "ita": "it", "por": "pt", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh",
-        "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi",
-    ]
 
     /// Apply an audio selection chosen in the Audio tab. A soft switch on the live `AVPlayerItem`
     /// — no reload. Persists the choice (language code) so it's reapplied to the next item, and
@@ -1658,9 +1631,11 @@ final class PlaybackController {
         }
 
         audioStreamIDOverride = choice.id
-        if let lang = part.audioStreams.first(where: { $0.id == choice.id })?.languageTag
-            ?? part.audioStreams.first(where: { $0.id == choice.id })?.language,
-           !lang.isEmpty {
+        // Persist a normalized code, never the display name ("English") — the Settings picker
+        // matches the stored string against its two-letter ids.
+        if let stream = part.audioStreams.first(where: { $0.id == choice.id }),
+           let lang = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
+               languageTag: stream.languageTag, languageCode: stream.languageCode) {
             UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
         }
 
@@ -2060,6 +2035,35 @@ final class PlaybackController {
                 // Non-fatal: the stream still starts; a stale server-side selection may burn
                 // subtitles this session (the pre-fix behavior).
                 NSLog("PlaybackController: subtitle off deselection PUT failed: %@", Self.safeErrorSummary(error))
+            }
+        }
+
+        // Apply the "Preferred Audio" language at launch — the Plex twin of the Jellyfin/Emby
+        // initial `AudioStreamIndex` (MediaBrowserPlaybackPreferencePolicy.initialSelection).
+        // PMS muxes only the part-selected track into the transcode, so the preference must be
+        // PUT on the part before the build (same account-sticky mechanic as the subtitle PUTs
+        // above and the manual Audio-tab switch). Skipped when the user already switched audio
+        // this session (`audioStreamIDOverride`) or the preferred track is already selected —
+        // no redundant account-wide writes.
+        if audioStreamIDOverride == nil,
+           let part = sourcePartForCurrentMedia(),
+           let preferredAudioID = MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(for: item,
+                                                                                                 mediaIndex: mediaIndex),
+           part.audioStreams.first(where: { $0.selected == true })?.id != preferredAudioID {
+            do {
+                try await client.send(StreamSelectionRequest.selectAudioStream(server: server,
+                                                                               token: token,
+                                                                               identity: identity,
+                                                                               partID: part.id,
+                                                                               audioStreamID: preferredAudioID))
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                audioStreamIDOverride = preferredAudioID
+                NSLog("PlaybackController: selected preferred-language audio stream %d on part %d before transcode build",
+                      preferredAudioID, part.id)
+            } catch {
+                // Non-fatal: the stream still starts on the server-default track (the
+                // pre-fix behavior).
+                NSLog("PlaybackController: preferred audio selection PUT failed: %@", Self.safeErrorSummary(error))
             }
         }
 

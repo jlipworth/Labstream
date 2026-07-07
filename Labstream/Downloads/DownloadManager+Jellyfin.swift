@@ -212,7 +212,8 @@ extension DownloadManager {
                     request = try JellyfinLibrary.compatibleRemuxDownloadRequest(
                         server: server, token: token, identity: identity, itemId: itemId,
                         mediaSourceId: decision.mediaSourceId,
-                        videoCodec: videoCodec, copyAudio: eligibility.copiesAudio,
+                        videoCodec: videoCodec, audioCodec: eligibility.audioCodec,
+                        copyAudio: eligibility.copiesAudio,
                         playSessionId: decision.playSessionId)
                 } else {
                     // Stale UI/retry fallback: keep the download safe and playable when the
