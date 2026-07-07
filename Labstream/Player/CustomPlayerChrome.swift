@@ -519,14 +519,26 @@ struct CustomPlayerChrome: View {
                 }
             }
 
-            // No scroll track for primary transport: two skips (matching the hardware-keyboard
-            // mapping ←10/→30) plus the three menu circles fit iPhone portrait outright. The
-            // four-skip strip stays exclusive to the regular/iPad layout.
-            HStack(spacing: 8) {
-                skipButton(seconds: -10)
-                skipButton(seconds: 30)
-                Spacer(minLength: 8)
-                menuStrip
+            // Two skips (matching the hardware-keyboard mapping ←10/→30); the four-skip
+            // strip stays exclusive to the regular/iPad layout. The flat menu strip (up to
+            // six icon circles, ~304 pt) shares the row when it fits (landscape) and drops
+            // to its own row on a portrait phone. Both variants have fixed ideal widths,
+            // so ViewThatFits is deterministic here.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    skipButton(seconds: -10)
+                    skipButton(seconds: 30)
+                    Spacer(minLength: 8)
+                    menuStrip
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        skipButton(seconds: -10)
+                        skipButton(seconds: 30)
+                        Spacer(minLength: 0)
+                    }
+                    menuStrip
+                }
             }
         }
     }
