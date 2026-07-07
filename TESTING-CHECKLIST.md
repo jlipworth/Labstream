@@ -329,8 +329,8 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       grids 200 items at a time and pre-sizes placeholders from PMS `totalSize`; the rail uses
       PMS `/firstCharacter` counts.
 - [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
-  - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; visionOS row sane;
-    Client row says "Labstream on <device>" (for example iPad, iPhone, or Apple Vision Pro; NO client identifier shown).
+  - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; OS row sane for the running platform;
+    Client row says "Labstream on <device>" (for example Apple Vision Pro, iPad, or iPhone according to `PlatformClientIdentity`; NO client identifier shown).
   - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
     the connection scheme only — no token, client identifier, hostname, or full URL.
   - Server section: Version row shows the PMS version; Status row says "Tap to check",
@@ -623,7 +623,7 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). Device checks befo
 - [x] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
 - [x] "Reset playback preferences" lives in the **Account** section (just above Sign Out), shows a **confirmation dialog**, and on confirm clears remembered speed + subtitle/audio language (NOT streaming quality), showing "Preferences reset".
 - [x] Maintenance ▸ "Clear image cache" shows "Cache cleared"; artwork re-downloads on next view.
-- [x] About shows app version (build), visionOS, client (product on device — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
+- [x] About shows app version (build), OS, and client (product on Apple Vision Pro/iPad/iPhone per target — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
 - [x] Sign Out now shows a confirmation dialog; Cancel keeps you signed in, Sign Out returns to login.
 
 ### Device-only bugs found on Apple Vision Pro hardware (2026-06-14/15)

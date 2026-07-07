@@ -32,11 +32,20 @@ struct SystemEntryRoutingTests {
         let identifier = MediaSearchIdentifier.make(ratingKey: "items/abc|part", server: server, backend: .emby)
         let route = MediaSearchIdentifier.routeKey(from: identifier)
 
-        #expect(identifier == "vp1|emby|emby.example.test:8096|items/abc|part")
+        #expect(identifier == "ls1|emby|emby.example.test:8096|items/abc|part")
         #expect(route == BackendScopedMediaID(backend: .emby,
                                              serverNamespace: "emby.example.test:8096",
                                              ratingKey: "items/abc|part"))
         #expect(MediaSearchIdentifier.ratingKey(from: identifier) == "items/abc|part")
+    }
+
+    @Test func backendScopedIdentifierAcceptsLegacyVisionPrefix() {
+        let route = MediaSearchIdentifier.routeKey(from: "vp1|emby|emby.example.test:8096|items/abc|part")
+
+        #expect(route == BackendScopedMediaID(backend: .emby,
+                                             serverNamespace: "emby.example.test:8096",
+                                             ratingKey: "items/abc|part"))
+        #expect(MediaSearchIdentifier.ratingKey(from: "vp1|emby|emby.example.test:8096|items/abc|part") == "items/abc|part")
     }
 
     @Test func legacyServerScopedIdentifierParsesAsPlexRouteKey() throws {
@@ -60,7 +69,7 @@ struct SystemEntryRoutingTests {
         let id = BackendScopedMediaID(backend: .jellyfin, ratingKey: "abc").identifier
         let route = MediaSearchIdentifier.routeKey(from: id)
 
-        #expect(id == "vp1|jellyfin||abc")
+        #expect(id == "ls1|jellyfin||abc")
         #expect(route.backend == .jellyfin)
         #expect(route.serverNamespace == nil)
         #expect(route.ratingKey == "abc")

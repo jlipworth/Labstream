@@ -5,7 +5,7 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 ## Requirements
 
 - macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
-- The iOS/iPadOS 27 SDK/runtime (or compatible beta platform) for the `LabstreamMobile` target.
+- The iOS/iPadOS 26+ SDK/runtime for the `LabstreamMobile` target.
 - An Apple Vision Pro simulator runtime compatible with the project deployment target.
 - Swift Package Manager for `PMSKit` tests.
 - `uv` for the repo's Python tooling checks.
@@ -60,7 +60,7 @@ printf 'ipad\n' > .simplatform
 SIMID=$(scripts/worktree-sim.sh id)   # reads .simid-ipad for this worktree
 ```
 
-If Xcode says the iOS platform/runtime is missing or warns that the iOS 27 deployment target is newer than the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer beta simulator runtime may not be usable with an older installed iOS SDK.
+If Xcode says the iOS platform/runtime is missing or warns that the mobile deployment target is newer than the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer beta simulator runtime may not be usable with an older installed iOS SDK.
 
 Both app targets use `com.jlipworth.Labstream` for the intended unified product identity. Local installs with that bundle identifier can replace an existing install and its app state.
 
