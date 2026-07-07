@@ -19,7 +19,7 @@ struct PairingCodeCells: View {
                     .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
                     .frame(width: width, height: height)
                     .background(.thinMaterial, in: cellShape)
-                    .overlay(cellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                    .overlay(cellShape.strokeBorder(.primary.opacity(0.10), lineWidth: 0.5))
             }
         }
         .padding(.vertical, DS.Space.xs)

@@ -62,6 +62,7 @@ struct PlexLinkCodeView: View {
             VStack(spacing: DS.Space.xs) {
                 Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
                     .font(.title3)
+                    .multilineTextAlignment(.center)
                 Text("on your phone, tablet, or computer")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -140,6 +141,7 @@ struct EmbyConnectPinCodeView: View {
                 VStack(spacing: DS.Space.xs) {
                     Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
                         .font(.title3)
+                        .multilineTextAlignment(.center)
                     Text("on your phone, tablet, or computer — sign in to Emby Connect there")
                         .font(.callout)
                         .foregroundStyle(.secondary)

@@ -333,10 +333,23 @@ struct DetailView: View {
     @ViewBuilder
     private var artBackdrop: some View {
         if let art = detailed.art ?? detailed.thumb, !art.isEmpty {
-            PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .blur(radius: 60)
-                .opacity(0.30)
+            // Color.clear.overlay, NOT a bare PosterImage: the 900×600 poster frame
+            // is an intrinsic size, and a ZStack consulting it inflates the whole
+            // page to ~900 pt on narrow windows (live on iPhone via the music twin
+            // of this backdrop). Zero-ideal-size + scale-to-cover + clipped keeps
+            // the wash purely decorative at any window size.
+            Color.clear
+                .overlay {
+                    GeometryReader { geo in
+                        let scale = max(geo.size.width / 900, geo.size.height / 600, 1)
+                        PosterImage(path: art, width: 900, height: 600, cornerRadius: 0, requestScale: 1.0)
+                            .scaleEffect(scale)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .blur(radius: 60)
+                            .opacity(0.30)
+                    }
+                }
+                .clipped()
                 .overlay(
                     LinearGradient(colors: [.clear, .black.opacity(0.55)],
                                    startPoint: .top, endPoint: .bottom)
