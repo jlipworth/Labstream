@@ -14,8 +14,11 @@ struct AlbumDetailView: View {
     @State private var tracks: [MediaItem] = []
     @State private var loadState: BrowseLoadState = .idle
 
-    /// Hero cover size, matching the detail-screen poster width.
-    private let coverSize: CGFloat = 300
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    /// Hero cover size, matching the detail-screen poster width (220 on compact,
+    /// mirroring `DetailView`'s compact poster).
+    private var coverSize: CGFloat { compactWidth ? 220 : 300 }
 
     /// On an *album* item, `parentTitle` is the artist name (PMS hierarchy:
     /// artist → album → track).
@@ -63,7 +66,7 @@ struct AlbumDetailView: View {
                         }
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
+                .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                 .padding(.vertical, DS.Space.xl)
             }
         }
@@ -81,13 +84,19 @@ struct AlbumDetailView: View {
 
     // MARK: - Header
 
-    /// Cover + title/artist/year + Play / Shuffle actions.
+    /// Cover + title/artist/year + Play / Shuffle actions. Side-by-side on regular
+    /// width; compact phones stack the cover (centered) above the metadata — the
+    /// 300-pt cover + large-title text row cannot fit a 390-pt screen.
     private var header: some View {
-        HStack(alignment: .bottom, spacing: DS.Space.xxl) {
+        let layout = compactWidth
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Space.lg))
+            : AnyLayout(HStackLayout(alignment: .bottom, spacing: DS.Space.xxl))
+        return layout {
             PosterImage(path: album.thumb, width: coverSize, height: coverSize,
                         cornerRadius: DS.Radius.poster)
                 .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
                                                              style: .continuous)))
+                .frame(maxWidth: compactWidth ? .infinity : nil)
 
             VStack(alignment: .leading, spacing: DS.Space.sm) {
                 Text(album.title)
