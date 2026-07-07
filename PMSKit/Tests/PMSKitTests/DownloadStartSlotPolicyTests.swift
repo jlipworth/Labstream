@@ -13,6 +13,20 @@ struct DownloadStartSlotPolicyTests {
                 == .rejectExistingActiveRow(status: .downloading))
     }
 
+    @Test("Static recovery can replace a persisted active row when no live slot exists")
+    func recoveryMayReplaceActiveRowWithoutLiveSlot() {
+        #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .queued,
+                                                 hasActiveSlot: false,
+                                                 allowReplacingExistingActiveRow: true) == .accept)
+        #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .downloading,
+                                                 hasActiveSlot: false,
+                                                 allowReplacingExistingActiveRow: true) == .accept)
+        #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .queued,
+                                                 hasActiveSlot: true,
+                                                 allowReplacingExistingActiveRow: true)
+                == .rejectExistingActiveRow(status: .queued))
+    }
+
     @Test("An active slot with a visible inactive row is still a duplicate")
     func activeSlotWithVisibleRowRejects() {
         #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .paused, hasActiveSlot: true)

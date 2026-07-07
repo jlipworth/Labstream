@@ -38,6 +38,14 @@ public enum BackgroundFinalizationResultPolicy {
                 validationFailureReason: nil,
                 userFacingErrorMessage: nil
             )
+        case .emptyFile:
+            return BackgroundFinalizationResult(
+                status: .failed,
+                resultLabel: "failed_empty",
+                shouldDeleteFile: true,
+                validationFailureReason: "empty_file",
+                userFacingErrorMessage: "Downloaded file is empty."
+            )
         case .truncated(let actualDurationMs, let expectedDurationMs):
             return BackgroundFinalizationResult(
                 status: .failed,

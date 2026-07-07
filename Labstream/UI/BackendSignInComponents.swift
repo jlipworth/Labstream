@@ -122,6 +122,38 @@ struct PlexSignInStartView: View {
     }
 }
 
+struct PlexRestoreFailureView: View {
+    let isWorking: Bool
+    let onRetry: () -> Void
+    let onSignInAgain: () -> Void
+
+    var body: some View {
+        VStack(spacing: DS.Space.md) {
+            Text("Plex session saved")
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+
+            Text("Labstream still has your Plex token, but server discovery did not finish. Try reconnecting before signing in again.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+
+            Button(action: onRetry) {
+                Label("Reconnect to Plex", systemImage: "arrow.clockwise")
+                    .backendPrimaryCTALabel()
+            }
+            .labstreamGlassProminentButtonStyle()
+            .disabled(isWorking)
+            .frame(maxWidth: 340)
+
+            Button("Sign in again", action: onSignInAgain)
+                .labstreamGlassButtonStyle()
+                .disabled(isWorking)
+        }
+    }
+}
+
 
 struct JellyfinQuickConnectCodeView: View {
     let code: String

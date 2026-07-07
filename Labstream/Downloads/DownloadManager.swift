@@ -458,10 +458,13 @@ public final class DownloadManager {
     /// unwinding. If that leaves `activeJobs` set but no store row, future starts would be
     /// ignored as "already active" and the item would never appear in Downloads. Treat that
     /// combination as stale bookkeeping and clear it before accepting the new start.
-    func acquireInFlightSlotForStart(ratingKey: String, backend: String) -> Bool {
+    func acquireInFlightSlotForStart(ratingKey: String,
+                                     backend: String,
+                                     allowReplacingExistingActiveRow: Bool = false) -> Bool {
         let existingStatus = store.records.first(where: { $0.ratingKey == ratingKey })?.status
         switch DownloadStartSlotPolicy.decision(existingRecordStatus: existingStatus,
-                                                hasActiveSlot: activeJobs.contains(ratingKey)) {
+                                                hasActiveSlot: activeJobs.contains(ratingKey),
+                                                allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) {
         case .accept:
             break
         case .rejectExistingActiveRow(let status):
@@ -746,7 +749,7 @@ public final class DownloadManager {
             deferStaticRangeResume(record: record, reason: reason, preserveActiveIntent: true)
             return
         }
-        staticRangeRecovery.removePendingResume(ratingKey)
+        staticRangeRecovery.addPendingResume(ratingKey)
         recordDownloadDiagnostic("downloads.range_resume_ready", fields: [
             "download_id": .identifier(ratingKey),
             "backend": .label(DownloadJobSnapshot(record: record).backend.rawValue),
@@ -762,14 +765,9 @@ public final class DownloadManager {
         if StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: reason) {
             staticRangeRecovery.preserveRestartCountersForNextStart(ratingKey)
         }
-        if StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record) {
-            // A persisted system-resume intent is not a live task. Drop it to an inactive status for
-            // the backend retry handoff so `acquireInFlightSlotForStart` will seed the replacement
-            // Range request instead of treating the row as duplicate active work.
-            store.setStatus(ratingKey: ratingKey, .failed)
-        }
         refreshRecords()
-        retry(ratingKey: ratingKey)
+        retry(ratingKey: ratingKey,
+              allowReplacingExistingActiveRow: StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record))
     }
 
     func consumeRangeRestartCounterPreservation(ratingKey: String) -> Bool {
@@ -807,10 +805,21 @@ public final class DownloadManager {
     /// from the persisted `OfflineMetadata` snapshot (real type + media/part index) and
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
-    public func retry(ratingKey: String) {
+    public func retry(ratingKey: String, allowReplacingExistingActiveRow: Bool = false) {
         guard !retryState.isRetrying(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         guard record.status != .complete, record.status != .unverified else { return }
+        let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
+        let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
+            || StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record)
+        let allowActiveRowReplacement = shouldPromotePausedStatic || shouldReplacePersistedActiveStatic
+        if allowActiveRowReplacement {
+            // Keep refresh reconciliation from re-classifying this queued/downloading static row as
+            // stale while the backend entry point is still rebuilding PlaybackInfo and before
+            // URLSession has been re-acquired. The marker is cleared once a transfer starts or an
+            // immediate start failure is surfaced.
+            staticRangeRecovery.addPendingResume(ratingKey)
+        }
         let isManualStaticResumeWhileQueuePaused = DownloadRetryPreparationPolicy.isManualStaticResumeWhileQueuePaused(
             isQueuePaused: isQueuePaused,
             isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
@@ -902,20 +911,19 @@ public final class DownloadManager {
         // them out of `.paused` before backend-specific retry dispatch, because Jellyfin/Emby retry
         // bodies also pass through `retryAttemptCanContinue`; if the row is still `.paused`, that
         // async guard treats the user's Resume tap as cancelled and silently no-ops.
-        if StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record) {
-            // The backend download entry points reject existing `.queued`/`.downloading` rows as
-            // duplicate active work. A partial static retry is not active yet; it is about to
-            // re-acquire a URLSession task against the same destination file. Keep the row inactive
-            // for that handoff so `downloadEmby`/`downloadJellyfin` can start the Range request
-            // instead of no-oping and stranding the row as queued.
-            store.setStatus(ratingKey: ratingKey, .failed)
+        if shouldPromotePausedStatic {
+            // A partial static retry is not active yet; it is about to re-acquire a URLSession task
+            // against the same destination file. Keep the visible row as queued while letting the
+            // backend entry point intentionally replace this persisted active intent, instead of
+            // briefly showing user-visible `.failed` as a retry trampoline.
+            store.setStatus(ratingKey: ratingKey, .queued)
         }
         if DownloadRecordIdentity.isJellyfinRecordKey(ratingKey) {
-            retryJellyfin(record: record)
+            retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement)
             return
         }
         if DownloadRecordIdentity.isEmbyRecordKey(ratingKey) {
-            retryEmby(record: record)
+            retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement)
             return
         }
         let metadata = record.metadata
@@ -976,7 +984,8 @@ public final class DownloadManager {
                 // from the durable file size (0 when no checkpoint exists). Removing here made Plex
                 // existing-version retries forget side materials and appear to restart from scratch.
                 await self.download(currentItem, choice: resolved.choice,
-                                    mediaIndex: resolved.mediaIndex, partIndex: resolved.partIndex)
+                                    mediaIndex: resolved.mediaIndex, partIndex: resolved.partIndex,
+                                    allowReplacingExistingActiveRow: allowActiveRowReplacement)
                 self.refreshRecords()
                 return
             }
@@ -990,7 +999,8 @@ public final class DownloadManager {
                 // Preserve side materials for the same static existing-version row; the replacement
                 // upsert updates transfer fields without deleting cached assets.
                 await self.download(currentItem, choice: .existingVersion,
-                                    mediaIndex: mediaIndex, partIndex: partIndex)
+                                    mediaIndex: mediaIndex, partIndex: partIndex,
+                                    allowReplacingExistingActiveRow: allowActiveRowReplacement)
                 self.refreshRecords()
                 return
             }
@@ -1008,7 +1018,8 @@ public final class DownloadManager {
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
                 self.store.remove(ratingKey: ratingKey)
             }
-            await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex)
+            await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
+                                allowReplacingExistingActiveRow: allowActiveRowReplacement)
             self.refreshRecords()
         }
     }
@@ -1126,7 +1137,7 @@ public final class DownloadManager {
         }
     }
 
-    private func retryJellyfin(record: DownloadRecord) {
+    private func retryJellyfin(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false) {
         let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey),
@@ -1163,12 +1174,13 @@ public final class DownloadManager {
             await self.downloadJellyfin(retryIntent.item, choice: retryIntent.choice,
                                         mediaIndex: retryIntent.mediaIndex,
                                         partIndex: retryIntent.partIndex,
-                                        mediaSourceIDOverride: retryIntent.mediaSourceIDOverride)
+                                        mediaSourceIDOverride: retryIntent.mediaSourceIDOverride,
+                                        allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
             self.refreshRecords()
         }
     }
 
-    private func retryEmby(record: DownloadRecord) {
+    private func retryEmby(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false) {
         let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.embyItemID(fromRecordKey: record.ratingKey))
@@ -1204,7 +1216,8 @@ public final class DownloadManager {
             await self.downloadEmby(retryIntent.item, choice: retryIntent.choice,
                                     mediaIndex: retryIntent.mediaIndex,
                                     partIndex: retryIntent.partIndex,
-                                    mediaSourceIDOverride: retryIntent.mediaSourceIDOverride)
+                                    mediaSourceIDOverride: retryIntent.mediaSourceIDOverride,
+                                    allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
             self.refreshRecords()
         }
     }
@@ -1712,8 +1725,10 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.start", fields: fields)
         do {
             try start()
+            staticRangeRecovery.removePendingResume(plan.ratingKey)
             refreshRecords()
         } catch {
+            staticRangeRecovery.removePendingResume(plan.ratingKey)
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(plan.ratingKey),
                 "backend": .label(plan.backendLabel),
@@ -1816,6 +1831,10 @@ public final class DownloadManager {
 
     private func clearRetryHandoff(ratingKey: String) {
         retryState.clearHandoff(ratingKey)
+    }
+
+    func clearStaticRangePendingResume(ratingKey: String) {
+        staticRangeRecovery.removePendingResume(ratingKey)
     }
 
     private func markRetryReplacementSeeded(ratingKey: String) {

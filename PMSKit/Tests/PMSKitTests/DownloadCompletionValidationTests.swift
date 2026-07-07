@@ -74,6 +74,12 @@ struct DownloadCompletionValidationTests {
                                                      expectedDurationMs: nil, actualDurationMs: nil) == .complete)
     }
 
+    @Test func outcomeZeroBytesIsFailedEmptyEvenWhenProbeMisses() {
+        #expect(DownloadCompletionValidation.outcome(played: false, probeReason: "item_failed",
+                                                     expectedDurationMs: 10_000, actualDurationMs: nil,
+                                                     downloadedBytes: 0) == .emptyFile)
+    }
+
     @Test func outcomePlayedButShortIsTruncated() {
         #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
                                                      expectedDurationMs: 10_000, actualDurationMs: 1_000)

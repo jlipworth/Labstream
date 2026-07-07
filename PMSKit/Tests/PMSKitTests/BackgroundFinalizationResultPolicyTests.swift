@@ -15,6 +15,17 @@ struct BackgroundFinalizationResultPolicyTests {
         ))
     }
 
+    @Test("Empty transfers fail, delete the placeholder file, and stay retryable")
+    func emptyFileResult() {
+        #expect(BackgroundFinalizationResultPolicy.result(for: .emptyFile) == BackgroundFinalizationResult(
+            status: .failed,
+            resultLabel: "failed_empty",
+            shouldDeleteFile: true,
+            validationFailureReason: "empty_file",
+            userFacingErrorMessage: "Downloaded file is empty."
+        ))
+    }
+
     @Test("Truncated transfers fail, delete the file, and surface duration context")
     func truncatedResult() {
         #expect(BackgroundFinalizationResultPolicy.result(
