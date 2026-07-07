@@ -10,6 +10,27 @@ import Security
 /// Values are stored as generic passwords keyed by `account`, scoped to this
 /// app's service. `kSecAttrAccessibleAfterFirstUnlock` lets background URLSession
 /// downloads read the token while the headset is locked.
+///
+/// ## iCloud Keychain sync (shared sign-in across the user's devices)
+///
+/// Exactly ONE item syncs via iCloud Keychain: the Plex account token. All three app
+/// variants (visionOS, iPhone, iPad) share the bundle id and this service string, so a
+/// Plex sign-in on any device signs the others in on next launch. This is safe for Plex
+/// specifically because the token is account-scoped while each install keeps its OWN
+/// `clientIdentifier` (deliberately non-synced): every device still presents a distinct
+/// `X-Plex-Client-Identifier` + `X-Plex-Device-Name`, so the server sees truly
+/// independent, per-device-identifiable sessions.
+///
+/// Deliberately NOT synced:
+///   - `clientIdentifier` — syncing it would merge all devices into one server-side
+///     client identity, breaking per-device session listings and transcode bookkeeping.
+///   - Jellyfin/Emby access tokens — those servers bind the token to the device id used
+///     at authentication, so a synced token would make every device impersonate one
+///     server-side device record instead of holding independent sessions.
+///   - Backend/server selection — per-device preference, not a credential.
+///
+/// Note the flip side: deleting the synced token (manual sign-out or a 401 wipe) signs
+/// ALL devices out, which matches how an account-level token actually dies.
 final class KeychainStore {
     static let tokenKey = "token"
     static let clientIdentifierKey = "clientIdentifier"
@@ -24,6 +45,10 @@ final class KeychainStore {
     static let embyUserIDKey = "embyUserID"
     static let embyServerIDKey = "embyServerID"
 
+    /// Accounts stored as iCloud-synchronizable keychain items (see the type doc for the
+    /// rationale). Everything else stays device-local.
+    private static let synchronizedAccounts: Set<String> = [tokenKey]
+
     private let service: String
     private let fallbackPolicy: SecretFileFallbackPolicy
     private let fileManager: FileManager
@@ -36,16 +61,33 @@ final class KeychainStore {
         self.fileManager = fileManager
     }
 
+    /// Whether `account` is stored as an iCloud-synchronizable item.
+    private func isSynchronized(_ account: String) -> Bool {
+        Self.synchronizedAccounts.contains(account)
+    }
+
+    /// Base match query for `account`. A keychain query matches ONLY device-local items
+    /// unless `kSecAttrSynchronizable` says otherwise, so synced accounts must carry the
+    /// attribute explicitly (and legacy-local lookups omit it).
+    private func baseQuery(for account: String, synchronizable: Bool) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        if synchronizable {
+            query[kSecAttrSynchronizable as String] = true
+        }
+        return query
+    }
+
     /// Insert or update the value for `account`.
     @discardableResult
     func save(_ value: String, for account: String) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        let synced = isSynchronized(account)
+        let query = baseQuery(for: account, synchronizable: synced)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
@@ -53,6 +95,10 @@ final class KeychainStore {
 
         let status = saveToKeychain(data, query: query, attributes: attributes)
         if status == errSecSuccess {
+            if synced {
+                // Retire any pre-sync local copy so it can't shadow the synced item.
+                SecItemDelete(baseQuery(for: account, synchronizable: false) as CFDictionary)
+            }
             // Drop any stale fallback so it can't shadow the real value later.
             cleanupFallback(for: account)
             return true
@@ -69,36 +115,50 @@ final class KeychainStore {
 
     /// Read the value for `account`, or `nil` if absent.
     func read(_ account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecSuccess,
-           let data = result as? Data,
-           let value = String(data: data, encoding: .utf8) {
+        let synced = isSynchronized(account)
+        let primary = readItem(account, synchronizable: synced)
+        if let value = primary.value {
             cleanupFallback(for: account)
             return value
         }
 
-        if status != errSecItemNotFound, !fallbackPolicy.allowsSecretFileFallback {
-            NSLog("%@", "KeychainStore: SecItem read failed for \(account) (OSStatus \(status))")
+        if synced, let legacyValue = readItem(account, synchronizable: false).value {
+            // Pre-sync install: promote the device-local item to the synchronizable one.
+            // The keychain can't flip the attribute in place, so `save` re-adds the item
+            // as synced and retires the local copy; the value is good either way.
+            _ = save(legacyValue, for: account)
+            return legacyValue
         }
-        return readFallbackForMigrationOrDevelopment(account, keychainStatus: status)
+
+        if primary.status != errSecItemNotFound, !fallbackPolicy.allowsSecretFileFallback {
+            NSLog("%@", "KeychainStore: SecItem read failed for \(account) (OSStatus \(primary.status))")
+        }
+        return readFallbackForMigrationOrDevelopment(account, keychainStatus: primary.status)
     }
 
-    /// Remove the value for `account` (no-op if absent).
+    /// One `SecItemCopyMatching` for `account` in the given sync domain.
+    private func readItem(_ account: String,
+                          synchronizable: Bool) -> (status: OSStatus, value: String?) {
+        var query = baseQuery(for: account, synchronizable: synchronizable)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else { return (status, nil) }
+        return (status, value)
+    }
+
+    /// Remove the value for `account` (no-op if absent). For synced accounts this deletes
+    /// BOTH the synchronizable item (propagating the sign-out to the user's other devices
+    /// via iCloud Keychain) and any legacy device-local copy.
     @discardableResult
     func delete(_ account: String) -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        var query = baseQuery(for: account, synchronizable: false)
+        if isSynchronized(account) {
+            query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        }
         let status = SecItemDelete(query as CFDictionary)
         cleanupFallback(for: account)
         return status == errSecSuccess || status == errSecItemNotFound
@@ -120,11 +180,7 @@ final class KeychainStore {
     }
 
     private func saveFallbackDataToKeychain(_ data: Data, for account: String) -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+        let query = baseQuery(for: account, synchronizable: isSynchronized(account))
         let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
