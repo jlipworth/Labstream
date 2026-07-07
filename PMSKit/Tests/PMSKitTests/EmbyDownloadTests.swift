@@ -88,7 +88,7 @@ struct EmbyDownloadTests {
     // MARK: - Download device profile
 
     @Test func downloadDeviceProfileAdvertisesStaticMp4NotHls() throws {
-        let profile = EmbyPlayback.visionOSDownloadDeviceProfile(maxStaticBitrate: 200_000_000)
+        let profile = EmbyPlayback.downloadDeviceProfile(maxStaticBitrate: 200_000_000)
         #expect(profile["Name"] as? String == "Labstream-Download")
         #expect(profile["MaxStaticBitrate"] as? Int == 200_000_000)
         // `try #require` (not `try?`): a missing/renamed TranscodingProfiles is a real structural

@@ -113,10 +113,73 @@ extension View {
     /// docs/DEVELOPMENT.md. `.plain` registers through the correct path and routes
     /// clicks accurately; the `contentShape(.hoverEffect, …)` reshapes its automatic
     /// system highlight to the card's rounded rect.
+    @ViewBuilder
     func cardLink(cornerRadius: CGFloat = DS.Radius.poster) -> some View {
-        buttonStyle(.plain)
+        #if os(visionOS)
+        self.buttonStyle(.plain)
             .contentShape(.hoverEffect,
                           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        #else
+        // iPad pointer idiom: cards lift under the cursor, like Home Screen icons.
+        self.buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .contentShape(.hoverEffect,
+                          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .hoverEffect(.lift)
+        #endif
+    }
+
+    /// Platform glass platter. visionOS keeps `glassBackgroundEffect` (materials render
+    /// flat and z-fight window edges there); iOS 26 uses Liquid Glass proper.
+    @ViewBuilder
+    func labstreamGlassBackground<S: InsettableShape>(in shape: S) -> some View {
+        #if os(visionOS)
+        self.glassBackgroundEffect(in: shape)
+        #else
+        self.glassEffect(.regular, in: shape)
+        #endif
+    }
+
+    /// Platter behind controls that float over media (player chrome). visionOS keeps its
+    /// proven material look; iOS 26 uses Liquid Glass, the platform idiom for controls
+    /// layered above content.
+    @ViewBuilder
+    func labstreamOverlayPlatter<S: InsettableShape>(_ material: Material = .ultraThinMaterial,
+                                                     in shape: S) -> some View {
+        #if os(visionOS)
+        self.background(material, in: shape)
+        #else
+        self.glassEffect(.regular, in: shape)
+        #endif
+    }
+
+    /// Neutral secondary button: visionOS `.bordered` (already a glass platter there),
+    /// iOS 26 `.glass` (Liquid Glass). The iOS branch forces a `.primary` tint so the
+    /// label reads monochrome instead of inheriting the amber app accent — secondary
+    /// browse/detail/login chrome should look Apple-neutral, with amber reserved for the
+    /// genuine prominent CTA (`labstreamGlassProminentButtonStyle`). visionOS keeps the
+    /// accent it always had, so its rendering is unchanged.
+    @ViewBuilder
+    func labstreamGlassButtonStyle() -> some View {
+        #if os(visionOS)
+        self.buttonStyle(.bordered)
+        #else
+        self.buttonStyle(.glass)
+            .tint(.primary)
+        #endif
+    }
+
+    /// Prominent variant of `labstreamGlassButtonStyle`. The player chrome tints
+    /// controls white on iOS, so the prominent fill is white — the label must be
+    /// explicitly dark or it disappears into the pill (white-on-white).
+    @ViewBuilder
+    func labstreamGlassProminentButtonStyle() -> some View {
+        #if os(visionOS)
+        self.buttonStyle(.borderedProminent)
+        #else
+        self.buttonStyle(.glassProminent)
+            .foregroundStyle(.black)
+        #endif
     }
 
     /// Shared media-rail scroll content insets. Use with
@@ -140,6 +203,6 @@ struct SpecChip: View {
             .padding(.horizontal, DS.Space.md)
             .padding(.vertical, DS.Space.xs + 1)
             .background(.thinMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.08), lineWidth: 0.5))
+            .overlay(Capsule().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
     }
 }

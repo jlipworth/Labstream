@@ -22,6 +22,10 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
     // Self-clear the seek hold once the live clock has actually landed at/after the target (the
     // per-item readyToPlay fires once and may precede that, so the 500ms tick backstops it).
     controller.releaseSeekHoldIfLanded()
+    // Zombie-playback backstop: a starved rebuild can report `.playing` with a parked clock
+    // forever (no `.waiting`-keyed watchdog ever fires) — the tick polls for that and escalates
+    // to the visible reconnect path.
+    controller.detectZombiePlaybackIfStuck()
     if !scrubState.isDragging {
         // While a user seek is in flight (in-buffer native seek, or an out-of-buffer
         // rebuild/reopen), pass `holdCommittedTarget: true` so the committed target stays pinned:
@@ -43,14 +47,18 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
+    #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissWindow) private var dismissWindow
+    #endif
 
     let controller: PlaybackController
     let title: String
     @Binding var scrubState: PlaybackScrubState
     let trickPlayProvider: (any TrickPlayThumbnailProviding)?
+    /// Drives the iOS Picture in Picture button; inert on visionOS.
+    let pipCoordinator: PlayerPiPCoordinator
     let onRetry: () -> Void
     let onClose: (() -> Void)?
     let allowsRealityTheater: Bool
@@ -64,11 +72,18 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
+    /// True only between a Slider `onEditingChanged(true)` and its matching `(false)`. Guards the
+    /// scrubber binding's defensive `beginDrag` so a trailing value-set arriving after the commit
+    /// cannot re-open the drag (see `scrubberBinding`).
+    @State private var scrubEditingSessionActive = false
 
     init(controller: PlaybackController,
          title: String,
          scrubState: Binding<PlaybackScrubState>,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         // Defaulted so the visionOS Cinema/Theater call sites (which have no PiP) need no
+         // change; the iOS window path passes the shared coordinator from CustomPlayerView.
+         pipCoordinator: PlayerPiPCoordinator = PlayerPiPCoordinator(),
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?,
          allowsRealityTheater: Bool = false) {
@@ -76,6 +91,7 @@ struct CustomPlayerChrome: View {
         self.title = title
         _scrubState = scrubState
         self.trickPlayProvider = trickPlayProvider
+        self.pipCoordinator = pipCoordinator
         self.onRetry = onRetry
         self.onClose = onClose
         self.allowsRealityTheater = allowsRealityTheater
@@ -121,7 +137,7 @@ struct CustomPlayerChrome: View {
                         } label: {
                             Label(marker.kind.label, systemImage: marker.kind.systemImage)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .labstreamGlassProminentButtonStyle()
                     }
                     .padding(.horizontal, 34)
                     .padding(.bottom, 14)
@@ -159,10 +175,23 @@ struct CustomPlayerChrome: View {
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+
+            #if os(iOS)
+            // Hardware-keyboard transport. These zero-size buttons stay in the hierarchy
+            // regardless of `shouldShowChrome`, so the shortcuts fire even while the chrome
+            // is auto-hidden (the on-screen transport buttons are gone at that point).
+            keyboardShortcuts
+            #endif
         }
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
         .animation(.easeInOut(duration: 0.18), value: controller.skipMarker.active != nil)
+        #if os(iOS)
+        // System-player look: the whole chrome is monochrome — white pills, symbols,
+        // and scrubber — instead of inheriting the amber app accent. The brand color
+        // stays in the browse UI; inside the player it reads as non-native.
+        .tint(.white)
+        #endif
         .onAppear { revealChrome() }
         .onDisappear {
             hideTask?.cancel()
@@ -215,6 +244,7 @@ struct CustomPlayerChrome: View {
         VStack {
             HStack(spacing: 14) {
                 if let onClose {
+                    #if os(visionOS)
                     Button(action: {
                         revealChrome()
                         onClose()
@@ -225,15 +255,108 @@ struct CustomPlayerChrome: View {
                             .frame(width: 52, height: 52)
                     }
                     .buttonStyle(.borderedProminent)
+                    #else
+                    // iOS system players use a subdued monochrome glass circle for
+                    // dismiss, not a large accent-tinted platter.
+                    Button(action: {
+                        revealChrome()
+                        onClose()
+                    }) {
+                        Label("Close", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                            .font(.body.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .tint(.primary)
+                    // Sit a touch lower than the visionOS chrome so the circle clears
+                    // the status-bar corner radius comfortably.
+                    .padding(.top, 10)
+                    #endif
                 }
 
                 Spacer()
+
+                #if os(iOS)
+                // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
+                // circles at the top-trailing corner, opposite the close button. Backgrounding
+                // pauses ordinary video, but active AirPlay/PiP routes keep playing.
+                airPlayButton
+                    .padding(.top, 10)
+
+                if pipCoordinator.isPossible {
+                    pipButton
+                        .padding(.top, 10)
+                }
+                #endif
             }
             .padding(28)
 
             Spacer()
         }
     }
+
+    #if os(iOS)
+    private var airPlayButton: some View {
+        AirPlayRoutePickerButton()
+            .frame(width: 44, height: 44)
+            .labstreamOverlayPlatter(in: Circle())
+            .accessibilityLabel("AirPlay")
+    }
+
+    private var pipButton: some View {
+        Button {
+            revealChrome(keepVisible: true)
+            pipCoordinator.toggle()
+        } label: {
+            Label(pipCoordinator.isActive ? "Exit Picture in Picture" : "Picture in Picture",
+                  systemImage: pipCoordinator.isActive ? "pip.exit" : "pip.enter")
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.semibold))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .tint(.primary)
+    }
+
+    /// Zero-size buttons whose only job is to register hardware-keyboard shortcuts. Space
+    /// toggles play/pause, ←/→ skip 10s back / 30s forward (matching the on-screen skip
+    /// buttons), and Esc closes the player. Kept out of the visible layout via `opacity(0)`.
+    @ViewBuilder private var keyboardShortcuts: some View {
+        Group {
+            Button("Play or pause") {
+                revealChrome()
+                controller.togglePlayback()
+                scheduleChromeHideIfNeeded()
+            }
+            .keyboardShortcut(.space, modifiers: [])
+
+            Button("Skip back 10 seconds") {
+                performRelativeSkip(seconds: -10)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+
+            Button("Skip forward 30 seconds") {
+                performRelativeSkip(seconds: 30)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [])
+
+            if let onClose {
+                Button("Close player") {
+                    revealChrome()
+                    onClose()
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+        }
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+    #endif
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -259,8 +382,15 @@ struct CustomPlayerChrome: View {
                 realityTheaterDeveloperButton
                     .fixedSize(horizontal: true, vertical: false)
 
+                #if os(visionOS)
                 menuStrip
                     .fixedSize(horizontal: true, vertical: false)
+                #else
+                // No fixedSize on iOS: the strip's ViewThatFits needs the row's REAL
+                // remaining width to pick labeled pills vs icon circles — an unbounded
+                // proposal would always choose the labeled variant and overflow portrait.
+                menuStrip
+                #endif
             }
 
             if scrubState.isDragging, trickPlayProvider != nil {
@@ -279,7 +409,14 @@ struct CustomPlayerChrome: View {
                         .font(.title2.weight(.semibold))
                         .frame(width: 44, height: 44)
                 }
+                #if os(visionOS)
                 .buttonStyle(.borderedProminent)
+                #else
+                // Neutral symbol on the glass platter, like the system player's
+                // transport controls — the accent stays reserved for real CTAs.
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                #endif
 
                 skipControls
 
@@ -301,7 +438,7 @@ struct CustomPlayerChrome: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 20)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
 
@@ -374,6 +511,7 @@ struct CustomPlayerChrome: View {
     }
 
     @ViewBuilder private var cinemaButton: some View {
+        #if os(visionOS)
         // Shipping Cinema uses the custom-player ImmersiveSpace. The separate RealityKit theater
         // prototype has its own feature/session boundary and remains gated until device-ready.
         if !CustomCinemaMode.isUserVisible {
@@ -407,10 +545,14 @@ struct CustomPlayerChrome: View {
             .controlSize(.small)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
         }
+        #else
+        EmptyView()
+        #endif
     }
 
 
     @ViewBuilder private var cinemaScreenButton: some View {
+        #if os(visionOS)
         if CustomCinemaMode.isUserVisible && cinemaSession.presentationState == .open {
             Button {
                 openMenu(.screen)
@@ -426,10 +568,14 @@ struct CustomPlayerChrome: View {
             .accessibilityLabel("Screen position")
             .help("Adjust Cinema screen position")
         }
+        #else
+        EmptyView()
+        #endif
     }
 
 
     @ViewBuilder private var realityTheaterDeveloperButton: some View {
+        #if os(visionOS)
         if allowsRealityTheater
             && (RealityTheaterFeature.isDeviceTestingEntryPointVisible
                 || RealityTheaterFeature.isDeveloperEntryPointEnabled()
@@ -451,6 +597,9 @@ struct CustomPlayerChrome: View {
             .disabled(realityTheaterSession.phase == .opening)
             .help("RealityKit cinema prototype for #12 headset testing")
         }
+        #else
+        EmptyView()
+        #endif
     }
 
 
@@ -458,7 +607,8 @@ struct CustomPlayerChrome: View {
         realityTheaterSession.phase == .open ? 112 : CustomPlayerMenuKind.quality.minChromeWidth
     }
 
-    private var menuStrip: some View {
+    @ViewBuilder private var menuStrip: some View {
+        #if os(visionOS)
         HStack(spacing: 8) {
             ForEach(availableMenus) { menu in
                 Button {
@@ -474,7 +624,52 @@ struct CustomPlayerChrome: View {
                 .controlSize(.small)
             }
         }
+        #else
+        // Flat menus, no "…" overflow (an ellipsis submenu was tried and reverted — it
+        // buried Quality/Chapters/Speed behind an extra hop, killing the tap-video →
+        // change-setting flow the visionOS pill strip was designed for). Every width
+        // keeps the LABELED pills (icon-only circles were tried and rejected): when the
+        // row can't seat the full ~660-pt strip (portrait iPad, iPhone), the same pills
+        // scroll horizontally instead of degrading to icons. The labeled variant has a
+        // fixed ideal width, so ViewThatFits is deterministic; the scroller is the
+        // always-fits last resort.
+        ViewThatFits(in: .horizontal) {
+            labeledMenuStrip
+            scrollableLabeledMenuStrip
+        }
+        #endif
     }
+
+    #if os(iOS)
+    /// visionOS-parity labeled pills in iOS glass styling — every menu one tap away.
+    private var labeledMenuStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(availableMenus) { menu in
+                Button {
+                    openMenu(menu)
+                } label: {
+                    Label(menu.shortTitle, systemImage: menu.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .font(.callout.weight(.semibold))
+                        .frame(minWidth: menu.minChromeWidth, minHeight: 38)
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.glass)
+                .tint(.primary)
+            }
+        }
+    }
+
+    /// The labeled pills in a trailing-anchored horizontal scroller — the variant for
+    /// rows too narrow to seat the whole strip. Pills keep their full size and titles;
+    /// the viewer swipes to reach the clipped ones.
+    private var scrollableLabeledMenuStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            labeledMenuStrip
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+    }
+    #endif
 
     private var availableMenus: [CustomPlayerMenuKind] {
         CustomPlayerMenuKind.allCases.filter { menu in
@@ -512,10 +707,10 @@ struct CustomPlayerChrome: View {
                 revealChrome()
                 controller.playNextNow()
             }
-            .buttonStyle(.borderedProminent)
+            .labstreamGlassProminentButtonStyle()
         }
         .padding(18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var scrubberBinding: Binding<Double> {
@@ -525,6 +720,12 @@ struct CustomPlayerChrome: View {
         } set: { fraction in
             revealChrome(keepVisible: true)
             if !scrubState.isDragging {
+                // On iPad a trailing Slider value-set can land AFTER onEditingChanged(false) has
+                // already committed the seek. Without this guard that set re-opens the drag with no
+                // editing session left to close it, so isDragging sticks true and the trickplay
+                // preview stays pinned on screen. Only honor the defensive begin inside a live
+                // editing session; ignore a stray trailing set.
+                guard scrubEditingSessionActive else { return }
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
@@ -533,6 +734,7 @@ struct CustomPlayerChrome: View {
     }
 
     private func handleScrubEditingChanged(_ editing: Bool) {
+        scrubEditingSessionActive = editing
         if editing {
             revealChrome(keepVisible: true)
             scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
@@ -598,6 +800,7 @@ struct CustomPlayerChrome: View {
     }
 
     private func toggleCinemaMode() async {
+        #if os(visionOS)
         switch cinemaSession.presentationState {
         case .closed:
             cinemaSession.presentationState = .inTransition
@@ -622,10 +825,12 @@ struct CustomPlayerChrome: View {
         case .inTransition:
             break
         }
+        #endif
     }
 
 
     private func toggleRealityTheaterMode() async {
+        #if os(visionOS)
         switch realityTheaterSession.phase {
         case .inactive, .prepared:
             realityTheaterSession.prepare(title: title,
@@ -646,6 +851,7 @@ struct CustomPlayerChrome: View {
         case .opening:
             break
         }
+        #endif
     }
 
     /// Chapters is a horizontal filmstrip; unlike the small fixed menus it should fill most of the
@@ -815,14 +1021,18 @@ private struct CustomPlayerMenuPopover: View {
         }
         .padding(22)
         .frame(width: size.width + 44, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .labstreamOverlayPlatter(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(radius: 24)
     }
 
     @ViewBuilder private var menuContent: some View {
         switch menu {
         case .screen:
+            #if os(visionOS)
             CinemaScreenAdjustmentView(session: cinemaSession)
+            #else
+            EmptyView()
+            #endif
         case .quality:
             QualityTabView(state: menuState) { kbps in
                 controller.reload(bitrateKbps: kbps)
@@ -869,6 +1079,7 @@ private struct CustomPlayerMenuPopover: View {
 }
 
 
+#if os(visionOS)
 private struct CinemaScreenAdjustmentView: View {
     let session: CustomCinemaSessionStore
 
@@ -1015,6 +1226,8 @@ private struct CinemaScreenAdjustmentView: View {
     }
 }
 
+#endif
+
 struct CustomTransportStatusOverlay: View {
     let status: PlaybackTransportStatus
     let onRetry: () -> Void
@@ -1070,7 +1283,7 @@ struct CustomTransportStatusOverlay: View {
                     Label(isPausedBuffering ? "Play when ready" : "Pause while loading",
                           systemImage: isPausedBuffering ? "play.fill" : "pause.fill")
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .controlSize(.small)
             case .reconnecting:
                 if let onClose {
@@ -1087,7 +1300,7 @@ struct CustomTransportStatusOverlay: View {
                         Label("Retry", systemImage: "arrow.clockwise")
                             .frame(minWidth: 160)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .labstreamGlassProminentButtonStyle()
                     if let onClose {
                         Button(action: onClose) {
                             Text("Close")
@@ -1104,7 +1317,7 @@ struct CustomTransportStatusOverlay: View {
         .padding(.horizontal, 24)
         .padding(.vertical, 22)
         .frame(width: 340)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(radius: 18)
     }
 

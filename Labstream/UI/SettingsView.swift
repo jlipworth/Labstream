@@ -746,7 +746,7 @@ struct SettingsView: View {
             if let builtAt = Self.buildDateUTC {
                 LabeledContent("Built", value: builtAt)
             }
-            LabeledContent("visionOS", value: ProcessInfo.processInfo.operatingSystemVersionString)
+            LabeledContent("OS", value: ProcessInfo.processInfo.operatingSystemVersionString)
             // Product/device name exactly as sent to Plex. NEVER the client identifier —
             // it's treated as a secret in this repo.
             LabeledContent("Client", value: "\(appModel.identity.product) on \(appModel.identity.deviceName)")

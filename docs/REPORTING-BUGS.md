@@ -14,7 +14,7 @@ diagnostic report to make that easy and safe.
    **Settings ▸ Diagnostics** and turn on **Enable diagnostic logging**. Then
    make the problem happen once.
 2. **Grab the report.** Tap **Send feedback to developer** to review the redacted
-   report and share it via the visionOS share sheet, **Copy diagnostic report**
+   report and share it via the system share sheet, **Copy diagnostic report**
    to copy it to the clipboard, or **Export diagnostic report file** if you want
    a text file.
 3. **Review it.** The report is redacted for you (see below) — but give it a
@@ -26,7 +26,7 @@ diagnostic report to make that easy and safe.
 5. **Turn logging back off** in Settings ▸ Diagnostics if you no longer need it.
 
 That's it. The form will also ask for your Labstream version and build
-(**Settings ▸ About**), your visionOS version, and which backend you use
+(**Settings ▸ About**), your OS version, and which backend you use
 (Plex / Jellyfin / Emby).
 
 ## What's in the diagnostic report — and what isn't

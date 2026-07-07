@@ -16,7 +16,7 @@ cd Labstream
 scripts/worktree-sim.sh setup
 ```
 
-Build and test with the commands in [Development setup](DEVELOPMENT.md). Use the worktree simulator ID rather than `booted`.
+Build and test with the commands in [Development setup](DEVELOPMENT.md). Use the worktree simulator ID for the platform you are testing rather than `booted`.
 
 ## Pull request expectations
 

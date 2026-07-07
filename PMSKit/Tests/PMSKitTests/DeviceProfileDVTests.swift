@@ -17,16 +17,16 @@ struct DeviceProfileDVTests {
                                                   deviceId: "device-123", version: "0.1.0")
 
     @Test func plexProfilesOmitDVByDefault() {
-        let streaming = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000)
-        let probe = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: 8000)
+        let streaming = DeviceProfile.streaming(maxVideoBitrateKbps: 8000)
+        let probe = DeviceProfile.directPlayProbe(maxVideoBitrateKbps: 8000)
         #expect(!streaming.clientProfileExtra.lowercased().contains("dvh"))
         #expect(!probe.clientProfileExtra.lowercased().contains("dvh"))
     }
 
     @Test func plexProfilesAdvertiseDVWhenEnabled() {
-        let streaming = DeviceProfile.visionOS(maxVideoBitrateKbps: 8000, advertiseDolbyVision: true)
-        let probe = DeviceProfile.visionOSDirectPlayProbe(maxVideoBitrateKbps: 8000,
-                                                          advertiseDolbyVision: true)
+        let streaming = DeviceProfile.streaming(maxVideoBitrateKbps: 8000, advertiseDolbyVision: true)
+        let probe = DeviceProfile.directPlayProbe(maxVideoBitrateKbps: 8000,
+                                                  advertiseDolbyVision: true)
         for extra in [streaming.clientProfileExtra, probe.clientProfileExtra] {
             #expect(extra.contains("dvh1"))
             #expect(extra.contains("dvhe"))

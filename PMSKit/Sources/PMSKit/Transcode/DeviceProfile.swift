@@ -8,7 +8,7 @@ import Foundation
 ///     listing the containers / video codecs / audio codecs we can play.
 ///   - `add-limitation` capping the video bitrate so PMS transcodes down to our cap.
 ///
-/// visionOS / AVPlayer plays HLS with fMP4 or MPEG-TS segments and H.264 / HEVC video
+/// AVPlayer (visionOS and iPadOS alike) plays HLS with fMP4 or MPEG-TS segments and H.264 / HEVC video
 /// (HEVC over HLS requires the fMP4 container — see research/09 — which is why `mp4` is
 /// listed as a transcode-target container alongside `ts`).
 public struct DeviceProfile: Sendable, Equatable {
@@ -19,7 +19,8 @@ public struct DeviceProfile: Sendable, Equatable {
         self.clientProfileExtra = clientProfileExtra
     }
 
-    /// Build the visionOS device profile, capping the transcoded video bitrate and, for
+    /// Build the streaming device profile (shared by every Apple platform — the AVPlayer
+    /// codec surface is identical), capping the transcoded video bitrate and, for
     /// low/mid quality ladder rungs, audio bitrate.
     /// - Parameter maxVideoBitrateKbps: hard cap on transcoded video bitrate, in kbps.
     /// - Parameter maxAudioBitrateKbps: optional cap on transcoded audio bitrate, in kbps.
@@ -30,9 +31,9 @@ public struct DeviceProfile: Sendable, Equatable {
     static let dolbyVisionDirectPlayDirective =
         "add-direct-play-profile(type=videoProfile&container=mp4,m4v,mov&videoCodec=hevc&videoProfile=dvhe.05,dvhe.08,dvh1.05,dvh1.08&audioCodec=aac,ac3,eac3)"
 
-    public static func visionOS(maxVideoBitrateKbps: Int,
-                                maxAudioBitrateKbps: Int? = nil,
-                                advertiseDolbyVision: Bool = false) -> DeviceProfile {
+    public static func streaming(maxVideoBitrateKbps: Int,
+                                 maxAudioBitrateKbps: Int? = nil,
+                                 advertiseDolbyVision: Bool = false) -> DeviceProfile {
         // HEVC over HLS must use the fMP4 (mp4) container; H.264 works in both ts and mp4.
         var directives = [
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",
@@ -59,13 +60,13 @@ public struct DeviceProfile: Sendable, Equatable {
     /// Dolby Vision / TrueHD / DTS / EAC3 are deliberately omitted so they
     /// fall to the transcode path until verified on-device.
     ///
-    /// The two `add-transcode-target` directives are identical to `visionOS(...)` so
+    /// The two `add-transcode-target` directives are identical to `streaming(...)` so
     /// above-cap (or non-whitelisted) sources still have a valid transcode target.
     /// - Parameter maxVideoBitrateKbps: hard cap on video bitrate, in kbps; `isRequired=true`.
     /// - Parameter maxAudioBitrateKbps: optional cap on audio bitrate, in kbps.
-    public static func visionOSDirectPlayProbe(maxVideoBitrateKbps: Int,
-                                               maxAudioBitrateKbps: Int? = nil,
-                                               advertiseDolbyVision: Bool = false) -> DeviceProfile {
+    public static func directPlayProbe(maxVideoBitrateKbps: Int,
+                                       maxAudioBitrateKbps: Int? = nil,
+                                       advertiseDolbyVision: Bool = false) -> DeviceProfile {
         var directives = [
             "add-direct-play-profile(type=videoProfile&container=mp4,m4v,mov&videoCodec=h264,hevc&audioCodec=aac,ac3)",
             "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mp4&videoCodec=h264,hevc&audioCodec=aac,ac3)",

@@ -343,6 +343,15 @@ final class PlaybackController {
     /// across a Quality reload); torn down in `stop()`.
     private lazy var audioSession = AudioSessionCoordinator(player: player)
 
+    /// Passthrough to the audio-session coordinator's background-pause suppression. The iOS
+    /// player view points this at its PiP/AirPlay state so externally rendered video keeps
+    /// playing when the app backgrounds (the coordinator otherwise pauses on
+    /// resign-active/background, which is correct for ordinary in-app video).
+    var suppressBackgroundPause: (@MainActor () -> Bool)? {
+        get { audioSession.shouldSuppressBackgroundPause }
+        set { audioSession.shouldSuppressBackgroundPause = newValue }
+    }
+
     /// Timeline heartbeats + scrobble reporting to PMS. Spans Quality reloads (its
     /// one-shot scrobble guard deliberately survives a stream rebuild); its readiness
     /// gate is reset per item in `load(_:)`.
@@ -465,6 +474,9 @@ final class PlaybackController {
         NSLog("PlaybackController: isSeeking=%@ targetMs=%@",
               seeking ? "true" : "false",
               seekHoldTargetMs.map { String($0) } ?? "nil")
+        // The transport overlay covers the rebuild window of an in-flight seek (see
+        // `resolvedTransportStatus`), so it must be re-derived on every hold begin/end.
+        updateTransportStatus()
     }
 
     /// Release the hold only if it still belongs to the seek that scheduled this completion
@@ -494,6 +506,19 @@ final class PlaybackController {
             NSLog("PlaybackController: seek hold released by max-hold ceiling (target=%@)",
                   String(target))
             setSeeking(false)
+            // The ceiling firing means the seek never landed. When the player still isn't
+            // rendering — a starved transcoder can leave the rebuilt item reloading a
+            // segment-less playlist forever, with no KVO transition, no item error, and no
+            // stall watchdog (seen live: frozen chrome pinned at the target with zero
+            // status) — escalate to the visible reconnect path: spinner now, and the
+            // existing 20s reconnect watchdog converts a dead rebuild into the Retry/Close
+            // overlay. A genuine recovery cancels it at the `.playing` transition.
+            if player.timeControlStatus != .playing, !userWantsPaused, !playbackError.isFailed {
+                recordPlaybackDiagnostic("playback.seek_hold_ceiling_escalated", fields: [
+                    "target": .millisecondsBucket(target),
+                ])
+                beginReconnectStatus()
+            }
             return
         }
         let secs = player.currentTime().seconds
@@ -524,6 +549,64 @@ final class PlaybackController {
         // scrubber/resume position never regresses to the OLD position (GH #110).
         if isSeeking, let seekHoldTargetMs { return seekHoldTargetMs }
         return pendingResumeMs ?? item.viewOffset ?? 0
+    }
+
+    // MARK: - Zombie-playback detector (starved rebuild reporting `.playing`)
+
+    /// Live-clock baseline for the zombie-playback check: last observed position (ms) and when
+    /// it was recorded. A starved post-seek transcode can leave AVPlayer reporting `.playing`
+    /// while it reloads a segment-less playlist forever (kFigAssetError_TrackNotFound ~1/s,
+    /// seen live on iPad): the fake `.playing` transition cancels the stall watchdog, clears
+    /// the buffering overlay, AND releases the seek hold (the item clock parks at the target),
+    /// so every `.waiting`-keyed safety net goes dark. The 500ms scrubber tick polls this
+    /// instead: `.playing` with a clock that hasn't advanced for `zombiePlaybackTimeoutSeconds`
+    /// is not playback — escalate to the visible reconnect path (spinner now, Retry via the
+    /// 20s reconnect watchdog). Genuine recovery cancels it at the next real `.playing`
+    /// transition, and any clock advance re-seeds the baseline.
+    private var zombieClockBaselineMs: Int?
+    private var zombieClockBaselineAt: TimeInterval?
+    private let zombiePlaybackTimeoutSeconds: TimeInterval = 8
+    /// Minimum cumulative clock advance (ms) that counts as real progress. Cumulative, so slow
+    /// playback rates still clear it across ticks; jitter on a parked clock stays below it.
+    private let zombieClockAdvanceThresholdMs = 350
+
+    /// Called from the 500ms scrubber tick alongside `releaseSeekHoldIfLanded`.
+    func detectZombiePlaybackIfStuck() {
+        guard player.timeControlStatus == .playing,
+              !userWantsPaused, !transport.pauseRequested,
+              !isSeeking,
+              !playbackError.isFailed,
+              player.rate > 0 else {
+            zombieClockBaselineMs = nil
+            zombieClockBaselineAt = nil
+            return
+        }
+        let secs = player.currentTime().seconds
+        guard secs.isFinite else { return }
+        let nowMs = Int(secs * 1000)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let baseMs = zombieClockBaselineMs, let baseAt = zombieClockBaselineAt else {
+            zombieClockBaselineMs = nowMs
+            zombieClockBaselineAt = now
+            return
+        }
+        if abs(nowMs - baseMs) > zombieClockAdvanceThresholdMs {
+            zombieClockBaselineMs = nowMs
+            zombieClockBaselineAt = now
+            // The clock moving again after a zombie escalation IS the recovery: the player
+            // never left `.playing`, so no KVO transition will fire to clear the overlay —
+            // this tick is the only signal.
+            if reconnectInProgress { finishReconnectStatus() }
+            return
+        }
+        guard !reconnectInProgress, now - baseAt >= zombiePlaybackTimeoutSeconds else { return }
+        recordPlaybackDiagnostic("playback.zombie_playback_detected", fields: [
+            "position": .millisecondsBucket(nowMs),
+            "stuck_seconds": .int(Int(now - baseAt)),
+        ])
+        NSLog("PlaybackController: .playing with frozen clock for %.0fs — escalating to reconnect",
+              now - baseAt)
+        beginReconnectStatus()
     }
 
     /// Whether this session is streaming (vs local file). Drives which menus the
@@ -2736,6 +2819,10 @@ final class PlaybackController {
         hasObservedPlayback = false
         currentTimeControlStatus = .paused
         hasObservedTimeControlStatus = false
+        // Fresh item, fresh zombie-clock baseline: a reload that resumes at the same parked
+        // position must not inherit the previous item's "clock hasn't moved" countdown.
+        zombieClockBaselineMs = nil
+        zombieClockBaselineAt = nil
         playbackError.clear()
         offlineSubtitleOverlay.set(nil)
         updateTransportStatus()
@@ -3277,6 +3364,20 @@ final class PlaybackController {
         }
         guard hasObservedTimeControlStatus,
               currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
+            // A rebuild-backed user seek replaces the player item, which resets the
+            // timeControlStatus observation gate above. A wedged rebuild (starved
+            // transcoder whose playlist never grows segments) can then sit forever
+            // without a single KVO transition — no spinner over a frozen, pinned
+            // scrubber (seen live on iPad, GH #110 follow-up). While the seek hold is
+            // riding such a not-yet-started item, report buffering so the viewer sees
+            // progress state instead of dead chrome. In-buffer native seeks keep the
+            // observation gate (same item), so quick scrubs don't flash the overlay.
+            if isSeeking, !hasObservedTimeControlStatus {
+                if userWantsPaused || transport.pauseRequested || transport.isPaused {
+                    return .pausedBuffering
+                }
+                return .buffering
+            }
             return .none
         }
         if userWantsPaused || transport.pauseRequested || transport.isPaused {
