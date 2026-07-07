@@ -109,6 +109,9 @@ public final class DownloadManager {
     /// checkpoint-draining pauses, queue-paused manual resumes, and one-shot restart-counter
     /// preservation.
     private var staticRangeRecovery = StaticRangeRecoveryTracker()
+    /// Reentrancy depth of `resumeStaticRangeWhenReady`, which deliberately dispatches
+    /// synchronously with `refreshRecords`. Guards against the #210 recursion family.
+    private var staticResumeReentryDepth = 0
     @ObservationIgnored private var unverifiedRevalidationKeys: Set<String> = []
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
@@ -474,6 +477,13 @@ public final class DownloadManager {
                 "reason": .label("existing_active_row"),
                 "status": .label(status.rawValue),
             ])
+            // Only the resume-handoff caller owns the pendingResume marker. If ITS start is the
+            // one being rejected (a live slot exists after all), the handoff is moot — drop the
+            // marker so it cannot outlive the attempt. An ordinary duplicate tap must NOT clear
+            // it: a deferred backend-unavailable resume legitimately parks a marked queued row.
+            if allowReplacingExistingActiveRow {
+                clearStaticRangePendingResume(ratingKey: ratingKey)
+            }
             return false
         case .rejectAlreadyActive:
             recordDownloadDiagnostic("downloads.enqueue_ignored", fields: [
@@ -481,6 +491,9 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("already_active"),
             ])
+            if allowReplacingExistingActiveRow {
+                clearStaticRangePendingResume(ratingKey: ratingKey)
+            }
             return false
         case .recoverStaleSlotAndAccept:
             recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
@@ -616,9 +629,17 @@ public final class DownloadManager {
 
     @discardableResult
     private func deferStaticRangeRetryIfBackendUnavailable(record: DownloadRecord, reason: String) -> Bool {
-        guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
-              staticRangeBackendSession(for: record) == nil else {
+        guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record) else {
             staticRangeRecovery.removePendingResume(record.ratingKey)
+            return false
+        }
+        if staticRangeBackendSession(for: record) != nil {
+            // Backend ready: KEEP the pendingResume handoff marker — retry() set it just before
+            // calling here so the stale-queued detector leaves the row alone while the backend
+            // entry point rebuilds the request. Removing it here re-exposed the still-queued row
+            // to the detector, which re-drove retry in an endless loop on every refresh (the
+            // async cousin of the #210 refresh⇄resume recursion). It is cleared when the transfer
+            // starts or a no-start failure is surfaced.
             return false
         }
         deferStaticRangeResume(record: record, reason: reason)
@@ -703,6 +724,22 @@ public final class DownloadManager {
     }
 
     private func resumeStaticRangeWhenReady(ratingKey: String, reason: String) {
+        // Backstop for the #210 family: this function and refreshRecords dispatch each other
+        // synchronously on purpose (see the stale-queued comment in refreshRecords), and a marker
+        // bookkeeping bug turns that pair into unbounded mutual recursion — it has blown the
+        // main-thread stack twice now. Legitimate nesting is depth ≤ 2 (refresh → resume →
+        // its own refresh), so bail loudly past that instead of crashing; the pendingResume
+        // marker survives the bail and a later sweep re-drives the row.
+        guard staticResumeReentryDepth < 3 else {
+            recordDownloadDiagnostic("downloads.range_resume_reentry_bailout", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+                "depth": .int(staticResumeReentryDepth),
+            ])
+            return
+        }
+        staticResumeReentryDepth += 1
+        defer { staticResumeReentryDepth -= 1 }
         if StaticRangeRecoveryPolicy.shouldWaitForManualResume(
             isQueuePaused: isQueuePaused,
             wasManuallyResumedWhileQueuePaused: staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)
@@ -1634,8 +1671,27 @@ public final class DownloadManager {
             "expected_bytes": .bytes(expectedBytes),
         ])
         lastError[ratingKey] = .storageLimitExceeded(message)
+        // A retry/resume handoff arrives here with a row still parked in active-work status and
+        // (for static resumes) a pendingResume marker. Fail the row and drop the marker BEFORE
+        // publishing the refresh — a still-queued row with a lingering marker is exempt from stale
+        // demotion forever while auto-resume re-drives this same rejected start on every
+        // backend-ready edge. Fresh enqueues have no row yet, so this is a no-op for them.
+        markStartAbortedBeforeTransfer(ratingKey: ratingKey)
         refreshRecords()
         return true
+    }
+
+    /// Terminal bookkeeping for a download entry point that gives up before any transfer starts.
+    /// Order is load-bearing: the row must leave active-work status BEFORE the pending-resume
+    /// marker is dropped. A still-queued static partial with no marker re-enters the stale-queued
+    /// detector on the next refresh, which re-drives the same doomed start — the churn cousin of
+    /// the #210 refresh⇄resume recursion.
+    func markStartAbortedBeforeTransfer(ratingKey: String) {
+        if let status = store.records.first(where: { $0.ratingKey == ratingKey })?.status,
+           status.isActiveWork {
+            store.setStatus(ratingKey: ratingKey, .failed)
+        }
+        clearStaticRangePendingResume(ratingKey: ratingKey)
     }
 
     public func deleteCompletedDownloads() {
@@ -1804,7 +1860,39 @@ public final class DownloadManager {
         refreshRecords()
     }
 
+    /// Heal rows that historical bugs finalized past the byte-completeness guard: a static
+    /// byte-for-byte row whose durable file is smaller than the source's EXACT size can never be a
+    /// playable whole (headset evidence: an HTTP 416 finalized one 64 MB chunk of a 5.9 GB part to
+    /// `.complete`, and starting playback promoted another truncated row from `.unverified`).
+    /// Demote them to `.failed` KEEPING the file — it is the resume checkpoint — so Retry
+    /// continues from the durable offset. `sourceExactBytes` is nil for transcode lanes, whose
+    /// outputs are legitimately smaller than their source, so they are never touched.
+    private func demoteIncompleteCompletedStaticRows(reason: String) {
+        var demotedAny = false
+        for record in store.records where record.status == .complete || record.status == .unverified {
+            guard let expected = store.sourceExactBytes(ratingKey: record.ratingKey) else { continue }
+            let durable = store.durableStaticRangeCheckpointSize(ratingKey: record.ratingKey)
+            guard DownloadCompletionValidation.isIncomplete(downloadedBytes: durable,
+                                                            expectedExactBytes: expected) else { continue }
+            recordDownloadDiagnostic("downloads.completed_size_audit_demoted", fields: [
+                "download_id": .identifier(record.ratingKey),
+                "reason": .label(reason),
+                "from_status": .label(record.status.rawValue),
+                "bytes": .bytes(durable),
+                "expected_bytes": .bytes(expected),
+            ])
+            _ = store.resetStaticRangeProgressToDurableCheckpoint(ratingKey: record.ratingKey,
+                                                                  expectedBytes: expected)
+            store.setStatus(ratingKey: record.ratingKey, .failed)
+            lastError[record.ratingKey] = .transferFailed(
+                "Download is incomplete (\(durable / 1_000_000) of \(expected / 1_000_000) MB). Retry to continue.")
+            demotedAny = true
+        }
+        if demotedAny { refreshRecords() }
+    }
+
     private func revalidateUnverifiedDownloads(reason: String) {
+        demoteIncompleteCompletedStaticRows(reason: reason)
         let candidates = store.records.filter { $0.status == .unverified }
         guard !candidates.isEmpty else { return }
         for record in candidates where !unverifiedRevalidationKeys.contains(record.ratingKey) {

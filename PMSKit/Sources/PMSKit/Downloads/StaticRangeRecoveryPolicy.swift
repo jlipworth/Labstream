@@ -70,16 +70,20 @@ public enum StaticRangeRecoveryPolicy {
         isQueuePaused && !wasManuallyResumedWhileQueuePaused
     }
 
-    /// Before backend retry dispatch, static paused rows must become inactive so async backend
-    /// guards do not interpret the user's resume tap as a cancellation. This includes rows with no
-    /// durable bytes yet: they still need a clean byte-0 retry path.
+    /// A paused static row about to be retried must be promoted out of `.paused` (to `.queued`)
+    /// before backend dispatch so async backend guards do not interpret the user's resume tap as a
+    /// cancellation, and its backend entry point must be allowed to intentionally replace the
+    /// persisted active row. This includes rows with no durable bytes yet: they still need a clean
+    /// byte-0 retry path. (Historically this "marked the row inactive" via a `.failed` trampoline;
+    /// since the 1.5.0 resume-recovery fix it gates `allowReplacingExistingActiveRow` instead.)
     public static func shouldMarkPausedRowInactiveBeforeBackendRetry(_ record: DownloadRecord) -> Bool {
         record.status == .paused && isStaticRangeRecord(record)
     }
 
     /// A queued/downloading system-resume intent is not a live URLSession task once recovery has
-    /// decided to rebuild via the backend path. Drop it to an inactive status before retry dispatch
-    /// so duplicate-active guards do not no-op the replacement task.
+    /// decided to rebuild via the backend path. Let the backend entry point replace the persisted
+    /// active row (`allowReplacingExistingActiveRow`) so duplicate-active guards do not no-op the
+    /// replacement task. (Historically this demoted the row to `.failed` before dispatch.)
     public static func shouldMarkSystemResumeInactiveBeforeRetry(_ record: DownloadRecord) -> Bool {
         (record.status == .queued || record.status == .downloading) && isStaticRangeRecord(record)
     }
