@@ -48,6 +48,9 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
     #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -520,10 +523,10 @@ struct CustomPlayerChrome: View {
             }
 
             // Two skips (matching the hardware-keyboard mapping ←10/→30); the four-skip
-            // strip stays exclusive to the regular/iPad layout. The flat menu strip (up to
-            // six icon circles, ~304 pt) shares the row when it fits (landscape) and drops
-            // to its own row on a portrait phone. Both variants have fixed ideal widths,
-            // so ViewThatFits is deterministic here.
+            // strip stays exclusive to the regular/iPad layout. The labeled pill strip
+            // (~660 pt ideal) shares the row only when it fully fits (roomy landscape);
+            // otherwise it drops to its own full-width row, where it scrolls horizontally
+            // on a portrait phone. Fixed ideal widths keep ViewThatFits deterministic.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
                     skipButton(seconds: -10)
