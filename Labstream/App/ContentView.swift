@@ -200,12 +200,15 @@ private struct RestoringSessionView: View {
 #Preview {
     let identity = PlatformClientIdentity.make(clientIdentifier: "preview", version: "0.0.0")
     let model = AppModel(identity: identity)
+    let watchTogetherCoordinator = WatchTogetherCoordinator()
     ContentView(appModel: model,
                 authManager: AuthManager(appModel: model),
                 downloadManager: DownloadManager(appModel: model),
                 musicPlayer: MusicPlayerController(appModel: model),
+                watchTogetherCoordinator: watchTogetherCoordinator,
                 bootstrap: SessionBootstrap())
         .environment(CustomCinemaSessionStore())
         .environment(RealityTheaterSessionStore())
+        .environment(watchTogetherCoordinator)
 }
 #endif
