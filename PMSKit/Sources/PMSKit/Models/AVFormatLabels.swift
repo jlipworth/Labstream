@@ -9,12 +9,16 @@ import Foundation
 /// shows less than the raw fact.
 public enum AVFormatLabels {
 
-    /// "5.1", "7.1", "2.0", "Mono" from a raw channel count.
+    /// "5.1", "7.1", "2.0", "Mono" from a raw channel count. A bare count can't distinguish
+    /// e.g. 5.0 from 4.1, so use the conventional layout for each count: 4 ch is quad ("4.0")
+    /// and 5 ch is "5.0", not the "\(n-1).1" that only holds for 3/6/7/8 channels.
     public static func channelLayoutName(_ channels: Int?) -> String? {
         guard let channels, channels > 0 else { return nil }
         switch channels {
         case 1: return "Mono"
         case 2: return "2.0"
+        case 4: return "4.0"
+        case 5: return "5.0"
         default: return "\(channels - 1).1"
         }
     }
