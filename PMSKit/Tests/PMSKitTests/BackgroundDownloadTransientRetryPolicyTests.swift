@@ -142,21 +142,24 @@ struct BackgroundDownloadTransientRetryPolicyTests {
         ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
     }
 
-    @Test("Range move retries only for file-missing Cocoa errors on durable checkpoint chunks")
+    // #220: a move/stash failure commits NO bytes, so re-requesting from the durable checkpoint
+    // is valid for EVERY segment kind — including continuousRemainder, the off-head suspension
+    // mode where the lost-temp evidence occurred. The policy takes no segment-kind input.
+    @Test("Range move retries file-missing Cocoa errors for every segment kind")
     func rangeMoveRetryGate() {
         #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
             errorDomain: NSCocoaErrorDomain,
             errorCode: CocoaError.fileNoSuchFile.rawValue,
             hasRequest: true,
-            supportsDurableCheckpoint: true,
             currentRetryCount: 0
         ) == .retry(nextAttempt: 1))
 
+        // A reattached task without a rebuildable request routes to rehydration instead of
+        // terminal failure — the rejection reason is what the caller keys on.
         #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
             errorDomain: NSCocoaErrorDomain,
             errorCode: CocoaError.fileNoSuchFile.rawValue,
             hasRequest: false,
-            supportsDurableCheckpoint: true,
             currentRetryCount: 0
         ) == .reject(.missingRangeRequest))
 
@@ -164,15 +167,6 @@ struct BackgroundDownloadTransientRetryPolicyTests {
             errorDomain: NSCocoaErrorDomain,
             errorCode: CocoaError.fileNoSuchFile.rawValue,
             hasRequest: true,
-            supportsDurableCheckpoint: false,
-            currentRetryCount: 0
-        ) == .reject(.unsupportedRangeSegment))
-
-        #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
-            errorDomain: NSCocoaErrorDomain,
-            errorCode: CocoaError.fileNoSuchFile.rawValue,
-            hasRequest: true,
-            supportsDurableCheckpoint: true,
             currentRetryCount: 3
         ) == .reject(.retryBudgetExhausted(nextAttempt: 4, maxRetries: 3)))
 
@@ -180,7 +174,6 @@ struct BackgroundDownloadTransientRetryPolicyTests {
             errorDomain: NSURLErrorDomain,
             errorCode: NSURLErrorNetworkConnectionLost,
             hasRequest: true,
-            supportsDurableCheckpoint: true,
             currentRetryCount: 0
         ) == .reject(.nonTransientError))
     }

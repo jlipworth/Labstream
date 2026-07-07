@@ -284,7 +284,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     func cleanupOrphanedNetworkTemps() {
         urlSession.getAllTasks { [weak self] tasks in
-            self?.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, reason: "manual_scan")
+            self?.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, context: .manualScan)
         }
     }
 
@@ -813,7 +813,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // chunk was never appended, so the durable partial re-fetches it on resume. visionOS only
             // clears `tmp/` under pressure, so reclaim them here (cheap, alongside reattach).
             self.sweepOrphanedChunkStashes(liveTaskIdentifiers: Set(tasks.map(\.taskIdentifier)))
-            self.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, reason: "reattach")
+            self.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, context: .reattach)
             onReattached?(liveKeys)
             self.onChange?()
         }
@@ -832,19 +832,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
-    private func sweepOrphanedNetworkTemps(liveTaskCount: Int, reason: String) {
+    private func sweepOrphanedNetworkTemps(liveTaskCount: Int,
+                                           context: BackgroundNetworkTempCleanupContext) {
         let candidates = cfNetworkTempDirectories()
             .flatMap { directory in cfNetworkTempFiles(in: directory).map { (directory, $0) } }
         let candidateBytes = candidates.reduce(0) { $0 + (fileSize(at: $1.1) ?? 0) }
         switch BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: context,
             liveTaskCount: liveTaskCount,
             candidateCount: candidates.count
         ) {
         case .none:
             return
+        case .skipReattach:
+            // #220: a finished-but-undelivered task's payload lives in one of these temps and
+            // the task is absent from `getAllTasks` — deleting here is what lost chunks.
+            AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
+                "reason": .label(context.rawValue),
+                "live_task_count": .int(liveTaskCount),
+                "candidate_count": .int(candidates.count),
+                "candidate_bytes": .int(candidateBytes),
+            ])
+            return
         case .skipLiveTasks:
             AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
-                "reason": .label(reason),
+                "reason": .label(context.rawValue),
                 "live_task_count": .int(liveTaskCount),
                 "candidate_count": .int(candidates.count),
                 "candidate_bytes": .int(candidateBytes),
@@ -857,7 +869,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var deletedCount = 0
         var deletedBytes = 0
         var failedCount = 0
+        var skippedYoungCount = 0
         for (_, url) in candidates {
+            guard BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
+                modificationAge: modificationAge(at: url)
+            ) else {
+                skippedYoungCount += 1
+                continue
+            }
             let bytes = fileSize(at: url) ?? 0
             do {
                 try fileManager.removeItem(at: url)
@@ -868,12 +887,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         }
         AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup", fields: [
-            "reason": .label(reason),
+            "reason": .label(context.rawValue),
             "candidate_count": .int(candidates.count),
             "deleted_count": .int(deletedCount),
             "failed_count": .int(failedCount),
+            "skipped_young_count": .int(skippedYoungCount),
             "deleted_bytes": .int(deletedBytes),
         ])
+    }
+
+    private func modificationAge(at url: URL) -> TimeInterval? {
+        guard let modified = try? fileManager.attributesOfItem(
+            atPath: url.path)[.modificationDate] as? Date else { return nil }
+        return Date().timeIntervalSince(modified)
     }
 
     private func pendingCFNetworkTempBytes() -> Int {
@@ -1871,6 +1897,33 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         }
 
+        // #220: stash the OS temp FIRST — `location` is only guaranteed valid until this delegate
+        // returns, and the payload is irreplaceable. Classification, diagnostics, and the write
+        // decision all run off the stash; branches that don't want the body delete the stash.
+        let stash = chunkStashURL(taskIdentifier: taskIdentifier)
+        do {
+            try? fileManager.removeItem(at: stash)
+            try fileManager.moveItem(at: location, to: stash)
+        } catch {
+            let statusForDiagnostics = (response as? HTTPURLResponse)?.statusCode ?? -1
+            AppDiagnostics.record(.downloads, "downloads.range_stash_move_failed", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "task_id": .int(taskIdentifier),
+                "http_status": .int(statusForDiagnostics),
+                "segment_kind": .label(entry.segmentKind.rawValue),
+                "base_offset": .int(entry.baseOffset),
+                "temp_exists": .bool(fileManager.fileExists(atPath: location.path)),
+                "temp_bytes": .int(fileSize(at: location) ?? -1),
+                "durable_bytes": .int(fileSize(at: entry.destination) ?? -1),
+                "error": .error(error),
+            ])
+            endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
+                                           ratingKey: entry.ratingKey,
+                                           reason: "move_failed")
+            failRangeMove(entry: entry, error: error, stage: "stash_move")
+            return
+        }
+
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? -1
         AppDiagnostics.record(.downloads, "downloads.range_chunk_finished", fields: [
@@ -1895,8 +1948,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
                                            ratingKey: entry.ratingKey,
                                            reason: "server_failure")
-            // The chunk body (an error page) is in the OS temp, NEVER appended into the durable
+            // The chunk body (an error page) stays in the stash, NEVER appended into the durable
             // partial, so the partial's completed chunks stay intact and resumable.
+            try? fileManager.removeItem(at: stash)
             let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
                 ratingKey: entry.ratingKey,
                 expectedBytes: entry.expectedBytes
@@ -1922,7 +1976,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onChange?()
 
         case .alreadyComplete:
-            // HTTP 416: only "already complete" if the durable partial matches a total we know.
+            // HTTP 416: the body is a zero-length/error payload — the stash is not needed.
+            try? fileManager.removeItem(at: stash)
+            // Only "already complete" if the durable partial matches a total we know.
             // Prefer the response's `Content-Range: bytes */TOTAL`; when the server omits it
             // (headset evidence: reattached Plex chunks 416'd with no total and one 64 MB chunk of
             // a 5.9 GB part was finalized straight to `.complete`), fall back to the expected size
@@ -1975,21 +2031,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                            reason: "already_complete")
 
         case .append, .replaceWhole:
-            // The 64 MB append/replace must not block the serial delegate queue. Synchronously stash
-            // the OS temp (a same-volume rename, O(1)) so it survives past this delegate's return,
-            // capture the response headers we still need (#169 HIGH 1), then do the heavy IO + chunk
-            // decision off-queue.
-            let stash = chunkStashURL(taskIdentifier: taskIdentifier)
-            do {
-                try? fileManager.removeItem(at: stash)
-                try fileManager.moveItem(at: location, to: stash)
-            } catch {
-                endRangeBackgroundHandoffGrace(taskIdentifier: taskIdentifier,
-                                               ratingKey: entry.ratingKey,
-                                               reason: "move_failed")
-                failRangeMove(entry: entry, error: error)
-                return
-            }
+            // The 64 MB append/replace must not block the serial delegate queue. The temp is
+            // already stashed (a same-volume rename, O(1)) so it survives past this delegate's
+            // return; capture the response headers we still need (#169 HIGH 1), then do the heavy
+            // IO + chunk decision off-queue.
             let validator = RangeTransferHTTPPolicy.rangeValidator(from: http)
             let contentRangeStart = RangeTransferHTTPPolicy.contentRangeStart(from: http)
             let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
@@ -2065,13 +2110,44 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         switch write {
         case .replaceWhole:
             // HTTP 200: the server sent the whole CURRENT resource — replace the partial honestly
-            // rather than appending real bytes after a stale prefix.
+            // rather than appending real bytes after a stale prefix. But only if the body is
+            // plausibly whole (#220): a truncated 200 must not clobber a good partial checkpoint.
+            let stashBytes = fileSize(at: stash)
+            guard RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+                stashBytes: stashBytes,
+                expectedBytes: entry.expectedBytes,
+                storedValidator: store.rangeValidator(ratingKey: entry.ratingKey),
+                responseValidator: validator
+            ) else {
+                try? fileManager.removeItem(at: stash)
+                let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
+                    ratingKey: entry.ratingKey,
+                    expectedBytes: entry.expectedBytes
+                )
+                AppDiagnostics.record(.downloads, "downloads.range_200_size_mismatch", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "segment_kind": .label(entry.segmentKind.rawValue),
+                    "body_bytes": .int(stashBytes ?? -1),
+                    "expected_bytes": .int(entry.expectedBytes ?? -1),
+                    "durable_bytes": .int(durableBytes),
+                ])
+                if retryRangeOffsetMismatch(entry: entry,
+                                            durableBytes: durableBytes,
+                                            serverOffset: nil) {
+                    return
+                }
+                store.setStatus(ratingKey: entry.ratingKey, .failed)
+                onError?(entry.ratingKey, .transferFailed(
+                    "Server returned an incomplete full-file response for a ranged request."))
+                onChange?()
+                return
+            }
             do {
                 try? fileManager.removeItem(at: entry.destination)
                 try fileManager.moveItem(at: stash, to: entry.destination)
             } catch {
                 try? fileManager.removeItem(at: stash)
-                failRangeMove(entry: entry, error: error)
+                failRangeMove(entry: entry, error: error, stage: "replace_whole")
                 return
             }
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
@@ -2191,7 +2267,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 chunkBytes = try appendFile(at: stash, onto: entry.destination)
             } catch {
                 try? fileManager.removeItem(at: stash)
-                failRangeMove(entry: entry, error: error)
+                failRangeMove(entry: entry, error: error, stage: "append")
                 return
             }
             try? fileManager.removeItem(at: stash)
@@ -2641,8 +2717,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         onChange?()
     }
 
-    private func failRangeMove(entry: RangeTransfer, error: Error) {
-        if recoverRangeMoveFailure(entry: entry, error: error) {
+    private func failRangeMove(entry: RangeTransfer, error: Error, stage: String) {
+        if recoverRangeMoveFailure(entry: entry, error: error, stage: stage) {
             return
         }
         let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
@@ -2651,6 +2727,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         )
         AppDiagnostics.record(.downloads, "downloads.move_failed", fields: [
             "download_id": .identifier(entry.ratingKey),
+            "stage": .label(stage),
             "error": .error(error),
             "bytes": .bytes(durableBytes),
         ])
@@ -2663,9 +2740,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Recover "Cocoa code=4" Range chunk move/append failures by doing what the user's Retry button
     /// would do: preserve/reset to the app-owned checkpoint and reissue/rebuild the next Range request
     /// a bounded number of times instead of terminally failing the row.
-    private func recoverRangeMoveFailure(entry: RangeTransfer, error: Error) -> Bool {
+    private func recoverRangeMoveFailure(entry: RangeTransfer, error: Error, stage: String) -> Bool {
         let nsError = error as NSError
-        let supportsDurableCheckpoint = RangeTransferHTTPPolicy.isDurableCheckpointSegment(entry.segmentKind)
         let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
             ratingKey: entry.ratingKey,
             expectedBytes: entry.expectedBytes
@@ -2675,18 +2751,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             errorDomain: nsError.domain,
             errorCode: nsError.code,
             hasRequest: entry.request != nil,
-            supportsDurableCheckpoint: supportsDurableCheckpoint,
             currentRetryCount: retryCounts[entry.ratingKey] ?? 0
         )
         guard case .retry(let nextAttempt) = decision else {
             lock.unlock()
+            // #220: any segment kind may rehydrate — a move failure committed no bytes, so the
+            // durable partial is a valid restart point even for a continuous remainder.
             if case .reject(.missingRangeRequest) = decision,
                nsError.domain == NSCocoaErrorDomain,
-               nsError.code == CocoaError.fileNoSuchFile.rawValue,
-               supportsDurableCheckpoint {
+               nsError.code == CocoaError.fileNoSuchFile.rawValue {
                 AppDiagnostics.record(.downloads, "downloads.range_move_rehydrate", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "segment_kind": .label(entry.segmentKind.rawValue),
+                    "stage": .label(stage),
                     "error": .error(error),
                     "bytes": .bytes(durableBytes),
                     "reason": .label("missing_request"),
@@ -2706,6 +2783,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         AppDiagnostics.record(.downloads, "downloads.range_move_retry", fields: [
             "download_id": .identifier(entry.ratingKey),
             "segment_kind": .label(entry.segmentKind.rawValue),
+            "stage": .label(stage),
             "attempt": .int(nextAttempt),
             "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRangeMoveRetries),
             "error": .error(error),

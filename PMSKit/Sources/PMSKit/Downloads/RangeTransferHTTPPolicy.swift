@@ -14,6 +14,29 @@ public enum RangeTransferHTTPPolicy {
         kind == .boundedCheckpoint || kind == .backgroundCheckpoint
     }
 
+    /// #220: whether an HTTP 200 body may replace the whole durable partial.
+    ///
+    /// A 200 to a ranged request means the server ignored/refused the range — the body is either
+    /// the whole CURRENT resource (safe to adopt) or a truncated/garbage payload (must not clobber
+    /// a good partial checkpoint). Adopt only when the body is plausibly whole: its size matches
+    /// the expected total, the resource demonstrably changed (both validators present and
+    /// different — the body is the whole NEW resource, whatever its size), or no expected total is
+    /// known so there is no basis to reject. A size mismatch on an unchanged or unknowable
+    /// resource is a truncated body → reject so the caller discards and retries from the durable
+    /// checkpoint.
+    public static func shouldAdoptReplaceWholeBody(stashBytes: Int?,
+                                                   expectedBytes: Int?,
+                                                   storedValidator: String?,
+                                                   responseValidator: String?) -> Bool {
+        guard let expectedBytes, expectedBytes > 0 else { return true }
+        guard let stashBytes else { return false }
+        if stashBytes == expectedBytes { return true }
+        if let storedValidator, let responseValidator, storedValidator != responseValidator {
+            return true
+        }
+        return false
+    }
+
     /// Classify a task's `Range` header back into the segment strategy that created it.
     ///
     /// Only a single open-ended byte range (`bytes=<offset>-`) is a continuous remainder. Closed

@@ -75,19 +75,62 @@ struct BackgroundTempFileCleanupPolicyTests {
         ))
     }
 
-    @Test("Network cleanup deletes only when candidates exist and no URLSession tasks are live")
+    @Test("Manual-scan cleanup deletes only when candidates exist and no URLSession tasks are live")
     func networkCleanupDisposition() {
         #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: .manualScan,
             liveTaskCount: 0,
             candidateCount: 0
         ) == .none)
         #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: .manualScan,
             liveTaskCount: 2,
             candidateCount: 3
         ) == .skipLiveTasks(liveTaskCount: 2))
         #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: .manualScan,
             liveTaskCount: 0,
             candidateCount: 3
         ) == .deleteCandidates)
+    }
+
+    // #220: a finished-but-undelivered background download task is ABSENT from `getAllTasks`
+    // while its completed payload still lives in a CFNetworkDownload_*.tmp. Sweeping those
+    // temps at reattach time deleted the chunk before `didFinishDownloadingTo` could stash it
+    // (Cocoa error 4), so reattach must never delete CFNetwork temps.
+    @Test("Reattach cleanup never deletes CFNetwork temps, even with zero live tasks")
+    func reattachNeverDeletes() {
+        #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: .reattach,
+            liveTaskCount: 0,
+            candidateCount: 3
+        ) == .skipReattach)
+        #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: .reattach,
+            liveTaskCount: 0,
+            candidateCount: 0
+        ) == .none)
+        #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
+            context: .reattach,
+            liveTaskCount: 2,
+            candidateCount: 3
+        ) == .skipReattach)
+    }
+
+    @Test("CFNetwork temps are deletable only past the old-age gate; unknown age is protected")
+    func cfNetworkTempAgeGate() {
+        let gate = BackgroundTempFileCleanupPolicy.minimumCFNetworkTempAge
+        #expect(gate >= 24 * 60 * 60)
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
+            modificationAge: 3 * 60 * 60))
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
+            modificationAge: gate - 1))
+        #expect(BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
+            modificationAge: gate))
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
+            modificationAge: nil))
+        // A negative age (clock skew / future mtime) must also be protected.
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
+            modificationAge: -60))
     }
 }
