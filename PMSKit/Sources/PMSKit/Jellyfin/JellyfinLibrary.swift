@@ -345,6 +345,7 @@ public enum JellyfinLibrary {
                                                       itemId: String,
                                                       mediaSourceId: String?,
                                                       videoCodec: String,
+                                                      audioCodec: String? = nil,
                                                       copyAudio: Bool,
                                                       playSessionId: String? = nil) throws -> URLRequest {
         let url = try JellyfinPlayback.jellyfinURL(server: server, path: "/Videos/\(itemId)/stream.mp4")
@@ -354,13 +355,19 @@ public enum JellyfinLibrary {
         // List the source's real video codec so the server is allowed to copy it; keep h264 in the
         // list as the fallback re-encode target if copy is refused.
         let videoCodecList = videoCodec == "h264" ? "h264" : "\(videoCodec),h264"
+        // Same for audio: stream-copy only engages when the SOURCE codec is in the requested
+        // list (aac alone silently re-encoded ac3/eac3 sources to AAC 192k while the UI
+        // promised a copy). aac stays in the list as the re-encode target if copy is refused.
+        // No maxAudioChannels cap here — capping to 6 forced a transcode (and 5.1 downmix) of
+        // copy-eligible 7.1 tracks, contradicting the lane's "original quality" promise.
+        let audioCodecList = DownloadAudioCodecList.forRemux(sourceAudioCodec: audioCodec,
+                                                             copyAudio: copyAudio)
         var query = [
             URLQueryItem(name: "static", value: "false"),
             URLQueryItem(name: "container", value: "mp4"),
             URLQueryItem(name: "videoCodec", value: videoCodecList),
-            URLQueryItem(name: "audioCodec", value: "aac"),
+            URLQueryItem(name: "audioCodec", value: audioCodecList),
             URLQueryItem(name: "audioBitRate", value: "192000"),
-            URLQueryItem(name: "maxAudioChannels", value: "6"),
             URLQueryItem(name: "allowVideoStreamCopy", value: "true"),
             URLQueryItem(name: "allowAudioStreamCopy", value: copyAudio ? "true" : "false"),
             URLQueryItem(name: "enableAutoStreamCopy", value: "true"),

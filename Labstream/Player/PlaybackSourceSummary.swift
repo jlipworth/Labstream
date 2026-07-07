@@ -64,19 +64,24 @@ struct PlaybackSourceSummary: Equatable {
             return mediaItems.first
         }
         let part = media?.part.first
+        // The ACTIVE audio stream (PMS sends `selected` only on it), not blindly the first —
+        // on a multi-track part the first stream can be a track that isn't playing at all.
+        let audioStream = part?.audioStreams.first { $0.selected == true }
+            ?? part?.audioStreams.first { $0.isDefault == true }
+            ?? part?.audioStreams.first
         return PlaybackSourceSummary(
             container: media?.container ?? part?.container,
             videoCodec: media?.videoCodec ?? part?.videoStreams.first?.codec,
-            audioCodec: media?.audioCodec ?? part?.audioStreams.first?.codec,
+            audioCodec: media?.audioCodec ?? audioStream?.codec,
             bitrateKbps: media?.bitrate ?? 0,
             width: media?.width,
             height: media?.height,
             durationMs: media?.duration ?? item.duration,
             partIndex: 0,
             subtitleMode: (part?.subtitleStreams.isEmpty == false) ? "available" : "none",
-            audioChannels: part?.audioStreams.first?.channels,
+            audioChannels: audioStream?.channels,
             hdr: part?.videoStreams.first?.hdrMetadata,
-            audioProfile: part?.audioStreams.first?.profile
+            audioProfile: audioStream?.profile
         )
     }
 

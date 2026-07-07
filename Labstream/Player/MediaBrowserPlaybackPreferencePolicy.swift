@@ -7,9 +7,11 @@ struct MediaBrowserPlaybackStreamSelection: Sendable {
 }
 
 enum MediaBrowserPlaybackPreferencePolicy {
-    /// Jellyfin treats an omitted subtitle stream as "server default". Use a concrete off sentinel
-    /// when the user has explicitly disabled subtitles so PlaybackInfo and HLS reopens cannot
-    /// silently inherit a server/default subtitle.
+    /// Jellyfin/Emby treat an omitted subtitle stream as "server default": the server-side
+    /// user profile's subtitle mode (Default/Smart/Always) then picks a stream itself and —
+    /// on the burn-in path — bakes it into the video while the app's picker still shows
+    /// "Off". So the wire value must never be "omitted": send this explicit off sentinel
+    /// (both servers read -1 as "no subtitles") whenever no subtitle should be shown.
     static let subtitleOffStreamIndex = -1
 
     static func initialSelection(for item: MediaItem,
@@ -19,7 +21,9 @@ enum MediaBrowserPlaybackPreferencePolicy {
             audioStreamIndex: preferredAudioStreamIndex(for: item,
                                                         mediaIndex: mediaIndex,
                                                         defaults: defaults),
-            subtitleStreamIndex: subtitleStreamIndex(defaults: defaults))
+            subtitleStreamIndex: preferredSubtitleStreamIndex(for: item,
+                                                              mediaIndex: mediaIndex,
+                                                              defaults: defaults))
     }
 
     static func preferredAudioStreamIndex(for item: MediaItem,
@@ -38,10 +42,57 @@ enum MediaBrowserPlaybackPreferencePolicy {
         }?.id
     }
 
-    static func subtitleStreamIndex(defaults: UserDefaults = .standard) -> Int? {
-        defaults.bool(forKey: PlaybackPreferences.Keys.subtitlesOff)
-            ? subtitleOffStreamIndex
-            : nil
+    /// Resolve the subtitle stream index to send on a stream open/reopen. Always concrete —
+    /// never nil/omit (see `subtitleOffStreamIndex`):
+    ///   - explicit Off, or manual auto-select mode ("Subtitles stay off until selected in
+    ///     the player") → the off sentinel;
+    ///   - foreign-audio mode with a domestic audio track → the off sentinel;
+    ///   - otherwise the first stream matching the saved subtitle language, or the off
+    ///     sentinel when nothing matches.
+    static func preferredSubtitleStreamIndex(for item: MediaItem,
+                                             mediaIndex: Int = 0,
+                                             defaults: UserDefaults = .standard) -> Int {
+        if defaults.bool(forKey: PlaybackPreferences.Keys.subtitlesOff) {
+            return subtitleOffStreamIndex
+        }
+        let mode = SubtitleAutoSelectMode(
+            rawValue: defaults.string(forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode) ?? "")
+            ?? .manual
+        guard mode != .manual,
+              let part = sourcePart(for: item, mediaIndex: mediaIndex) else {
+            return subtitleOffStreamIndex
+        }
+        if mode == .foreignAudio, !sourceAudioIsForeign(part: part, defaults: defaults) {
+            return subtitleOffStreamIndex
+        }
+        guard let preferred = defaults.string(forKey: PlaybackPreferences.Keys.preferredSubtitleLanguage),
+              !preferred.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return subtitleOffStreamIndex
+        }
+        return part.subtitleStreams.first {
+            languageMatches(languageTag: $0.languageTag,
+                            languageCode: $0.languageCode,
+                            language: $0.language,
+                            preferredLanguage: preferred)
+        }?.id ?? subtitleOffStreamIndex
+    }
+
+    /// Whether the source's active (selected/default/first) audio track differs from the
+    /// user's preferred audio language — the trigger for the "Shown with Foreign Audio"
+    /// subtitle mode. Internal so `PlaybackController` shares this single implementation.
+    static func sourceAudioIsForeign(part: Part, defaults: UserDefaults) -> Bool {
+        let preferredAudio = defaults.string(forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+            ?? Locale.current.language.languageCode?.identifier
+        guard let preferredAudio, !preferredAudio.isEmpty,
+              let sourceAudio = part.audioStreams.first(where: { $0.selected == true })
+                ?? part.audioStreams.first(where: { $0.isDefault == true })
+                ?? part.audioStreams.first else {
+            return false
+        }
+        return !languageMatches(languageTag: sourceAudio.languageTag,
+                                languageCode: sourceAudio.languageCode,
+                                language: sourceAudio.language,
+                                preferredLanguage: preferredAudio)
     }
 
     private static func sourcePart(for item: MediaItem, mediaIndex: Int) -> Part? {
@@ -52,10 +103,12 @@ enum MediaBrowserPlaybackPreferencePolicy {
         return media?.part.first
     }
 
-    private static func languageMatches(languageTag: String?,
-                                        languageCode: String?,
-                                        language: String?,
-                                        preferredLanguage: String) -> Bool {
+    /// Internal (not private) so `PlaybackController` shares this single implementation —
+    /// it, `normalizedLanguageCodes`, and the ISO table were previously duplicated there.
+    static func languageMatches(languageTag: String?,
+                                languageCode: String?,
+                                language: String?,
+                                preferredLanguage: String) -> Bool {
         let preferred = normalizedLanguageCodes(for: preferredLanguage)
         guard !preferred.isEmpty else { return false }
         let candidates = [languageTag, languageCode, language]
@@ -83,4 +136,18 @@ enum MediaBrowserPlaybackPreferencePolicy {
         "ita": "it", "por": "pt", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh",
         "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi",
     ]
+
+    /// Normalize a track's language identifiers to the base two-letter code the Settings
+    /// picker uses as its ids ("en", not "en-US"/"eng"/"English"). Persisting anything else
+    /// still plays back correctly (`languageMatches` normalizes) but desyncs the Settings
+    /// checkmark, which matches on the exact stored string. nil when no code-like value exists.
+    static func persistableLanguageCode(languageTag: String?, languageCode: String?) -> String? {
+        for raw in [languageTag, languageCode] {
+            guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                  !raw.isEmpty else { continue }
+            let base = raw.split(separator: "-").first.map(String.init) ?? raw
+            return iso639ThreeToTwo[base] ?? base
+        }
+        return nil
+    }
 }
