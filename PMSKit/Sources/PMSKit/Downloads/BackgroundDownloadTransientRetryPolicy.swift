@@ -126,18 +126,18 @@ public enum BackgroundDownloadTransientRetryPolicy {
     /// to move/stash/append because the temporary file or durable partial disappeared during a
     /// headset-off/background reattach race. Treat file-missing Cocoa errors like a transient Range
     /// chunk failure: keep the last app-owned checkpoint and rebuild/retry from there.
+    ///
+    /// Unlike the 416/HTTP paths this takes no segment-kind gate (#220): a move failure commits no
+    /// bytes, so re-requesting from the durable partial's size is valid for every segment kind,
+    /// including a continuous remainder. `.missingRangeRequest` routes the caller to rehydration.
     public static func rangeMoveDecision(errorDomain: String,
                                          errorCode: Int,
                                          hasRequest: Bool,
-                                         supportsDurableCheckpoint: Bool,
                                          currentRetryCount: Int,
                                          maxRetries: Int = defaultMaxRangeMoveRetries) -> BackgroundDownloadTransientRetryDecision {
         guard errorDomain == NSCocoaErrorDomain,
               errorCode == CocoaError.fileNoSuchFile.rawValue else {
             return .reject(.nonTransientError)
-        }
-        guard supportsDurableCheckpoint else {
-            return .reject(.unsupportedRangeSegment)
         }
         guard hasRequest else {
             return .reject(.missingRangeRequest)
