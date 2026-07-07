@@ -47,12 +47,6 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
-    #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// Phone-class width (iPhone, narrow iPad Split View): the labeled pill strip
-    /// doesn't fit, so the menu buttons drop to icon-only circles.
-    private var compactWidth: Bool { horizontalSizeClass == .compact }
-    #endif
     #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -632,20 +626,15 @@ struct CustomPlayerChrome: View {
         #else
         // Flat menus, no "…" overflow (an ellipsis submenu was tried and reverted — it
         // buried Quality/Chapters/Speed behind an extra hop, killing the tap-video →
-        // change-setting flow the visionOS pill strip was designed for). Regular-width
-        // iPad has room for the labeled pills; compact drops to icon-only circles so
-        // every menu still opens in one tap.
-        if compactWidth {
-            iconMenuStrip
-        } else {
-            // The labeled strip is ~660 pt; a portrait iPad row (title + padding) can't
-            // seat it, so fall back to the icon circles when the row is too tight. Both
-            // variants have fixed ideal widths, so ViewThatFits is deterministic here
-            // (no unwrapped-text measurement trap).
-            ViewThatFits(in: .horizontal) {
-                labeledMenuStrip
-                iconMenuStrip
-            }
+        // change-setting flow the visionOS pill strip was designed for). Every width
+        // keeps the LABELED pills (icon-only circles were tried and rejected): when the
+        // row can't seat the full ~660-pt strip (portrait iPad, iPhone), the same pills
+        // scroll horizontally instead of degrading to icons. The labeled variant has a
+        // fixed ideal width, so ViewThatFits is deterministic; the scroller is the
+        // always-fits last resort.
+        ViewThatFits(in: .horizontal) {
+            labeledMenuStrip
+            scrollableLabeledMenuStrip
         }
         #endif
     }
@@ -670,28 +659,14 @@ struct CustomPlayerChrome: View {
         }
     }
 
-    /// Icon-only glass circles for every menu — the narrow-row variant.
-    private var iconMenuStrip: some View {
-        HStack(spacing: 8) {
-            ForEach(availableMenus) { menu in
-                inlineMenuButton(menu)
-            }
+    /// The labeled pills in a trailing-anchored horizontal scroller — the variant for
+    /// rows too narrow to seat the whole strip. Pills keep their full size and titles;
+    /// the viewer swipes to reach the clipped ones.
+    private var scrollableLabeledMenuStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            labeledMenuStrip
         }
-    }
-
-    /// Icon-only glass circle that opens one of the popover menus inline.
-    private func inlineMenuButton(_ menu: CustomPlayerMenuKind) -> some View {
-        Button {
-            openMenu(menu)
-        } label: {
-            Label(menu.title, systemImage: menu.systemImage)
-                .labelStyle(.iconOnly)
-                .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
-        }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .tint(.primary)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
     }
     #endif
 
