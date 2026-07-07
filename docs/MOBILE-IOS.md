@@ -40,6 +40,24 @@ xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 
 A compatible installed iOS Simulator runtime is required. If Xcode reports that the installed iOS platform/runtime is missing or incompatible, install the matching iOS simulator runtime in Xcode Settings before treating the mobile build as failed.
 
+## Install on a physical iPhone or iPad
+
+Simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot install on hardware. For a real iPhone or iPad, use the mobile device wrapper; it builds the `LabstreamMobile` scheme for `iphoneos`, applies normal Apple Development signing/provisioning, installs with `devicectl`, and optionally launches the app:
+
+```sh
+scripts/deploy-mobile-to-device.sh            # build + install to the single paired iPhone/iPad
+scripts/deploy-mobile-to-device.sh --launch   # also launch after install
+scripts/deploy-mobile-to-device.sh --no-build # reinstall the last Debug-iphoneos build
+```
+
+If more than one iPhone/iPad is paired, pass the destination explicitly:
+
+```sh
+IOS_DEVICE_ID=<device-uuid> scripts/deploy-mobile-to-device.sh --launch
+```
+
+First-time hardware deploy still requires the one-time Apple steps outside the script: connect/pair the device, trust this Mac, enable Developer Mode on the device if prompted, and make sure the matching Apple ID is signed into Xcode Settings so command-line automatic provisioning can create or refresh the development profile.
+
 ## Known remaining mobile work
 
 The first milestone is a buildable native iPhone/iPad target with a real app shell. These product behaviors still need dedicated follow-up validation/implementation before calling the mobile app feature-complete:

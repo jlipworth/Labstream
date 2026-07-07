@@ -74,6 +74,30 @@ Mobile simulator builds require an iOS Simulator runtime compatible with the ins
 iOS SDK. If Xcode reports the iOS platform/runtime is missing, install the matching
 runtime in Xcode Settings before treating `LabstreamMobile` as broken.
 
+### Installing on a physical iPhone or iPad (device testing)
+
+The mobile simulator flow builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install
+on hardware. A real iPhone/iPad needs a code-signed **iphoneos** device build (product
+lands in `Debug-iphoneos`, NOT `Debug-iphonesimulator`):
+
+```sh
+scripts/deploy-mobile-to-device.sh            # build (signed, version-stamped) + install
+scripts/deploy-mobile-to-device.sh --launch   # also launch after install
+scripts/deploy-mobile-to-device.sh --no-build # reinstall last iOS device build without rebuilding
+scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
+```
+
+If both an iPad and iPhone are paired, set `IOS_DEVICE_ID=<uuid>` (or
+`MOBILE_DEVICE_ID=<uuid>`) so the script targets the intended device. The script uses the
+`LabstreamMobile` scheme, derives the signing team from the Apple Development certificate
+OU unless `IOS_DEVELOPMENT_TEAM` is set, deletes stale `Debug-iphoneos/Labstream.app`
+products before building, and stamps the internal Build ID via
+`scripts/build-version-args.sh`.
+
+First hardware deploy still needs the user's one-time setup: connect/pair the device,
+trust this Mac, enable Developer Mode on-device if prompted, and sign the matching Apple
+ID into Xcode Settings ▸ Accounts so CLI automatic provisioning works.
+
 ### Installing on a physical Vision Pro (device testing)
 
 The simulator flow above builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install on
