@@ -12,7 +12,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
 
 ## Simulator and device helpers
 
-- `worktree-sim.sh` — provisions one simulator per git worktree. The default remains the visionOS golden/clone flow (`vpwt-*`, `.simid`); opt into an iPad simulator with `LABSTREAM_SIM_PLATFORM=ipad`, `scripts/worktree-sim.sh --platform ipad ...`, or a gitignored `.simplatform` file (`ipadwt-*`, `.simid-ipad`). Use `SIMID=$(scripts/worktree-sim.sh id)` for the selected platform and target `"$SIMID"`, not `booted`.
+- `worktree-sim.sh` — provisions one simulator per git worktree. The default remains the visionOS golden/clone flow (`vpwt-*`, `.simid`); opt into iPhone or iPad simulators with `LABSTREAM_SIM_PLATFORM=iphone|ipad`, `scripts/worktree-sim.sh --platform iphone|ipad ...`, or a gitignored `.simplatform` file (`iphonewt-*` / `.simid-iphone`, `ipadwt-*` / `.simid-ipad`). Use `SIMID=$(scripts/worktree-sim.sh id)` for the selected platform and target `"$SIMID"`, not `booted`.
 - `simclick.swift` — local simulator click helper.
 - `probe-plex-range-drop.sh` — simulator-only Plex download recoverability probe. It launches the DEBUG app in the worktree simulator with the range-drop URLProtocol enabled, using the simulator's signed-in app state and no token env file. Provide `LABSTREAM_PROBE_QUERY` or `LABSTREAM_PROBE_RATING_KEY`; logs go under `build/probes/plex-range-drop/`. Add `--keep-app-running` during iterative refactor work when you want the probe to leave the app alive after the observation window. The probe exits non-zero if logs show only item resolution/route selection without any transfer start or observation evidence.
 - `probe-jellyfin-download.sh` — simulator-only Jellyfin download probe. It launches the DEBUG app

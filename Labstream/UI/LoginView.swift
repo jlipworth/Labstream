@@ -20,6 +20,9 @@ struct LoginView: View {
     let authManager: AuthManager
 
     @Environment(AppModel.self) private var appModel
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
 
     @State private var webAuth = WebAuthSession()
 
@@ -35,7 +38,17 @@ struct LoginView: View {
     @State private var embySignInMethod: EmbySignInMethod?
     @State private var selectingEmbyConnectServerID: String?
 
-    var body: some View {
+    /// Compact width (iPhone, narrow iPad split view) drops the floating glass card:
+    /// phone sign-in should read as one full-screen surface, not a window-in-a-window.
+    private var isCompactWidth: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
+    private var formStack: some View {
         VStack(spacing: DS.Space.xl) {
             LoginBrandHeader()
 
@@ -47,10 +60,49 @@ struct LoginView: View {
                 BackendAuthErrorBanner(message: errorMessage)
             }
         }
-        .padding(.horizontal, DS.Space.xxxl)
-        .padding(.vertical, DS.Space.xxl)
-        .frame(maxWidth: 560)
-        .background(LoginPanelBackground())
+    }
+
+    /// The floating glass sign-in card used at regular width (iPad, visionOS).
+    private var loginCard: some View {
+        formStack
+            .padding(.horizontal, DS.Space.xxxl)
+            .padding(.vertical, DS.Space.xxl)
+            .frame(maxWidth: 560)
+            .background(LoginPanelBackground())
+    }
+
+    var body: some View {
+        Group {
+            if isCompactWidth {
+                // Full-screen phone layout: brand gradient owns the whole display,
+                // content flows in a scroll view so the keyboard can push it around.
+                ScrollView {
+                    formStack
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.vertical, DS.Space.xl)
+                        .frame(maxWidth: .infinity)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            } else {
+                #if os(iOS)
+                // iPad regular width: the fixed 560-pt card overflows once the
+                // software keyboard shrinks the safe area (Jellyfin/Emby credential
+                // fields, especially landscape) or the Emby Connect server list grows.
+                // Wrap it in a ScrollView so it can scroll instead of clipping; the
+                // GeometryReader-backed minHeight keeps the card vertically centered
+                // whenever the content fits, and .basedOnSize keeps it inert until then.
+                GeometryReader { proxy in
+                    ScrollView {
+                        loginCard
+                            .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                }
+                #else
+                loginCard
+                #endif
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #if os(iOS)
         // The dark login panel was authored against the visionOS glass window. A bare

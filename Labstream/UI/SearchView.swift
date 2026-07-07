@@ -214,11 +214,13 @@ struct SearchView: View {
 private struct SearchLibrarySection: View {
     let group: SearchResultGroup
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.xl) {
             Text(group.title)
-                .font(.title.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title2.bold() : .title.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ForEach(group.hubs) { hub in
                 SearchHubSection(hub: hub)
@@ -231,14 +233,16 @@ private struct SearchLibrarySection: View {
 private struct SearchHubSection: View {
     let hub: Hub
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.lg) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(hub.title)
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Space.xl) {
+                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
                             RailMediaCell(item: item)
@@ -251,7 +255,7 @@ private struct SearchHubSection: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .mediaRailScrollStyle()
+            .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
 }
@@ -272,6 +276,7 @@ private struct SearchSongsSection: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(MusicPlayerController.self) private var player
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var showAll = false
     @State private var isStarting = false
@@ -284,8 +289,8 @@ private struct SearchSongsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             Text("Songs")
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             VStack(spacing: 0) {
                 ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
@@ -339,13 +344,13 @@ private struct SearchSongsSection: View {
             .padding(.vertical, DS.Space.sm)
             .background(.regularMaterial,
                         in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .padding(.horizontal, DS.Space.xxl)
+            .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             if let playError {
                 Label(playError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.yellow)
-                    .padding(.horizontal, DS.Space.xxl)
+                    .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
             }
         }
     }

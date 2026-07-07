@@ -75,6 +75,7 @@ final class SystemEntryRouter {
     /// when there's no signed-in, resolved server. Tokens stay inside — callers
     /// pass this straight to the `BrowseAPI` builders and never persist any of it.
     struct BrowseContext {
+        let backend: MediaBackendKind
         let server: URL
         let token: String
         let identity: ClientIdentity
@@ -83,9 +84,12 @@ final class SystemEntryRouter {
 
     var browseContext: BrowseContext? {
         guard let appModel,
-              let server = appModel.serverBaseURL,
-              let token = appModel.serverToken else { return nil }
-        return BrowseContext(server: server, token: token,
+              let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) else {
+            return nil
+        }
+        return BrowseContext(backend: appModel.activeBackend,
+                             server: session.baseURL,
+                             token: session.token,
                              identity: appModel.identity, client: appModel.client)
     }
 

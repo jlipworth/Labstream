@@ -17,12 +17,16 @@ struct ContainerBrowserView: View {
     let container: MediaItem
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var children: [MediaItem] = []
     @State private var loadState: BrowseLoadState = .idle
 
-    private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
-                                    spacing: DS.Space.xl)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
+                            maximum: DS.Poster.gridMax(compact: compactWidth)),
+                  spacing: DS.gridGutter(compact: compactWidth))]
+    }
 
     /// A season lists episodes (drawn as wide episode rows); a show lists seasons (posters).
     private var childrenAreEpisodes: Bool { container.kind == .season }
@@ -59,15 +63,15 @@ struct ContainerBrowserView: View {
 
     /// Seasons as a poster grid (same look as a library section).
     private var seasonGrid: some View {
-        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+        LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
             ForEach(Array(children.enumerated()), id: \.element.containerRowIdentity) { _, season in
                 NavigationLink(value: season) {
-                    PosterCell(item: season, width: DS.Poster.gridMin)
+                    PosterCell(item: season, width: DS.Poster.gridMin(compact: compactWidth))
                 }
                 .cardLink()
             }
         }
-        .padding(DS.Space.xl)
+        .padding(DS.pagePadding(compact: compactWidth))
     }
 
     /// Episodes as a vertical list of wide rows, each reading
@@ -81,7 +85,7 @@ struct ContainerBrowserView: View {
                 .cardLink(cornerRadius: DS.Radius.card)
             }
         }
-        .padding(DS.Space.xl)
+        .padding(DS.pagePadding(compact: compactWidth))
     }
 
     private func recordContainerChildrenDiagnostics(_ loaded: [MediaItem],
@@ -191,12 +195,17 @@ private extension Array where Element == MediaItem {
 /// with a continue-watching sliver when the episode carries a resume offset.
 struct EpisodeRow: View {
     let episode: MediaItem
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
-        HStack(alignment: .top, spacing: DS.Space.lg) {
+        // Shrink the 16:9 thumbnail on compact width so the title/summary column
+        // isn't squeezed to a sliver on a narrow phone.
+        let thumbWidth: CGFloat = compactWidth ? 128 : 200
+        let thumbHeight = round(thumbWidth * 9 / 16)
+        HStack(alignment: .top, spacing: compactWidth ? DS.Space.md : DS.Space.lg) {
             PosterImage(path: episode.thumb ?? episode.parentThumb,
-                        width: 200,
-                        height: 112,
+                        width: thumbWidth,
+                        height: thumbHeight,
                         cornerRadius: DS.Radius.poster)
                 .overlay(alignment: .bottom) { progressSliver }
 

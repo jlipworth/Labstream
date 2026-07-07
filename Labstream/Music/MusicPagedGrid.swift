@@ -31,8 +31,13 @@ struct MusicPagedGrid: View {
         kind == .albums ? MusicBrowseSort.albumCases : MusicBrowseSort.artistCases
     }
 
-    private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
-                                    spacing: DS.Space.xl)]
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: MusicArt.gridMin(compact: compactWidth),
+                            maximum: MusicArt.gridMax(compact: compactWidth)),
+                  spacing: DS.gridGutter(compact: compactWidth))]
+    }
 
     private var pagingSource: LibraryPagingSource {
         .music(kind: kind, libraryID: libraryID, libraryTitle: libraryTitle,
@@ -82,9 +87,9 @@ struct MusicPagedGrid: View {
                 sortMenu
                 Spacer()
             }
-            .padding(.horizontal, DS.Space.xxl)
+            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
 
-            LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+            LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
                 // Position-keyed: a slot's identity is its place in the listing; its content
                 // arrives when the page loads (same contract as the video grid's slots).
                 ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
@@ -95,7 +100,12 @@ struct MusicPagedGrid: View {
                     .id(index)
                 }
             }
-            .padding(.horizontal, DS.Space.xxl)
+            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+            // On compact the 16-pt page padding leaves the last column under the
+            // A-Z rail's capsule (34-pt rail + 10-pt inset), which intercepts taps —
+            // reserve the rail's width instead of overlapping (same fix as the
+            // video LibraryGridView).
+            .padding(.trailing, compactWidth && paging.alphabetBuckets.count > 1 ? 34 : 0)
         }
         .padding(.vertical, DS.Space.xl)
     }
@@ -163,7 +173,7 @@ private struct MusicPagedGridSlot: View {
         Group {
             if let item {
                 NavigationLink(value: item) {
-                    SquareArtCell(item: item, size: MusicArt.gridMin, subtitle: subtitle)
+                    SquareArtCell(item: item, subtitle: subtitle)
                 }
                 .cardLink()
                 // Keep the outer numeric `.id(index)` as the scroll target, but force the
@@ -183,17 +193,20 @@ private struct MusicPagedGridSlot: View {
 /// Shimmer stand-in matching a loaded music cell's footprint (square art + one text line),
 /// shown for a not-yet-fetched slot. The square counterpart of `LibraryPlaceholderPoster`.
 private struct MusicPlaceholderCell: View {
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
+        let side = MusicArt.gridMin(compact: compactWidth)
         VStack(alignment: .leading, spacing: DS.Space.sm) {
             RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                 .fill(.regularMaterial)
-                .frame(width: MusicArt.gridMin, height: MusicArt.gridMin)
+                .frame(width: side, height: side)
                 .overlay { ShimmerView() }
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
             RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
                 .fill(.regularMaterial)
-                .frame(width: MusicArt.gridMin * 0.6, height: 16)
+                .frame(width: side * 0.6, height: 16)
         }
-        .frame(width: MusicArt.gridMin, alignment: .leading)
+        .frame(width: side, alignment: .leading)
     }
 }

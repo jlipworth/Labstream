@@ -41,9 +41,10 @@ struct PlayMediaIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady() else { throw LabstreamIntentError.notSignedIn }
-        // Route by ratingKey, not the snapshot: RootView re-fetches authoritative
-        // metadata (and resolves a show/season container down to an episode leaf).
-        router.open(ratingKey: item.id, autoPlay: true)
+        // Route by backend-scoped id, not the snapshot: RootView re-fetches authoritative
+        // metadata from the active backend (and resolves a show/season container down to
+        // an episode leaf).
+        router.open(routeKey: MediaSearchIdentifier.routeKey(from: item.id), autoPlay: true)
         return .result(dialog: "Playing \(item.title) in Labstream.")
     }
 }
@@ -65,7 +66,7 @@ struct OpenMediaIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady() else { throw LabstreamIntentError.notSignedIn }
-        router.open(ratingKey: item.id, autoPlay: false)
+        router.open(routeKey: MediaSearchIdentifier.routeKey(from: item.id), autoPlay: false)
         return .result(dialog: "Opening \(item.title) in Labstream.")
     }
 }
@@ -73,17 +74,30 @@ struct OpenMediaIntent: AppIntent {
 struct ResumeContinueWatchingIntent: AppIntent {
     static let title: LocalizedStringResource = "Continue Watching"
     static let description = IntentDescription(
-        "Resumes the most recent item in your Plex Continue Watching list.")
+        "Resumes the most recent item in your active backend's Continue Watching list.")
     static let openAppWhenRun = true
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let router = SystemEntryRouter.shared
         guard await router.ensureBrowseReady(),
-              let ctx = router.browseContext else { throw LabstreamIntentError.notSignedIn }
-        let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
-        guard let resp = try? await ctx.client.send(req, as: MetadataResponse.self),
-              let next = resp.mediaContainer.metadata.first(where: { !$0.isMusic }) else {
+              let ctx = router.browseContext,
+              let appModel = router.appModel else { throw LabstreamIntentError.notSignedIn }
+        let items: [MediaItem]
+        switch ctx.backend {
+        case .plex:
+            let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
+            items = (try? await ctx.client.send(req, as: MetadataResponse.self))?.mediaContainer.metadata ?? []
+        case .jellyfin:
+            let service = JellyfinBrowseService(appModel: appModel)
+            let resume = (try? await service.resumeItems(limit: 10)) ?? []
+            items = resume.isEmpty ? ((try? await service.nextUp(limit: 10)) ?? []) : resume
+        case .emby:
+            let service = EmbyBrowseService(appModel: appModel)
+            let resume = (try? await service.resumeItems(limit: 10)) ?? []
+            items = resume.isEmpty ? ((try? await service.nextUp(limit: 10)) ?? []) : resume
+        }
+        guard let next = items.first(where: { !$0.isMusic }) else {
             throw LabstreamIntentError.nothingToResume
         }
         // On Deck items are leaves (movies/episodes) carrying a viewOffset, so

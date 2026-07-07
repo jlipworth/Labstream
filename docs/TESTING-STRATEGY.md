@@ -8,7 +8,7 @@ flowchart TD
   Change --> Hygiene[ci-hygiene]
   Change --> Docs[mkdocs build --strict]
   Unit --> VisionSim[visionOS simulator build/smoke]
-  Unit --> MobileSim[iPad simulator build/smoke]
+  Unit --> MobileSim[iPhone/iPad simulator build/smoke]
   VisionSim --> Device[Physical headset checks]
   Unit --> Live[Optional live-server probes]
 ```
@@ -43,17 +43,17 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
-For the native iPhone/iPad target, opt into an iPad simulator and build the `LabstreamMobile` scheme:
+For the native iPhone/iPad target, opt into an iPhone simulator by default and build the `LabstreamMobile` scheme. Use `ipad` instead of `iphone` for the iPad pass:
 
 ```sh
-printf 'ipad\n' > .simplatform
+printf 'iphone\n' > .simplatform
 SIMID=$(scripts/worktree-sim.sh id)
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
-Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, mobile shell regressions, and many download/playback routing checks. They are not a full substitute for headset playback or physical iPhone/iPad media-background behavior.
+Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, compact/regular mobile shell regressions, and many download/playback routing checks. They are not a full substitute for headset playback or physical iPhone/iPad media-background behavior, cellular-transfer policy, PiP/AirPlay handoff, or system search/Shortcuts invocation.
 
 ## Optional live-server checks
 

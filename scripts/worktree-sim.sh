@@ -6,8 +6,14 @@
 # logged-in "golden" simulator (<main>/.simid) and LINKED worktrees get vpwt-* clones of
 # that golden, created SHUT DOWN.
 #
-# iPadOS/iOS work can opt into an independent iPad simulator instead of cloning the
+# iPhone/iPadOS work can opt into an independent iOS simulator instead of cloning the
 # visionOS golden. Select it with either:
+#   LABSTREAM_SIM_PLATFORM=iphone scripts/worktree-sim.sh id
+#   scripts/worktree-sim.sh --platform iphone id
+# or write `iphone` to a gitignored <worktree>/.simplatform. iPhone simulators are named
+# iphonewt-<branch>-<hash> and recorded in <worktree>/.simid-iphone.
+#
+# iPad work is the same shape:
 #   LABSTREAM_SIM_PLATFORM=ipad scripts/worktree-sim.sh id
 #   scripts/worktree-sim.sh --platform ipad id
 # or write `ipad` to a gitignored <worktree>/.simplatform. iPad simulators are named
@@ -16,21 +22,22 @@
 # Subcommands:
 #   setup         provision this worktree's sim; idempotent.
 #                 visionOS: no-op in main or clone golden in linked worktrees.
-#                 iPadOS: create/reuse a shutdown iPad simulator for this worktree.
+#                 iPhone/iPadOS: create/reuse a shutdown iOS simulator for this worktree.
 #   teardown      delete the current worktree's owned sim for the selected platform and
 #                 remove its simid file. Use --all to delete every linked-worktree sim
 #                 owned by this worktree (never the main golden sim).
 #   closeout      safe finish command: teardown all sims for an existing linked worktree
 #                 path, then prune orphaned worktree sims.
-#   prune         delete every vpwt-* / ipadwt-* sim no live worktree references.
+#   prune         delete every vpwt-* / ipadwt-* / iphonewt-* sim no live worktree references.
 #   id            print the current worktree's sim UDID (seeds/setups if needed).
-#   platform      print the effective platform (visionos or ipad).
+#   platform      print the effective platform (visionos, iphone, or ipad).
 #   install-hook  install a post-checkout hook that runs `setup` after `git worktree add`.
 #
 set -euo pipefail
 
 VISION_PREFIX="vpwt-"
 IPAD_PREFIX="ipadwt-"
+IPHONE_PREFIX="iphonewt-"
 DEFAULT_PLATFORM="visionos"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 PLATFORM_OVERRIDE=""
@@ -44,6 +51,18 @@ IPAD_DEVICE_TYPE_CANDIDATES=(
   "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4"
   "com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4"
   "com.apple.CoreSimulator.SimDeviceType.iPad-A16"
+)
+
+# These iPhone device types are ordered newest/preferred first. If a local Xcode does not
+# have one, setup falls back to the first available iPhone device type reported by simctl.
+IPHONE_DEVICE_TYPE_CANDIDATES=(
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-17"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-16"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-16e"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro"
+  "com.apple.CoreSimulator.SimDeviceType.iPhone-15"
 )
 
 die() { echo "worktree-sim: $*" >&2; exit 1; }
@@ -60,8 +79,9 @@ normalize_platform() {
   p=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
   case "$p" in
     ""|vision|visionos|xros|xr|vp) printf 'visionos' ;;
-    ipad|ipados|ios|iphone|mobile) printf 'ipad' ;;
-    *) die "unknown simulator platform '$p' (expected visionos or ipad)" ;;
+    ipad|ipados) printf 'ipad' ;;
+    iphone|ios|mobile) printf 'iphone' ;;
+    *) die "unknown simulator platform '$p' (expected visionos, iphone, or ipad)" ;;
   esac
 }
 
@@ -87,6 +107,7 @@ name_prefix_for_platform() {
   case "$(normalize_platform "$1")" in
     visionos) printf '%s' "$VISION_PREFIX" ;;
     ipad) printf '%s' "$IPAD_PREFIX" ;;
+    iphone) printf '%s' "$IPHONE_PREFIX" ;;
   esac
 }
 
@@ -97,6 +118,7 @@ simid_file_for_platform() {
   case "$platform" in
     visionos) printf '%s/.simid' "$root" ;;
     ipad) printf '%s/.simid-ipad' "$root" ;;
+    iphone) printf '%s/.simid-iphone' "$root" ;;
   esac
 }
 
@@ -184,7 +206,7 @@ clone_golden() {
   printf '%s' "$udid"
 }
 
-available_ipad_runtime() {
+available_ios_runtime() {
   xcrun simctl list runtimes -j | python3 -c '
 import json, re, sys
 runtimes = json.load(sys.stdin).get("runtimes", [])
@@ -201,9 +223,16 @@ if choices:
 '
 }
 
-available_ipad_device_type() {
+available_device_type() {
+  local family="$1"
   local candidate
-  for candidate in "${IPAD_DEVICE_TYPE_CANDIDATES[@]}"; do
+  local -a candidates=()
+  case "$family" in
+    ipad) candidates=("${IPAD_DEVICE_TYPE_CANDIDATES[@]}") ;;
+    iphone) candidates=("${IPHONE_DEVICE_TYPE_CANDIDATES[@]}") ;;
+    *) die "unknown iOS device family '$family'" ;;
+  esac
+  for candidate in "${candidates[@]}"; do
     if xcrun simctl list devicetypes -j | python3 -c 'import json,sys; target=sys.argv[1]; print(any(d.get("identifier")==target and d.get("isAvailable", True) for d in json.load(sys.stdin).get("devicetypes", [])))' "$candidate" | grep -q True; then
       printf '%s' "$candidate"
       return 0
@@ -211,21 +240,25 @@ available_ipad_device_type() {
   done
   xcrun simctl list devicetypes -j | python3 -c '
 import json, sys
+family = sys.argv[1]
+needle = "iPad" if family == "ipad" else "iPhone"
+ident_needle = f"SimDeviceType.{needle}"
 for d in json.load(sys.stdin).get("devicetypes", []):
     ident = d.get("identifier", "")
     name = d.get("name", "")
-    if d.get("isAvailable", True) and "iPad" in name and "SimDeviceType.iPad" in ident:
+    if d.get("isAvailable", True) and needle in name and ident_needle in ident:
         print(ident); sys.exit(0)
-'
+' "$family"
 }
 
-create_ipad_sim() {
-  local name="$1" runtime device udid
-  runtime=$(available_ipad_runtime)
-  [ -n "$runtime" ] || die "no available iOS/iPadOS simulator runtime found"
-  device=$(available_ipad_device_type)
-  [ -n "$device" ] || die "no available iPad simulator device type found"
-  udid=$(xcrun simctl create "$name" "$device" "$runtime") || die "create iPad simulator failed"
+create_ios_sim() {
+  local family="$1" name="$2" runtime device udid label
+  runtime=$(available_ios_runtime)
+  [ -n "$runtime" ] || die "no available iOS simulator runtime found"
+  device=$(available_device_type "$family")
+  label=$([ "$family" = "ipad" ] && printf 'iPad' || printf 'iPhone')
+  [ -n "$device" ] || die "no available ${label} simulator device type found"
+  udid=$(xcrun simctl create "$name" "$device" "$runtime") || die "create ${label} simulator failed"
   printf '%s' "$udid"
 }
 
@@ -246,7 +279,8 @@ cmd_setup_platform() {
   if [ -z "$udid" ]; then
     case "$platform" in
       visionos) udid=$(clone_golden "$name") ;;
-      ipad) udid=$(create_ipad_sim "$name") ;;
+      ipad) udid=$(create_ios_sim ipad "$name") ;;
+      iphone) udid=$(create_ios_sim iphone "$name") ;;
     esac
   fi
   printf '%s\n' "$udid" > "$simid_file"
@@ -282,6 +316,7 @@ cmd_teardown() {
   if [ "${1:-}" = "--all" ]; then
     cmd_teardown_platform visionos
     cmd_teardown_platform ipad
+    cmd_teardown_platform iphone
     return 0
   fi
   cmd_teardown_platform "$(effective_platform)"
@@ -292,6 +327,7 @@ cmd_prune() {
   while read -r wt; do
     if [ -f "$wt/.simid" ]; then refs+="$(cat "$wt/.simid") "; fi
     if [ -f "$wt/.simid-ipad" ]; then refs+="$(cat "$wt/.simid-ipad") "; fi
+    if [ -f "$wt/.simid-iphone" ]; then refs+="$(cat "$wt/.simid-iphone") "; fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   tmp=$(mktemp "${TMPDIR:-/tmp}/worktree-sim-prune.XXXXXX")
   xcrun simctl list devices -j | python3 -c '
@@ -302,10 +338,10 @@ for devs in json.load(sys.stdin)["devices"].values():
     for d in devs:
         if d["name"].startswith(prefixes) and d["udid"] not in refs:
             print(d["udid"], d["name"])
-' "$VISION_PREFIX,$IPAD_PREFIX" "$refs" > "$tmp"
+' "$VISION_PREFIX,$IPAD_PREFIX,$IPHONE_PREFIX" "$refs" > "$tmp"
   count=$(wc -l < "$tmp" | tr -d ' ')
   if [ "$count" = "0" ]; then
-    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* simulators found"
+    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* / ${IPHONE_PREFIX}* simulators found"
     rm -f "$tmp"
     return 0
   fi
@@ -401,7 +437,7 @@ main() {
     id)           cmd_id "$@" ;;
     platform)     cmd_platform "$@" ;;
     install-hook) cmd_install_hook "$@" ;;
-    *) die "usage: worktree-sim.sh [--platform visionos|ipad] {setup|teardown [--all]|closeout|prune|id|platform|install-hook}" ;;
+    *) die "usage: worktree-sim.sh [--platform visionos|iphone|ipad] {setup|teardown [--all]|closeout|prune|id|platform|install-hook}" ;;
   esac
 }
 

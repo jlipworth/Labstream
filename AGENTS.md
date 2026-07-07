@@ -73,10 +73,10 @@ invoked by a `post-checkout` git hook).
   `<main>/.simid`). Never delete it.
 - By default, a **linked** worktree gets a `vpwt-<branch>-<hash>` visionOS clone of the
   golden, created **shut down**; its UDID lives in `<worktree>/.simid` (git-ignored).
-- iPad/iOS work can opt into an independent iPad simulator without touching the golden:
-  use `LABSTREAM_SIM_PLATFORM=ipad`, `scripts/worktree-sim.sh --platform ipad ...`, or a
-  gitignored `<worktree>/.simplatform` containing `ipad`. Its UDID lives in
-  `<worktree>/.simid-ipad`.
+- iPhone/iPadOS work can opt into independent iOS simulators without touching the golden:
+  use `LABSTREAM_SIM_PLATFORM=iphone` or `ipad`, `scripts/worktree-sim.sh --platform iphone|ipad ...`, or a
+  gitignored `<worktree>/.simplatform` containing `iphone` or `ipad`. iPhone UDIDs live in
+  `<worktree>/.simid-iphone`; iPad UDIDs live in `<worktree>/.simid-ipad`.
 - Target `"$SIMID"` (from `scripts/worktree-sim.sh id`), never `booted` — `booted` errors
   once more than one sim is up.
 
@@ -89,6 +89,7 @@ scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune or
 scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone
 SIMID=$(scripts/worktree-sim.sh id)    # this worktree's UDID for build/install/log
 SIMID=$(scripts/worktree-sim.sh --platform visionos id) # force the visionOS sim
+SIMID=$(scripts/worktree-sim.sh --platform iphone id)   # force the iPhone sim
 SIMID=$(scripts/worktree-sim.sh --platform ipad id)     # force the iPad sim
 ```
 
@@ -100,8 +101,8 @@ just wrote; unset that config before relying on auto-clone behavior.
 `scripts/worktree-sim.sh teardown --all` inside the linked worktree **before**
 `git worktree remove`. Use `prune` immediately afterward if removal already happened.
 visionOS `setup` clones from the golden sim, which `simctl` can only do while the golden
-is shut down, so it briefly bounces a booted main sim (~10s blip). iPad setup creates a
-fresh `ipadwt-*` simulator from the newest available iOS runtime instead.
+is shut down, so it briefly bounces a booted main sim (~10s blip). iPhone/iPad setup
+creates a fresh `iphonewt-*` or `ipadwt-*` simulator from the newest available iOS runtime instead.
 
 ### Worktree closeout checklist
 
@@ -120,8 +121,8 @@ scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|ipadwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|<branch-fragment>' || true
 ```
 
-Do not delete the golden main-worktree simulator. Only this linked worktree's `vpwt-*`
-and/or `ipadwt-*` simulators should disappear during closeout.
+Do not delete the golden main-worktree simulator. Only this linked worktree's `vpwt-*`,
+`iphonewt-*`, and/or `ipadwt-*` simulators should disappear during closeout.

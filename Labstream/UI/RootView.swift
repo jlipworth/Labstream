@@ -31,6 +31,11 @@ struct RootView: View {
     @State private var systemEntryGeneration = 0
     /// Incremented by the ⌘F shortcut to route to Search and (re-)focus its field.
     @State private var searchFocusRequest = 0
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Compact-width Settings presentation (see `usesCompactTabSet`).
+    @State private var showsSettingsSheet = false
+    #endif
 
     enum AppTab: Hashable, CaseIterable {
         case home, libraries, search, music, offline, settings
@@ -217,7 +222,7 @@ struct RootView: View {
     /// the tab bar minimizes on scroll so media rails keep the full height.
     private var mobileRootContent: some View {
         TabView(selection: $selection) {
-            ForEach(AppTab.allCases.filter { $0 != .search }, id: \.self) { tab in
+            ForEach(mobileTabs, id: \.self) { tab in
                 Tab(tab.title, systemImage: tab.systemImage, value: tab) {
                     tabContent(for: tab)
                 }
@@ -234,13 +239,60 @@ struct RootView: View {
         .tabViewBottomAccessory(isEnabled: musicPlayer.current != nil) {
             MiniPlayerBar()
         }
+        .sheet(isPresented: $showsSettingsSheet) {
+            NavigationStack {
+                SettingsView(authManager: authManager)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showsSettingsSheet = false }
+                        }
+                    }
+            }
+        }
+        // A compact↔regular flip (iPhone Max rotation, iPad split-view resize) can strand
+        // the selection on a Settings tab that no longer exists; fall back to Home and
+        // keep Settings reachable via the sheet.
+        .onChange(of: usesCompactTabSet) { _, isCompact in
+            if isCompact, selection == .settings {
+                selection = .home
+                showsSettingsSheet = true
+            }
+        }
+    }
+
+    /// A phone-width bottom bar holds ~5 items; six spills Offline/Settings into the system
+    /// "More" list. On compact width Settings moves out of the tab set to a Home nav-bar
+    /// gear (the iPhone idiom — Apple apps use a gear/profile control, not a Settings tab),
+    /// keeping the bar to four tabs plus the system search role. Regular width (iPad
+    /// sidebar, Max-phone landscape) keeps the full set.
+    private var usesCompactTabSet: Bool { horizontalSizeClass == .compact }
+
+    private var mobileTabs: [AppTab] {
+        AppTab.allCases.filter { tab in
+            if tab == .search { return false }
+            if tab == .settings, usesCompactTabSet { return false }
+            return true
+        }
     }
 
     @ViewBuilder
     private func tabContent(for tab: AppTab) -> some View {
         switch tab {
         case .home:
-            NavigationStack(path: $homePath) { HomeView() }
+            NavigationStack(path: $homePath) {
+                HomeView()
+                    .toolbar {
+                        if usesCompactTabSet {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button {
+                                    showsSettingsSheet = true
+                                } label: {
+                                    Label("Settings", systemImage: "gearshape")
+                                }
+                            }
+                        }
+                    }
+            }
                 .environment(\.cinemaOriginTab, .home)
                 .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
@@ -303,9 +355,6 @@ struct RootView: View {
             }
 
             guard isCurrentRoute() else { return }
-            let identity = appModel.identity
-            let client = appModel.client
-
             // Resolve the target to a full item. Spotlight hits and Play/Open
             // intents arrive as a backend-scoped route key and are fetched fresh here;
             // `.item` is reserved for callers that JUST fetched the metadata
@@ -315,21 +364,19 @@ struct RootView: View {
             case .item(let given):
                 item = given
             case .routeKey(let routeKey):
-                // Only Plex system-entry ids are currently indexed/routable. If a future
-                // non-Plex id reaches this path before non-Plex system indexing is enabled,
-                // do not resolve it against whichever backend happens to be active.
-                guard routeKey.backend == .plex,
-                      appModel.activeBackend.backendChoice == routeKey.backend,
-                      let server = appModel.serverBaseURL,
-                      let token = appModel.serverToken else { return }
-                if let namespace = routeKey.serverNamespace,
-                   namespace != BackendScopedMediaID.serverNamespace(server) {
+                let routeBackend = MediaBackendKind(routeKey.backend)
+                guard appModel.activeBackend == routeBackend,
+                      let session = appModel.backendSession(for: routeBackend.downloadBackendKind) else {
                     return
                 }
-                let req = BrowseAPI.metadata(server: server, token: token,
-                                             identity: identity, ratingKey: routeKey.ratingKey)
-                item = (try? await client.send(req, as: MetadataResponse.self))?
-                    .mediaContainer.metadata.first
+                if let namespace = routeKey.serverNamespace,
+                   namespace != BackendScopedMediaID.serverNamespace(session.baseURL) {
+                    return
+                }
+                let result = await DetailMetadataLoader.load(ratingKey: routeKey.ratingKey,
+                                                             backend: routeBackend,
+                                                             appModel: appModel)
+                item = result.item
                 guard isCurrentRoute() else { return }
             }
             // Unresolvable (deleted item, stale index from another server): the
@@ -338,25 +385,9 @@ struct RootView: View {
 
             var autoPlay = route.autoPlay
             if autoPlay, item.isContainer {
-                guard let server = appModel.serverBaseURL,
-                      let token = appModel.serverToken else {
-                    autoPlay = false
-                    await Task.yield()
-                    guard isCurrentRoute() else { return }
-                    appendPath(for: targetTab, item)
-                    return
-                }
-                // "Play <show/season>": drill to the first episode leaf. Explicitly
-                // @Sendable (capturing only Sendable values) so the closure may
-                // cross from the main actor into the nonisolated resolver.
-                let loadChildren: @Sendable (String) async throws -> [MediaItem] = { ratingKey in
-                    let req = BrowseAPI.children(server: server, token: token,
-                                                 identity: identity, ratingKey: ratingKey)
-                    return try await client.send(req, as: MetadataResponse.self)
-                        .mediaContainer.metadata
-                }
-                let leaf = try? await EpisodeResolver.resolveLeaf(from: item,
-                                                                  loadChildren: loadChildren)
+                // "Play <show/season>": drill to the first episode leaf against the ACTIVE
+                // backend only, so a stale route never walks the wrong server's hierarchy.
+                let leaf = await resolveSystemEntryLeaf(from: item)
                 guard isCurrentRoute() else { return }
                 if let leaf {
                     item = leaf
@@ -381,6 +412,55 @@ struct RootView: View {
             }
             appendPath(for: targetTab, item)
         }
+    }
+
+    private func resolveSystemEntryLeaf(from item: MediaItem) async -> MediaItem? {
+        if item.isPlayableLeaf { return item }
+        switch item.kind {
+        case .season:
+            let episodes = (try? await systemEntryChildren(for: item.ratingKey)) ?? []
+            return firstSystemEntryLeaf(in: episodes)
+        case .show:
+            let seasons = (try? await systemEntryChildren(for: item.ratingKey)) ?? []
+            for season in seasons {
+                let episodes = (try? await systemEntryChildren(for: season.ratingKey)) ?? []
+                if let first = firstSystemEntryLeaf(in: episodes) { return first }
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private func systemEntryChildren(for ratingKey: String) async throws -> [MediaItem] {
+        switch appModel.activeBackend {
+        case .plex:
+            guard let server = appModel.serverBaseURL,
+                  let token = appModel.serverToken else {
+                throw URLError(.userAuthenticationRequired)
+            }
+            let req = BrowseAPI.children(server: server, token: token,
+                                         identity: appModel.identity, ratingKey: ratingKey)
+            return try await appModel.client.send(req, as: MetadataResponse.self)
+                .mediaContainer.metadata
+        case .jellyfin:
+            return try await JellyfinBrowseService(appModel: appModel)
+                .items(parentId: ratingKey, recursive: false)
+        case .emby:
+            return try await EmbyBrowseService(appModel: appModel)
+                .items(parentId: ratingKey, recursive: false)
+        }
+    }
+
+    private func firstSystemEntryLeaf(in items: [MediaItem]) -> MediaItem? {
+        items
+            .filter(\.isPlayableLeaf)
+            .sorted { lhs, rhs in
+                let l = (lhs.parentIndex ?? Int.max, lhs.index ?? Int.max)
+                let r = (rhs.parentIndex ?? Int.max, rhs.index ?? Int.max)
+                return l < r
+            }
+            .first
     }
 
     private func cancelSystemEntryTask() {
