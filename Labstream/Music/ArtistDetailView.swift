@@ -38,8 +38,11 @@ struct ArtistDetailView: View {
     @State private var isStartingPlayback = false
     @State private var playError: String?
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     /// Header portrait size — larger than a grid cell, smaller than an album hero.
-    private let portraitSize: CGFloat = 160
+    /// Compact shrinks it so the name/buttons column keeps usable width beside it.
+    private var portraitSize: CGFloat { compactWidth ? 110 : 160 }
 
     private var isEmpty: Bool {
         popular.isEmpty && albums.isEmpty && categorized.isEmpty
@@ -84,7 +87,7 @@ struct ArtistDetailView: View {
 
             VStack(alignment: .leading, spacing: DS.Space.sm) {
                 Text(artist.title)
-                    .font(.largeTitle.bold())
+                    .font(compactWidth ? .title.bold() : .largeTitle.bold())
                 if let summary = artist.summary, !summary.isEmpty {
                     Text(summary)
                         .font(.subheadline)
@@ -125,7 +128,7 @@ struct ArtistDetailView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
     /// Fetch every track under the artist in one flat list and play it (in album
@@ -188,21 +191,22 @@ struct ArtistDetailView: View {
             .background(.regularMaterial,
                         in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
     /// Shimmering shelf placeholders while everything loads.
     private var shelfSkeleton: some View {
-        HStack(spacing: DS.Space.xl) {
+        HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
             ForEach(0..<6, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                     .fill(.regularMaterial)
-                    .frame(width: MusicArt.railSize, height: MusicArt.railSize)
+                    .frame(width: MusicArt.railSize(compact: compactWidth),
+                           height: MusicArt.railSize(compact: compactWidth))
                     .overlay { ShimmerView() }
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
             }
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
     private func load() async {

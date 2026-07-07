@@ -16,8 +16,10 @@ struct PlaylistDetailView: View {
     @State private var tracks: [MediaItem] = []
     @State private var loadState: BrowseLoadState = .idle
 
-    /// Hero art size, matching the album detail header.
-    private let coverSize: CGFloat = 300
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    /// Hero art size, matching the album detail header (220 on compact).
+    private var coverSize: CGFloat { compactWidth ? 220 : 300 }
 
     var body: some View {
         ZStack {
@@ -46,7 +48,7 @@ struct PlaylistDetailView: View {
                         }
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
+                .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                 .padding(.vertical, DS.Space.xl)
             }
         }
@@ -65,12 +67,18 @@ struct PlaylistDetailView: View {
     // MARK: - Header
 
     /// Composite art + title + "N tracks · duration" + Play / Shuffle actions.
+    /// Side-by-side on regular width; compact stacks the art above the metadata
+    /// (same rationale as `AlbumDetailView.header`).
     private var header: some View {
-        HStack(alignment: .bottom, spacing: DS.Space.xxl) {
+        let layout = compactWidth
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Space.lg))
+            : AnyLayout(HStackLayout(alignment: .bottom, spacing: DS.Space.xxl))
+        return layout {
             PosterImage(path: playlist.musicArtPath, width: coverSize, height: coverSize,
                         cornerRadius: DS.Radius.poster)
                 .background(DS.posterShadow(RoundedRectangle(cornerRadius: DS.Radius.poster,
                                                              style: .continuous)))
+                .frame(maxWidth: compactWidth ? .infinity : nil)
 
             VStack(alignment: .leading, spacing: DS.Space.sm) {
                 Text(playlist.title)

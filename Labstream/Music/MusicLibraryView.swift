@@ -163,6 +163,7 @@ private struct MusicHomeView: View {
 ///   2. no usable Recently-Played hub → synthesize the rail from play history;
 ///   3. hubs failed entirely → the old layout (Recently Added rail + Artists nudge).
 private struct MusicHomePivot: View {
+    @Environment(\.labstreamCompactWidth) private var compactWidth
     let section: PlexSection
 
     @Environment(AppModel.self) private var appModel
@@ -210,7 +211,7 @@ private struct MusicHomePivot: View {
                             Text("Browse everything from the Artists and Albums pivots above.")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
-                                .padding(.horizontal, DS.Space.xxl)
+                                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
                         }
                         shuffleButton
                     }
@@ -242,7 +243,7 @@ private struct MusicHomePivot: View {
                     .foregroundStyle(.yellow)
             }
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
         .padding(.top, DS.Space.md)
     }
 
@@ -355,18 +356,20 @@ struct MusicRail: View {
     let title: String
     let items: [MediaItem]
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.lg) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(title)
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Space.xl) {
+                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(items.prefix(20)) { item in
                         NavigationLink(value: item) {
                             SquareArtCell(item: item,
-                                          size: MusicArt.railSize,
+                                          size: MusicArt.railSize(compact: compactWidth),
                                           subtitle: item.parentTitle)
                         }
                         .cardLink()
@@ -376,7 +379,7 @@ struct MusicRail: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .mediaRailScrollStyle() // let hover-lifted art breathe past the rail edge
+            .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
 }
@@ -394,20 +397,22 @@ private struct MusicTrackRail: View {
 
     @State private var isStarting = false
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.lg) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(title)
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Space.xl) {
+                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(tracks.prefix(20)) { track in
                         Button {
                             Task { await play(from: track) }
                         } label: {
                             SquareArtCell(item: displayItem(for: track),
-                                          size: MusicArt.railSize,
+                                          size: MusicArt.railSize(compact: compactWidth),
                                           subtitle: track.grandparentTitle)
                         }
                         .cardLink()
@@ -418,7 +423,7 @@ private struct MusicTrackRail: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .mediaRailScrollStyle() // let hover-lifted art breathe past the rail edge
+            .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
 
@@ -568,30 +573,37 @@ private struct PlaylistRow: View {
 /// Shimmering placeholder mirroring the rail-above-grid layout while a section loads.
 /// Internal so the shared `MusicPagedGrid` shows the same loading treatment (#111).
 struct MusicSkeleton: View {
-    private let columns = [GridItem(.adaptive(minimum: MusicArt.gridMin, maximum: MusicArt.gridMax),
-                                    spacing: DS.Space.xl)]
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: MusicArt.gridMin(compact: compactWidth),
+                            maximum: MusicArt.gridMax(compact: compactWidth)),
+                  spacing: DS.gridGutter(compact: compactWidth))]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.xxxl) {
             VStack(alignment: .leading, spacing: DS.Space.lg) {
                 skeletonBlock(width: 220, height: 26, radius: DS.Radius.chip)
-                    .padding(.horizontal, DS.Space.xxl)
-                HStack(spacing: DS.Space.xl) {
+                    .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+                HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(0..<5, id: \.self) { _ in
-                        skeletonBlock(width: MusicArt.railSize, height: MusicArt.railSize,
+                        skeletonBlock(width: MusicArt.railSize(compact: compactWidth),
+                                      height: MusicArt.railSize(compact: compactWidth),
                                       radius: DS.Radius.poster)
                     }
                 }
-                .padding(.horizontal, DS.Space.xxl)
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
             }
 
-            LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+            LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
                 ForEach(0..<8, id: \.self) { _ in
-                    skeletonBlock(width: MusicArt.gridMin, height: MusicArt.gridMin,
+                    skeletonBlock(width: MusicArt.gridMin(compact: compactWidth),
+                                  height: MusicArt.gridMin(compact: compactWidth),
                                   radius: DS.Radius.poster)
                 }
             }
-            .padding(.horizontal, DS.Space.xxl)
+            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
         }
         .padding(.vertical, DS.Space.xl)
     }
@@ -632,6 +644,18 @@ enum MusicArt {
     /// Adaptive grid bounds for artist/album cells.
     static let gridMin: CGFloat = 168
     static let gridMax: CGFloat = 208
+
+    /// Compact-width (iPhone) counterparts, matching `DS.Poster.Compact` so music
+    /// and video browse density stay in lock-step on the phone.
+    enum Compact {
+        static let railSize: CGFloat = 110
+        static let gridMin: CGFloat = 104
+        static let gridMax: CGFloat = 150
+    }
+
+    static func railSize(compact: Bool) -> CGFloat { compact ? Compact.railSize : railSize }
+    static func gridMin(compact: Bool) -> CGFloat { compact ? Compact.gridMin : gridMin }
+    static func gridMax(compact: Bool) -> CGFloat { compact ? Compact.gridMax : gridMax }
 }
 
 /// Square artwork + title (+ optional subtitle) cell shared by the music rails and
@@ -639,12 +663,19 @@ enum MusicArt {
 /// (the music-app idiom that visually separates people from records).
 struct SquareArtCell: View {
     let item: MediaItem
-    var size: CGFloat = MusicArt.gridMin
+    /// Explicit size from callers; nil means "grid default for this size class".
+    var size: CGFloat?
     /// Optional second line (e.g. artist name on an album, year on a discography cell).
     var subtitle: String? = nil
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var resolvedSize: CGFloat {
+        size ?? MusicArt.gridMin(compact: compactWidth)
+    }
+
     private var artRadius: CGFloat {
-        item.kind == .artist ? size / 2 : DS.Radius.poster
+        item.kind == .artist ? resolvedSize / 2 : DS.Radius.poster
     }
 
     private var textAlignment: HorizontalAlignment {
@@ -657,7 +688,7 @@ struct SquareArtCell: View {
 
     var body: some View {
         VStack(alignment: textAlignment, spacing: DS.Space.sm) {
-            PosterImage(path: item.thumb, width: size, height: size,
+            PosterImage(path: item.thumb, width: resolvedSize, height: resolvedSize,
                         cornerRadius: artRadius,
                         placeholderSymbol: item.kind == .artist ? "music.microphone" : "music.note")
                 .posterHover()
@@ -676,7 +707,7 @@ struct SquareArtCell: View {
                 }
             }
         }
-        .frame(width: size, alignment: frameAlignment)
+        .frame(width: resolvedSize, alignment: frameAlignment)
         // NOTE: highlight comes from the wrapping link's `.cardLink()` — a custom
         // ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
     }
