@@ -5,6 +5,7 @@ import PMSKit
 /// Swiftfin-style. Each rail is one `Hub`; tapping a poster opens `DetailView`.
 struct HomeView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var hubs: [Hub] = []
     @State private var mediaBrowserLibraries: [MediaBrowserHomeLibraryLink] = []
@@ -37,7 +38,8 @@ struct HomeView: View {
                                            description: Text("No hubs returned by the server."))
                     .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
+                    LazyVStack(alignment: .leading,
+                               spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
                         // Music un-hidden (#17 Phase 7): artists/albums stay in the
                         // hubs; only TRACK items drop (rail cells have no play
                         // affordance — v2, MUSIC-DESIGN §3.1).
@@ -45,7 +47,7 @@ struct HomeView: View {
                             HubRail(hub: hub)
                         }
                     }
-                    .padding(.vertical, DS.Space.xl)
+                    .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
                 }
             }
         }
@@ -90,7 +92,8 @@ struct HomeView: View {
                                    description: Text("This \(appModel.activeBackend.displayName) user has no visible libraries."))
             .frame(maxWidth: .infinity, minHeight: 360)
         } else {
-            LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
+            LazyVStack(alignment: .leading,
+                       spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
                 if mediaBrowserRails.isEmpty {
                     ContentUnavailableView("Open a library to browse",
                                            systemImage: "rectangle.stack",
@@ -104,7 +107,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .padding(.vertical, DS.Space.xl)
+            .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
         }
     }
 
@@ -131,6 +134,12 @@ struct HomeView: View {
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 mediaBrowserLibraries = content.libraries
                 mediaBrowserRails = content.rails
+                if let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) {
+                    SpotlightIndexer.index(content.rails.flatMap(\.items),
+                                           backend: appModel.activeBackend,
+                                           server: session.baseURL)
+                    LabstreamShortcuts.updateAppShortcutParameters()
+                }
                 // Only pin the loaded identity for a clean load. A degraded load (some rails
                 // errored) is shown but left unpinned so pop-back / the next `.task` re-fetches
                 // and can recover the missing rails without a manual pull-to-refresh (#93).
@@ -195,14 +204,16 @@ struct HomeView: View {
 private struct HubRail: View {
     let hub: Hub
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.lg) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(hub.title)
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Space.xl) {
+                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
                             RailMediaCell(item: item)
@@ -216,7 +227,7 @@ private struct HubRail: View {
             // Inset the scroll content via contentMargins, not .padding on the stack —
             // keeps the inset out of the cards' own geometry (see the gaze-routing
             // gotcha in docs/DEVELOPMENT.md).
-            .mediaRailScrollStyle() // let hover-lifted posters breathe past the rail edge
+            .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
 }
@@ -245,19 +256,23 @@ struct RailMediaCell: View {
 /// Without reserving the same overall cell height, a TV rail collapses vertically and
 /// makes the next Emby/Jellyfin "Recently Added" rail look incorrectly spaced.
 private enum HomeRailCellMetrics {
-    static let episodeWidth: CGFloat = 252
-    static var episodeImageHeight: CGFloat { episodeWidth * 9.0 / 16.0 }
+    static func episodeWidth(compact: Bool) -> CGFloat { compact ? 196 : 252 }
+    static func episodeImageHeight(compact: Bool) -> CGFloat {
+        episodeWidth(compact: compact) * 9.0 / 16.0
+    }
     static let titleBlockHeight: CGFloat = 46
-    static var canonicalCellHeight: CGFloat {
-        DS.Poster.height(for: DS.Poster.railWidth) + DS.Space.sm + titleBlockHeight
+    static func canonicalCellHeight(compact: Bool) -> CGFloat {
+        DS.Poster.height(for: DS.Poster.railWidth(compact: compact)) + DS.Space.sm + titleBlockHeight
     }
 }
 
 private struct EpisodeRailCell: View {
     let item: MediaItem
 
-    private let width = HomeRailCellMetrics.episodeWidth
-    private var height: CGFloat { HomeRailCellMetrics.episodeImageHeight }
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var width: CGFloat { HomeRailCellMetrics.episodeWidth(compact: compactWidth) }
+    private var height: CGFloat { HomeRailCellMetrics.episodeImageHeight(compact: compactWidth) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
@@ -279,7 +294,7 @@ private struct EpisodeRailCell: View {
             }
         }
         .frame(width: width,
-               height: HomeRailCellMetrics.canonicalCellHeight,
+               height: HomeRailCellMetrics.canonicalCellHeight(compact: compactWidth),
                alignment: .topLeading)
     }
 
@@ -302,18 +317,25 @@ private struct EpisodeRailCell: View {
 /// stable height so rows of cells with 1- vs 2-line titles still align cleanly.
 struct PosterCell: View {
     let item: MediaItem
-    var width: CGFloat = DS.Poster.railWidth
+    /// Explicit width from grid callers; nil means "rail default for this size class".
+    var width: CGFloat?
+
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var resolvedWidth: CGFloat {
+        width ?? DS.Poster.railWidth(compact: compactWidth)
+    }
 
     /// Render at the item's real artwork ratio when the backend reports one (Jellyfin/Emby
     /// `PrimaryImageAspectRatio`: 16:9 YouTube, square Twitch, 16:9 episode stills), else the
     /// canonical 2:3 poster. Plex reports no ratio, so it stays 2:3 (GH #101).
     private var height: CGFloat {
-        CGFloat(Double(width) / item.resolvedPosterAspect(fallback: Double(DS.Poster.aspect)))
+        CGFloat(Double(resolvedWidth) / item.resolvedPosterAspect(fallback: Double(DS.Poster.aspect)))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
-            PosterImage(path: item.thumb, width: width, height: height)
+            PosterImage(path: item.thumb, width: resolvedWidth, height: height)
                 .overlay(alignment: .bottom) { progressSliver }
                 .posterHover()
 
@@ -341,7 +363,7 @@ struct PosterCell: View {
                 }
             }
         }
-        .frame(width: width, alignment: .leading)
+        .frame(width: resolvedWidth, alignment: .leading)
         // NOTE: no hover effect here — the wrapping link uses `.cardLink()`, whose
         // built-in `.plain` style draws (and correctly registers) the gaze highlight.
         // A custom ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
@@ -366,8 +388,10 @@ struct PosterCell: View {
 /// Placeholder rails shown while Home loads — a couple of titled rows of shimmering
 /// poster blanks so the screen has structure (and no jarring spinner-to-grid jump).
 struct SkeletonRails: View {
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.xxxl) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
             ForEach(0..<2, id: \.self) { _ in
                 VStack(alignment: .leading, spacing: DS.Space.lg) {
                     RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
@@ -375,26 +399,27 @@ struct SkeletonRails: View {
                         .frame(width: 200, height: 26)
                         .overlay { ShimmerView() }
                         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
-                        .padding(.horizontal, DS.Space.xxl)
+                        .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: DS.Space.xl) {
+                        HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                             ForEach(0..<5, id: \.self) { _ in
                                 RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                                     .fill(.regularMaterial)
-                                    .frame(width: DS.Poster.railWidth,
-                                           height: DS.Poster.height(for: DS.Poster.railWidth))
+                                    .frame(width: DS.Poster.railWidth(compact: compactWidth),
+                                           height: DS.Poster.height(for: DS.Poster.railWidth(compact: compactWidth)))
                                     .overlay { ShimmerView() }
                                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
                             }
                         }
                     }
-                    .mediaRailScrollStyle(clipDisabled: false)
+                    .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                          clipDisabled: false)
                     .scrollDisabled(true)
                 }
             }
         }
-        .padding(.vertical, DS.Space.xl)
+        .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
     }
 }
 

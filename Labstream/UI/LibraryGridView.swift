@@ -5,6 +5,7 @@ import PMSKit
 /// one pushes a `LibraryGridView` of its items.
 struct LibrariesView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var rootItems: [LibraryRootItem] = []
     @State private var loadState: BrowseLoadState = .idle
@@ -91,12 +92,18 @@ struct LibrariesView: View {
                         .cardLink(cornerRadius: DS.Radius.card)
                     }
                 }
-                .padding(DS.Space.xl)
+                .padding(DS.pagePadding(compact: compactWidth))
             }
         }
     }
 
     private var librarySectionColumns: [GridItem] {
+        if compactWidth {
+            // Compact phones: one full-width flexible column — the card stretches to
+            // the screen (`LibrarySectionCard` drops its rigid width on compact), so
+            // the #124 sub-card-track hazard below cannot arise here.
+            return [GridItem(.flexible())]
+        }
         // The cards are a rigid 300pt (`LibrarySectionCard.frame(width: 300)`). With an
         // adaptive minimum below the card width, a transiently-narrow first-pass container
         // could compute a track narrower than the card, laying the 300pt cards edge-to-edge
@@ -104,7 +111,7 @@ struct LibrariesView: View {
         // never compute a sub-card track, so even a degenerate first pass yields one correctly
         // gapped column instead of bunched cards. The spacing-collapse invariant this preserves
         // is asserted by `LibraryGridLayout` / `LibraryGridLayoutTests` in PMSKit.
-        [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
+        return [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
     }
 
     private var librariesEmptyState: some View {
@@ -306,14 +313,27 @@ struct LibraryGridView: View {
     let source: LibraryGridSource
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var paging = LibraryPagingModel()
 
-    private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
-                                    spacing: DS.Space.xl)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
+                            maximum: DS.Poster.gridMax(compact: compactWidth)),
+                  spacing: DS.gridGutter(compact: compactWidth))]
+    }
 
     private var pagingSource: LibraryPagingSource {
         LibraryPagingSource(gridSource: source, appModel: appModel)
+    }
+
+    /// Mirrors the trailing A–Z rail's own visibility condition below so the grid can
+    /// reserve room for it. The rail (a ~34 pt capsule inset 10 pt from the trailing edge)
+    /// occupies ~44 pt of the trailing edge; on compact width the 16 pt page padding leaves
+    /// the last poster column under the capsule, which then intercepts its taps (#209).
+    private var alphabetRailVisible: Bool {
+        guard case .loaded = paging.loadState else { return false }
+        return paging.alphabetBuckets.count > 1
     }
 
     private var loadIdentity: String {
@@ -350,11 +370,13 @@ struct LibraryGridView: View {
                                                description: Text("No items in \(source.title)."))
                             .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
-                        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+                        LazyVGrid(columns: columns,
+                                  spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
                             ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
                                 if let item = slot {
                                     NavigationLink(value: item) {
-                                        PosterCell(item: item, width: DS.Poster.gridMin)
+                                        PosterCell(item: item,
+                                                   width: DS.Poster.gridMin(compact: compactWidth))
                                     }
                                     .cardLink()
                                     .id(index)
@@ -368,7 +390,11 @@ struct LibraryGridView: View {
                                 }
                             }
                         }
-                        .padding(DS.Space.xl)
+                        .padding(DS.pagePadding(compact: compactWidth))
+                        // Reserve the rail's own width past the base padding so the last
+                        // poster column clears the trailing A–Z rail on compact (#209);
+                        // regular width has ample gutter and needs no reservation.
+                        .padding(.trailing, alphabetRailVisible && compactWidth ? 34 : 0)
                     }
                 }
             }
@@ -421,10 +447,13 @@ struct LibraryGridView: View {
 }
 
 private struct LibraryPlaceholderPoster: View {
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
+        let side = DS.Poster.gridMin(compact: compactWidth)
         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
             .fill(.regularMaterial)
-            .frame(width: DS.Poster.gridMin, height: DS.Poster.height(for: DS.Poster.gridMin))
+            .frame(width: side, height: DS.Poster.height(for: side))
             .overlay { ShimmerView() }
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
     }
@@ -433,19 +462,20 @@ private struct LibraryPlaceholderPoster: View {
 /// Shimmering poster grid shown while a library section loads, so the screen keeps
 /// its layout (and the same gutters as the real grid) rather than flashing a spinner.
 private struct SkeletonGrid: View {
-    private let columns = [GridItem(.adaptive(minimum: DS.Poster.gridMin, maximum: DS.Poster.gridMax),
-                                    spacing: DS.Space.xl)]
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
+                            maximum: DS.Poster.gridMax(compact: compactWidth)),
+                  spacing: DS.gridGutter(compact: compactWidth))]
+    }
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: DS.Space.xxl) {
+        LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
             ForEach(0..<12, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
-                    .fill(.regularMaterial)
-                    .frame(width: DS.Poster.gridMin, height: DS.Poster.height(for: DS.Poster.gridMin))
-                    .overlay { ShimmerView() }
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
+                LibraryPlaceholderPoster()
             }
         }
-        .padding(DS.Space.xl)
+        .padding(DS.pagePadding(compact: compactWidth))
     }
 }

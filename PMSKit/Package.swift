@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "PMSKit",
-    platforms: [.iOS(.v26), .visionOS(.v26), .macOS(.v15)],
+    platforms: [.iOS("26.1"), .visionOS(.v26), .macOS(.v15)],
     products: [.library(name: "PMSKit", targets: ["PMSKit"])],
     targets: [
         .target(name: "PMSKit"),

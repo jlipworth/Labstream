@@ -19,6 +19,8 @@ struct DetailTitleHeader: View {
                                 Text(show)
                                     .font(.title3.weight(.semibold))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
                                     .padding(.horizontal, DS.Space.sm)
                                     .contentShape(Capsule())
                             }
@@ -29,12 +31,15 @@ struct DetailTitleHeader: View {
                             Text(show)
                                 .font(.title3.weight(.semibold))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                         }
                     }
                     if let code = item.seasonEpisodeCode {
                         Text(code)
                             .font(.title3.weight(.bold))
                             .foregroundStyle(.tint)
+                            .layoutPriority(1)
                     }
                 }
                 Text(item.title)
@@ -44,6 +49,7 @@ struct DetailTitleHeader: View {
         } else {
             Text(item.title)
                 .font(.largeTitle.bold())
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -57,38 +63,68 @@ struct DetailMetadataRow: View {
     let criticRating: Double?
     let isWatched: Bool
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
-        HStack(spacing: 16) {
-            if let year {
-                Text(String(year))
-            }
-            if let runtimeMinutes {
-                Text("\(runtimeMinutes) min")
-            }
-            if let contentRating, !contentRating.isEmpty {
-                Text(contentRating)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, DS.Space.sm)
-                    .padding(.vertical, 3)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(.secondary, lineWidth: 1)
-                    )
-            }
-            if let rating, rating > 0 {
-                Label(String(format: "%.1f", rating), systemImage: "star.fill")
-                    .foregroundStyle(.yellow)
-            }
-            if let criticRating, criticRating > 0 {
-                Label(String(format: "%.1f", criticRating), systemImage: "rosette")
-                    .foregroundStyle(.orange)
-            }
-            if isWatched {
-                Label("Watched", systemImage: "checkmark.circle.fill")
+        Group {
+            if compactWidth {
+                // Six children at .title3 overflow the ~358-pt compact budget, so fall
+                // back to a two-row layout (year/runtime/rating, then stars/critic/watched)
+                // when they can't fit on one line.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: DS.Space.md) {
+                        primaryItems
+                        secondaryItems
+                    }
+                    VStack(alignment: .leading, spacing: DS.Space.xs) {
+                        HStack(spacing: DS.Space.md) { primaryItems }
+                        HStack(spacing: DS.Space.md) { secondaryItems }
+                    }
+                }
+            } else {
+                HStack(spacing: 16) {
+                    primaryItems
+                    secondaryItems
+                }
             }
         }
-        .font(.title3)
+        .font(compactWidth ? .subheadline : .title3)
         .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var primaryItems: some View {
+        if let year {
+            Text(String(year))
+        }
+        if let runtimeMinutes {
+            Text("\(runtimeMinutes) min")
+        }
+        if let contentRating, !contentRating.isEmpty {
+            Text(contentRating)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, DS.Space.sm)
+                .padding(.vertical, 3)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(.secondary, lineWidth: 1)
+                )
+        }
+    }
+
+    @ViewBuilder
+    private var secondaryItems: some View {
+        if let rating, rating > 0 {
+            Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                .foregroundStyle(.yellow)
+        }
+        if let criticRating, criticRating > 0 {
+            Label(String(format: "%.1f", criticRating), systemImage: "rosette")
+                .foregroundStyle(.orange)
+        }
+        if isWatched {
+            Label("Watched", systemImage: "checkmark.circle.fill")
+        }
     }
 }
 
@@ -124,7 +160,25 @@ struct DetailMediaInfoSummary: View {
     let specBadges: [String]
     let chapterCount: Int?
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     var body: some View {
+        Group {
+            if compactWidth {
+                // A full spec set (4K · DOLBY VISION · HEVC · TRUEHD 7.1 · 24 MBPS · chapters)
+                // overflows a 390-pt phone, so let the chip row scroll horizontally.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    chips
+                }
+                .mediaRailScrollStyle()
+            } else {
+                chips
+            }
+        }
+        .padding(.top, DS.Space.xs)
+    }
+
+    private var chips: some View {
         HStack(spacing: DS.Space.sm) {
             ForEach(specBadges, id: \.self) { spec in
                 SpecChip(text: spec, monospaced: true)
@@ -135,6 +189,5 @@ struct DetailMediaInfoSummary: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.top, DS.Space.xs)
     }
 }

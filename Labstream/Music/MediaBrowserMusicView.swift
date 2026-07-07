@@ -194,21 +194,22 @@ private struct MediaBrowserMusicTrackRail: View {
     let tracks: [MediaItem]
 
     @Environment(MusicPlayerController.self) private var player
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.lg) {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
             Text(title)
-                .font(.title2.bold())
-                .padding(.horizontal, DS.Space.xxl)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Space.xl) {
+                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(Array(tracks.prefix(20).enumerated()), id: \.element.id) { index, track in
                         Button {
                             player.play(tracks: Array(tracks.prefix(20)), startingAt: index)
                         } label: {
                             SquareArtCell(item: track,
-                                          size: MusicArt.railSize,
+                                          size: MusicArt.railSize(compact: compactWidth),
                                           subtitle: track.grandparentTitle)
                         }
                         .cardLink()
@@ -218,7 +219,7 @@ private struct MediaBrowserMusicTrackRail: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
-            .mediaRailScrollStyle()
+            .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
 }

@@ -2,11 +2,16 @@ import Foundation
 
 /// Backend/server/item identity for system-entry and navigation surfaces.
 ///
-/// The app still only indexes Plex items today, but this value gives future Spotlight,
-/// App Intent, and deep-link routes a single backend-scoped shape instead of passing a
-/// raw `ratingKey` plus out-of-band active-backend state.
+/// Spotlight, App Intents, and deep-link routes use this single backend-scoped shape
+/// instead of passing a raw `ratingKey` plus out-of-band active-backend state.
 public struct BackendScopedMediaID: Sendable, Hashable, Codable {
-    public static let currentPrefix = "vp1"
+    /// Version prefix generated for new backend-scoped system-entry ids.
+    ///
+    /// Older #208/#209 mobile-preview builds generated `vp1`, which may already be
+    /// persisted in Spotlight entries or saved Shortcuts. Keep accepting that legacy
+    /// alias, but generate a neutral Labstream prefix going forward.
+    public static let currentPrefix = "ls1"
+    public static let legacyPrefixes: Set<String> = ["vp1"]
 
     public let backend: MediaBackendChoice
     public let serverNamespace: String?
@@ -43,7 +48,7 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
                                       omittingEmptySubsequences: false)
             .map(String.init)
         if pieces.count == 4,
-           pieces[0] == Self.currentPrefix,
+           Self.isSupportedBackendScopedPrefix(pieces[0]),
            let backend = MediaBackendChoice(rawValue: pieces[1]) {
             self.init(backend: backend,
                       serverNamespace: pieces[2].isEmpty ? nil : pieces[2],
@@ -71,6 +76,10 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
         }
         return host
     }
+
+    private static func isSupportedBackendScopedPrefix(_ prefix: String) -> Bool {
+        prefix == currentPrefix || legacyPrefixes.contains(prefix)
+    }
 }
 
 /// Pure helpers for Labstream system-entry routing (App Intents and Spotlight).
@@ -79,13 +88,14 @@ public struct BackendScopedMediaID: Sendable, Hashable, Codable {
 public enum MediaSearchIdentifier {
     public static let separator = "|"
 
-    /// Build the existing non-secret, Plex/server-scoped identifier for a media item in system
-    /// search. Kept byte-compatible with the current Plex-only Spotlight index.
+    /// Build the legacy Plex/server-scoped identifier for a media item in system
+    /// search. It is token-free but still private user/server metadata; kept
+    /// byte-compatible with the existing Plex Spotlight index.
     public static func make(ratingKey: String, server: URL) -> String {
         "\(BackendScopedMediaID.serverNamespace(server))\(separator)\(ratingKey)"
     }
 
-    /// Build a versioned backend-scoped identifier for future non-Plex system-entry routes.
+    /// Build a versioned backend-scoped identifier for non-Plex system-entry routes.
     public static func make(ratingKey: String, server: URL, backend: MediaBackendChoice) -> String {
         BackendScopedMediaID(backend: backend, server: server, ratingKey: ratingKey).identifier
     }

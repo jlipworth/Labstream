@@ -38,8 +38,15 @@ struct ArtistDetailView: View {
     @State private var isStartingPlayback = false
     @State private var playError: String?
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
     /// Header portrait size — larger than a grid cell, smaller than an album hero.
-    private let portraitSize: CGFloat = 160
+    /// Compact shrinks it so the name/buttons column keeps usable width beside it.
+    private var portraitSize: CGFloat { compactWidth ? 110 : 160 }
+
+    /// Readable-measure cap for the bio so it doesn't stretch to ~1000-pt lines on wide
+    /// iPad/visionOS windows (mirrors DetailView's readable metadata column).
+    private static let readableBioWidth: CGFloat = 640
 
     private var isEmpty: Bool {
         popular.isEmpty && albums.isEmpty && categorized.isEmpty
@@ -76,20 +83,29 @@ struct ArtistDetailView: View {
         .task { await load() }
     }
 
-    /// Portrait + name + short bio.
+    /// Portrait + name + short bio. Side-by-side on regular width; compact stacks the
+    /// portrait above a full-width name/buttons column — the Play/Shuffle pair can't fit
+    /// the ~224-pt column left beside the portrait on a phone.
     private var header: some View {
-        HStack(alignment: .top, spacing: DS.Space.xl) {
+        let layout = compactWidth
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: DS.Space.lg))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: DS.Space.xl))
+        return layout {
             PosterImage(path: artist.thumb, width: portraitSize, height: portraitSize,
                         cornerRadius: DS.Radius.poster)
 
             VStack(alignment: .leading, spacing: DS.Space.sm) {
                 Text(artist.title)
-                    .font(.largeTitle.bold())
+                    .font(compactWidth ? .title.bold() : .largeTitle.bold())
                 if let summary = artist.summary, !summary.isEmpty {
                     Text(summary)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
+                        // Cap the bio to a readable measure so it doesn't stretch to
+                        // ~1000 pt on wide iPad/visionOS windows (mirrors DetailView's
+                        // readable metadata column).
+                        .frame(maxWidth: Self.readableBioWidth, alignment: .leading)
                 }
 
                 // Play/Shuffle the whole discography via `allLeaves` (MUSIC-DESIGN
@@ -125,7 +141,7 @@ struct ArtistDetailView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
     /// Fetch every track under the artist in one flat list and play it (in album
@@ -188,21 +204,22 @@ struct ArtistDetailView: View {
             .background(.regularMaterial,
                         in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
     /// Shimmering shelf placeholders while everything loads.
     private var shelfSkeleton: some View {
-        HStack(spacing: DS.Space.xl) {
+        HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
             ForEach(0..<6, id: \.self) { _ in
                 RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                     .fill(.regularMaterial)
-                    .frame(width: MusicArt.railSize, height: MusicArt.railSize)
+                    .frame(width: MusicArt.railSize(compact: compactWidth),
+                           height: MusicArt.railSize(compact: compactWidth))
                     .overlay { ShimmerView() }
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
             }
         }
-        .padding(.horizontal, DS.Space.xxl)
+        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
     private func load() async {

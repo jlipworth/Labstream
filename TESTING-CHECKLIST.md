@@ -329,8 +329,8 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       grids 200 items at a time and pre-sizes placeholders from PMS `totalSize`; the rail uses
       PMS `/firstCharacter` counts.
 - [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
-  - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; visionOS row sane;
-    Client row says "Labstream on <device>" (for example iPad, iPhone, or Apple Vision Pro; NO client identifier shown).
+  - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; OS row sane for the running platform;
+    Client row says "Labstream on <device>" (for example Apple Vision Pro, iPad, or iPhone according to `PlatformClientIdentity`; NO client identifier shown).
   - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
     the connection scheme only — no token, client identifier, hostname, or full URL.
   - Server section: Version row shows the PMS version; Status row says "Tap to check",
@@ -623,7 +623,7 @@ _Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). Device checks befo
 - [x] Server section shows the PMS **Version**; the **Status** row says "Tap to check", and tapping shows a green/red dot + "Checked <time>".
 - [x] "Reset playback preferences" lives in the **Account** section (just above Sign Out), shows a **confirmation dialog**, and on confirm clears remembered speed + subtitle/audio language (NOT streaming quality), showing "Preferences reset".
 - [x] Maintenance ▸ "Clear image cache" shows "Cache cleared"; artwork re-downloads on next view.
-- [x] About shows app version (build), visionOS, client (product on device — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
+- [x] About shows app version (build), OS, and client (product on Apple Vision Pro/iPad/iPhone per target — never the identifier); "Copy diagnostics" copies a blob containing NO token/identifier/hostname (scheme only).
 - [x] Sign Out now shows a confirmation dialog; Cancel keeps you signed in, Sign Out returns to login.
 
 ### Device-only bugs found on Apple Vision Pro hardware (2026-06-14/15)
@@ -684,7 +684,37 @@ shows the stamped Build ID, and normal in-app browsing still works.
 
 ---
 
-## E. Deferred / optional (tracked in issues)
+## E. Mobile iPhone/iPad target (GH #208/#209)
+
+Simulator build/smoke commands live in [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md). The
+items below are manual/mobile-system checks after the simulator build is green. Keep
+server names, account names, media titles, and device identifiers out of public notes.
+
+- [ ] **iPhone compact shell (GH #208)** — on an iPhone simulator/device, sign in to one
+      backend and verify Home, Libraries, Search, Detail, Settings, Offline, and Music use
+      readable compact-width layouts with no clipped primary controls or inaccessible
+      action buttons.
+- [ ] **iPhone video player system controls (GH #208)** — play video and verify the
+      compact chrome exposes AirPlay/PiP controls, seek/skip/menu controls remain tappable,
+      Now Playing metadata appears in the system surface, and remote play/pause/seek
+      commands control the app.
+- [ ] **Mobile background policy (GH #208)** — while playing on iPhone/iPad, backgrounding
+      pauses normal inline playback but continues when PiP is active or an external
+      AirPlay route owns playback. Validate on physical hardware where possible; simulator
+      behavior is not a complete gate.
+- [ ] **Cellular downloads default off (GH #208)** — Settings > Downloads shows cellular
+      downloads disabled by default; enabling it applies to fresh request-based transfer tasks only;
+      active/resume-data tasks keep their existing OS policy. Validate real cellular scheduling on physical iPhone/iPad.
+- [ ] **Mobile App Intents / Spotlight active backend (GH #208/#24)** — Shortcuts and
+      Spotlight suggestions/search resolve only media from the active signed-in backend,
+      exclude music, and fail cleanly while signed out.
+- [ ] **iPad regression pass (GH #209)** — repeat the primary mobile browse/detail/player
+      smoke on an iPad simulator/device after iPhone changes to ensure the sidebar and
+      regular-width chrome still fit.
+
+---
+
+## F. Deferred / optional (tracked in issues)
 
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
   direct-play `start.m3u8` when Default Quality is "Direct Play / Maximum" and PMS can copy the
