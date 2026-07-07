@@ -1,7 +1,7 @@
 # Labstream
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Platform: visionOS 26 + iOS/iPadOS 27](https://img.shields.io/badge/Platform-visionOS%2026%20%2B%20iOS%2FiPadOS%2027-black.svg)](https://developer.apple.com/)
+[![Platform: visionOS 26 + iOS/iPadOS 26+](https://img.shields.io/badge/Platform-visionOS%2026%20%2B%20iOS%2FiPadOS%2026%2B-black.svg)](https://developer.apple.com/)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
@@ -65,7 +65,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ## Tech stack
 
-- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 27.
+- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26+.
 - Swift 6 with strict concurrency.
 - Custom AVFoundation playback and offline playback paths.
 - `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models, diagnostics primitives, and pure policy state machines.
@@ -75,7 +75,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ### Requirements
 
-- macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 27-capable SDK/runtime for mobile builds.
+- macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 26+ SDK/runtime for mobile builds.
 - A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPhone/iPad simulator runtime for mobile builds, or a paired Apple Vision Pro for device installs.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
