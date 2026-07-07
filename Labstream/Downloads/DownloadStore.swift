@@ -390,6 +390,20 @@ final class DownloadStore: @unchecked Sendable {
         fileSize(at: baseDirectory.appendingPathComponent(relativePath))
     }
 
+    /// The source's EXACT byte size when the row knows it (static-lane Content-Length /
+    /// `sourcePartSize`), or nil. Unlike `expectedBytesEstimate` this never falls back to the
+    /// ratio-derived estimate — callers use it to judge byte-completeness, where an estimate
+    /// would misfire. Nil for non-static lanes: enqueue metadata records the SOURCE part size on
+    /// every lane, but a transcode's finished output is legitimately smaller than its source, so
+    /// only a byte-for-byte static download may be measured against this.
+    func sourceExactBytes(ratingKey: String) -> Int? {
+        guard let row = rows[ratingKey],
+              let metadata = row.metadata,
+              metadata.resolvedResumeMode(ratingKey: ratingKey) == .staticByteRange,
+              let size = metadata.sourcePartSize, size > 0 else { return nil }
+        return size
+    }
+
     private static func expectedBytesEstimate(row: Row) -> Int? {
         if let sourcePartSize = row.metadata?.sourcePartSize, sourcePartSize > 0 {
             return sourcePartSize

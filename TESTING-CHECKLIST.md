@@ -121,6 +121,15 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [ ] **Pending-prep row, lane signed out (GH #84)** — sign out of the backend that owns a queued
       server-prep row: the row reads "Paused — <Backend> signed out" (not "Preparing on server…") and
       auto-resumes when that backend is signed back in.
+- [ ] **Incomplete static download can never verify (416 family)** — take the headset off mid static
+      download, put it back on after the chunk 416s/stalls: the row must NOT become
+      complete/unverified at a fraction of the source size; it stays failed/retryable ("Download is
+      incomplete (X of Y MB)") or keeps downloading from the checkpoint. Previously-broken rows are
+      demoted by the size audit at launch/scene-active and Retry continues from the durable bytes.
+- [ ] **Static resume does not churn retry (marker hygiene)** — after reattach, a resuming static
+      row retries ONCE (no repeated retry/stale_queued_resume/range_resume_ready loop in the
+      Downloads diagnostics), and a storage-limit rejection lands the row on failed with the
+      storage message instead of stranding it queued forever.
 - [x] **Backend switch does not bounce to Home (GH #84)** ✅ verified live — switching the active
       backend to Plex stays on the current screen (e.g. Settings) just like a Jellyfin↔Emby switch,
       instead of tearing down to the Home screen during Plex server re-discovery.

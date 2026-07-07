@@ -86,6 +86,59 @@ struct DownloadCompletionValidationTests {
                 == .truncated(actualDurationMs: 1_000, expectedDurationMs: 10_000))
     }
 
+    // MARK: Byte-completeness (headset 416 evidence: one 64 MB chunk of a 5.9 GB part was
+    // finalized `.complete` because the moov-led MP4 passed the probe with its full metadata
+    // duration; a trailing-moov sibling probe-missed into a stuck `.unverified` loop instead)
+
+    @Test func outcomeShortStaticBytesIsIncompleteEvenWhenProbePasses() {
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: 7_200_000, actualDurationMs: 7_200_000,
+                                                     downloadedBytes: 67_108_864,
+                                                     expectedExactBytes: 5_857_580_532)
+                == .incompleteBytes(actualBytes: 67_108_864, expectedBytes: 5_857_580_532))
+    }
+
+    @Test func outcomeShortStaticBytesIsIncompleteNotUnverifiedWhenProbeMisses() {
+        #expect(DownloadCompletionValidation.outcome(played: false, probeReason: "item_failed",
+                                                     expectedDurationMs: nil, actualDurationMs: nil,
+                                                     downloadedBytes: 1_543_503_872,
+                                                     expectedExactBytes: 2_400_000_000)
+                == .incompleteBytes(actualBytes: 1_543_503_872, expectedBytes: 2_400_000_000))
+    }
+
+    @Test func outcomeExactStaticBytesIsNotIncomplete() {
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: nil, actualDurationMs: nil,
+                                                     downloadedBytes: 2_400_000_000,
+                                                     expectedExactBytes: 2_400_000_000) == .complete)
+    }
+
+    @Test func outcomeWithoutExactExpectedBytesNeverReportsIncomplete() {
+        // Transcode lanes only have byte ESTIMATES and must pass nil — a finished transcode is
+        // legitimately smaller than its source part.
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: nil, actualDurationMs: nil,
+                                                     downloadedBytes: 100,
+                                                     expectedExactBytes: nil) == .complete)
+    }
+
+    @Test func outcomeZeroBytesStaysEmptyNotIncomplete() {
+        #expect(DownloadCompletionValidation.outcome(played: false, probeReason: "item_failed",
+                                                     expectedDurationMs: nil, actualDurationMs: nil,
+                                                     downloadedBytes: 0,
+                                                     expectedExactBytes: 2_400_000_000) == .emptyFile)
+    }
+
+    @Test func isIncompleteRequiresBothSidesKnownAndPositive() {
+        #expect(DownloadCompletionValidation.isIncomplete(downloadedBytes: 10, expectedExactBytes: 20))
+        #expect(!DownloadCompletionValidation.isIncomplete(downloadedBytes: 20, expectedExactBytes: 20))
+        #expect(!DownloadCompletionValidation.isIncomplete(downloadedBytes: 30, expectedExactBytes: 20))
+        #expect(!DownloadCompletionValidation.isIncomplete(downloadedBytes: nil, expectedExactBytes: 20))
+        #expect(!DownloadCompletionValidation.isIncomplete(downloadedBytes: 10, expectedExactBytes: nil))
+        #expect(!DownloadCompletionValidation.isIncomplete(downloadedBytes: 10, expectedExactBytes: 0))
+        #expect(!DownloadCompletionValidation.isIncomplete(downloadedBytes: 0, expectedExactBytes: 20))
+    }
+
     @Test func outcomeProbeMissIsUnverifiedNotFailed() {
         // The #98 leniency — and the H3 fix that makes the RANGE path behave like the opaque path:
         // an inconclusive probe keeps the file (`.unverified`), it is never condemned to `.failed`.

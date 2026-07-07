@@ -26,6 +26,19 @@ struct BackgroundFinalizationResultPolicyTests {
         ))
     }
 
+    @Test("Byte-incomplete static transfers fail but PRESERVE the resume checkpoint")
+    func incompleteBytesResult() {
+        #expect(BackgroundFinalizationResultPolicy.result(for: .incompleteBytes(
+            actualBytes: 67_108_864, expectedBytes: 5_857_580_532
+        )) == BackgroundFinalizationResult(
+            status: .failed,
+            resultLabel: "failed_incomplete_bytes",
+            shouldDeleteFile: false,
+            validationFailureReason: "incomplete_bytes",
+            userFacingErrorMessage: "Download is incomplete (67 of 5857 MB). Retry to continue."
+        ))
+    }
+
     @Test("Truncated transfers fail, delete the file, and surface duration context")
     func truncatedResult() {
         #expect(BackgroundFinalizationResultPolicy.result(

@@ -46,6 +46,16 @@ public enum BackgroundFinalizationResultPolicy {
                 validationFailureReason: "empty_file",
                 userFacingErrorMessage: "Downloaded file is empty."
             )
+        case .incompleteBytes(let actualBytes, let expectedBytes):
+            // NEVER delete: the partial is a valid resume checkpoint for the static range lane;
+            // retry continues from the durable file size instead of re-downloading from 0%.
+            return BackgroundFinalizationResult(
+                status: .failed,
+                resultLabel: "failed_incomplete_bytes",
+                shouldDeleteFile: false,
+                validationFailureReason: "incomplete_bytes",
+                userFacingErrorMessage: "Download is incomplete (\(actualBytes / 1_000_000) of \(expectedBytes / 1_000_000) MB). Retry to continue."
+            )
         case .truncated(let actualDurationMs, let expectedDurationMs):
             return BackgroundFinalizationResult(
                 status: .failed,
