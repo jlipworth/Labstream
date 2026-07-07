@@ -79,4 +79,39 @@ struct RangeTransferHTTPPolicyTests {
         #expect(RangeTransferHTTPPolicy.isDurableCheckpointSegment(.backgroundCheckpoint))
         #expect(!RangeTransferHTTPPolicy.isDurableCheckpointSegment(.continuousRemainder))
     }
+
+    // #220: an HTTP 200 body replaces the whole partial only when it is plausibly the whole
+    // resource. On an UNCHANGED resource (validator equal, or unknowable) a size mismatch means
+    // a truncated body and must be rejected rather than overwrite a good partial checkpoint.
+    // A CHANGED resource (both validators present and different) keeps the honest replace.
+    @Test("200 replaceWhole adoption requires the body to plausibly be the whole resource")
+    func replaceWholeAdoption() {
+        // Exact size match on an unchanged resource → adopt.
+        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 1_000, expectedBytes: 1_000,
+            storedValidator: "\"etag-a\"", responseValidator: "\"etag-a\""))
+        // Size mismatch, validator proves resource unchanged → truncated body, reject.
+        #expect(!RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: 1_000,
+            storedValidator: "\"etag-a\"", responseValidator: "\"etag-a\""))
+        // Size mismatch, validators unknown → cannot prove it's the whole resource, reject.
+        #expect(!RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: 1_000,
+            storedValidator: nil, responseValidator: nil))
+        // Size mismatch but the resource demonstrably changed → whole NEW resource, adopt.
+        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: 1_000,
+            storedValidator: "\"etag-a\"", responseValidator: "\"etag-b\""))
+        // No expected size on record → no basis to reject, adopt.
+        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: nil,
+            storedValidator: nil, responseValidator: nil))
+        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: 0,
+            storedValidator: nil, responseValidator: nil))
+        // Unstatable stash after a successful move is broken state → reject to retry.
+        #expect(!RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: nil, expectedBytes: 1_000,
+            storedValidator: nil, responseValidator: nil))
+    }
 }
