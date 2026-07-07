@@ -13,16 +13,23 @@ struct LibrarySectionCard: View {
     let title: String
     let kind: LibrarySectionKind
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    /// Icon tile side: the 76-pt visionOS/iPad tile makes a phone list row look like a
+    /// kiosk button, so compact width uses a standard-list-scale 56-pt tile.
+    private var tileSide: CGFloat { compactWidth ? 56 : 76 }
+
     var body: some View {
         HStack(spacing: DS.Space.lg) {
             ZStack {
-                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                RoundedRectangle(cornerRadius: compactWidth ? DS.Radius.chip + 4 : DS.Radius.card,
+                                 style: .continuous)
                     .fill(.tint.opacity(0.18))
                 Image(systemName: kind.systemImage)
-                    .font(.system(size: 34, weight: .semibold))
+                    .font(.system(size: compactWidth ? 25 : 34, weight: .semibold))
                     .foregroundStyle(.tint)
             }
-            .frame(width: 76, height: 76)
+            .frame(width: tileSide, height: tileSide)
 
             VStack(alignment: .leading, spacing: DS.Space.xs) {
                 Text(title)
@@ -36,8 +43,11 @@ struct LibrarySectionCard: View {
 
             Spacer(minLength: 0)
         }
-        .padding(DS.Space.lg)
-        .frame(width: 300, alignment: .leading)
+        .padding(compactWidth ? DS.Space.md : DS.Space.lg)
+        // Rigid 300pt on regular width (see the #124 note at the grid); compact width
+        // stretches the card to the single full-width column instead.
+        .frame(maxWidth: compactWidth ? .infinity : nil, alignment: .leading)
+        .frame(width: compactWidth ? nil : 300, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)

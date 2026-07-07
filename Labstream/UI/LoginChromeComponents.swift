@@ -6,6 +6,20 @@ import SwiftUI
 /// avoiding the wordmark in the cropped app icon while still presenting the Labstream name on
 /// screen.
 struct LoginBrandHeader: View {
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// Slightly smaller lockup on compact phones so the sign-in form keeps room
+    /// above the keyboard; regular width keeps the authored visionOS/iPad size.
+    private var markSide: CGFloat {
+        #if os(iOS)
+        horizontalSizeClass == .compact ? 84 : 112
+        #else
+        112
+        #endif
+    }
+
     var body: some View {
         VStack(spacing: DS.Space.md) {
             brandMark
@@ -31,14 +45,14 @@ struct LoginBrandHeader: View {
             Image("LabstreamGlyph")
                 .resizable()
                 .scaledToFit()
-                .frame(width: 78, height: 78)
+                .frame(width: markSide * 0.7, height: markSide * 0.7)
         }
-        .frame(width: 112, height: 112)
+        .frame(width: markSide, height: markSide)
         .shadow(color: .black.opacity(0.32), radius: 14, x: 0, y: 8)
     }
 
     private var logoTileShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: DS.Radius.card + 14, style: .continuous)
+        RoundedRectangle(cornerRadius: (DS.Radius.card + 14) * (markSide / 112), style: .continuous)
     }
 }
 
