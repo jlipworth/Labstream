@@ -31,6 +31,16 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # still valid for ONE thing: confirming the INSTALLED copy == the copy you just built
 # (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
 # the source.
+# ⚠️ PARALLEL-WORKTREE DerivedData TRAP (bit us live): the `Labstream-*` globs below span
+# EVERY worktree's DerivedData dir. With a single job that's fine (newest wins), but when
+# several worktrees build concurrently (fan-out agents), one job's `rm -rf` deletes another
+# job's product and the newest-glob then installs the WRONG worktree's binary. Each worktree
+# has its own deterministic DerivedData dir; whenever parallel builds may be running, resolve
+# YOURS first and scope both the rm and the APP= glob to it:
+#   DD=$(grep -l ">$(git rev-parse --show-toplevel)/Labstream.xcodeproj<" \
+#     $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/info.plist | xargs dirname)
+#   # then use $DD/Build/Products/... in place of Labstream-*/Build/Products/... below
+# The install UUID_MATCH guard is what catches a mixup — never skip it under parallelism.
 rm -rf $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
@@ -39,6 +49,7 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
 # Install + relaunch on this worktree's simulator (upgrade in place — login survives).
 # Multiple stale Labstream-* DerivedData dirs exist — always pick the newest, and use
 # /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
+# Under parallel jobs, newest is NOT yours — see the PARALLEL-WORKTREE trap above ($DD).
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream; xcrun simctl launch "$SIMID" com.jlipworth.Labstream
@@ -64,6 +75,7 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMo
   -destination "platform=iOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
 
+# Same PARALLEL-WORKTREE trap as above: scope to $DD instead when other jobs may be building.
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
@@ -144,6 +156,7 @@ half of the live-testing workflow — do NOT ask the user to do it):
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+# PARALLEL-WORKTREE trap applies here too (see Build block): scope to $DD under parallel jobs.
 APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
 # install guard (see STALE-PROCESS trap): installed UUID must match the build you just made.
