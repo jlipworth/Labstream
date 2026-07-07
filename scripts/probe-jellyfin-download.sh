@@ -28,7 +28,7 @@ Options:
   --no-install                      Reuse the already installed app.
   -h, --help                        Show this help.
 
-The target simulator defaults to scripts/worktree-sim.sh id (or SIMID if set).
+The target simulator defaults to scripts/worktree-sim.sh --platform visionos id (or SIMID if set).
 Output logs are written under build/probes/jellyfin-download/<timestamp>/.
 USAGE
 }
@@ -79,7 +79,7 @@ if [[ -n "$drop_after" ]] && ! is_positive_int "$drop_after"; then
   exit 2
 fi
 
-simid=${SIMID:-$(scripts/worktree-sim.sh id)}
+simid=${SIMID:-$(scripts/worktree-sim.sh --platform visionos id)}
 derived_data=${LABSTREAM_PROBE_DERIVED_DATA:-build/DerivedData/JellyfinDownloadProbe}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 out_dir=${LABSTREAM_PROBE_OUTPUT_DIR:-build/probes/jellyfin-download/$timestamp}

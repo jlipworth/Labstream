@@ -1,13 +1,13 @@
 # Labstream
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Platform: visionOS 26](https://img.shields.io/badge/Platform-visionOS%2026-black.svg)](https://developer.apple.com/visionos/)
+[![Platform: visionOS 26 + iOS 26](https://img.shields.io/badge/Platform-visionOS%2026%20%2B%20iOS%2026-black.svg)](https://developer.apple.com/)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
-**Labstream is a native Apple Vision Pro media client for your own Plex, Jellyfin, or Emby server.**
+**Labstream is a native Apple-platform media client for your own Plex, Jellyfin, or Emby server.**
 
-It brings server-aware streaming, an Apple Vision Pro cinema playback surface, music browsing, privacy-preserving diagnostics, and offline downloads to a source-first visionOS app.
+It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a native iPhone/iPad shell, music browsing, privacy-preserving diagnostics, and offline downloads to a source-first SwiftUI app.
 
 > **Distribution status:** Labstream is currently distributed as source for local builds. There is no App Store or TestFlight build today.
 
@@ -27,7 +27,7 @@ It brings server-aware streaming, an Apple Vision Pro cinema playback surface, m
 
 ### Playback
 
-- Custom AVFoundation player surface built for visionOS.
+- Custom AVFoundation player surface shared by the visionOS and iOS/iPadOS targets.
 - Direct Play / Maximum attempts copy or direct-stream paths where viable.
 - Explicit quality rungs request capped server streams when needed.
 - Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and Stats for Nerds.
@@ -65,7 +65,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ## Tech stack
 
-- SwiftUI app shell targeting visionOS 26.
+- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26.
 - Swift 6 with strict concurrency.
 - Custom AVFoundation playback and offline playback paths.
 - `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models, diagnostics primitives, and pure policy state machines.
@@ -75,20 +75,35 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ### Requirements
 
-- macOS with Xcode 26 and the visionOS 26 SDK.
-- An Apple Vision Pro simulator runtime, or a paired Apple Vision Pro for device installs.
+- macOS with Xcode 26 plus the visionOS 26 and iOS 26 SDKs.
+- A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPad/iPhone simulator runtime for mobile builds, or a paired Apple Vision Pro for device installs.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
-### Build for the simulator
+### Build for the visionOS simulator
 
 ```sh
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 
 scripts/xcodebuild-versioned.sh \
   -project Labstream.xcodeproj \
   -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
+  -configuration Debug \
+  build CODE_SIGNING_ALLOWED=NO
+```
+
+### Build for an iPad simulator
+
+```sh
+printf 'ipad\n' > .simplatform   # gitignored per-worktree default
+SIMID=$(scripts/worktree-sim.sh id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+
+scripts/xcodebuild-versioned.sh \
+  -project Labstream.xcodeproj \
+  -scheme LabstreamMobile \
+  -destination "platform=iOS Simulator,id=$SIMID" \
   -configuration Debug \
   build CODE_SIGNING_ALLOWED=NO
 ```
@@ -109,13 +124,13 @@ scripts/deploy-to-device.sh            # build + install
 scripts/deploy-to-device.sh --launch   # also launch while the headset is awake/worn
 ```
 
-The development bundle identifier remains `com.jlipworth.VisionPlay` for compatibility with existing app identity, Keychain entries, downloads, background sessions, and installed app state.
+Both app targets use the bundle identifier `com.jlipworth.Labstream` for the intended unified product identity.
 
 ## Project structure
 
 ```text
 Labstream/
-├── Labstream/             # visionOS app target
+├── Labstream/             # shared app source for Labstream (visionOS) and LabstreamMobile (iOS/iPadOS)
 │   ├── App/               # app entry, object graph, restore state
 │   ├── Auth/              # Plex/Jellyfin/Emby auth and Keychain persistence
 │   ├── Backend/           # backend service lanes, paging, search
@@ -137,6 +152,7 @@ Labstream/
 
 - Published docs: <https://jlipworth.github.io/Labstream/>
 - Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+- iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
 - Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Backend model: [`docs/BACKENDS.md`](docs/BACKENDS.md)
 - Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)

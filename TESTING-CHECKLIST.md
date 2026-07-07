@@ -3,13 +3,13 @@
 _Everything below is implemented + build-verified on `main` (app builds green; the full `PMSKit`
 suite passes locally on macOS with `cd PMSKit && swift test`; Linux CI runs the XCTest and Swift
 Testing halves separately as documented in `.woodpecker/pmskit.yml`) but the unchecked items are NOT
-yet human-verified in the headset/simulator. Work through them in one pass._
+yet human-verified on device/simulator. Work through them in one pass._
 
 **Numbering = GitHub issue numbers** ([issues](https://github.com/jlipworth/Labstream/issues)).
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: a same-bundle-id upgrade install usually preserves the container; deleting the app, erasing the sim, or switching install sources starts fresh and requires sign-in again.
 
-> **Automated coverage map (issue #75):** this checklist is the *manual* headset/sim pass. Its
+> **Automated coverage map (issue #75):** this checklist is the *manual* device/sim pass. Its
 > automated counterpart — which mocked-unit / live-probe layer covers each screen, menu, playback,
 > download, profile and subtitle flow — is [`docs/TESTING-LIVE-MATRIX.md`](docs/TESTING-LIVE-MATRIX.md),
 > with live-server requirements + CI enablement in
@@ -21,8 +21,19 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 ## A. Sign-in & player fundamentals
 
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
-      plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
+      plex.tv/link plus an "Open Plex sign-in on this device instead" fallback; consent page says
       **Labstream**. Both paths land in the library.
+- [ ] **Plex cross-device sign-in via iCloud Keychain (DEVICE-ONLY)** — on two real devices signed
+      into the same iCloud account with iCloud Keychain enabled (see `docs/DEVELOPMENT.md` §Credentials
+      and iCloud Keychain sync): sign in to Plex on device A, then launch on device B and confirm it
+      is signed in without re-entering the linking code. The server's session/device list must still
+      show A and B as two distinct devices (independent `X-Plex-Client-Identifier` / device name).
+- [ ] **Plex sign-out propagates everywhere (DEVICE-ONLY)** — with both devices signed in, sign out
+      (or trigger a 401 wipe) on one device and confirm the other returns to the sign-in screen on its
+      next launch.
+- [ ] **Jellyfin/Emby remain per-device (DEVICE-ONLY)** — signing in to Jellyfin or Emby on device A
+      does NOT sign device B in; device B still requires its own Quick Connect / Emby Connect sign-in,
+      and both devices appear as separate sessions on the server.
 - [ ] **Emby Connect PIN sign-in (GH #72)** — select Emby, choose "Sign in with Emby Connect,"
       confirm the code at `emby.media/pin.html`, and verify the app lands in the Emby library
       with the exchanged local server token. If the account has multiple linked servers, verify
@@ -30,7 +41,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       to the chosen server or returns a clear error without leaking Connect tokens/access keys.
 - [ ] **Welcome screen polish (GH #18)** — at the next natural sign-out, before signing back in:
       logo tile shows the real artwork with a blue/amber two-tone glow (no flat circle); title reads
-      "Vision**Play**" with the current brand treatment; tagline "Your whole Plex library, in your space."; the
+      "Labstream" with the current brand treatment; tagline "Your whole Plex library, anywhere."; the
       sign-in state shows a hint line about the code; after tapping Sign in, the 4-char code renders
       as four glass cells with "plex.tv/link" highlighted in amber; an auth failure shows the new
       glass error banner (red icon + hairline, readable text). Flow itself unchanged (#16 semantics).
@@ -41,7 +52,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       the immersive space, stops the controller, reopens the main window while active, and routes
       back to the item's detail page.
       **⚠️ WATCH:** keep an eye out for any Cinema dismissal flash or empty-window artifact during
-      future headset passes.
+      future device passes.
 - [x] **Quality-reload keeps playhead** ✅ verified in sim — switching the Mbps cap mid-playback
       rebuffers briefly then resumes at the same playhead; a normal Resume lands at the right offset
       with no double-seek.
@@ -58,13 +69,13 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
       unavailable there; device keeps the background session.) Logs:
       `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.Labstream"'`
-- [ ] **Off-head static Range continuation (GH #169, DEVICE-ONLY)** — start a large
-      static/original/existing-version download while the headset is worn, wait for
-      `downloads.range_start segment_kind=boundedCheckpoint`, then remove the headset while plugged
-      in for 2–5 minutes. Expected diagnostics: `app.scene_phase` → inactive/background,
+- [ ] **Background static Range continuation (GH #169, DEVICE-ONLY)** — start a large
+      static/original/existing-version download while the app is active, wait for
+      `downloads.range_start segment_kind=boundedCheckpoint`, then background/lock the device
+      while plugged in for 2–5 minutes. Expected diagnostics: `app.scene_phase` → inactive/background,
       `downloads.range_strategy strategy=continuous_remainder`, then either
       `downloads.range_remainder_promote` (active bounded task cancelled back to durable checkpoint)
-      or a direct `downloads.range_remainder_start`. While off-head, look for
+      or a direct `downloads.range_remainder_start`. While backgrounded, look for
       `downloads.range_progress segment_kind=continuousRemainder` / `downloads.range_remainder_finished`
       followed by `downloads.range_chunk_appended` and finalization. If the remainder fails, the row
       may pause/retry from `bytes` equal to the durable partial checkpoint, not the optimistic temp
@@ -124,8 +135,8 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [ ] **Convert-then-download resume — DEVICE-ONLY** — the sim cannot validate this: a hard
       `simctl terminate` produces no `NSURLSessionDownloadTaskResumeData` and the sim doesn't keep a
       background `URLSession` alive across a kill, so kill→relaunch dead-ends in a failed row. On the
-      headset: start a convert/download, take the headset off (or let it sleep) for a few minutes,
-      put it back on → confirm the transfer CONTINUES/RESUMES from its offset rather than failing or
+      device: start a convert/download, background/lock the device for a few minutes,
+      foreground/unlock it → confirm the transfer CONTINUES/RESUMES from its offset rather than failing or
       restarting from 0. (Resume today relies on iOS background continuation + resume-data blobs; the
       app does NOT yet self-resume via HTTP `Range` from the on-disk partial — see #128-adjacent
       follow-up if device testing shows hard-kill/OOM restarts from 0.)
@@ -186,8 +197,8 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       correct path (direct vs optimize); kill the app mid-download → relaunch reconnects or
       reconciles to failed/retryable.
 - [ ] **Audio session / interruptions (device-only)** — call/Siri pauses then resumes (only if it was
-      playing); unplugging headphones pauses; backgrounding pauses and does NOT auto-resume; a manual
-      pause is never overridden.
+      playing); unplugging headphones pauses; backgrounding ordinary video pauses and does NOT
+      auto-resume, while active PiP or AirPlay continues; a manual pause is never overridden.
 - [x] **Playback speed + Now Playing metadata** ✅ verified — Speed tab changes rate and survives
       a Quality reload. (Control Center metadata not separately re-checked.)
 - [ ] **Buffering indicator** — centered spinner on a real stall, NOT on manual pause.
@@ -319,7 +330,7 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       PMS `/firstCharacter` counts.
 - [ ] **Settings expansion (GH #26, Phase 1+2)** — spot checks:
   - About: Version matches the bundle marketing version; Build shows CFBundleVersion; Build ID is a source slug when built via `scripts/xcodebuild-versioned.sh` or the args from `scripts/build-version-args.sh`; visionOS row sane;
-    Client row says "Labstream on Apple Vision Pro" (NO client identifier shown).
+    Client row says "Labstream on <device>" (for example iPad, iPhone, or Apple Vision Pro; NO client identifier shown).
   - Copy diagnostics: pasted text has app/build/OS versions, server name+version, and
     the connection scheme only — no token, client identifier, hostname, or full URL.
   - Server section: Version row shows the PMS version; Status row says "Tap to check",
@@ -354,8 +365,8 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [ ] **System integration** — Control Center / Now Playing shows track title, artist, album +
       album art; play/pause/next/previous remote commands work; music keeps playing when the app
       backgrounds (unlike video); unplugging headphones pauses.
-- [ ] **Video regression check** — after the audio-session change, video playback still pauses on
-      backgrounding and resumes after interruptions exactly as before.
+- [ ] **Video regression check** — after the audio-session change, ordinary video playback still
+      pauses on backgrounding, active PiP/AirPlay continues, and interruptions resume exactly as before.
 
 ### C2. Music redesign Phase 2 (pivot + Home rails — docs/MUSIC-DESIGN.md §3.1)
 
@@ -596,7 +607,7 @@ must be validated on hardware; simulator-only proof is insufficient._
 
 ## Wave 2 — Plex bar (re-applied onto the custom player)
 
-_Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). In-headset checks before merge._
+_Build-verified on `wave2/plex-bar` (stacked on `wave1/...`). Device checks before merge._
 
 ### #30 — failure card layout
 - [x] Trigger a playback failure (kill the server mid-stream): the failure card is a **compact centered dialog** (capped at 360pt) with **Retry stacked ABOVE Close**, both buttons equal width; a long server message **wraps onto multiple centered lines** rather than stretching the card wide.
@@ -678,7 +689,7 @@ shows the stamped Build ID, and normal in-app browsing still works.
 - **GH #7 — DeviceProfile + direct play:** shipped — the app-side half now loads the
   direct-play `start.m3u8` when Default Quality is "Direct Play / Maximum" and PMS can copy the
   source (see the "Direct play via Direct Play / Maximum" item in §A). Still subject to the
-  **CRITICAL `Generic` client-profile constraint** — must not be changed back to Safari or an unknown profile. Keep the live headset pass for resume-priming / `subtitles=auto` regressions.
+  **CRITICAL `Generic` client-profile constraint** — must not be changed back to Safari or an unknown profile. Keep the live device pass for resume-priming / `subtitles=auto` regressions.
 - **GH #4 — trick-play scrub thumbnails:** server-dependent (PMS I-frame playlist); held.
 - **GH #12 — RealityKit theater:** hidden prototype scaffold only; no visible entry point until
   the device-only checks above pass. **GH #13 — multi-track offline (.movpkg):** optional / later.

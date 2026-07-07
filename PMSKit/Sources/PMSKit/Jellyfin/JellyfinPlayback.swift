@@ -229,7 +229,7 @@ public enum JellyfinPlayback {
             "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": true,
-            "DeviceProfile": visionOSDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
+            "DeviceProfile": streamingDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
                                                    advertiseDolbyVision: advertiseDolbyVision,
                                                    subtitlesInManifest: subtitleStreamIndex != -1),
         ]
@@ -274,7 +274,7 @@ public enum JellyfinPlayback {
             "AllowVideoStreamCopy": true,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": true,
-            "DeviceProfile": visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
+            "DeviceProfile": compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
 
@@ -590,9 +590,9 @@ public enum JellyfinPlayback {
             sources.first
     }
 
-    static func visionOSDeviceProfile(maxStreamingBitrate: Int,
-                                      advertiseDolbyVision: Bool = false,
-                                      subtitlesInManifest: Bool = true) -> [String: Any] {
+    static func streamingDeviceProfile(maxStreamingBitrate: Int,
+                                       advertiseDolbyVision: Bool = false,
+                                       subtitlesInManifest: Bool = true) -> [String: Any] {
         // subtitlesInManifest: when the user explicitly chose subtitles OFF (the -1 sentinel),
         // drop the in-manifest WebVTT renditions entirely. AVFoundation displays FORCED/default
         // legible renditions matching the audio language even after `select(nil, in: group)`,
@@ -652,7 +652,7 @@ public enum JellyfinPlayback {
         ],
     ] }
 
-    static func visionOSCompatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
+    static func compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
         [
             "Name": "Labstream-Compatible-Download",
             "MaxStaticBitrate": maxStaticBitrate,

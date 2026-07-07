@@ -47,16 +47,36 @@ Detailed agent instructions are mirrored for both assistants:
 If `summary.json` reports `developer_disk_image_mount_unauthorized`, check VPN/network
 filtering first; this can prevent `devicectl` from mounting the xrOS developer disk image.
 
+## Deploy to a physical iPhone or iPad
+
+Use the mobile device wrapper for `LabstreamMobile` hardware installs. It builds a signed
+`iphoneos` Debug app and installs with `devicectl`; simulator builds with
+`CODE_SIGNING_ALLOWED=NO` will not install on hardware.
+
+```sh
+scripts/deploy-mobile-to-device.sh            # build + install to one paired iPhone/iPad
+scripts/deploy-mobile-to-device.sh --launch   # also launch
+IOS_DEVICE_ID=<uuid> scripts/deploy-mobile-to-device.sh --launch  # when multiple devices are paired
+```
+
+One-time GUI prereqs still apply: connect/pair the iPhone/iPad, trust this Mac, enable
+Developer Mode if prompted, and sign the matching Apple ID into Xcode Settings ▸ Accounts
+so command-line automatic provisioning can create profiles.
+
 ## Worktree simulators
 
-Each git worktree gets its own visionOS simulator so parallel worktrees don't clobber
-each other's app container / login. `scripts/worktree-sim.sh` is the single source of
-truth (also invoked by a `post-checkout` git hook).
+Each git worktree gets its own simulator so parallel worktrees don't clobber each other's
+app container / login. `scripts/worktree-sim.sh` is the single source of truth (also
+invoked by a `post-checkout` git hook).
 
-- The **main** worktree owns the *golden* logged-in sim (recorded in `<main>/.simid`).
-  Never delete it.
-- A **linked** worktree gets a `vpwt-<branch>-<hash>` clone of the golden, created **shut down**;
-  its UDID lives in `<worktree>/.simid` (git-ignored). Boot it yourself before building.
+- The **main** worktree owns the visionOS *golden* logged-in sim (recorded in
+  `<main>/.simid`). Never delete it.
+- By default, a **linked** worktree gets a `vpwt-<branch>-<hash>` visionOS clone of the
+  golden, created **shut down**; its UDID lives in `<worktree>/.simid` (git-ignored).
+- iPad/iOS work can opt into an independent iPad simulator without touching the golden:
+  use `LABSTREAM_SIM_PLATFORM=ipad`, `scripts/worktree-sim.sh --platform ipad ...`, or a
+  gitignored `<worktree>/.simplatform` containing `ipad`. Its UDID lives in
+  `<worktree>/.simid-ipad`.
 - Target `"$SIMID"` (from `scripts/worktree-sim.sh id`), never `booted` — `booted` errors
   once more than one sim is up.
 
@@ -64,38 +84,44 @@ truth (also invoked by a `post-checkout` git hook).
 scripts/worktree-sim.sh install-hook   # one-time: auto-clone on `git worktree add`
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid
+scripts/worktree-sim.sh teardown --all # delete all sims owned by this linked worktree
 scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphans
 scripts/worktree-sim.sh prune          # sweep clones whose worktree is gone
 SIMID=$(scripts/worktree-sim.sh id)    # this worktree's UDID for build/install/log
+SIMID=$(scripts/worktree-sim.sh --platform visionos id) # force the visionOS sim
+SIMID=$(scripts/worktree-sim.sh --platform ipad id)     # force the iPad sim
 ```
 
 If `install-hook` warns that `core.hooksPath` is set, Git will ignore the shared hook it
 just wrote; unset that config before relying on auto-clone behavior.
 
-**Rule:** after creating a worktree run `setup`; when finishing/removing one run
-`teardown` **before** `git worktree remove`, or run `closeout PATH` / `prune` immediately
-afterward. `setup` clones from the golden sim, which `simctl` can only do while the
-golden is shut down, so it briefly bounces a booted main sim (~10s blip).
+**Rule:** after creating a worktree run `setup`; when finishing/removing one, prefer
+`scripts/worktree-sim.sh closeout PATH` from any repo worktree, or run
+`scripts/worktree-sim.sh teardown --all` inside the linked worktree **before**
+`git worktree remove`. Use `prune` immediately afterward if removal already happened.
+visionOS `setup` clones from the golden sim, which `simctl` can only do while the golden
+is shut down, so it briefly bounces a booted main sim (~10s blip). iPad setup creates a
+fresh `ipadwt-*` simulator from the newest available iOS runtime instead.
 
 ### Worktree closeout checklist
 
 Never call worktree cleanup done until the matching simulator is gone. Preferred flow:
 
 ```sh
-# Before removing a linked worktree:
+# Before removing a linked worktree that may own both visionOS and iPad simulators:
 cd <worktree>
-scripts/worktree-sim.sh teardown
+scripts/worktree-sim.sh teardown --all
 cd <main>
 git worktree remove <worktree>
 git branch -D <branch>
 
-# Safer one-command helper from any repo worktree:
+# Preferred one-command helper from any repo worktree:
 scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|ipadwt|<branch-fragment>' || true
 ```
 
-Do not delete the golden main-worktree simulator. Only `vpwt-*` linked-worktree clones
-should disappear during closeout.
+Do not delete the golden main-worktree simulator. Only this linked worktree's `vpwt-*`
+and/or `ipadwt-*` simulators should disappear during closeout.

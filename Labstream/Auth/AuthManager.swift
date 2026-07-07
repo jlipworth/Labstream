@@ -54,7 +54,7 @@ final class AuthManager {
     private var pollTask: Task<Void, Never>?
     /// PINs being polled for the current login attempt (#16): the non-strong
     /// "link" PIN (its 4-char code is shown for plex.tv/link) and the strong
-    /// PIN (its long code backs the in-headset web-auth URL). Whichever the
+    /// PIN (its long code backs the on-device web-auth URL). Whichever the
     /// user completes authorizes first; both clear when the attempt ends.
     private var activePinIDs: Set<Int> = []
     private var activeJellyfinQuickConnectAttemptID: UUID?
@@ -361,7 +361,7 @@ final class AuthManager {
     /// long code backs the `app.plex.tv/auth` web URL (a strong code cannot be
     /// typed at plex.tv/link, and the auth web page needs the strong one).
     /// Both are polled; whichever the user completes wins.
-    /// Returns the URL the UI should present for the in-headset browser path.
+    /// Returns the URL the UI should present for the on-device browser path.
     func createPin() async throws -> URL {
         selectBackend(.plex)
         cancelPendingLogin()

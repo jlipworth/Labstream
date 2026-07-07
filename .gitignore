@@ -68,6 +68,8 @@ site/
 
 # Per-worktree simulator UDID (worktree-sim.sh)
 .simid
+.simid-ipad
+.simplatform
 
 # Local agent simulator run artifacts
 artifacts/agent-sim-runs/

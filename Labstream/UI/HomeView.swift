@@ -208,6 +208,7 @@ private struct HubRail: View {
                             RailMediaCell(item: item)
                         }
                         .cardLink()
+                        .videoCardContextMenu(for: item)
                     }
                 }
                 .padding(.vertical, DS.Space.sm)

@@ -1,28 +1,50 @@
 #!/usr/bin/env bash
 #
-# worktree-sim.sh — give each git worktree its own visionOS simulator.
+# worktree-sim.sh — give each git worktree its own simulator.
 #
-# The MAIN worktree owns a "golden" logged-in sim (its UDID lives in <main>/.simid).
-# Each LINKED worktree gets a clone of that golden sim, named vpwt-<branch>-<hash>,
-# created SHUT DOWN. The clone's UDID is written to <worktree>/.simid (git-ignored). The
-# worktree's own agent boots/manipulates the sim as needed.
+# Default behavior is unchanged for existing worktrees: visionOS uses the MAIN worktree's
+# logged-in "golden" simulator (<main>/.simid) and LINKED worktrees get vpwt-* clones of
+# that golden, created SHUT DOWN.
+#
+# iPadOS/iOS work can opt into an independent iPad simulator instead of cloning the
+# visionOS golden. Select it with either:
+#   LABSTREAM_SIM_PLATFORM=ipad scripts/worktree-sim.sh id
+#   scripts/worktree-sim.sh --platform ipad id
+# or write `ipad` to a gitignored <worktree>/.simplatform. iPad simulators are named
+# ipadwt-<branch>-<hash> and recorded in <worktree>/.simid-ipad.
 #
 # Subcommands:
-#   setup         clone the golden sim for the current (linked) worktree; idempotent.
-#                 No-op in the main worktree or when a live .simid already exists.
-#   teardown      delete the current worktree's vpwt-* sim and remove .simid.
-#   closeout      safe finish command: teardown an existing linked worktree path, then
-#                 prune orphaned vpwt-* sims. Use this before/after worktree removal.
-#   prune         delete every vpwt-* sim no live worktree references (backstop for
-#                 `git worktree remove`, which has no git hook).
+#   setup         provision this worktree's sim; idempotent.
+#                 visionOS: no-op in main or clone golden in linked worktrees.
+#                 iPadOS: create/reuse a shutdown iPad simulator for this worktree.
+#   teardown      delete the current worktree's owned sim for the selected platform and
+#                 remove its simid file. Use --all to delete every linked-worktree sim
+#                 owned by this worktree (never the main golden sim).
+#   closeout      safe finish command: teardown all sims for an existing linked worktree
+#                 path, then prune orphaned worktree sims.
+#   prune         delete every vpwt-* / ipadwt-* sim no live worktree references.
 #   id            print the current worktree's sim UDID (seeds/setups if needed).
-#   install-hook  install a post-checkout hook (shared across worktrees) that runs
-#                 `setup` after `git worktree add`.
+#   platform      print the effective platform (visionos or ipad).
+#   install-hook  install a post-checkout hook that runs `setup` after `git worktree add`.
 #
 set -euo pipefail
 
-NAME_PREFIX="vpwt-"
+VISION_PREFIX="vpwt-"
+IPAD_PREFIX="ipadwt-"
+DEFAULT_PLATFORM="visionos"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+PLATFORM_OVERRIDE=""
+
+# These iPad device types are ordered newest/preferred first. If a local Xcode does not
+# have one, setup falls back to the first available iPad device type reported by simctl.
+IPAD_DEVICE_TYPE_CANDIDATES=(
+  "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB"
+  "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-16GB"
+  "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-8GB"
+  "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4"
+  "com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4"
+  "com.apple.CoreSimulator.SimDeviceType.iPad-A16"
+)
 
 die() { echo "worktree-sim: $*" >&2; exit 1; }
 
@@ -32,6 +54,51 @@ worktree_root() { git rev-parse --show-toplevel; }
 main_worktree() { git worktree list --porcelain | awk '/^worktree /{print $2; exit}'; }
 
 is_main() { [ "$(worktree_root)" = "$(main_worktree)" ]; }
+
+normalize_platform() {
+  local p="${1:-}"
+  p=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
+  case "$p" in
+    ""|vision|visionos|xros|xr|vp) printf 'visionos' ;;
+    ipad|ipados|ios|iphone|mobile) printf 'ipad' ;;
+    *) die "unknown simulator platform '$p' (expected visionos or ipad)" ;;
+  esac
+}
+
+effective_platform() {
+  if [ -n "$PLATFORM_OVERRIDE" ]; then
+    normalize_platform "$PLATFORM_OVERRIDE"
+    return 0
+  fi
+  if [ -n "${LABSTREAM_SIM_PLATFORM:-}" ]; then
+    normalize_platform "$LABSTREAM_SIM_PLATFORM"
+    return 0
+  fi
+  local f
+  f="$(worktree_root)/.simplatform"
+  if [ -f "$f" ]; then
+    normalize_platform "$(tr -d '[:space:]' < "$f")"
+    return 0
+  fi
+  printf '%s' "$DEFAULT_PLATFORM"
+}
+
+name_prefix_for_platform() {
+  case "$(normalize_platform "$1")" in
+    visionos) printf '%s' "$VISION_PREFIX" ;;
+    ipad) printf '%s' "$IPAD_PREFIX" ;;
+  esac
+}
+
+simid_file_for_platform() {
+  local root platform
+  root=$(worktree_root)
+  platform=$(normalize_platform "$1")
+  case "$platform" in
+    visionos) printf '%s/.simid' "$root" ;;
+    ipad) printf '%s/.simid-ipad' "$root" ;;
+  esac
+}
 
 # Golden UDID = main worktree's .simid. The file is local/gitignored because simulator IDs are
 # machine-specific and should not be committed.
@@ -50,13 +117,15 @@ hash_short() {
 }
 
 sim_name() {
-  local b root h
+  local platform prefix b root h
+  platform=$(normalize_platform "$1")
+  prefix=$(name_prefix_for_platform "$platform")
   b=$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD)
   root=$(worktree_root)
-  h=$(printf '%s\n%s' "$root" "$b" | hash_short)
+  h=$(printf '%s\n%s\n%s' "$root" "$b" "$platform" | hash_short)
   b=$(printf '%s' "$b" | sed 's#[^A-Za-z0-9_-]#-#g')
   b=${b:0:40}
-  printf '%s%s-%s' "$NAME_PREFIX" "$b" "$h"
+  printf '%s%s-%s' "$prefix" "$b" "$h"
 }
 
 # Print the UDID of the first sim with the given exact name (empty if none).
@@ -115,55 +184,128 @@ clone_golden() {
   printf '%s' "$udid"
 }
 
-cmd_setup() {
-  if is_main; then golden_udid >/dev/null; return 0; fi
-  local root simid_file; root=$(worktree_root); simid_file="$root/.simid"
+available_ipad_runtime() {
+  xcrun simctl list runtimes -j | python3 -c '
+import json, re, sys
+runtimes = json.load(sys.stdin).get("runtimes", [])
+def version_tuple(r):
+    text = r.get("version") or r.get("name", "")
+    nums = [int(x) for x in re.findall(r"\d+", text)]
+    return tuple(nums)
+choices = [r for r in runtimes
+           if r.get("isAvailable", True)
+           and ".SimRuntime.iOS-" in r.get("identifier", "")]
+choices.sort(key=version_tuple, reverse=True)
+if choices:
+    print(choices[0]["identifier"])
+'
+}
+
+available_ipad_device_type() {
+  local candidate
+  for candidate in "${IPAD_DEVICE_TYPE_CANDIDATES[@]}"; do
+    if xcrun simctl list devicetypes -j | python3 -c 'import json,sys; target=sys.argv[1]; print(any(d.get("identifier")==target and d.get("isAvailable", True) for d in json.load(sys.stdin).get("devicetypes", [])))' "$candidate" | grep -q True; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  xcrun simctl list devicetypes -j | python3 -c '
+import json, sys
+for d in json.load(sys.stdin).get("devicetypes", []):
+    ident = d.get("identifier", "")
+    name = d.get("name", "")
+    if d.get("isAvailable", True) and "iPad" in name and "SimDeviceType.iPad" in ident:
+        print(ident); sys.exit(0)
+'
+}
+
+create_ipad_sim() {
+  local name="$1" runtime device udid
+  runtime=$(available_ipad_runtime)
+  [ -n "$runtime" ] || die "no available iOS/iPadOS simulator runtime found"
+  device=$(available_ipad_device_type)
+  [ -n "$device" ] || die "no available iPad simulator device type found"
+  udid=$(xcrun simctl create "$name" "$device" "$runtime") || die "create iPad simulator failed"
+  printf '%s' "$udid"
+}
+
+cmd_setup_platform() {
+  local platform root simid_file name udid
+  platform=$(normalize_platform "$1")
+  root=$(worktree_root)
+  simid_file=$(simid_file_for_platform "$platform")
+
+  if [ "$platform" = "visionos" ] && is_main; then
+    golden_udid >/dev/null
+    return 0
+  fi
+
   if [ -f "$simid_file" ] && sim_exists "$(cat "$simid_file")"; then return 0; fi
-  local name udid; name=$(sim_name)
+  name=$(sim_name "$platform")
   udid=$(sim_udid_by_name "$name")          # reuse if a matching sim already exists
   if [ -z "$udid" ]; then
-    udid=$(clone_golden "$name")
+    case "$platform" in
+      visionos) udid=$(clone_golden "$name") ;;
+      ipad) udid=$(create_ipad_sim "$name") ;;
+    esac
   fi
   printf '%s\n' "$udid" > "$simid_file"
   echo "worktree-sim: $name -> $udid (shutdown)"
 }
 
-cmd_teardown() {
-  local root simid_file; root=$(worktree_root); simid_file="$root/.simid"
-  [ -f "$simid_file" ] || { echo "worktree-sim: no .simid here, nothing to tear down"; return 0; }
-  local udid; udid=$(cat "$simid_file")
-  [ "$udid" = "$(golden_udid)" ] && die "refusing to delete the golden sim ($udid)"
-  local name; name=$(sim_name_by_udid "$udid")
+cmd_setup() { cmd_setup_platform "$(effective_platform)"; }
+
+cmd_teardown_platform() {
+  local platform root simid_file udid name prefix
+  platform=$(normalize_platform "$1")
+  root=$(worktree_root); simid_file=$(simid_file_for_platform "$platform")
+  [ -f "$simid_file" ] || { echo "worktree-sim: no $(basename "$simid_file") here, nothing to tear down"; return 0; }
+  udid=$(cat "$simid_file")
+  if [ "$platform" = "visionos" ] && [ "$udid" = "$(golden_udid)" ]; then
+    die "refusing to delete the golden sim ($udid)"
+  fi
+  prefix=$(name_prefix_for_platform "$platform")
+  name=$(sim_name_by_udid "$udid")
   case "$name" in
-    "${NAME_PREFIX}"*)
+    "${prefix}"*)
       xcrun simctl shutdown "$udid" 2>/dev/null || true
       xcrun simctl delete "$udid"
       echo "worktree-sim: deleted $name ($udid)"
       ;;
     "") echo "worktree-sim: sim $udid no longer exists" ;;
-    *)  echo "worktree-sim: $udid ($name) is not a ${NAME_PREFIX}* sim, leaving it" ;;
+    *)  echo "worktree-sim: $udid ($name) is not a ${prefix}* sim, leaving it" ;;
   esac
   rm -f "$simid_file"
+}
+
+cmd_teardown() {
+  if [ "${1:-}" = "--all" ]; then
+    cmd_teardown_platform visionos
+    cmd_teardown_platform ipad
+    return 0
+  fi
+  cmd_teardown_platform "$(effective_platform)"
 }
 
 cmd_prune() {
   local refs="" wt tmp count
   while read -r wt; do
     if [ -f "$wt/.simid" ]; then refs+="$(cat "$wt/.simid") "; fi
+    if [ -f "$wt/.simid-ipad" ]; then refs+="$(cat "$wt/.simid-ipad") "; fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   tmp=$(mktemp "${TMPDIR:-/tmp}/worktree-sim-prune.XXXXXX")
   xcrun simctl list devices -j | python3 -c '
 import json, sys
-prefix = sys.argv[1]
+prefixes = tuple(sys.argv[1].split(","))
 refs = set(sys.argv[2].split())
 for devs in json.load(sys.stdin)["devices"].values():
     for d in devs:
-        if d["name"].startswith(prefix) and d["udid"] not in refs:
+        if d["name"].startswith(prefixes) and d["udid"] not in refs:
             print(d["udid"], d["name"])
-' "$NAME_PREFIX" "$refs" > "$tmp"
+' "$VISION_PREFIX,$IPAD_PREFIX" "$refs" > "$tmp"
   count=$(wc -l < "$tmp" | tr -d ' ')
   if [ "$count" = "0" ]; then
-    echo "worktree-sim: no orphaned ${NAME_PREFIX}* simulators found"
+    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* simulators found"
     rm -f "$tmp"
     return 0
   fi
@@ -187,8 +329,8 @@ cmd_closeout() {
     if [ "$root" = "$main" ]; then
       echo "worktree-sim: closeout target is the main worktree; not tearing down golden sim"
     else
-      echo "worktree-sim: closeout tearing down simulator for $root"
-      (cd "$root" && "$SCRIPT_PATH" teardown)
+      echo "worktree-sim: closeout tearing down simulators for $root"
+      (cd "$root" && "$SCRIPT_PATH" teardown --all)
     fi
   else
     echo "worktree-sim: closeout target missing or not a git worktree; running prune backstop"
@@ -198,21 +340,25 @@ cmd_closeout() {
 }
 
 cmd_id() {
-  if is_main; then golden_udid; return 0; fi
-  local root simid_file udid; root=$(worktree_root); simid_file="$root/.simid"
+  local platform root simid_file udid
+  platform=$(effective_platform)
+  if [ "$platform" = "visionos" ] && is_main; then golden_udid; return 0; fi
+  root=$(worktree_root); simid_file=$(simid_file_for_platform "$platform")
   if [ -f "$simid_file" ]; then
     udid=$(cat "$simid_file")
     if sim_exists "$udid"; then
       printf '%s\n' "$udid"
       return 0
     fi
-    echo "worktree-sim: stale .simid ($udid); provisioning a live simulator" >&2
+    echo "worktree-sim: stale $(basename "$simid_file") ($udid); provisioning a live simulator" >&2
   fi
-  cmd_setup >&2
+  cmd_setup_platform "$platform" >&2
   udid=$(cat "$simid_file")
   sim_exists "$udid" || die "setup wrote $udid, but that simulator does not exist"
   printf '%s\n' "$udid"
 }
+
+cmd_platform() { effective_platform; printf '\n'; }
 
 cmd_install_hook() {
   local common hookdir hook hp
@@ -239,6 +385,13 @@ HOOK
 }
 
 main() {
+  while [ "${1:-}" = "--platform" ]; do
+    shift
+    [ -n "${1:-}" ] || die "missing value for --platform"
+    PLATFORM_OVERRIDE="$1"
+    shift
+  done
+
   local cmd="${1:-}"; shift || true
   case "$cmd" in
     setup)        cmd_setup "$@" ;;
@@ -246,8 +399,9 @@ main() {
     closeout)     cmd_closeout "$@" ;;
     prune)        cmd_prune "$@" ;;
     id)           cmd_id "$@" ;;
+    platform)     cmd_platform "$@" ;;
     install-hook) cmd_install_hook "$@" ;;
-    *) die "usage: worktree-sim.sh {setup|teardown|closeout|prune|id|install-hook}" ;;
+    *) die "usage: worktree-sim.sh [--platform visionos|ipad] {setup|teardown [--all]|closeout|prune|id|platform|install-hook}" ;;
   esac
 }
 

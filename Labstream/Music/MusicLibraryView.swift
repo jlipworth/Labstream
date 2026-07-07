@@ -233,7 +233,7 @@ private struct MusicHomePivot: View {
                     .padding(.horizontal, DS.Space.md)
                     .padding(.vertical, DS.Space.xs)
             }
-            .buttonStyle(.bordered)
+            .labstreamGlassButtonStyle()
             .disabled(isShuffling)
 
             if let shuffleError {

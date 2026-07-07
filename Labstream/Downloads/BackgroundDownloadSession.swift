@@ -39,10 +39,9 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
 }
 
 /// Wraps a background `URLSession` so transfers survive app suspension and
-/// relaunch. On visionOS the OS pauses background transfers while the headset is
-/// OFF and resumes them when worn again — surface that reality in the UI
-/// (research/10): a "download" is best-effort and may stall until the headset is
-/// back on the user's head.
+/// relaunch. The OS may defer background transfers while the app is backgrounded
+/// or the device sleeps — surface that reality in the UI (research/10): a
+/// "download" is best-effort and may stall until the app/system daemon can run.
 ///
 /// Delegate callbacks land off the main actor; we hop to `@MainActor` for record
 /// updates via `onChange`. The store itself is internally locked.
@@ -350,7 +349,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // `handleEventsForBackgroundURLSession` is delivered to the app delegate.
         config.sessionSendsLaunchEvents = true
         #endif
-        config.allowsCellularAccess = true
+        // Downloads can be multi-GB and there is not yet policy UI for metered data. Default to
+        // Wi-Fi-only until Settings exposes an explicit cellular-download opt-in.
+        config.allowsCellularAccess = false
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 

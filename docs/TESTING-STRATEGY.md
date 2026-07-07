@@ -7,8 +7,9 @@ flowchart TD
   Change[Code or docs change] --> Unit[PMSKit unit tests]
   Change --> Hygiene[ci-hygiene]
   Change --> Docs[mkdocs build --strict]
-  Unit --> Sim[visionOS simulator build/smoke]
-  Sim --> Device[Physical headset checks]
+  Unit --> VisionSim[visionOS simulator build/smoke]
+  Unit --> MobileSim[iPad simulator build/smoke]
+  VisionSim --> Device[Physical headset checks]
   Unit --> Live[Optional live-server probes]
 ```
 
@@ -33,16 +34,26 @@ The public CI surface is intentionally portable:
 
 ## Simulator checks
 
-Use the worktree simulator for app build and launch smoke:
+Use platform-specific worktree simulators for app build and launch smoke. VisionOS remains the default/golden-clone path:
 
 ```sh
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug build CODE_SIGNING_ALLOWED=NO
 ```
 
-The simulator is useful for compile coverage, sign-in UI, settings, browse flows, and many download/playback routing checks. It is not a full substitute for headset playback.
+For the native iPhone/iPad target, opt into an iPad simulator and build the `LabstreamMobile` scheme:
+
+```sh
+printf 'ipad\n' > .simplatform
+SIMID=$(scripts/worktree-sim.sh id)
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
+  -destination "platform=iOS Simulator,id=$SIMID" \
+  -configuration Debug build CODE_SIGNING_ALLOWED=NO
+```
+
+Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, mobile shell regressions, and many download/playback routing checks. They are not a full substitute for headset playback or physical iPhone/iPad media-background behavior.
 
 ## Optional live-server checks
 

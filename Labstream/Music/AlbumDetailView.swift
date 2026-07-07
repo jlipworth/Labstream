@@ -127,7 +127,7 @@ struct AlbumDetailView: View {
                             .padding(.horizontal, DS.Space.md)
                             .padding(.vertical, DS.Space.xs)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .labstreamGlassProminentButtonStyle()
 
                     Button {
                         player.playAlbumShuffled(tracks: tracks)
@@ -135,7 +135,7 @@ struct AlbumDetailView: View {
                         Label("Shuffle", systemImage: "shuffle")
                             .font(.title3)
                     }
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
                 }
                 .disabled(tracks.isEmpty)
                 .padding(.top, DS.Space.md)
