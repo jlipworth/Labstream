@@ -24,6 +24,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
   sources, or start the optimize/convert/download lane, and writes logs under
   `build/probes/emby-download/`.
 - `deploy-to-device.sh` — signed build/install wrapper for the paired Apple Vision Pro. Mutates the device install and may replace another app with the same bundle id.
+- `deploy-mobile-to-device.sh` — signed build/install wrapper for a paired physical iPhone or iPad using the `LabstreamMobile` scheme. Set `IOS_DEVICE_ID` when more than one mobile device is paired.
 - `headset-evidence.sh` — read-only devicectl evidence collector for a paired Apple Vision Pro after a user-driven repro; writes local bundles under `build/headset-evidence/` and may contain private artifacts that must be redacted before sharing.
 
 ## Live probes

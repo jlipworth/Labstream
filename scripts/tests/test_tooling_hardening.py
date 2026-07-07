@@ -317,5 +317,105 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertIn("DEVELOPMENT_TEAM=TEAMID1234", args)
 
 
+    def test_mobile_deploy_masks_device_and_team_ids_by_default(self):
+        device = "87654321-4321-4321-4321-CBA987654321"
+        team = "TEAMID1234"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            home = tmp_root / "home"
+            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
+            app.mkdir(parents=True)
+            fakebin = tmp_root / "fakebin"
+            fakebin.mkdir()
+            (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "$1 $2 $3" = "devicectl list devices" ]; then
+                  printf 'Jonathan iPad ({device}) available\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3 $4" = "devicectl device install app" ]; then
+                  printf 'installed on {device}\n'
+                  exit 0
+                fi
+                echo "unexpected xcrun $*" >&2
+                exit 2
+                """))
+            (fakebin / "codesign").write_text(f"#!/usr/bin/env bash\nprintf 'TeamIdentifier={team}\\n' >&2\n")
+            (fakebin / "xcrun").chmod(0o755)
+            (fakebin / "codesign").chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{fakebin}:{env['PATH']}",
+                "HOME": str(home),
+                "IOS_DEVICE_ID": device,
+                "IOS_DEVELOPMENT_TEAM": team,
+                "IOS_REFRESH_SHORT_DEV_PROFILES": "0",
+            })
+
+            masked = subprocess.run([str(REPO / "scripts" / "deploy-mobile-to-device.sh"), "--no-build"], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            combined = masked.stdout + masked.stderr
+            self.assertNotIn(device, combined)
+            self.assertNotIn(team, combined)
+            self.assertIn("8765…4321", combined)
+            self.assertIn("TEAM…1234", combined)
+
+            verbose = subprocess.run([str(REPO / "scripts" / "deploy-mobile-to-device.sh"), "--no-build", "--verbose"], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            verbose_combined = verbose.stdout + verbose.stderr
+            self.assertIn(device, verbose_combined)
+            self.assertIn(team, verbose_combined)
+
+    def test_mobile_deploy_build_uses_labstreammobile_iphoneos_destination(self):
+        device = "87654321-4321-4321-4321-CBA987654321"
+        team = "TEAMID1234"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            home = tmp_root / "home"
+            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
+            fakebin = tmp_root / "fakebin"
+            fakebin.mkdir()
+            args_file = tmp_root / "xcodebuild-args.txt"
+            (fakebin / "xcodebuild").write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\n' "$@" > {args_file}
+                mkdir -p {app}
+                exit 0
+                """))
+            (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "$1 $2 $3" = "devicectl list devices" ]; then
+                  printf 'Jonathan iPhone ({device}) available\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3 $4" = "devicectl device install app" ]; then
+                  printf 'installed on {device}\n'
+                  exit 0
+                fi
+                echo "unexpected xcrun $*" >&2
+                exit 2
+                """))
+            (fakebin / "codesign").write_text(f"#!/usr/bin/env bash\nprintf 'TeamIdentifier={team}\\n' >&2\n")
+            for tool in ("xcodebuild", "xcrun", "codesign"):
+                (fakebin / tool).chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{fakebin}:{env['PATH']}",
+                "HOME": str(home),
+                "IOS_DEVICE_ID": device,
+                "IOS_DEVELOPMENT_TEAM": team,
+                "IOS_REFRESH_SHORT_DEV_PROFILES": "0",
+            })
+
+            subprocess.run([str(REPO / "scripts" / "deploy-mobile-to-device.sh")], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            args = args_file.read_text()
+            self.assertIn("-scheme\nLabstreamMobile", args)
+            self.assertIn(f"platform=iOS,id={device}", args)
+            self.assertIn("DEVELOPMENT_TEAM=TEAMID1234", args)
+            self.assertIn("LABSTREAM_BUILD_SLUG=", args)
+            self.assertIn("LABSTREAM_BUILD_DATE_UTC=", args)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -47,6 +47,22 @@ Detailed agent instructions are mirrored for both assistants:
 If `summary.json` reports `developer_disk_image_mount_unauthorized`, check VPN/network
 filtering first; this can prevent `devicectl` from mounting the xrOS developer disk image.
 
+## Deploy to a physical iPhone or iPad
+
+Use the mobile device wrapper for `LabstreamMobile` hardware installs. It builds a signed
+`iphoneos` Debug app and installs with `devicectl`; simulator builds with
+`CODE_SIGNING_ALLOWED=NO` will not install on hardware.
+
+```sh
+scripts/deploy-mobile-to-device.sh            # build + install to one paired iPhone/iPad
+scripts/deploy-mobile-to-device.sh --launch   # also launch
+IOS_DEVICE_ID=<uuid> scripts/deploy-mobile-to-device.sh --launch  # when multiple devices are paired
+```
+
+One-time GUI prereqs still apply: connect/pair the iPhone/iPad, trust this Mac, enable
+Developer Mode if prompted, and sign the matching Apple ID into Xcode Settings ▸ Accounts
+so command-line automatic provisioning can create profiles.
+
 ## Worktree simulators
 
 Each git worktree gets its own simulator so parallel worktrees don't clobber each other's
