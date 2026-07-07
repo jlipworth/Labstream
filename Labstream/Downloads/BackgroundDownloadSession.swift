@@ -2521,7 +2521,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func revalidateCompletedDownload(ratingKey: String, validationLabel: String) -> Bool {
         guard let destination = store.localURL(for: ratingKey) else { return false }
         let bytes = fileSize(at: destination) ?? 0
-        guard bytes > 0 else { return false }
+        guard bytes > 0 else {
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("empty_file"),
+                "bytes": .bytes(bytes),
+                "preserved": .bool(false),
+                "validation": .label(validationLabel),
+            ])
+            try? fileManager.removeItem(at: destination)
+            clearRetryCount(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, .failed)
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: "failed_empty",
+                                   validationLabel: validationLabel,
+                                   durationMs: 0,
+                                   bytes: bytes)
+            onError?(ratingKey, .transferFailed("Downloaded file is empty."))
+            onChange?()
+            return true
+        }
         AppDiagnostics.record(.downloads, "downloads.unverified_revalidate", fields: [
             "download_id": .identifier(ratingKey),
             "bytes": .bytes(bytes),
@@ -2780,10 +2799,30 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let outcome = DownloadCompletionValidation.outcome(played: validation.played,
                                                            probeReason: validation.reason,
                                                            expectedDurationMs: expectedDurationMs,
-                                                           actualDurationMs: validation.durationMs)
+                                                           actualDurationMs: validation.durationMs,
+                                                           downloadedBytes: bytes)
         let finalizationResult = BackgroundFinalizationResultPolicy.result(for: outcome)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         switch outcome {
+        case .emptyFile:
+            downloadLog.error("empty-download ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
+            AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(finalizationResult.validationFailureReason ?? "empty_file"),
+                "bytes": .bytes(bytes),
+                "preserved": .bool(false),
+            ])
+            if finalizationResult.shouldDeleteFile {
+                try? fileManager.removeItem(at: destination)
+            }
+            clearRetryCount(ratingKey: ratingKey)
+            store.setStatus(ratingKey: ratingKey, finalizationResult.status)
+            onError?(ratingKey, .transferFailed(finalizationResult.userFacingErrorMessage ?? "Downloaded file is empty."))
+            recordFinalizeFinished(ratingKey: ratingKey,
+                                   result: finalizationResult.resultLabel,
+                                   validationLabel: validationLabel,
+                                   durationMs: finalizationDurationMs,
+                                   bytes: bytes)
         case .truncated(let actualDurationMs, let expectedMs):
             downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
             AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [

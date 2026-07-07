@@ -31,7 +31,8 @@ extension DownloadManager {
                              partIndex: Int = 0,
                              mediaSourceIDOverride: String? = nil,
                              deferStaticStartWhenQueuePaused: Bool = false,
-                             requestedProfileLabelOverride: String? = nil) async {
+                             requestedProfileLabelOverride: String? = nil,
+                             allowReplacingExistingActiveRow: Bool = false) async {
         let itemId = item.ratingKey
         let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
         // #84: capture the Emby session from its own lane; never re-read `appModel.emby*` or
@@ -48,7 +49,9 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Emby") else { return }
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
+                                          backend: "Emby",
+                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
         // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
@@ -135,6 +138,7 @@ extension DownloadManager {
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return
@@ -208,6 +212,7 @@ extension DownloadManager {
             recordDownloadDiagnostic(event, fields: fields)
             lastError[ratingKey] = .transferFailed(reason.userMessage)
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return
@@ -275,6 +280,7 @@ extension DownloadManager {
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             store.setStatus(ratingKey: ratingKey, .failed)
+            clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return

@@ -163,12 +163,20 @@ final class AuthManager {
     }
 
     private func restorePlexSession(updateState: Bool = true) async -> Bool {
-        guard let saved = keychain.token else { return false }
+        let restoreFields: [String: DiagnosticFieldValue] = [
+            "update_state": .bool(updateState)
+        ]
+        guard let saved = keychain.token else {
+            recordAuthDiagnostic("auth.plex.restore.missing_token", fields: restoreFields)
+            return false
+        }
+        recordAuthDiagnostic("auth.plex.restore.start", fields: restoreFields)
         appModel.token = saved
         do {
             await refreshPlexAccountProfile()
             try await refreshServers()
             if updateState { state = .authenticated }
+            recordAuthDiagnostic("auth.plex.restore.success", fields: restoreFields)
             return true
         } catch PlexError.unauthorized {
             // Only wipe the Plex lane when it is the ACTIVE, user-facing backend. On the inactive
@@ -176,6 +184,7 @@ final class AuthManager {
             // discovery 401 must NOT silently sign the user out of Plex — leave the saved token in
             // place and let the lane stay unhydrated until they switch back, where `updateState: true`
             // handles a genuine sign-out with the proper UI teardown.
+            recordAuthDiagnostic("auth.plex.restore.unauthorized", fields: restoreFields)
             guard updateState else { return false }
             SpotlightIndexer.deleteAll()
             appModel.isSwitchingBackend = false
@@ -183,6 +192,9 @@ final class AuthManager {
             state = .idle
             return false
         } catch {
+            var fields = restoreFields
+            fields.merge(authErrorFields(error)) { _, new in new }
+            recordAuthDiagnostic("auth.plex.restore.discovery_failed", fields: fields)
             if updateState { state = .failed("Signed in, but server discovery failed.") }
             return true
         }

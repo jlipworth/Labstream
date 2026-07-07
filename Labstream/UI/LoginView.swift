@@ -166,6 +166,10 @@ struct LoginView: View {
             PlexLinkCodeView(code: code) {
                 webAuth.start(url) { }
             }
+        case .failed where appModel.token != nil:
+            PlexRestoreFailureView(isWorking: working,
+                                   onRetry: { Task { await retryPlexRestore() } },
+                                   onSignInAgain: { Task { await startLogin() } })
         default:
             PlexSignInStartView(isWorking: working) {
                 Task { await startLogin() }
@@ -315,6 +319,13 @@ struct LoginView: View {
             errorMessage = friendlyMessage(error)
             working = false
         }
+    }
+
+    private func retryPlexRestore() async {
+        working = true
+        errorMessage = nil
+        _ = await authManager.restoreSession()
+        working = false
     }
 
     private func startJellyfinLogin() async {

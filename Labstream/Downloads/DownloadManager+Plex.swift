@@ -19,7 +19,9 @@ extension DownloadManager {
     /// on the same background-`URLSession` + validation pipeline. Records state rather than
     /// throwing.
     public func download(_ item: MediaItem, choice: DownloadChoice,
-                         mediaIndex: Int = 0, partIndex: Int = 0) async {
+                         mediaIndex: Int = 0,
+                         partIndex: Int = 0,
+                         allowReplacingExistingActiveRow: Bool = false) async {
         let ratingKey = item.ratingKey
         // #84: resolve the Plex session ONCE from its own lane (never `appModel.activeBackend`),
         // then never re-read a per-lane credential field for the rest of this job.
@@ -34,7 +36,9 @@ extension DownloadManager {
         }
         let token = backendSession.token
         let server = backendSession.baseURL
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey, backend: "Plex") else { return }
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
+                                          backend: "Plex",
+                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
         lastError[ratingKey] = nil
         // NOTE: no `defer { activeJobs.remove }` here — that fired when this function returned,
         // which (for both choices) is right after `session.start` merely KICKS OFF the transfer,
@@ -102,6 +106,7 @@ extension DownloadManager {
             case .noExistingVersionPart:
                 lastError[ratingKey] = .transferFailed("No server version part to download.")
             }
+            clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             return
 
