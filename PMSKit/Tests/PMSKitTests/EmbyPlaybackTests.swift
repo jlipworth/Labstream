@@ -115,6 +115,85 @@ struct EmbyPlaybackTests {
         #expect(result.sourceMetadata.bitrate == 8200)
     }
 
+    @Test func cappedTranscodeSteersCompatibleAudioOntoTranscodingURL() throws {
+        // Default track is high-risk (TrueHD 7.1); a compatible AC3 5.1 alternate exists.
+        // The server minted its URL against the default — the client-side steering must pin
+        // the compatible track on the master URL (the Emby twin of Jellyfin's overrides).
+        let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-1",
+          "MediaSources": [{
+            "Id": "mediasource_abc",
+            "Name": "Main",
+            "Container": "mkv",
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2160 },
+              { "Index": 2, "Type": "Audio", "Codec": "truehd", "Language": "eng", "DisplayTitle": "English TrueHD Atmos 7.1", "IsDefault": true, "Channels": 8 },
+              { "Index": 4, "Type": "Audio", "Codec": "ac3", "Language": "eng", "DisplayTitle": "English AC3 5.1", "Channels": 6 }
+            ],
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": false,
+            "SupportsTranscoding": true,
+            "TranscodingUrl": "/videos/movie-1/master.m3u8?DeviceId=device-123&MediaSourceId=mediasource_abc&PlaySessionId=play-1&api_key=server-token&AudioStreamIndex=2",
+            "TranscodingSubProtocol": "hls",
+            "TranscodingContainer": "ts"
+          }]
+        }
+        """#.utf8))
+
+        let result = try EmbyPlayback.resolveStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: "token-abc",
+            userId: "user-9",
+            itemId: "movie-1",
+            audioBitrate: 256_000)
+
+        let comps = try #require(URLComponents(url: result.url, resolvingAgainstBaseURL: false))
+        let queryItems = comps.queryItems ?? []
+        let q = Dictionary(uniqueKeysWithValues: queryItems.map { ($0.name, $0.value ?? "") })
+        #expect(q["AudioStreamIndex"] == "4")
+        #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioStreamIndex") == .orderedSame }.count == 1)
+        // The reported metadata matches the steered track, not the server default.
+        #expect(result.sourceMetadata.audioCodec == "ac3")
+    }
+
+    @Test func uncappedTranscodeLeavesServerMintedAudioSelectionAlone() throws {
+        let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
+        {
+          "PlaySessionId": "play-1",
+          "MediaSources": [{
+            "Id": "mediasource_abc",
+            "MediaStreams": [
+              { "Index": 0, "Type": "Video", "Codec": "hevc" },
+              { "Index": 2, "Type": "Audio", "Codec": "truehd", "IsDefault": true, "Channels": 8 },
+              { "Index": 4, "Type": "Audio", "Codec": "ac3", "Channels": 6 }
+            ],
+            "SupportsDirectPlay": false,
+            "SupportsDirectStream": false,
+            "SupportsTranscoding": true,
+            "TranscodingUrl": "/videos/movie-1/master.m3u8?PlaySessionId=play-1&api_key=server-token&AudioStreamIndex=2",
+            "TranscodingSubProtocol": "hls",
+            "TranscodingContainer": "ts"
+          }]
+        }
+        """#.utf8))
+
+        let result = try EmbyPlayback.resolveStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: "token-abc",
+            userId: "user-9",
+            itemId: "movie-1")
+
+        let comps = try #require(URLComponents(url: result.url, resolvingAgainstBaseURL: false))
+        let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        // No cap → no steering; the server's own selection stands untouched.
+        #expect(q["AudioStreamIndex"] == "2")
+    }
+
     @Test func resolveStreamClassifiesTranscodingURLAsTranscodeEvenWhenDirectStreamSupported() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {

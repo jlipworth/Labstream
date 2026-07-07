@@ -265,6 +265,13 @@ struct DownloadRetryPolicyTests {
         #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
             record,
             isActive: false,
+            hasPendingResumeIntent: true,
+            fileExists: { $0 == url },
+            fileSize: { _ in 25 * 1_024 * 1_024 }
+        ))
+        #expect(!DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+            record,
+            isActive: false,
             fileExists: { _ in false },
             fileSize: { _ in nil }
         ))

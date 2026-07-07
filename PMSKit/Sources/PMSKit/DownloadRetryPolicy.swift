@@ -35,10 +35,12 @@ public enum DownloadRetryPolicy {
     /// does not show Pause/active work for a row with no URLSession task.
     public static func shouldDemoteStaleQueuedStaticPartial(_ record: DownloadRecord,
                                                            isActive: Bool,
+                                                           hasPendingResumeIntent: Bool = false,
                                                            fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) },
                                                            fileSize: (URL) -> Int? = Self.defaultFileSize) -> Bool {
         (record.status == .queued || record.status == .downloading)
             && !isActive
+            && !hasPendingResumeIntent
             && hasStaticPartialCheckpoint(record, fileExists: fileExists, fileSize: fileSize)
     }
 

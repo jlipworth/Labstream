@@ -858,12 +858,31 @@ public final class DownloadManager {
         ), let resumeData = persistedResumeData {
             store.clearResumeData(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, .downloading)
-            if session.resume(ratingKey: ratingKey, resumeData: resumeData, to: record.localURL) {
+            // #212: range-checkpoint rows (paused/failed continuous remainders) MUST resume on the
+            // range lane; the opaque lane would treat the blob task's partial-body temp as a
+            // whole-file move at completion and corrupt the durable partial.
+            let lane = DownloadRetryPreparationPolicy.persistedResumeDataLane(
+                resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey)
+            )
+            let resumed: Bool
+            switch lane {
+            case .rangeCheckpoint:
+                resumed = session.resumeRange(
+                    ratingKey: ratingKey,
+                    resumeData: resumeData,
+                    to: record.localURL,
+                    expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record)
+                )
+            case .opaque:
+                resumed = session.resume(ratingKey: ratingKey, resumeData: resumeData, to: record.localURL)
+            }
+            if resumed {
                 activeJobs.insert(ratingKey)
                 refreshRecords()
                 return
             }
-            // resume() refused the blob — fall through to a clean restart below.
+            // The blob was refused/stale — fall through to a clean restart below (for range rows
+            // the durable partial remains the checkpoint; only the blob's temp is lost).
             store.setStatus(ratingKey: ratingKey, .failed)
         }
         if DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(
@@ -1819,7 +1838,11 @@ public final class DownloadManager {
         let staleQueuedStaticPartials = fresh.filter { record in
             DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
-                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey)
+                isActive: session.isTrackingTransfer(ratingKey: record.ratingKey),
+                // #210: a backend-unavailable static Range resume is intentionally preserved as a
+                // queued pending intent. Reprocessing it here re-enters resume/defer/refresh until
+                // the main-thread stack overflows during launch.
+                hasPendingResumeIntent: staticRangeRecovery.hasPendingResume(record.ratingKey)
             )
         }
         if !staleQueuedStaticPartials.isEmpty {
