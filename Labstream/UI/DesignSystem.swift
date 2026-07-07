@@ -52,6 +52,11 @@ enum DS {
     /// Canonical poster geometry. A 2:3 movie-poster ratio is the backbone of the
     /// browse UI; deriving heights from a single width keeps every rail and grid
     /// cell perfectly aligned regardless of the size we render at.
+    ///
+    /// Two size families: the bare constants are the visionOS/iPad values the app was
+    /// authored against; `Compact` holds the iPhone-class counterparts (a 184-pt rail
+    /// poster is half a phone screen). Views pick via the `compact:`-parameterized
+    /// accessors, driven by `\.labstreamCompactWidth`.
     enum Poster {
         /// The 2:3 aspect ratio shared by rail and grid posters.
         static let aspect: CGFloat = 2.0 / 3.0
@@ -61,6 +66,22 @@ enum DS {
         static let gridMax: CGFloat = 208
         /// Detail-screen hero poster width.
         static let detailWidth: CGFloat = 300
+
+        /// Compact-width (iPhone) poster sizes: ~3 grid columns / ~3.3 rail posters
+        /// visible on a 390-pt screen, in line with phone-class media apps.
+        enum Compact {
+            static let railWidth: CGFloat = 110
+            static let gridMin: CGFloat = 104
+            static let gridMax: CGFloat = 150
+            /// Compact detail/now-playing hero — the 300-pt hero plus page padding
+            /// overflows a 390-pt screen.
+            static let detailWidth: CGFloat = 220
+        }
+
+        static func railWidth(compact: Bool) -> CGFloat { compact ? Compact.railWidth : railWidth }
+        static func gridMin(compact: Bool) -> CGFloat { compact ? Compact.gridMin : gridMin }
+        static func gridMax(compact: Bool) -> CGFloat { compact ? Compact.gridMax : gridMax }
+        static func detailWidth(compact: Bool) -> CGFloat { compact ? Compact.detailWidth : detailWidth }
 
         /// Height for a given poster width at the canonical 2:3 ratio.
         static func height(for width: CGFloat) -> CGFloat { width / aspect }
@@ -72,13 +93,37 @@ enum DS {
     enum Scroll {
         static let railHorizontalMargin = Space.xxl
         static let compactRailHorizontalMargin = Space.md
+
+        static func railHorizontalMargin(compact: Bool) -> CGFloat {
+            compact ? compactRailHorizontalMargin : railHorizontalMargin
+        }
     }
+
+    /// Grid gutters: the 24-pt visionOS/iPad gutter would push a compact grid down to
+    /// two columns, so compact width tightens to the 12-pt phone gutter.
+    static func gridGutter(compact: Bool) -> CGFloat { compact ? Space.md : Space.xl }
+    /// Screen-edge padding around grids/pages: 24-pt regular, 16-pt compact.
+    static func pagePadding(compact: Bool) -> CGFloat { compact ? Space.lg : Space.xl }
 
     /// Soft, layered shadow used under posters and cards to lift them off the glass
     /// without looking heavy. visionOS already has real depth; this is a gentle hint.
     static func posterShadow<S: Shape>(_ shape: S) -> some View {
         shape.fill(.clear)
             .shadow(color: .black.opacity(0.35), radius: 14, x: 0, y: 10)
+    }
+}
+
+extension EnvironmentValues {
+    /// One shared definition of "phone-class width": true when the horizontal size
+    /// class is compact (iPhone, narrow iPad split view). visionOS windows never
+    /// report compact, so this is always false there — the authored visionOS/iPad
+    /// metrics remain untouched on that platform by construction.
+    var labstreamCompactWidth: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
     }
 }
 
@@ -184,9 +229,27 @@ extension View {
 
     /// Shared media-rail scroll content insets. Use with
     /// `ScrollView(.horizontal, showsIndicators: false)` to keep horizontal rails consistent.
-    func mediaRailScrollStyle(horizontalMargin: CGFloat = DS.Scroll.railHorizontalMargin,
+    /// With no explicit margin the modifier resolves the compact-aware default from the
+    /// environment, so a bare `.mediaRailScrollStyle()` can't silently burn the 32-pt
+    /// regular margin on a 390-pt phone.
+    func mediaRailScrollStyle(horizontalMargin: CGFloat? = nil,
                               clipDisabled: Bool = true) -> some View {
-        contentMargins(.horizontal, horizontalMargin, for: .scrollContent)
+        modifier(MediaRailScrollStyleModifier(horizontalMargin: horizontalMargin,
+                                              clipDisabled: clipDisabled))
+    }
+}
+
+private struct MediaRailScrollStyleModifier: ViewModifier {
+    let horizontalMargin: CGFloat?
+    let clipDisabled: Bool
+
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    func body(content: Content) -> some View {
+        content
+            .contentMargins(.horizontal,
+                            horizontalMargin ?? DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                            for: .scrollContent)
             .scrollClipDisabled(clipDisabled)
     }
 }

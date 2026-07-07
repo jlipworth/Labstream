@@ -1,5 +1,8 @@
 import SwiftUI
 import PMSKit
+#if os(iOS)
+import UIKit
+#endif
 
 /// Item detail: artwork, rich metadata, and the primary actions — a real per-item
 /// submenu modeled on the official Plex / Emby item pages.
@@ -29,16 +32,20 @@ struct DetailView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
     @Environment(MusicPlayerController.self) private var musicPlayer
+    #if os(iOS)
+    /// Drives iOS detail adaptations: compact phones use the dedicated narrow layout, while
+    /// narrow iPad split view can still stack the regular poster/metadata layout.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+    /// True in ANY iOS compact-width context — iPhone AND a narrow iPad window (Split View /
+    /// Slide Over), which reports compact width but is not the phone idiom. Sizing decisions
+    /// that must also shrink for a compact iPad pane key on this rather than
+    /// `isCompactPhoneLayout`. Always false on visionOS, so its metrics stay untouched.
+    @Environment(\.labstreamCompactWidth) private var compactWidth
     /// The browse tab this detail lives under, injected by RootView, so Cinema exit returns to the
     /// originating tab's detail instead of always Home (#87). `nil` → fall back to the system-entry
     /// (Home) path, preserving prior behavior.
     @Environment(\.cinemaOriginTab) private var cinemaOriginTab
-    #if os(iOS)
-    /// Drives the compact-width adaptation of `leafDetail` on iPhone / a narrow iPad split:
-    /// side-by-side poster+metadata collapses to a vertical stack. visionOS has a fixed-ish
-    /// window width and keeps the HStack unconditionally, so this is iOS-only.
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    #endif
 
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
@@ -115,6 +122,14 @@ struct DetailView: View {
         selectedVersionRatingKey ?? item.ratingKey
     }
 
+    private var isCompactPhoneLayout: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone && horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     /// An episode's show as a pushable container item (episode hierarchy:
     /// show = grandparent, season = parent).
     private var showItem: MediaItem? {
@@ -189,9 +204,19 @@ struct DetailView: View {
     @ViewBuilder
     private var detailLayout: some View {
         #if os(iOS)
-        if horizontalSizeClass == .compact {
+        if isCompactPhoneLayout {
+            VStack(alignment: .leading, spacing: DS.Space.xl) {
+                detailPoster(width: 220)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                metadataColumn
+            }
+        } else if horizontalSizeClass == .compact {
+            // Compact-width iPad (Split View / Slide Over): stack like the phone layout, but
+            // the 300-pt regular hero plus page padding overflows a ~320-pt pane, so use the
+            // 220-pt compact hero, centered as in the phone branch above.
             VStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                posterHero
+                detailPoster(width: DS.Poster.detailWidth(compact: true))
+                    .frame(maxWidth: .infinity, alignment: .center)
                 metadataColumn
             }
         } else {
@@ -215,9 +240,14 @@ struct DetailView: View {
     /// (e.g. a 16:9 episode still renders 16:9 instead of cropped 2:3); Plex and
     /// any item without a ratio keep the canonical 2:3 poster shape (GH #101).
     private var posterHero: some View {
+        detailPoster(width: DS.Poster.detailWidth)
+    }
+
+    @ViewBuilder
+    private func detailPoster(width: CGFloat) -> some View {
         PosterImage(path: detailed.thumb,
-                    width: DS.Poster.detailWidth,
-                    height: CGFloat(Double(DS.Poster.detailWidth) / detailed.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
+                    width: width,
+                    height: CGFloat(Double(width) / detailed.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))),
                     cornerRadius: DS.Radius.card)
             .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
     }
@@ -273,8 +303,14 @@ struct DetailView: View {
     /// item's own ratingKey, which is guaranteed to own a Media/Part.
     private var leafDetail: some View {
         ScrollView {
+            #if os(iOS)
+            detailLayout
+                .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
+                .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
+            #else
             detailLayout
                 .padding(DS.Space.xxxl)
+            #endif
         }
         .background(artBackdrop)
         .navigationTitle(detailed.title)
@@ -364,34 +400,7 @@ struct DetailView: View {
     @ViewBuilder
     private var actionButtons: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
-            HStack(spacing: DS.Space.lg) {
-                Button {
-                    guard !isResolvingPlayback, !presentingPlayer, metadataReadyForActions else { return }
-                    isResolvingPlayback = true
-                    let requestID = UUID()
-                    playbackRequestID = requestID
-                    Task { await startPlayback(requestID: requestID) }
-                } label: {
-                    Group {
-                        if isResolvingPlayback {
-                            ProgressView()
-                        } else {
-                            Label(resumeLabel, systemImage: "play.fill")
-                        }
-                    }
-                    .font(.title3.weight(.semibold))
-                    .padding(.horizontal, DS.Space.md)
-                    .padding(.vertical, DS.Space.xs)
-                }
-                .labstreamGlassProminentButtonStyle()
-                .disabled(isResolvingPlayback || !metadataReadyForActions)
-
-                downloadButton
-
-                if supportsWatchedToggle {
-                    markWatchedButton
-                }
-            }
+            actionButtonStack
 
             DetailMovieVersionPicker(versions: movieVersions,
                                      activeVersionRatingKey: activeVersionRatingKey,
@@ -407,6 +416,56 @@ struct DetailView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    @ViewBuilder
+    private var actionButtonStack: some View {
+        if compactWidth {
+            // Full-width stacked buttons with CENTERED labels — the system idiom for a
+            // prominent full-width action (App Store "Get", TV "Play"); a left-aligned
+            // label in a full-width pill reads as a list row. The width stretch lives on
+            // each button's label so the glass pill itself spans the column.
+            VStack(spacing: DS.Space.md) {
+                playButton
+                downloadButton
+                if supportsWatchedToggle {
+                    markWatchedButton
+                }
+            }
+            .controlSize(.large)
+        } else {
+            HStack(spacing: DS.Space.lg) {
+                playButton
+                downloadButton
+                if supportsWatchedToggle {
+                    markWatchedButton
+                }
+            }
+        }
+    }
+
+    private var playButton: some View {
+        Button {
+            guard !isResolvingPlayback, !presentingPlayer, metadataReadyForActions else { return }
+            isResolvingPlayback = true
+            let requestID = UUID()
+            playbackRequestID = requestID
+            Task { await startPlayback(requestID: requestID) }
+        } label: {
+            Group {
+                if isResolvingPlayback {
+                    ProgressView()
+                } else {
+                    Label(resumeLabel, systemImage: "play.fill")
+                }
+            }
+            .font(.title3.weight(.semibold))
+            .frame(maxWidth: compactWidth ? .infinity : nil)
+            .padding(.horizontal, DS.Space.md)
+            .padding(.vertical, DS.Space.xs)
+        }
+        .labstreamGlassProminentButtonStyle()
+        .disabled(isResolvingPlayback || !metadataReadyForActions)
     }
 
     /// "Play Offline" when a local copy exists, otherwise a button that opens the
@@ -460,6 +519,7 @@ struct DetailView: View {
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
+                    .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
         } else {
@@ -468,6 +528,7 @@ struct DetailView: View {
             } label: {
                 Label(downloadLabel, systemImage: "arrow.down.circle")
                     .font(.title3)
+                    .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
             .disabled(isDownloading || !metadataReadyForActions)
@@ -486,6 +547,7 @@ struct DetailView: View {
             Label(isWatched ? "Mark Unwatched" : "Mark Watched",
                   systemImage: isWatched ? "minus.circle" : "checkmark.circle")
                 .font(.title3)
+                .frame(maxWidth: compactWidth ? .infinity : nil)
         }
         .labstreamGlassButtonStyle()
         .disabled(isTogglingWatched)

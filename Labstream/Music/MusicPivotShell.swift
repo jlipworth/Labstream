@@ -31,6 +31,9 @@ struct MusicPivotShell<Content: View>: View {
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 460)
+            // Breathing room on compact, where the bar would otherwise run
+            // edge-to-edge; regular width is already capped at 460 and centered.
+            .padding(.horizontal, DS.Space.lg)
             .padding(.top, DS.Space.md)
             .padding(.bottom, DS.Space.sm)
 

@@ -72,6 +72,9 @@ extension LibraryPagingSource {
                                                        limit: limit,
                                                        includeItemTypes: itemTypes,
                                                        fields: JellyfinLibrary.gridItemFields)
+                if let session = appModel.backendSession(for: .jellyfin) {
+                    SpotlightIndexer.index(page.items, backend: .jellyfin, server: session.baseURL)
+                }
                 let gridPage = LibraryPagingPage(items: page.items, reportedTotal: page.total)
                 recordGridPageDiagnostics(page.items,
                                           backend: "Jellyfin",
@@ -110,6 +113,9 @@ extension LibraryPagingSource {
                                                        limit: limit,
                                                        includeItemTypes: itemTypes,
                                                        fields: EmbyLibrary.gridItemFields)
+                if let session = appModel.backendSession(for: .emby) {
+                    SpotlightIndexer.index(page.items, backend: .emby, server: session.baseURL)
+                }
                 let gridPage = LibraryPagingPage(items: page.items, reportedTotal: page.total)
                 recordGridPageDiagnostics(page.items,
                                           backend: "Emby",
