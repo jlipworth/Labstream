@@ -47,6 +47,12 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 struct CustomPlayerChrome: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Phone-class width (iPhone, narrow iPad Split View): the labeled pill strip
+    /// doesn't fit, so the menu buttons drop to icon-only circles.
+    private var compactWidth: Bool { horizontalSizeClass == .compact }
+    #endif
     #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
@@ -381,8 +387,15 @@ struct CustomPlayerChrome: View {
                 realityTheaterDeveloperButton
                     .fixedSize(horizontal: true, vertical: false)
 
+                #if os(visionOS)
                 menuStrip
                     .fixedSize(horizontal: true, vertical: false)
+                #else
+                // No fixedSize on iOS: the strip's ViewThatFits needs the row's REAL
+                // remaining width to pick labeled pills vs icon circles — an unbounded
+                // proposal would always choose the labeled variant and overflow portrait.
+                menuStrip
+                #endif
             }
 
             if scrubState.isDragging, trickPlayProvider != nil {
@@ -599,7 +612,7 @@ struct CustomPlayerChrome: View {
         realityTheaterSession.phase == .open ? 112 : CustomPlayerMenuKind.quality.minChromeWidth
     }
 
-    private var menuStrip: some View {
+    @ViewBuilder private var menuStrip: some View {
         #if os(visionOS)
         HStack(spacing: 8) {
             ForEach(availableMenus) { menu in
@@ -617,38 +630,56 @@ struct CustomPlayerChrome: View {
             }
         }
         #else
-        // System-player parity on iOS: Subtitles and Audio stay as inline icon-only glass
-        // circles, and the rest (Quality/Chapters/Speed/Stats) collapse behind a single
-        // "more" button. Each item still just calls `openMenu`, so the existing popovers
-        // are reused unchanged.
-        HStack(spacing: 8) {
-            inlineMenuButton(.subtitles)
-            inlineMenuButton(.audio)
-
-            Menu {
-                ForEach(overflowMenus) { menu in
-                    Button {
-                        openMenu(menu)
-                    } label: {
-                        Label(menu.title, systemImage: menu.systemImage)
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 44)
+        // Flat menus, no "…" overflow (an ellipsis submenu was tried and reverted — it
+        // buried Quality/Chapters/Speed behind an extra hop, killing the tap-video →
+        // change-setting flow the visionOS pill strip was designed for). Regular-width
+        // iPad has room for the labeled pills; compact drops to icon-only circles so
+        // every menu still opens in one tap.
+        if compactWidth {
+            iconMenuStrip
+        } else {
+            // The labeled strip is ~660 pt; a portrait iPad row (title + padding) can't
+            // seat it, so fall back to the icon circles when the row is too tight. Both
+            // variants have fixed ideal widths, so ViewThatFits is deterministic here
+            // (no unwrapped-text measurement trap).
+            ViewThatFits(in: .horizontal) {
+                labeledMenuStrip
+                iconMenuStrip
             }
-            .menuStyle(.button)
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .tint(.primary)
-            .accessibilityLabel("More options")
         }
         #endif
     }
 
     #if os(iOS)
-    /// Icon-only glass circle that opens one of the popover menus inline (Subtitles/Audio).
+    /// visionOS-parity labeled pills in iOS glass styling — every menu one tap away.
+    private var labeledMenuStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(availableMenus) { menu in
+                Button {
+                    openMenu(menu)
+                } label: {
+                    Label(menu.shortTitle, systemImage: menu.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .font(.callout.weight(.semibold))
+                        .frame(minWidth: menu.minChromeWidth, minHeight: 38)
+                        .padding(.horizontal, 6)
+                }
+                .buttonStyle(.glass)
+                .tint(.primary)
+            }
+        }
+    }
+
+    /// Icon-only glass circles for every menu — the narrow-row variant.
+    private var iconMenuStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(availableMenus) { menu in
+                inlineMenuButton(menu)
+            }
+        }
+    }
+
+    /// Icon-only glass circle that opens one of the popover menus inline.
     private func inlineMenuButton(_ menu: CustomPlayerMenuKind) -> some View {
         Button {
             openMenu(menu)
@@ -662,22 +693,8 @@ struct CustomPlayerChrome: View {
         .buttonBorderShape(.circle)
         .tint(.primary)
     }
-
-    /// The menus that collapse behind the iOS "more" button. Quality is gated the same way
-    /// the visionOS pill strip gates it; the rest always appear (matching prior behavior).
-    private var overflowMenus: [CustomPlayerMenuKind] {
-        [.quality, .chapters, .speed, .stats].filter { menu in
-            switch menu {
-            case .quality:
-                return controller.supportsQualityReload
-            default:
-                return true
-            }
-        }
-    }
     #endif
 
-    #if os(visionOS)
     private var availableMenus: [CustomPlayerMenuKind] {
         CustomPlayerMenuKind.allCases.filter { menu in
             switch menu {
@@ -690,7 +707,6 @@ struct CustomPlayerChrome: View {
             }
         }
     }
-    #endif
 
     private func upNextCard(_ next: MediaItem) -> some View {
         HStack(spacing: 12) {
