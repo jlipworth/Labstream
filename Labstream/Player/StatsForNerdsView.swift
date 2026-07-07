@@ -16,6 +16,14 @@ struct StatsForNerdsView: View {
     var onClose: (() -> Void)?
     var showsHeader = true
 
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    /// The authored widths (430 headerless) overflow a 390-pt phone; compact width
+    /// lets the panel size to its content under a screen-safe cap instead.
+    private var fixedPanelWidth: CGFloat? {
+        compactWidth ? nil : (showsHeader ? 340 : 430)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if showsHeader {
@@ -70,7 +78,8 @@ struct StatsForNerdsView: View {
             .font(.system(showsHeader ? .caption : .callout, design: .monospaced))
         }
         .padding(showsHeader ? 16 : 0)
-        .frame(width: showsHeader ? 340 : 430, alignment: .leading)
+        .frame(width: fixedPanelWidth, alignment: .leading)
+        .frame(maxWidth: compactWidth ? 340 : nil, alignment: .leading)
         .background {
             if showsHeader {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)

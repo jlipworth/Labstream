@@ -7,17 +7,37 @@ struct PairingCodeCells: View {
     let width: CGFloat
     let height: CGFloat
     let fontSize: CGFloat
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// Compact phones can't fit the authored cell geometry (six 64-pt Quick Connect
+    /// cells + gaps = 444 pt on a 390-pt screen), so the whole cell scales down as a
+    /// unit; regular width keeps the visionOS/iPad sizes untouched.
+    private var scale: CGFloat {
+        #if os(iOS)
+        horizontalSizeClass == .compact ? 0.62 : 1
+        #else
+        1
+        #endif
+    }
+
+    private var cellSpacing: CGFloat {
+        scale < 1 ? DS.Space.sm : DS.Space.md
+    }
 
     private var cellShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+        RoundedRectangle(cornerRadius: DS.Radius.poster * scale, style: .continuous)
     }
 
     var body: some View {
-        HStack(spacing: DS.Space.md) {
+        HStack(spacing: cellSpacing) {
             ForEach(Array(code.enumerated()), id: \.offset) { _, character in
                 Text(String(character))
-                    .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
-                    .frame(width: width, height: height)
+                    .font(.system(size: fontSize * scale, weight: .semibold, design: .monospaced))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .frame(width: width * scale, height: height * scale)
                     .background(.thinMaterial, in: cellShape)
                     .overlay(cellShape.strokeBorder(.primary.opacity(0.10), lineWidth: 0.5))
             }
