@@ -5,6 +5,23 @@ import SwiftUI
 /// These are deliberately presentation-only: callers own validation, auth-manager actions,
 /// cancellation, and credential storage semantics.
 
+/// Uniform footprint for every primary sign-in CTA: a 52-pt-tall block capped at the
+/// method-chooser's 340-pt width, so the Plex, Jellyfin, and Emby entry buttons read as
+/// the same control instead of a mix of text-hugging pills and full-width blocks. The
+/// 340-pt cap fits a compact iPhone column (390 − page padding) and matches the width
+/// used by the cross-platform chooser.
+private struct BackendPrimaryCTALabel: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .font(.title3.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 52)
+    }
+}
+
+private extension View {
+    func backendPrimaryCTALabel() -> some View { modifier(BackendPrimaryCTALabel()) }
+}
+
 enum JellyfinSignInMethod: Equatable {
     case quickConnect
     case credentials
@@ -55,13 +72,14 @@ struct BackendAuthErrorBanner: View {
 
 struct PlexLinkCodeView: View {
     let code: String
-    let onOpenInHeadset: () -> Void
+    let onOpenOnDevice: () -> Void
 
     var body: some View {
         VStack(spacing: DS.Space.lg) {
             VStack(spacing: DS.Space.xs) {
                 Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
                     .font(.title3)
+                    .multilineTextAlignment(.center)
                 Text("on your phone, tablet, or computer")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -76,8 +94,8 @@ struct PlexLinkCodeView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("Open Plex sign-in in this headset instead", action: onOpenInHeadset)
-                .buttonStyle(.bordered)
+            Button("Open Plex sign-in on this device instead", action: onOpenOnDevice)
+                .labstreamGlassButtonStyle()
         }
     }
 }
@@ -90,12 +108,11 @@ struct PlexSignInStartView: View {
         VStack(spacing: DS.Space.md) {
             Button(action: onStart) {
                 Label("Sign in with Plex", systemImage: "person.crop.circle")
-                    .font(.title3.weight(.semibold))
-                    .padding(.horizontal, DS.Space.lg)
-                    .padding(.vertical, DS.Space.xs)
+                    .backendPrimaryCTALabel()
             }
-            .buttonStyle(.borderedProminent)
+            .labstreamGlassProminentButtonStyle()
             .disabled(isWorking)
+            .frame(maxWidth: 340)
 
             Text("Uses a code at plex.tv/link.")
                 .font(.callout)
@@ -140,6 +157,7 @@ struct EmbyConnectPinCodeView: View {
                 VStack(spacing: DS.Space.xs) {
                     Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
                         .font(.title3)
+                        .multilineTextAlignment(.center)
                     Text("on your phone, tablet, or computer — sign in to Emby Connect there")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -281,7 +299,7 @@ struct EmbySignInFlow: View {
         }
     }
 
-    /// Emby Connect PIN is the headset-friendly primary path (needs no server address);
+    /// Emby Connect PIN is the device-friendly primary path (needs no server address);
     /// the server-URL + username/password form is the secondary option.
     private var methodChooser: some View {
         BackendSignInMethodChooser(
@@ -383,18 +401,16 @@ struct BackendSignInMethodChooser: View {
             VStack(spacing: DS.Space.sm) {
                 Button(action: onPrimary) {
                     Label(primaryTitle, systemImage: primarySystemImage)
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .backendPrimaryCTALabel()
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .disabled(primaryDisabled)
 
                 Button(action: onSecondary) {
                     Label(secondaryTitle, systemImage: secondarySystemImage)
-                        .font(.title3.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .backendPrimaryCTALabel()
                 }
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
                 .disabled(secondaryDisabled)
             }
             .frame(maxWidth: 340)
@@ -438,16 +454,15 @@ struct BackendAuthStartView: View {
             } else {
                 Button(action: onStart) {
                     Label(startTitle, systemImage: systemImage)
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
+                        .backendPrimaryCTALabel()
                 }
-                .buttonStyle(.borderedProminent)
+                .labstreamGlassProminentButtonStyle()
                 .disabled(isStartDisabled)
+                .frame(maxWidth: 340)
             }
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
         }
     }
 }
@@ -508,20 +523,21 @@ struct BackendCredentialsSignInForm: View {
                 .frame(maxWidth: 420)
 
             Button(action: onSignIn) {
-                if isWorking {
-                    ProgressView()
-                } else {
-                    Label(signInTitle, systemImage: systemImage)
-                        .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xs)
+                Group {
+                    if isWorking {
+                        ProgressView()
+                    } else {
+                        Label(signInTitle, systemImage: systemImage)
+                    }
                 }
+                .backendPrimaryCTALabel()
             }
-            .buttonStyle(.borderedProminent)
+            .labstreamGlassProminentButtonStyle()
             .disabled(isSignInDisabled)
+            .frame(maxWidth: 340)
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
         }
     }
 }
@@ -572,14 +588,14 @@ struct EmbyConnectServerPicker: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, DS.Space.xs)
                     }
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
                     .disabled(isWorking || selectingServerID != nil)
                 }
             }
             .frame(maxWidth: 420)
 
             Button("Cancel", action: onCancel)
-                .buttonStyle(.bordered)
+                .labstreamGlassButtonStyle()
                 .disabled(isWorking || selectingServerID != nil)
         }
     }

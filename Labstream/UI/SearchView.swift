@@ -8,6 +8,11 @@ import PMSKit
 /// rails up top routing through the shared `musicDestination`, then a Songs list
 /// whose rows PLAY on tap (tracks never navigate), then non-music library groups.
 struct SearchView: View {
+    /// Bumped by RootView's ⌘F shortcut to request focus of the search field. A plain
+    /// counter (not a Bool) so every press re-triggers the focus `.task`, even when the
+    /// Search tab is already frontmost.
+    let focusRequest: Int
+
     @Environment(AppModel.self) private var appModel
 
     @State private var query = ""
@@ -15,6 +20,12 @@ struct SearchView: View {
     @State private var loadState: BrowseLoadState = .idle
     /// The query the current results were fetched for (pop-back no-op guard).
     @State private var loadedQuery: String?
+    /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
+    @FocusState private var searchFieldFocused: Bool
+
+    init(focusRequest: Int = 0) {
+        self.focusRequest = focusRequest
+    }
 
     var body: some View {
         ScrollView {
@@ -73,8 +84,17 @@ struct SearchView: View {
             }
         }
         .searchable(text: $query, prompt: "Movies, shows, music…")
+        .searchFocused($searchFieldFocused)
         .task(id: searchTaskID) {
             await runSearch()
+        }
+        // ⌘F focus: runs on mount (arriving from a tab switch) and on every re-press.
+        .task(id: focusRequest) {
+            guard focusRequest > 0 else { return }
+            // Let the search bar install before requesting focus, especially right after
+            // a tab switch mounts this view.
+            try? await Task.sleep(for: .milliseconds(50))
+            searchFieldFocused = true
         }
     }
 
@@ -224,6 +244,7 @@ private struct SearchHubSection: View {
                             RailMediaCell(item: item)
                         }
                         .cardLink()
+                        .videoCardContextMenu(for: item)
                     }
                 }
                 .padding(.vertical, DS.Space.sm)

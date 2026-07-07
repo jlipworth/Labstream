@@ -1,6 +1,6 @@
 # System integration
 
-Labstream integrates with visionOS system surfaces through one routing layer so external entry points behave like normal in-app navigation.
+Labstream integrates with Apple system surfaces through one routing layer so external entry points behave like normal in-app navigation. The implementation is shared by the visionOS and mobile targets, while end-to-end validation remains platform-specific.
 
 ```mermaid
 flowchart TD

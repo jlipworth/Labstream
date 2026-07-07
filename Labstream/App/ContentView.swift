@@ -172,11 +172,9 @@ private struct RestoringSessionView: View {
     }
 }
 
+#if os(visionOS)
 #Preview(windowStyle: .plain) {
-    let identity = ClientIdentity(clientIdentifier: "preview",
-                                  product: "Labstream",
-                                  version: "0.0.0",
-                                  deviceName: "Apple Vision Pro")
+    let identity = PlatformClientIdentity.make(clientIdentifier: "preview", version: "0.0.0")
     let model = AppModel(identity: identity)
     ContentView(appModel: model,
                 authManager: AuthManager(appModel: model),
@@ -186,3 +184,16 @@ private struct RestoringSessionView: View {
         .environment(CustomCinemaSessionStore())
         .environment(RealityTheaterSessionStore())
 }
+#else
+#Preview {
+    let identity = PlatformClientIdentity.make(clientIdentifier: "preview", version: "0.0.0")
+    let model = AppModel(identity: identity)
+    ContentView(appModel: model,
+                authManager: AuthManager(appModel: model),
+                downloadManager: DownloadManager(appModel: model),
+                musicPlayer: MusicPlayerController(appModel: model),
+                bootstrap: SessionBootstrap())
+        .environment(CustomCinemaSessionStore())
+        .environment(RealityTheaterSessionStore())
+}
+#endif

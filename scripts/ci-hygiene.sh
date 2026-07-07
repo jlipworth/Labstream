@@ -63,8 +63,12 @@ check_pbxproj_churn() {
   # Xcode without PBXFileReference/PBXBuildFile churn. Keep allowing project
   # build-setting/version edits, but stop accidental file-reference/build-phase
   # noise before it reaches CI or review.
-  if printf '%s\n' "$diff_output" | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' >/dev/null; then
-    printf '%s\n' "$diff_output" | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' >&2 || true
+  local pbx_churn
+  pbx_churn=$(printf '%s\n' "$diff_output" \
+    | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' \
+    | grep -Ev 'LabstreamMobile\.app|PMSKit in Frameworks' || true)
+  if [[ -n "$pbx_churn" ]]; then
+    printf '%s\n' "$pbx_churn" >&2
     fail "unexpected project.pbxproj file-reference/build-file churn in $label; synchronized groups should pick up new Swift/resource files without pbxproj edits"
   fi
 }

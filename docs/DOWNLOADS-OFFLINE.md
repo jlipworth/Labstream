@@ -1,6 +1,6 @@
 # Downloads and offline playback
 
-Labstream downloads are designed to end in a local file the headset can play, plus enough metadata to show the item in the offline library and resume safely.
+Labstream downloads are designed to end in a local file the current device can play, plus enough metadata to show the item in the offline library and resume safely.
 
 ```mermaid
 flowchart TD
@@ -50,21 +50,21 @@ stateDiagram-v2
   Complete --> [*]
 ```
 
-## Background ("off-head") downloads on visionOS
+## Background downloads and sleeping devices
 
-Downloading with the headset off is fundamentally constrained by the platform, not by the
-server or the app:
+Downloading while the app is backgrounded, suspended, or the device is locked/asleep is
+fundamentally constrained by the platform, not by the server or the app:
 
-- **The device sleeps within seconds of coming off.** Only true background
-  `URLSessionDownloadTask`s owned by the system daemon (`nsurlsessiond`) keep transferring;
-  all app-side work (server-prep polling, keepalives, timers) is frozen.
-- **Background transfers are deprioritized.** visionOS gives real-time Wi-Fi features priority
-  over background bulk transfers, so off-head throughput can be several times slower than the
-  same download with the app active.
+- **Only system-owned transfers keep running.** True background `URLSessionDownloadTask`s owned
+  by the system daemon (`nsurlsessiond`) may continue; app-side work (server-prep polling,
+  keepalives, timers) is frozen while the app is suspended.
+- **Background transfers are deprioritized.** The OS gives interactive networking and power
+  management priority over background bulk transfers, so throughput can be several times slower
+  than the same download with the app active.
 - **Background app wake-ups are rate-limited.** Each time the system relaunches the app for a
-  background-session event, it doubles the delay before the next task may start. Any design
-  that needs an app wake-up per chunk therefore stalls after a handful of chunks regardless of
-  chunk size.
+  background-session event, it may delay the next opportunity to do app work. Any design that
+  needs an app wake-up per chunk therefore stalls after a handful of chunks regardless of chunk
+  size.
 - **Transfers started while backgrounded are treated as discretionary** — the system schedules
   them at its own pace regardless of configuration.
 
@@ -72,7 +72,7 @@ Labstream's static byte-range lane is shaped around these limits:
 
 - **Active app**: bounded 64 MB `Range` chunks, each appended to the durable partial — frequent
   real checkpoints, safe against force-quit.
-- **Going off-head** (scene inactive/background): the next segment is **one open-ended
+- **Leaving the foreground** (scene inactive/background): the next segment is **one open-ended
   remainder request** (`bytes=offset-`) so the daemon can finish the whole file without waking
   the app per chunk. Its in-flight bytes are non-durable until completion, so:
   - **Pause** cancels by producing URLSession *resume data*, preserving the transferred bytes;
@@ -89,11 +89,13 @@ Labstream's static byte-range lane is shaped around these limits:
 
 User-facing expectations worth setting (the "downloads disclaimer"):
 
-- Very large off-head downloads are best-effort on this platform. Keeping the device on power
-  helps; briefly putting the headset back on (foregrounding the app) resets the system's
-  background rate limiter and lets the app fold finished work into durable checkpoints.
+- Very large background downloads are best-effort. Keeping the device on power helps; briefly
+  foregrounding the app resets the system's background rate limiter and lets the app fold
+  finished work into durable checkpoints.
 - Server-rendered routes (optimize/convert) need the app awake for their *preparation* phase;
-  only the byte transfer itself survives off-head.
+  only the byte transfer itself survives app suspension.
+- Cellular downloads are disabled by default until the app has explicit policy UI for metered
+  data.
 
 ## Module ownership
 

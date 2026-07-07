@@ -12,7 +12,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
 
 ## Simulator and device helpers
 
-- `worktree-sim.sh` — provisions one Vision Pro simulator per git worktree. Use `SIMID=$(scripts/worktree-sim.sh id)` and target `"$SIMID"`, not `booted`.
+- `worktree-sim.sh` — provisions one simulator per git worktree. The default remains the visionOS golden/clone flow (`vpwt-*`, `.simid`); opt into an iPad simulator with `LABSTREAM_SIM_PLATFORM=ipad`, `scripts/worktree-sim.sh --platform ipad ...`, or a gitignored `.simplatform` file (`ipadwt-*`, `.simid-ipad`). Use `SIMID=$(scripts/worktree-sim.sh id)` for the selected platform and target `"$SIMID"`, not `booted`.
 - `simclick.swift` — local simulator click helper.
 - `probe-plex-range-drop.sh` — simulator-only Plex download recoverability probe. It launches the DEBUG app in the worktree simulator with the range-drop URLProtocol enabled, using the simulator's signed-in app state and no token env file. Provide `LABSTREAM_PROBE_QUERY` or `LABSTREAM_PROBE_RATING_KEY`; logs go under `build/probes/plex-range-drop/`. Add `--keep-app-running` during iterative refactor work when you want the probe to leave the app alive after the observation window. The probe exits non-zero if logs show only item resolution/route selection without any transfer start or observation evidence.
 - `probe-jellyfin-download.sh` — simulator-only Jellyfin download probe. It launches the DEBUG app
@@ -24,6 +24,7 @@ Small repo utilities for local validation, live probes, simulator/worktree hygie
   sources, or start the optimize/convert/download lane, and writes logs under
   `build/probes/emby-download/`.
 - `deploy-to-device.sh` — signed build/install wrapper for the paired Apple Vision Pro. Mutates the device install and may replace another app with the same bundle id.
+- `deploy-mobile-to-device.sh` — signed build/install wrapper for a paired physical iPhone or iPad using the `LabstreamMobile` scheme. Set `IOS_DEVICE_ID` when more than one mobile device is paired.
 - `headset-evidence.sh` — read-only devicectl evidence collector for a paired Apple Vision Pro after a user-driven repro; writes local bundles under `build/headset-evidence/` and may contain private artifacts that must be redacted before sharing.
 
 ## Live probes

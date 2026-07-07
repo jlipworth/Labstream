@@ -358,6 +358,7 @@ struct LibraryGridView: View {
                                     }
                                     .cardLink()
                                     .id(index)
+                                    .videoCardContextMenu(for: item)
                                 } else {
                                     LibraryPlaceholderPoster()
                                         .id(index)

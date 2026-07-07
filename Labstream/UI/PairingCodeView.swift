@@ -19,14 +19,14 @@ struct PairingCodeCells: View {
                     .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
                     .frame(width: width, height: height)
                     .background(.thinMaterial, in: cellShape)
-                    .overlay(cellShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                    .overlay(cellShape.strokeBorder(.primary.opacity(0.10), lineWidth: 0.5))
             }
         }
         .padding(.vertical, DS.Space.xs)
     }
 }
 
-/// Shared "enter this code / waiting for authorization" screen used by headset-friendly
+/// Shared "enter this code / waiting for authorization" screen used by device-friendly
 /// backend pairing-code flows. Callers provide backend-specific instructions and fallback action.
 struct PairingCodeView<Header: View>: View {
     let code: String
@@ -68,7 +68,7 @@ struct PairingCodeView<Header: View>: View {
 
             if let fallbackTitle, let onFallback {
                 Button(fallbackTitle, action: onFallback)
-                    .buttonStyle(.bordered)
+                    .labstreamGlassButtonStyle()
             }
         }
     }

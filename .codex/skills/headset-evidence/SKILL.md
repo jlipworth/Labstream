@@ -1,5 +1,5 @@
 ---
-name: labstream-headset-evidence
+name: headset-evidence
 description: Gather a read-only Labstream evidence bundle from a paired Apple Vision Pro after the user reproduces a headset-only bug. Use before ad hoc sysdiagnose/unified-log attempts.
 ---
 

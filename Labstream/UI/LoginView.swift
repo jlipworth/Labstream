@@ -4,7 +4,7 @@ import PMSKit
 /// Sign-in screen. Drives the Plex PIN-OAuth flow via `AuthManager`:
 ///   1. "Sign in with Plex" creates a PIN and shows the linking code as the
 ///      primary state (#16): the user enters it at plex.tv/link from any device
-///      while `AuthManager` polls in the background. The in-headset web sheet
+///      while `AuthManager` polls in the background. The on-device web sheet
 ///      (`WebAuthSession` → `app.plex.tv/auth`) is NOT auto-opened — it would
 ///      steal focus from the code ~0.5s after it appears — and is instead
 ///      offered as an explicit button.
@@ -52,6 +52,14 @@ struct LoginView: View {
         .frame(maxWidth: 560)
         .background(LoginPanelBackground())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(iOS)
+        // The dark login panel was authored against the visionOS glass window. A bare
+        // iOS window is white, which reads as a gray slab floating in a void — give
+        // mobile a full-bleed brand backdrop and render the panel's materials and
+        // secondary text in dark mode to match.
+        .background(DS.Brand.iconPlateGradient.ignoresSafeArea())
+        .environment(\.colorScheme, .dark)
+        #endif
         .onChange(of: authManager.state) { _, newValue in
             switch newValue {
             case .failed(let message):
@@ -102,7 +110,7 @@ struct LoginView: View {
         case .awaitingAuthorization(let code, let url):
             // Linking-code-first (#16): the code is the primary state so the user
             // can finish auth from a phone/laptop at plex.tv/link. Polling runs in
-            // the background the whole time; the in-headset browser is opt-in.
+            // the background the whole time; opening the browser on this device is opt-in.
             PlexLinkCodeView(code: code) {
                 webAuth.start(url) { }
             }
@@ -248,7 +256,7 @@ struct LoginView: View {
         do {
             // Create the PIN and stop: the linking code becomes the primary UI and
             // polling is already running (#16). The web sheet only opens if the
-            // user explicitly asks for the in-headset path.
+            // user explicitly asks for the on-device path.
             _ = try await authManager.createPin()
             working = false
         } catch {
