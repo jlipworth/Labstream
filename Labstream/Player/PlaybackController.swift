@@ -344,9 +344,9 @@ final class PlaybackController {
     private lazy var audioSession = AudioSessionCoordinator(player: player)
 
     /// Passthrough to the audio-session coordinator's background-pause suppression. The iOS
-    /// player view points this at its PiP coordinator so an active Picture in Picture window
-    /// keeps playing when the app backgrounds (the coordinator otherwise pauses on
-    /// resign-active/background, which would freeze the PiP tile).
+    /// player view points this at its PiP/AirPlay state so externally rendered video keeps
+    /// playing when the app backgrounds (the coordinator otherwise pauses on
+    /// resign-active/background, which is correct for ordinary in-app video).
     var suppressBackgroundPause: (@MainActor () -> Bool)? {
         get { audioSession.shouldSuppressBackgroundPause }
         set { audioSession.shouldSuppressBackgroundPause = newValue }

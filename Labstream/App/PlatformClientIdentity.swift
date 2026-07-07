@@ -4,6 +4,7 @@ import PMSKit
 import UIKit
 #endif
 
+@MainActor
 enum PlatformClientIdentity {
     static var deviceName: String {
         #if os(visionOS)

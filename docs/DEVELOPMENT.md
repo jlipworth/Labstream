@@ -106,6 +106,8 @@ Everything else is deliberately device-local:
 
 Because the Plex token is the shared item, deleting it — a manual sign-out or a 401-triggered wipe —
 propagates sign-out to **all** devices, which matches how an account-level token actually dies.
+When a synced Plex token is successfully read, the app deletes any pre-sync device-local Plex token
+so a later synced/global sign-out cannot re-promote stale local credentials.
 
 Caveat for the simulator: simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot access the real
 Keychain, so `KeychainStore` falls back to a file store. iCloud sync therefore only manifests on real

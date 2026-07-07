@@ -201,12 +201,14 @@ scripts/worktree-sim.sh --platform ipad id
 If `install-hook` warns that `core.hooksPath` is set, Git will ignore the shared hook it
 just wrote; unset that config before relying on auto-clone behavior.
 
-**Agent rule:** after creating a worktree, run `setup`; when finishing/removing one, run
-`teardown` **before** `git worktree remove`, or run `closeout PATH` / `prune` immediately
-afterward. visionOS `setup` clones from the golden sim, which `simctl` can only do while
-the golden is **shut down**, so it briefly bounces your booted main sim — expect a ~10s
-blip in the main worktree's simulator when a new visionOS worktree sim is provisioned.
-iPad setup creates a fresh simulator from the newest available iOS runtime instead.
+**Agent rule:** after creating a worktree, run `setup`; when finishing/removing one,
+prefer `scripts/worktree-sim.sh closeout PATH` from any repo worktree, or run
+`scripts/worktree-sim.sh teardown --all` inside the linked worktree **before**
+`git worktree remove`. Use `prune` immediately afterward if removal already happened.
+visionOS `setup` clones from the golden sim, which `simctl` can only do while the golden
+is **shut down**, so it briefly bounces your booted main sim — expect a ~10s blip in the
+main worktree's simulator when a new visionOS worktree sim is provisioned. iPad setup
+creates a fresh simulator from the newest available iOS runtime instead.
 
 **Booted sims are NOT free — shut them down.** When parallelizing work across several
 worktrees (fanning out agents, many at a time), each linked worktree may boot its own
@@ -227,14 +229,14 @@ re-booted on demand and `setup` needs it shut down to clone anyway.
 Never call worktree cleanup done until the linked simulator is gone. Preferred flow:
 
 ```sh
-# Before removing a linked worktree:
+# Before removing a linked worktree that may own both visionOS and iPad simulators:
 cd <worktree>
-scripts/worktree-sim.sh teardown
+scripts/worktree-sim.sh teardown --all
 cd <main>
 git worktree remove <worktree>
 git branch -D <branch>
 
-# Safer one-command helper from any repo worktree:
+# Preferred one-command helper from any repo worktree:
 scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
