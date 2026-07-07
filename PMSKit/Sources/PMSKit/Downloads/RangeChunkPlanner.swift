@@ -29,11 +29,14 @@ public enum RangeChunkNext: Equatable, Sendable {
 public enum RangeTransferSegmentKind: String, Equatable, Sendable {
     /// Foreground/active app path: bounded slices give frequent durable checkpoints.
     case boundedCheckpoint
-    /// Off-head/background path: bounded slices still let `nsurlsessiond` own a
-    /// background task while capping non-durable temp progress between app wakeups.
+    /// Legacy off-head path: bounded slices let `nsurlsessiond` own a background task while
+    /// capping non-durable temp progress between app wakeups. No longer produced for new
+    /// segments (each wakeup feeds the OS resume rate limiter — #212); retained to classify
+    /// reattached tasks from older sessions.
     case backgroundCheckpoint
-    /// Legacy/fallback path: one open-ended remainder task. This is only appropriate when
-    /// callers deliberately accept all-or-nothing temp progress until task completion.
+    /// Off-head/background path (#212): one open-ended remainder task so `nsurlsessiond`
+    /// finishes the file without waking the app per chunk. Temp progress is non-durable until
+    /// completion; pause/failure hold it in URLSession resume data.
     case continuousRemainder
 }
 
@@ -60,8 +63,9 @@ public struct RangeTransferSegmentPlan: Equatable, Sendable {
 /// `URLSessionDownloadTask`, but a background task hands back its temp file only on completion —
 /// it cannot byte-append into our durable partial mid-flight. While active, we download bounded
 /// `Range` chunks and append each finished chunk into the durable partial. When the app is likely
-/// going off-head, the next plan uses bounded background chunks so `nsurlsessiond` still owns each
-/// transfer segment, but the durable partial advances periodically instead of waiting for EOF.
+/// going off-head, the next plan is one open-ended continuous remainder (#212) so `nsurlsessiond`
+/// finishes the file without waking the app per chunk; pause/failure hold the remainder's
+/// non-durable temp in URLSession resume data.
 /// The partial remains the real checkpoint (`DownloadStore.reconcile`'s `hasAppRangeCheckpoint`)
 /// across force-quit/relaunch: if an in-flight segment is lost, only bytes already appended to that
 /// partial are durable.

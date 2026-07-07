@@ -242,6 +242,7 @@ extension DownloadManager {
                     itemId: itemId, mediaSourceId: decision.mediaSourceId,
                     playSessionId: decision.playSessionId,
                     videoCodec: remuxEligibility.videoCodec ?? "h264",
+                    audioCodec: remuxEligibility.audioCodec,
                     copyAudio: remuxEligibility.copiesAudio,
                     audioBitrate: 192_000)
                 expectedBytes = decision.size

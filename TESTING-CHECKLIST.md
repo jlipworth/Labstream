@@ -180,6 +180,13 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [x] **Subtitle language names** ✅ verified — Subtitles tab lists the muxed renditions by name
       ("CC (SDH)") plus Off, selection applies live. (Only the PMS-selected tracks are muxed into
       the stream, so the list is short by design.) Cross-session persistence not yet re-checked.
+- [ ] **Subtitles Off means off (all backends)** — with the picker showing Off (default state,
+      never touched), play an item whose subtitle stream is selected server-side (e.g. picked in
+      Plex Web, or a foreign-audio item on an Emby profile with subtitle mode Smart/Default): NO
+      subtitles render, and on Plex a direct-play-eligible item is NOT silently video-transcoded
+      by a burn (Stats shows copy/direct). Headless leg: `scripts/live-subtitle-off-probe.sh`
+      (part-selection dump + copy-lane decision flip). Then pick a subtitle in the player →
+      it renders; pick Off again → gone, and next item starts with subtitles off.
 - [ ] **Skip Intro / Skip Credits** — on an episode with server-detected markers, the bottom-trailing
       skip button appears during the window and seeks past it.
 - [ ] **Up Next + autoplay** — near an episode's end, the Up Next card shows the next episode +

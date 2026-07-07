@@ -166,29 +166,9 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
         playbackSourceMetadata()
     }
 
-    func preferredCompatibleAudioStreamIndexForCappedTranscode() -> Int? {
-        let audioStreams = mediaStreams.filter { $0.type == "Audio" }
-        guard !audioStreams.isEmpty else { return nil }
-
-        let current = audioStreams.first { $0.isDefault == true } ?? audioStreams.first
-        if let current, current.isLowRiskTranscodeAudio {
-            return nil
-        }
-
-        let compatible = audioStreams.filter(\.isLowRiskTranscodeAudio)
-        guard !compatible.isEmpty else { return nil }
-
-        let currentLanguage = current?.language?.lowercased()
-        let sameLanguage = compatible.filter { stream in
-            guard let currentLanguage, !currentLanguage.isEmpty else { return false }
-            return stream.language?.lowercased() == currentLanguage
-        }
-
-        return (sameLanguage.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
-                sameLanguage.first ??
-                compatible.first { !$0.looksLikeCommentaryOrDescriptiveAudio } ??
-                compatible.first)?.index
-    }
+    /// Shared steering logic lives on `[MediaBrowserItemMediaStreamDto]`
+    /// (`preferredCompatibleAudioStreamIndexForCappedTranscode`) — one implementation for
+    /// Jellyfin and Emby.
 }
 
 public struct JellyfinDownloadPlaybackDecision: Sendable, Equatable {
@@ -356,7 +336,7 @@ public enum JellyfinPlayback {
 
         if let transcodingURL = source.transcodingURL, !transcodingURL.isEmpty {
             let resolvedAudioStreamIndex = audioStreamIndex ??
-                (audioBitrate == nil ? nil : source.preferredCompatibleAudioStreamIndexForCappedTranscode())
+                (audioBitrate == nil ? nil : source.mediaStreams.preferredCompatibleAudioStreamIndexForCappedTranscode())
             // Keep Jellyfin's generated HLS session URL intact. AVFoundation does not reliably
             // propagate custom HTTP headers from the master playlist request to child playlists
             // and segments; when the ApiKey is stripped, the master can load via headers but the
@@ -636,7 +616,11 @@ public enum JellyfinPlayback {
                     // every 4K HEVC MKV re-encodes to h264 at source bitrate, which live
                     // testing showed starving AVPlayer into -12889 (GH #196 retest).
                     "VideoCodec": "h264,hevc",
-                    "AudioCodec": "aac",
+                    // aac,ac3 mirrors the Emby streaming profile: ac3's presence lets an
+                    // uncapped transcode keep 5.1 surround (audio copy or ac3 re-encode)
+                    // instead of forcing an AAC downmix. Capped rungs still force AAC via
+                    // the appendTranscodeOverrides URL params.
+                    "AudioCodec": "aac,ac3",
                     "Context": "Streaming",
                     "MinSegments": 2,
                     "BreakOnNonKeyFrames": false,

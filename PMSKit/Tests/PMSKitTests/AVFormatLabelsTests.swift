@@ -50,6 +50,9 @@ struct AVFormatLabelsAudioTests {
     @Test func channelLayouts() {
         #expect(AVFormatLabels.channelLayoutName(1) == "Mono")
         #expect(AVFormatLabels.channelLayoutName(2) == "2.0")
+        #expect(AVFormatLabels.channelLayoutName(3) == "2.1")
+        #expect(AVFormatLabels.channelLayoutName(4) == "4.0")   // quad, not "3.1"
+        #expect(AVFormatLabels.channelLayoutName(5) == "5.0")   // not "4.1"
         #expect(AVFormatLabels.channelLayoutName(6) == "5.1")
         #expect(AVFormatLabels.channelLayoutName(8) == "7.1")
         #expect(AVFormatLabels.channelLayoutName(7) == "6.1")
