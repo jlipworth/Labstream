@@ -23,6 +23,17 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [x] **Sign-in linking code (GH #16, closed)** ✅ verified — login shows a typeable 4-char code for
       plex.tv/link plus an "Open Plex sign-in in this headset instead" fallback; consent page says
       **Labstream**. Both paths land in the library.
+- [ ] **Plex cross-device sign-in via iCloud Keychain (DEVICE-ONLY)** — on two real devices signed
+      into the same iCloud account with iCloud Keychain enabled (see `docs/DEVELOPMENT.md` §Credentials
+      and iCloud Keychain sync): sign in to Plex on device A, then launch on device B and confirm it
+      is signed in without re-entering the linking code. The server's session/device list must still
+      show A and B as two distinct devices (independent `X-Plex-Client-Identifier` / device name).
+- [ ] **Plex sign-out propagates everywhere (DEVICE-ONLY)** — with both devices signed in, sign out
+      (or trigger a 401 wipe) on one device and confirm the other returns to the sign-in screen on its
+      next launch.
+- [ ] **Jellyfin/Emby remain per-device (DEVICE-ONLY)** — signing in to Jellyfin or Emby on device A
+      does NOT sign device B in; device B still requires its own Quick Connect / Emby Connect sign-in,
+      and both devices appear as separate sessions on the server.
 - [ ] **Emby Connect PIN sign-in (GH #72)** — select Emby, choose "Sign in with Emby Connect,"
       confirm the code at `emby.media/pin.html`, and verify the app lands in the Emby library
       with the exchanged local server token. If the account has multiple linked servers, verify

@@ -83,6 +83,37 @@ scripts/deploy-to-device.sh --no-build # reinstall the last build
 
 The development build uses the same bundle identifier as the App Store identity, so installing a local build can replace another installed build and its app state.
 
+## Credentials and iCloud Keychain sync
+
+The app persists its long-lived secrets in the Keychain (`Labstream/Auth/KeychainStore.swift`).
+Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex account token**.
+Because all three variants (visionOS, iPhone, iPad) share the `com.jlipworth.Labstream` bundle id and
+Keychain service string, a Plex sign-in on any one device signs the others in on their next launch.
+
+Everything else is deliberately device-local:
+
+- **Plex `clientIdentifier`** — generated once per install and never synced. Combined with a distinct
+  `X-Plex-Device-Name` (see `Labstream/App/PlatformClientIdentity.swift`), every device presents a
+  unique `X-Plex-Client-Identifier`, so the server still sees truly independent, per-device-identifiable
+  sessions even though the token is shared. Syncing it would merge all devices into one server-side
+  client identity, breaking per-device session listings and transcode bookkeeping.
+- **Jellyfin/Emby access tokens** — those servers mint the access token bound to the device id
+  presented at authentication (token and device are one server-side record). Syncing the token would
+  make every physical device impersonate a single server-side device, causing session collisions,
+  merged played-on attribution, and broken remote-control targeting. Jellyfin/Emby therefore still
+  require a per-device sign-in; Quick Connect / Emby Connect keeps that to a short-code step.
+- **Backend/server selection** — a per-device preference, not a credential.
+
+Because the Plex token is the shared item, deleting it — a manual sign-out or a 401-triggered wipe —
+propagates sign-out to **all** devices, which matches how an account-level token actually dies.
+
+Caveat for the simulator: simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot access the real
+Keychain, so `KeychainStore` falls back to a file store. iCloud sync therefore only manifests on real
+devices with iCloud Keychain enabled; you cannot observe cross-device sign-in in the simulator.
+
+The type doc comment at the top of `KeychainStore.swift` is the source of truth for this behavior; keep
+it and this section in agreement.
+
 ## Logs
 
 ```sh
