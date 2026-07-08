@@ -154,7 +154,7 @@ struct CustomPlayerChrome: View {
             VStack {
                 Spacer()
 
-                if let marker = controller.skipMarker.active {
+                if selectedMenu == nil, let marker = controller.skipMarker.active {
                     HStack {
                         Spacer()
                         Button {
@@ -169,13 +169,13 @@ struct CustomPlayerChrome: View {
                     .transition(.opacity)
                 }
 
-                if controller.upNext.isShown, let next = controller.upNext.nextItem {
+                if selectedMenu == nil, controller.upNext.isShown, let next = controller.upNext.nextItem {
                     upNextCard(next)
                         .padding(.horizontal, isCompactMobileChrome ? 14 : 34)
                         .padding(.bottom, 14)
                 }
 
-                if shouldShowChrome {
+                if shouldShowChrome, selectedMenu == nil {
                     controls
                         .padding(.horizontal, isCompactMobileChrome ? 14 : 34)
                         .padding(.bottom, isCompactMobileChrome ? 18 : 28)
@@ -192,13 +192,11 @@ struct CustomPlayerChrome: View {
                                                 menuState: menuState,
                                                 widthOverride: adaptiveMenuWidth(for: selectedMenu,
                                                                                  available: geo.size.width),
-                                                maxPopoverHeight: isCompactMobileChrome
-                                                    ? max(160, geo.size.height - 228 - 16)
-                                                    : nil,
+                                                maxPopoverHeight: menuPopoverHeightLimit(availableHeight: geo.size.height),
                                                 onClose: { closeMenu() })
                             .frame(maxWidth: .infinity, alignment: selectedMenu.popoverAlignment)
-                            .padding(.horizontal, isCompactMobileChrome ? 16 : 54)
-                            .padding(.bottom, isCompactMobileChrome ? 228 : 176)
+                            .padding(.horizontal, menuHorizontalInset)
+                            .padding(.bottom, menuBottomClearance)
                     }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -409,51 +407,20 @@ struct CustomPlayerChrome: View {
     private var controls: some View {
         if isCompactMobileChrome {
             compactControls
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         } else {
             regularControls
-                .padding(.horizontal, 22)
-                .padding(.vertical, 20)
-                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
     }
 
     private var regularControls: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 10) {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    // Give the title a little more room than before, but keep it capped so the
-                    // fixed-size menu pills remain legible/tappable instead of getting squeezed.
-                    .frame(minWidth: 220, maxWidth: 560, alignment: .leading)
-                    .layoutPriority(1)
-                    .accessibilityLabel(title)
-
-                Spacer(minLength: 8)
-
-                cinemaButton
-                    .fixedSize(horizontal: true, vertical: false)
-
-                cinemaScreenButton
-                    .fixedSize(horizontal: true, vertical: false)
-
-                realityTheaterDeveloperButton
-                    .fixedSize(horizontal: true, vertical: false)
-
-                #if os(visionOS)
-                menuStrip
-                    .fixedSize(horizontal: true, vertical: false)
-                #else
-                // No fixedSize on iOS: the strip's ViewThatFits needs the row's REAL
-                // remaining width to pick labeled pills vs icon circles — an unbounded
-                // proposal would always choose the labeled variant and overflow portrait.
-                menuStrip
-                #endif
-            }
+            regularControlsHeader
 
             if scrubState.isDragging, trickPlayProvider != nil {
                 trickPlayPreview
@@ -483,6 +450,72 @@ struct CustomPlayerChrome: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var regularControlsHeader: some View {
+        #if os(iOS)
+        // On iPad, the full labeled menu strip is more important than reserving a wide title
+        // column. Try the one-row system-player shape first, then fall back to a two-row header
+        // before letting the pills clip off the right edge.
+        ViewThatFits(in: .horizontal) {
+            regularIOSHeaderInline
+            regularIOSHeaderStacked
+        }
+        #else
+        HStack(alignment: .center, spacing: 10) {
+            regularTitleLabel
+
+            Spacer(minLength: 6)
+
+            cinemaButton
+                .fixedSize(horizontal: true, vertical: false)
+
+            cinemaScreenButton
+                .fixedSize(horizontal: true, vertical: false)
+
+            realityTheaterDeveloperButton
+                .fixedSize(horizontal: true, vertical: false)
+
+            menuStrip
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        #endif
+    }
+
+    private var regularTitleLabel: some View {
+        Text(title)
+            .font(.headline)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            // Keep the title present, but do not let it reserve half the row on iPad:
+            // the one-tap menu pills are the interactive controls and need the width.
+            .frame(minWidth: 120, idealWidth: 260, maxWidth: 360, alignment: .leading)
+            .accessibilityLabel(title)
+    }
+
+    #if os(iOS)
+    private var regularIOSHeaderInline: some View {
+        HStack(alignment: .center, spacing: 10) {
+            regularTitleLabel
+
+            Spacer(minLength: 6)
+
+            labeledMenuStrip
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .layoutPriority(2)
+        }
+    }
+
+    private var regularIOSHeaderStacked: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            regularTitleLabel
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            menuStrip
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+    #endif
 
     private var compactControls: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -795,6 +828,7 @@ struct CustomPlayerChrome: View {
         ScrollView(.horizontal, showsIndicators: false) {
             labeledMenuStrip
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
     }
     #endif
@@ -986,15 +1020,32 @@ struct CustomPlayerChrome: View {
     /// player width and stay centered. A fixed 1120-pt width looked right in the windowed player but
     /// narrow and right-shifted on the much wider Cinema canvas, so size it to the available width
     /// (capped) to keep the same proportion in both. On a compact phone the small fixed-width menus
-    /// (Stats 470, Subtitles/Audio 390, Quality 340) plus the popover's +44 frame also overflow a
+    /// (Stats 470, Subtitles/Audio 390, Quality 340) plus the popover's +36 frame also overflow a
     /// 390-pt screen, so clamp every menu to the available width there. Returns nil for menus that
     /// keep their authored fixed size (regular width / visionOS).
+    private var menuHorizontalInset: CGFloat {
+        isCompactMobileChrome ? 16 : 54
+    }
+
+    /// Keep floating menus comfortably above the safe area. Bottom transport chrome is hidden while
+    /// a menu is open, so this is a modest edge clearance rather than another full chrome height.
+    private var menuBottomClearance: CGFloat {
+        isCompactMobileChrome ? 24 : 34
+    }
+
+    private var menuTopClearance: CGFloat {
+        isCompactMobileChrome ? 36 : 48
+    }
+
+    private func menuPopoverHeightLimit(availableHeight: CGFloat) -> CGFloat {
+        max(160, availableHeight - menuBottomClearance - menuTopClearance)
+    }
+
     private func adaptiveMenuWidth(for menu: CustomPlayerMenuKind, available: CGFloat) -> CGFloat? {
         guard available > 0 else { return nil }
-        // Footprint outside the content: the popover's internal +44 frame and the horizontal
-        // padding applied to the popover on each side (16 pt compact, 54 pt regular).
-        let pad: CGFloat = isCompactMobileChrome ? 16 : 54
-        let chrome: CGFloat = 44 + pad * 2
+        // Footprint outside the content: the popover's internal +36 frame and the horizontal
+        // padding applied to the popover on each side.
+        let chrome: CGFloat = 36 + menuHorizontalInset * 2
         if menu == .chapters {
             return min(1680, max(isCompactMobileChrome ? 0 : 720, available - chrome))
         }
@@ -1150,28 +1201,35 @@ private struct CustomPlayerMenuPopover: View {
     /// width so a horizontal filmstrip can fill the available player width instead of sitting narrow
     /// on the wider Cinema canvas — and so the small menus stop overflowing a 390-pt phone.
     var widthOverride: CGFloat? = nil
-    /// When set (compact phone), caps the popover's overall height so its header/close button stays
-    /// on-screen in landscape, where the fixed authored heights would otherwise push the top off the
-    /// top edge. Each menu's content already scrolls internally, so the reduced height just scrolls.
+    /// Caps the popover's overall height so its header/close button stays on-screen when the
+    /// player is short (phone landscape, iPad split view). Each menu's content already scrolls
+    /// internally, so the reduced height just scrolls.
     var maxPopoverHeight: CGFloat? = nil
     let onClose: () -> Void
 
     var body: some View {
         let base = menu.popoverSize
         let size = CGSize(width: widthOverride ?? base.width, height: clampedContentHeight(base: base.height))
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Label(menu.title, systemImage: menu.systemImage)
                     .font(.title3.weight(.semibold))
+                    .frame(maxHeight: 44, alignment: .center)
                 Spacer()
                 Button(action: onClose) {
                     Label("Close menu", systemImage: "xmark")
                         .labelStyle(.iconOnly)
                         .frame(width: 44, height: 44)
                 }
+                #if os(iOS)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .tint(.primary)
+                #else
                 .buttonStyle(.bordered)
+                #endif
             }
-            .frame(width: size.width)
+            .frame(width: size.width, height: 44, alignment: .center)
 
             Divider()
                 .opacity(0.35)
@@ -1180,18 +1238,19 @@ private struct CustomPlayerMenuPopover: View {
             menuContent
                 .frame(width: size.width, height: size.height, alignment: .topLeading)
         }
-        .padding(22)
-        .frame(width: size.width + 44, alignment: .leading)
-        .labstreamOverlayPlatter(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .shadow(radius: 24)
+        .padding(18)
+        .frame(width: size.width + 36, alignment: .leading)
+        .labstreamOverlayPlatter(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(radius: 18)
     }
 
     /// Shrinks the content frame to fit `maxPopoverHeight` when the popover is height-constrained
-    /// (compact phone in landscape). Chrome = outer padding (22×2), header (~36), divider, and the
-    /// VStack's inter-row spacing (14×2). Unset → the authored height passes through unchanged.
+    /// (small mobile heights / iPad split view). Chrome = outer padding (18×2), header (44),
+    /// divider, and the VStack's inter-row spacing (12×2). Unset → the authored height passes
+    /// through unchanged.
     private func clampedContentHeight(base: CGFloat) -> CGFloat {
         guard let maxPopoverHeight else { return base }
-        let chrome: CGFloat = 22 * 2 + 36 + 14 * 2 + 1
+        let chrome: CGFloat = 18 * 2 + 44 + 12 * 2 + 1
         return min(base, max(120, maxPopoverHeight - chrome))
     }
 
@@ -1457,7 +1516,7 @@ struct CustomTransportStatusOverlay: View {
                     Label(isPausedBuffering ? "Play when ready" : "Pause while loading",
                           systemImage: isPausedBuffering ? "play.fill" : "pause.fill")
                 }
-                .labstreamGlassProminentButtonStyle()
+                .playerTransportProminentButtonStyle()
                 .controlSize(.small)
             case .reconnecting:
                 if let onClose {
@@ -1474,7 +1533,7 @@ struct CustomTransportStatusOverlay: View {
                         Label("Retry", systemImage: "arrow.clockwise")
                             .frame(minWidth: 160)
                     }
-                    .labstreamGlassProminentButtonStyle()
+                    .playerTransportProminentButtonStyle()
                     if let onClose {
                         Button(action: onClose) {
                             Text("Close")
@@ -1499,5 +1558,21 @@ struct CustomTransportStatusOverlay: View {
     private var isPausedBuffering: Bool {
         if case .pausedBuffering = status { return true }
         return false
+    }
+}
+
+private extension View {
+    /// Player status CTAs live under the iOS player-wide `.tint(.white)`. Plainly inheriting that
+    /// into `.glassProminent` can produce a low-contrast white-on-white buffering action, so pin the
+    /// label to dark text only for these high-contrast monochrome player status buttons.
+    @ViewBuilder
+    func playerTransportProminentButtonStyle() -> some View {
+        #if os(visionOS)
+        self.labstreamGlassProminentButtonStyle()
+        #else
+        self.buttonStyle(.glassProminent)
+            .tint(.white)
+            .foregroundStyle(.black)
+        #endif
     }
 }
