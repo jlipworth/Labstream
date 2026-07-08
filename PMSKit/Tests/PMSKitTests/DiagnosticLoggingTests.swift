@@ -138,6 +138,51 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertTrue(report.contains("\"media_title\":\"[omitted]\""))
     }
 
+    func testReportRenderingIncludesMacIdentityAndDownloadContext() {
+        let context = DiagnosticReportContext(product: "Labstream",
+                                              appVersion: "1.0",
+                                              appBuild: "42",
+                                              operatingSystem: "macOS 26.5",
+                                              deviceName: "Mac",
+                                              platform: "macOS",
+                                              bundleIdentifier: "com.jlipworth.Labstream.dev.issue-228-macos",
+                                              keychainService: "com.jlipworth.Labstream.dev.issue-228-macos",
+                                              sandboxContainerIdentifier: "com.jlipworth.Labstream.dev.issue-228-macos",
+                                              backend: "Plex",
+                                              server: "Plex Media Server 1.40",
+                                              connectionScheme: "https",
+                                              selectedQuality: "Home: 8 Mbps; Remote: 4 Mbps",
+                                              adaptiveBitrateEnabled: true,
+                                              backgroundDownloadSessionIdentifier: "com.jlipworth.Labstream.dev.issue-228-macos.downloads.background",
+                                              downloadStorageLocation: "app-container/Application Support/Labstream/Downloads",
+                                              downloadRecordCount: 3,
+                                              activeDownloadCount: 1,
+                                              completeDownloadCount: 2,
+                                              downloadQueuePaused: false,
+                                              downloadReferencedBytes: 123_456_789,
+                                              downloadDirectoryBytes: 234_567_890,
+                                              downloadUnreferencedBytes: 111_111_111,
+                                              downloadOrphanCandidateCount: 4,
+                                              downloadOrphanCandidateBytes: 111_111_111,
+                                              loggingEnabled: true)
+
+        let report = DiagnosticReportRenderer.render(context: context,
+                                                     events: [],
+                                                     generatedAt: Date(timeIntervalSince1970: 1_700_000_030))
+
+        XCTAssertTrue(report.contains("- Platform: macOS"))
+        XCTAssertTrue(report.contains("- Bundle ID: com.jlipworth.Labstream.dev.issue-228-macos"))
+        XCTAssertTrue(report.contains("- Keychain service: com.jlipworth.Labstream.dev.issue-228-macos"))
+        XCTAssertTrue(report.contains("- Sandbox/container identity: com.jlipworth.Labstream.dev.issue-228-macos"))
+        XCTAssertTrue(report.contains("Downloads"))
+        XCTAssertTrue(report.contains("- Background session: com.jlipworth.Labstream.dev.issue-228-macos.downloads.background"))
+        XCTAssertTrue(report.contains("- Storage location: app-container/Application Support/Labstream/Downloads"))
+        XCTAssertTrue(report.contains("- Queue paused: no"))
+        XCTAssertTrue(report.contains("- Records: 3 total, 1 active, 2 complete"))
+        XCTAssertFalse(report.contains("/Users/"))
+        XCTAssertFalse(report.contains("Library/Containers"))
+    }
+
     func testReportSnapshotUsesLatestSourceFieldsEvenWhenEventsAreHidden() {
         let olderSnapshot = DiagnosticEvent(timestamp: Date(timeIntervalSince1970: 1_700_000_000),
                                             category: .playback,

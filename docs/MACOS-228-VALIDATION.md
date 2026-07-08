@@ -15,6 +15,7 @@ This performs:
 - `git diff --check`
 - conflict-marker scan across source/docs/scripts/config
 - Mac app icon asset slot/file/dimension validation
+- Mac identity wiring static checks for bundle id, keychain service, background download session id, and diagnostic context
 - `LabstreamMac` host Debug build
 - `Labstream` visionOS simulator build using this worktree's visionOS simulator
 - `LabstreamMobile` iOS simulator build using this worktree's iPhone simulator
@@ -27,7 +28,7 @@ Logs are written to:
 build/validation/macos-228/
 ```
 
-These checks prove the branch is syntactically clean, shared-code compile-safe, that the Mac app can be staged/launched under an isolated dev bundle id, and that the diagnostics report renderer/redaction coverage still passes its focused tests. They do **not** prove real auth, subjective UI quality, system media-key runtime behavior, or live download robustness.
+These checks prove the branch is syntactically clean, shared-code compile-safe, that the Mac app can be staged/launched under an isolated dev bundle id, that key Mac identity wiring is still present, and that the diagnostics report renderer/redaction coverage still passes its focused tests. They do **not** prove real auth, subjective UI quality, system media-key runtime behavior, or live download robustness.
 
 ## User/manual validation still required
 

@@ -113,9 +113,9 @@ public enum DiagnosticReportRenderer {
             || context.keychainService != nil
             || context.sandboxContainerIdentifier != nil {
             lines.append("- Platform: \(redact(context.platform ?? "unknown"))")
-            lines.append("- Bundle ID: \(redact(context.bundleIdentifier ?? "unknown"))")
-            lines.append("- Keychain service: \(redact(context.keychainService ?? "unknown"))")
-            lines.append("- Sandbox/container identity: \(redact(context.sandboxContainerIdentifier ?? "unknown"))")
+            lines.append("- Bundle ID: \(safeIdentity(context.bundleIdentifier))")
+            lines.append("- Keychain service: \(safeIdentity(context.keychainService))")
+            lines.append("- Sandbox/container identity: \(safeIdentity(context.sandboxContainerIdentifier))")
         }
         lines.append("- Backend: \(redact(context.backend))")
         if let server = context.server, !server.isEmpty {
@@ -135,7 +135,7 @@ public enum DiagnosticReportRenderer {
             || context.backgroundDownloadSessionIdentifier != nil {
             lines.append("")
             lines.append("Downloads")
-            lines.append("- Background session: \(redact(context.backgroundDownloadSessionIdentifier ?? "unknown"))")
+            lines.append("- Background session: \(safeIdentity(context.backgroundDownloadSessionIdentifier))")
             lines.append("- Storage location: \(redact(context.downloadStorageLocation ?? "unknown"))")
             lines.append("- Queue paused: \(context.downloadQueuePaused.map { $0 ? "yes" : "no" } ?? "unknown")")
             lines.append("- Records: \(context.downloadRecordCount ?? 0) total, \(context.activeDownloadCount ?? 0) active, \(context.completeDownloadCount ?? 0) complete")
@@ -184,5 +184,9 @@ public enum DiagnosticReportRenderer {
 
     private static func redact(_ value: String) -> String {
         DiagnosticRedactor.redact(value)
+    }
+
+    private static func safeIdentity(_ value: String?) -> String {
+        DiagnosticRedactor.safeLogToken(value)
     }
 }
