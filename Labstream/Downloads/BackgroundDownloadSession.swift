@@ -109,6 +109,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private static let playbackValidationLimiter = DownloadPlaybackValidationLimiter()
     static let rangeChunkSize = 64 * 1_024 * 1_024
     static let backgroundRangeChunkSize = 1_024 * 1_024 * 1_024
+    /// Closed Range checkpoint tasks should finish at their planned segment size. Give URLSession a
+    /// small accounting cushion, then cancel/retry from the durable checkpoint rather than letting a
+    /// broken "64MB" request hoard a multi-GB temp file while the row stays pinned at 0–1%.
+    private static let rangeSegmentOverrunGraceBytes = 1 * 1_024 * 1_024
     private let rangeChunkPlanner = RangeChunkPlanner(
         chunkSize: BackgroundDownloadSession.rangeChunkSize,
         backgroundChunkSize: BackgroundDownloadSession.backgroundRangeChunkSize)
@@ -1616,6 +1620,38 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "total_bytes": .int(rangeEntry.baseOffset + chunkBytesWritten),
                     "reason": .label("durable_checkpoint_ahead"),
                 ])
+                return
+            }
+            let expectedSegmentBytes = expectedRangeSegmentBytes(entry: rangeEntry)
+            if RangeTransferHTTPPolicy.isDurableSegmentOverrun(
+                segmentKind: rangeEntry.segmentKind,
+                chunkBytesWritten: chunkBytesWritten,
+                expectedSegmentBytes: expectedSegmentBytes,
+                graceBytes: Self.rangeSegmentOverrunGraceBytes) {
+                lock.lock()
+                rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
+                supersededRangeTaskIdentifiers.insert(downloadTask.taskIdentifier)
+                loggedProgressMilestones.removeValue(forKey: downloadTask.taskIdentifier)
+                lastRangeProgressDiagnostic.removeValue(forKey: downloadTask.taskIdentifier)
+                lock.unlock()
+                downloadTask.cancel()
+                let httpStatus = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? -1
+                AppDiagnostics.record(.downloads, "downloads.range_segment_overrun_cancelled", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "task_id": .int(downloadTask.taskIdentifier),
+                    "segment_kind": .label(rangeEntry.segmentKind.rawValue),
+                    "base_offset": .int(rangeEntry.baseOffset),
+                    "chunk_bytes": .int(chunkBytesWritten),
+                    "expected_segment_bytes": .int(expectedSegmentBytes ?? -1),
+                    "durable_bytes": .int(durableBytes),
+                    "http_status": .int(httpStatus),
+                ])
+                if !retryRangeOffsetMismatch(entry: rangeEntry, durableBytes: durableBytes, serverOffset: nil) {
+                    store.setStatus(ratingKey: rangeEntry.ratingKey, .failed)
+                    onError?(rangeEntry.ratingKey, .transferFailed(
+                        "The server returned more bytes than the requested download checkpoint. Retry to continue."))
+                    onChange?()
+                }
                 return
             }
             lock.lock()
