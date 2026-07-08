@@ -428,6 +428,25 @@ final class PlaybackController {
     /// Resume target (ms) for the current item, retained so the status observer can do a
     /// client-side seek fallback if PMS's `#EXT-X-START` priming didn't land (P2 #9).
     private var pendingResumeMs: Int?
+    private var pendingResumeUpdatedAt: TimeInterval?
+    private var pendingResumeSource: String?
+    /// True when a near-zero `pendingResumeMs` came from explicit user/controller intent
+    /// (seek/restart target), not from a just-attached AVPlayerItem briefly reporting 0.
+    private var pendingResumeAllowsNearZero = false
+
+    /// Last playhead that came from a trustworthy live clock or explicit user/restart target.
+    /// Quality/audio/retry restarts use this as a guard against AVPlayer's transient 0 while an
+    /// item is detached or a replacement HLS item has not landed yet.
+    private var lastTrustworthyPlaybackMs: Int?
+    private var lastTrustworthyPlaybackUpdatedAt: TimeInterval?
+    private var lastTrustworthyPlaybackSource: String?
+    private var lastTrustworthyPlaybackAllowsNearZero = false
+
+    /// AVPlayer often reports exactly/near 0 while a new item is being attached even though the
+    /// server has been primed at a later offset. Treat 0..1.5s as a suspicious "near start"
+    /// snapshot only when we have better evidence of prior progress.
+    private static let transientZeroPlayheadThresholdMs = 1500
+
     /// One-shot guard for a diagnostic that catches the user-visible desync where the HLS item
     /// restarts near zero but the chrome keeps showing a stale resume/seek target.
     private var didLogResumeClockDesync = false
@@ -557,6 +576,9 @@ final class PlaybackController {
     /// stay pinned to that stale value.
     var currentResumeMs: Int {
         if let live = livePlaybackClockMs {
+            rememberTrustworthyPlaybackPosition(live,
+                                                source: "current_resume_live",
+                                                allowsNearZero: false)
             noteResumeClockDesyncIfNeeded(liveMs: live)
             return live
         }
@@ -572,13 +594,187 @@ final class PlaybackController {
     /// temporarily show the pending resume target. After `.playing` / observed playback, zero is a
     /// real clock value and must win over stale resume state.
     private var livePlaybackClockMs: Int? {
-        let secs = player.currentTime().seconds
-        guard secs.isFinite else { return nil }
-        let ms = max(0, Int((secs * 1000).rounded()))
+        guard let ms = rawPlayerClockMs else { return nil }
+        let secs = Double(ms) / 1000.0
         if secs > 0 || hasObservedPlayback || currentTimeControlStatus == .playing {
             return ms
         }
         return nil
+    }
+
+    private var rawPlayerClockMs: Int? {
+        let secs = player.currentTime().seconds
+        guard secs.isFinite else { return nil }
+        return max(0, Int((secs * 1000).rounded()))
+    }
+
+    private func setPendingResumeMs(_ ms: Int?,
+                                    source: String,
+                                    allowsNearZero: Bool = false) {
+        let preservesExplicitNearZero = ms != nil
+            && pendingResumeMs == ms
+            && pendingResumeAllowsNearZero
+        pendingResumeMs = ms
+        pendingResumeUpdatedAt = ProcessInfo.processInfo.systemUptime
+        pendingResumeSource = source
+        pendingResumeAllowsNearZero = ms != nil && (allowsNearZero || preservesExplicitNearZero)
+    }
+
+    private func rememberTrustworthyPlaybackPosition(_ ms: Int,
+                                                     source: String,
+                                                     allowsNearZero: Bool = false) {
+        let clamped = max(0, ms)
+        if clamped <= Self.transientZeroPlayheadThresholdMs,
+           !allowsNearZero,
+           isTransientZeroComparedToKnownPlayhead(clamped) {
+            return
+        }
+        lastTrustworthyPlaybackMs = clamped
+        lastTrustworthyPlaybackUpdatedAt = ProcessInfo.processInfo.systemUptime
+        lastTrustworthyPlaybackSource = source
+        lastTrustworthyPlaybackAllowsNearZero = allowsNearZero
+    }
+
+    private func isTransientZeroComparedToKnownPlayhead(_ ms: Int) -> Bool {
+        guard ms <= Self.transientZeroPlayheadThresholdMs else { return false }
+        // Explicit near-start intent wins: if the user/controller just asked for 0:00, do not
+        // resurrect an older non-zero playhead.
+        if isSeeking,
+           let seekHoldTargetMs,
+           seekHoldTargetMs <= Self.transientZeroPlayheadThresholdMs {
+            return false
+        }
+        if pendingResumeAllowsNearZero,
+           let pendingResumeMs,
+           pendingResumeMs <= Self.transientZeroPlayheadThresholdMs {
+            return false
+        }
+        if lastTrustworthyPlaybackAllowsNearZero,
+           let lastTrustworthyPlaybackMs,
+           lastTrustworthyPlaybackMs <= Self.transientZeroPlayheadThresholdMs {
+            return false
+        }
+
+        let meaningfulKnown = [
+            pendingResumeMs,
+            lastTrustworthyPlaybackMs,
+            item.viewOffset,
+        ].compactMap { $0 }.max() ?? 0
+        return meaningfulKnown > Self.transientZeroPlayheadThresholdMs
+    }
+
+    private func shouldUseLivePlayheadForRestart(_ ms: Int) -> Bool {
+        ms > Self.transientZeroPlayheadThresholdMs
+            || !isTransientZeroComparedToKnownPlayhead(ms)
+    }
+
+    private struct PlayheadSnapshot {
+        let positionMs: Int
+        let source: String
+        let rawLiveMs: Int?
+        let pendingMs: Int?
+        let pendingSource: String?
+        let lastTrustworthyMs: Int?
+        let lastTrustworthySource: String?
+        let suppressedTransientZero: Bool
+        let hasCurrentItem: Bool
+        let itemPreparationInProgress: Bool
+        let timeControlStatusLabel: String
+
+        func diagnosticFields() -> [String: DiagnosticFieldValue] {
+            [
+                "playhead_snapshot_source": .label(source),
+                "raw_live_position": .millisecondsBucket(rawLiveMs),
+                "pending_resume": .millisecondsBucket(pendingMs),
+                "pending_resume_source": .label(pendingSource),
+                "last_trustworthy_position": .millisecondsBucket(lastTrustworthyMs),
+                "last_trustworthy_source": .label(lastTrustworthySource),
+                "transient_zero_suppressed": .bool(suppressedTransientZero),
+                "has_current_item": .bool(hasCurrentItem),
+                "item_preparation_in_progress": .bool(itemPreparationInProgress),
+                "time_control_status": .label(timeControlStatusLabel),
+            ]
+        }
+    }
+
+    /// Snapshot the playhead for restart/reopen decisions. This deliberately differs from the
+    /// user-facing `currentResumeMs`: during a quality/audio/retry restart, AVPlayer may be
+    /// between items and briefly report currentTime=0 even though the intended/live playhead is
+    /// known from a pending resume or recent trustworthy clock sample.
+    private func playheadSnapshotForRestart(reason: String) -> PlayheadSnapshot {
+        let rawLiveMs = rawPlayerClockMs
+        let suppressedTransientZero = rawLiveMs.map {
+            $0 <= Self.transientZeroPlayheadThresholdMs
+                && isTransientZeroComparedToKnownPlayhead($0)
+        } ?? false
+
+        func snapshot(_ positionMs: Int, source: String) -> PlayheadSnapshot {
+            PlayheadSnapshot(positionMs: max(0, positionMs),
+                             source: source,
+                             rawLiveMs: rawLiveMs,
+                             pendingMs: pendingResumeMs,
+                             pendingSource: pendingResumeSource,
+                             lastTrustworthyMs: lastTrustworthyPlaybackMs,
+                             lastTrustworthySource: lastTrustworthyPlaybackSource,
+                             suppressedTransientZero: suppressedTransientZero,
+                             hasCurrentItem: player.currentItem != nil,
+                             itemPreparationInProgress: itemPreparationInProgress,
+                             timeControlStatusLabel: Self.timeControlStatusLabel(player.timeControlStatus))
+        }
+
+        if isSeeking, let seekHoldTargetMs {
+            rememberTrustworthyPlaybackPosition(seekHoldTargetMs,
+                                                source: "\(reason)_seek_hold",
+                                                allowsNearZero: true)
+            return snapshot(seekHoldTargetMs, source: "seek_hold")
+        }
+
+        if let rawLiveMs, shouldUseLivePlayheadForRestart(rawLiveMs) {
+            rememberTrustworthyPlaybackPosition(rawLiveMs,
+                                                source: "\(reason)_raw_live",
+                                                allowsNearZero: false)
+            return snapshot(rawLiveMs, source: "raw_live")
+        }
+
+        if let fallback = bestKnownPlayheadFallback() {
+            return snapshot(fallback.positionMs, source: fallback.source)
+        }
+
+        return snapshot(item.viewOffset ?? 0, source: item.viewOffset == nil ? "zero_default" : "item_view_offset")
+    }
+
+    private func bestKnownPlayheadFallback() -> (positionMs: Int, source: String)? {
+        let pending = pendingResumeMs.map { (positionMs: $0,
+                                             updatedAt: pendingResumeUpdatedAt ?? 0,
+                                             source: "pending_\(pendingResumeSource ?? "unknown")",
+                                             allowsNearZero: pendingResumeAllowsNearZero) }
+        let trusted = lastTrustworthyPlaybackMs.map { (positionMs: $0,
+                                                       updatedAt: lastTrustworthyPlaybackUpdatedAt ?? 0,
+                                                       source: "last_trustworthy_\(lastTrustworthyPlaybackSource ?? "unknown")",
+                                                       allowsNearZero: lastTrustworthyPlaybackAllowsNearZero) }
+
+        switch (pending, trusted) {
+        case (.some(let pending), .some(let trusted)):
+            if pending.positionMs <= Self.transientZeroPlayheadThresholdMs,
+               !pending.allowsNearZero,
+               trusted.positionMs > Self.transientZeroPlayheadThresholdMs {
+                return (trusted.positionMs, trusted.source)
+            }
+            if trusted.positionMs <= Self.transientZeroPlayheadThresholdMs,
+               !trusted.allowsNearZero,
+               pending.positionMs > Self.transientZeroPlayheadThresholdMs {
+                return (pending.positionMs, pending.source)
+            }
+            return pending.updatedAt >= trusted.updatedAt
+                ? (pending.positionMs, pending.source)
+                : (trusted.positionMs, trusted.source)
+        case (.some(let pending), .none):
+            return (pending.positionMs, pending.source)
+        case (.none, .some(let trusted)):
+            return (trusted.positionMs, trusted.source)
+        case (.none, .none):
+            return nil
+        }
     }
 
     private func noteResumeClockDesyncIfNeeded(liveMs: Int) {
@@ -589,6 +785,18 @@ final class PlaybackController {
               pending > 10_000,
               liveMs + 10_000 < pending else { return }
         didLogResumeClockDesync = true
+        if isTransientZeroComparedToKnownPlayhead(liveMs) {
+            recordPlaybackDiagnostic("playback.resume_clock_desync_suppressed", fields: [
+                "live_position": .millisecondsBucket(liveMs),
+                "pending_resume": .millisecondsBucket(pending),
+                "last_trustworthy_position": .millisecondsBucket(lastTrustworthyPlaybackMs),
+                "item_generation": .int(currentPlayerItemGeneration),
+                "time_control_status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
+            ])
+            NSLog("PlaybackController: suppressing transient zero live clock (%dms) behind pending resume (%dms)",
+                  liveMs, pending)
+            return
+        }
         recordPlaybackDiagnostic("playback.resume_clock_desync", fields: [
             "live_position": .millisecondsBucket(liveMs),
             "pending_resume": .millisecondsBucket(pending),
@@ -597,7 +805,10 @@ final class PlaybackController {
         ])
         NSLog("PlaybackController: AVPlayer live clock (%dms) is behind pending resume (%dms); trusting live clock",
               liveMs, pending)
-        pendingResumeMs = liveMs
+        setPendingResumeMs(liveMs, source: "resume_clock_desync_live")
+        rememberTrustworthyPlaybackPosition(liveMs,
+                                            source: "resume_clock_desync_live",
+                                            allowsNearZero: false)
     }
 
     // MARK: - Zombie-playback detector (starved rebuild reporting `.playing`)
@@ -1376,7 +1587,7 @@ final class PlaybackController {
             persistMetadataSubtitlePreference(for: track)
             didApplySavedSubtitle = true
 
-            let resumeMs = currentResumeMs
+            let resumeMs = playheadSnapshotForRestart(reason: "subtitle_reload").positionMs
             restartAtCurrentPosition(offsetMs: resumeMs,
                                      bitrateKbps: maxVideoBitrateKbps,
                                      resetFinalTarget: true,
@@ -1774,7 +1985,7 @@ final class PlaybackController {
 
         // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the
         // stream selection above; Jellyfin carries the stream index in the reopen request.
-        let resumeMs = currentResumeMs
+        let resumeMs = playheadSnapshotForRestart(reason: "audio_reload").positionMs
         restartAtCurrentPosition(offsetMs: resumeMs,
                                  bitrateKbps: maxVideoBitrateKbps,
                                  resetFinalTarget: true,
@@ -1871,18 +2082,24 @@ final class PlaybackController {
             rejectedDirectPlayStartKeys.removeAll()
         }
         guard bitrateKbps != previousActiveKbps else { return }
-        recordPlaybackDiagnostic("playback.quality_change", fields: [
-            "from_quality": .label(StreamingQuality.label(kbps: previousActiveKbps)),
-            "to_quality": .label(StreamingQuality.label(kbps: bitrateKbps)),
-            "resume": .millisecondsBucket(currentResumeMs),
-            "automatic_adaptation_reset": .bool(true),
-        ])
+        let snapshot = playheadSnapshotForRestart(reason: "quality_reload")
+        var fields = snapshot.diagnosticFields()
+        fields["from_quality"] = .label(StreamingQuality.label(kbps: previousActiveKbps))
+        fields["to_quality"] = .label(StreamingQuality.label(kbps: bitrateKbps))
+        fields["resume"] = .millisecondsBucket(snapshot.positionMs)
+        fields["automatic_adaptation_reset"] = .bool(true)
+        recordPlaybackDiagnostic("playback.quality_change", fields: fields)
+        NSLog("PlaybackController: quality reload snapshot source=%@ resumeMs=%d raw=%@ pending=%@ last=%@ suppressedZero=%@",
+              snapshot.source,
+              snapshot.positionMs,
+              snapshot.rawLiveMs.map { String($0) } ?? "nil",
+              snapshot.pendingMs.map { String($0) } ?? "nil",
+              snapshot.lastTrustworthyMs.map { String($0) } ?? "nil",
+              snapshot.suppressedTransientZero ? "true" : "false")
         maxVideoBitrateKbps = bitrateKbps
-        // Snapshot position so we can resume where the viewer was.
-        let resumeMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
         // A reload is explicit user intent: reset the final-target rebuild budget.
         // (didScrobble is intentionally NOT reset — the same content shouldn't re-scrobble.)
-        restartAtCurrentPosition(offsetMs: resumeMs,
+        restartAtCurrentPosition(offsetMs: snapshot.positionMs,
                                  bitrateKbps: bitrateKbps,
                                  resetFinalTarget: true,
                                  resetAdaptive: false,
@@ -1903,11 +2120,12 @@ final class PlaybackController {
     func retry() {
         guard isStreaming || remoteStreamReopener != nil else { return }
         beginReconnectStatus()
-        let resumeMs = currentResumeMs
-        recordPlaybackDiagnostic("playback.retry", fields: [
-            "resume": .millisecondsBucket(resumeMs),
-            "uses_remote_reopener": .bool(remoteStreamReopener != nil),
-        ])
+        let snapshot = playheadSnapshotForRestart(reason: "retry")
+        let resumeMs = snapshot.positionMs
+        var fields = snapshot.diagnosticFields()
+        fields["resume"] = .millisecondsBucket(resumeMs)
+        fields["uses_remote_reopener"] = .bool(remoteStreamReopener != nil)
+        recordPlaybackDiagnostic("playback.retry", fields: fields)
         restartAtCurrentPosition(offsetMs: resumeMs,
                                  bitrateKbps: maxVideoBitrateKbps,
                                  resetFinalTarget: true,
@@ -1932,6 +2150,10 @@ final class PlaybackController {
         // silent rebuilds off a single seek on a contended server before the probe gave up).
         startupDeadlineRetryAttempted = false
         let clamped = max(0, targetMs)
+        setPendingResumeMs(clamped, source: "user_seek_target", allowsNearZero: true)
+        rememberTrustworthyPlaybackPosition(clamped,
+                                            source: "user_seek_target",
+                                            allowsNearZero: true)
         let target = CMTime(value: CMTimeValue(clamped), timescale: 1000)
         let seconds = Double(clamped) / 1000
         let targetIsWithinLoadedRange = isWithinLoadedRanges(seconds: seconds)
@@ -1975,11 +2197,11 @@ final class PlaybackController {
     func performRelativeUserSeek(bySeconds deltaSeconds: Int,
                                  from baseMs: Int? = nil,
                                  durationMs: Int? = nil) -> Int {
-        let live = livePlaybackClockMs
+        let live = livePlaybackClockMs.flatMap { shouldUseLivePlayheadForRestart($0) ? $0 : nil }
         if let live {
             noteResumeClockDesyncIfNeeded(liveMs: live)
         }
-        let base = live ?? baseMs ?? currentResumeMs
+        let base = live ?? baseMs ?? playheadSnapshotForRestart(reason: "relative_seek").positionMs
         let deltaMs = deltaSeconds * 1000
         let upperBound = durationMs.flatMap { $0 > 0 ? $0 : nil } ?? knownDurationMs
         let unclamped = base + deltaMs
@@ -2874,7 +3096,7 @@ final class PlaybackController {
         didApplySavedSubtitle = false
         didApplyAudioPreference = false
         hdrProbeConclusive = false
-        pendingResumeMs = resumeOffsetMs
+        setPendingResumeMs(resumeOffsetMs, source: "load")
         didLogResumeClockDesync = false
         // Echo baseline: the resume seek's own `timeJumpedNotification` lands at this offset;
         // suppress nearby jumps so a rebuild does not immediately schedule another rebuild.
@@ -3037,6 +3259,9 @@ final class PlaybackController {
                 let current = avPlayer.currentItem
                 let matchesExpectedItem = current === playerItem
                 let liveMs = self.livePlaybackClockMs
+                let suppressLiveResumeUpdate = liveMs.map {
+                    self.isTransientZeroComparedToKnownPlayhead($0)
+                } ?? false
                 self.recordPlaybackDiagnostic("playback.current_item_changed", fields: [
                     "has_item": .bool(current != nil),
                     "matches_expected_item": .bool(matchesExpectedItem),
@@ -3045,6 +3270,7 @@ final class PlaybackController {
                     "observed_playback_generation": .int(observedPlaybackGeneration),
                     "playback_generation": .int(self.playbackGeneration),
                     "live_position": .millisecondsBucket(liveMs),
+                    "live_resume_update_suppressed": .bool(suppressLiveResumeUpdate),
                     "pending_resume": .millisecondsBucket(self.pendingResumeMs),
                 ])
 
@@ -3052,9 +3278,12 @@ final class PlaybackController {
                       self.playbackGeneration == observedPlaybackGeneration,
                       !matchesExpectedItem else { return }
 
-                if let liveMs {
+                if let liveMs, !suppressLiveResumeUpdate {
                     self.noteResumeClockDesyncIfNeeded(liveMs: liveMs)
-                    self.pendingResumeMs = liveMs
+                    self.setPendingResumeMs(liveMs, source: "current_item_changed_live")
+                    self.rememberTrustworthyPlaybackPosition(liveMs,
+                                                             source: "current_item_changed_live",
+                                                             allowsNearZero: false)
                 }
                 if current == nil {
                     self.timeline.isReadyForReporting = false
@@ -3270,6 +3499,11 @@ final class PlaybackController {
         observers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: markerInterval, queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
+                if time.seconds.isFinite {
+                    self.rememberTrustworthyPlaybackPosition(Int((max(0, time.seconds) * 1000).rounded()),
+                                                             source: "periodic_live",
+                                                             allowsNearZero: false)
+                }
                 self.updateSkipMarker(at: time.seconds)
                 // Drive the Up Next card (#15) off the same fine-grained observer.
                 self.updateUpNext(at: time.seconds)
@@ -3392,6 +3626,11 @@ final class PlaybackController {
             self.armStallWatchdog()
         } else if status == .playing {
             self.hasObservedPlayback = true
+            if let liveMs = self.rawPlayerClockMs {
+                self.rememberTrustworthyPlaybackPosition(liveMs,
+                                                         source: "time_control_playing",
+                                                         allowsNearZero: false)
+            }
             self.playbackStartupSpan?.end(fields: ["path_mode": self.performancePathMode])
             self.playbackStartupSpan = nil
             self.cancelStallWatchdog()
@@ -3946,18 +4185,23 @@ final class PlaybackController {
         if directPlayFallbackArmed {
             directPlayFallbackArmed = false
             suppressDirectPlayProbe = true
-            let resumeMs = currentResumeMs
+            let snapshot = playheadSnapshotForRestart(reason: "direct_play_runtime_fallback")
+            let resumeMs = snapshot.positionMs
             rejectedDirectPlayStartKeys.insert(Self.directPlayStartRejectionKey(
                 metadataKey: item.key ?? "/library/metadata/\(item.ratingKey)",
                 mediaIndex: mediaIndex,
                 partIndex: 0))
-            recordTranscodeDiagnostic("transcode.direct_play_runtime_fallback", fields: [
-                "error": .error(error),
-                "resume": .millisecondsBucket(resumeMs),
-                "fallback": .label("production_hls"),
-            ])
+            var fields = snapshot.diagnosticFields()
+            fields["error"] = .error(error)
+            fields["resume"] = .millisecondsBucket(resumeMs)
+            fields["fallback"] = .label("production_hls")
+            recordTranscodeDiagnostic("transcode.direct_play_runtime_fallback", fields: fields)
             NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to production HLS",
                   Self.safeErrorSummary(error))
+            setPendingResumeMs(resumeMs, source: "direct_play_runtime_fallback", allowsNearZero: true)
+            rememberTrustworthyPlaybackPosition(resumeMs,
+                                                source: "direct_play_runtime_fallback",
+                                                allowsNearZero: true)
             finalTargetRebuildPolicy.reset()
             removeObservers()
             beginStreaming(resumeOffsetMsOverride: resumeMs)
@@ -4272,13 +4516,14 @@ final class PlaybackController {
         let codesLabel = codes.map(String.init).joined(separator: ",")
         if remoteStreamReopener != nil {
             startupDeadlineRetryAttempted = true
-            let resumeMs = currentResumeMs
-            recordPlaybackDiagnostic("playback.startup_deadline_retry", fields: [
-                "trigger": .label(trigger),
-                "lane": .label("remote_reopen"),
-                "error_log_codes": .text(codesLabel),
-                "resume": .millisecondsBucket(resumeMs),
-            ])
+            let snapshot = playheadSnapshotForRestart(reason: "startup_deadline_retry")
+            let resumeMs = snapshot.positionMs
+            var fields = snapshot.diagnosticFields()
+            fields["trigger"] = .label(trigger)
+            fields["lane"] = .label("remote_reopen")
+            fields["error_log_codes"] = .text(codesLabel)
+            fields["resume"] = .millisecondsBucket(resumeMs)
+            recordPlaybackDiagnostic("playback.startup_deadline_retry", fields: fields)
             NSLog("PlaybackController: startup deadlines missed (%@); reopening remote stream once (#196)",
                   codesLabel)
             finalTargetRebuildPolicy.reset()
@@ -4287,15 +4532,20 @@ final class PlaybackController {
         }
         guard isStreaming, remoteStreamURL == nil else { return false }
         startupDeadlineRetryAttempted = true
-        let resumeMs = currentResumeMs
-        recordPlaybackDiagnostic("playback.startup_deadline_retry", fields: [
-            "trigger": .label(trigger),
-            "lane": .label("plex_warm_session"),
-            "error_log_codes": .text(codesLabel),
-            "resume": .millisecondsBucket(resumeMs),
-        ])
+        let snapshot = playheadSnapshotForRestart(reason: "startup_deadline_retry")
+        let resumeMs = snapshot.positionMs
+        var fields = snapshot.diagnosticFields()
+        fields["trigger"] = .label(trigger)
+        fields["lane"] = .label("plex_warm_session")
+        fields["error_log_codes"] = .text(codesLabel)
+        fields["resume"] = .millisecondsBucket(resumeMs)
+        recordPlaybackDiagnostic("playback.startup_deadline_retry", fields: fields)
         NSLog("PlaybackController: startup deadlines missed (%@); retrying once against the warm session (#196)",
               codesLabel)
+        setPendingResumeMs(resumeMs, source: "startup_deadline_retry", allowsNearZero: true)
+        rememberTrustworthyPlaybackPosition(resumeMs,
+                                            source: "startup_deadline_retry",
+                                            allowsNearZero: true)
         finalTargetRebuildPolicy.reset()
         removeObservers()
         // The abandoned item is dead weight; detach it so nothing it still requests can
@@ -4394,8 +4644,10 @@ final class PlaybackController {
                                               baseFields: [String: DiagnosticFieldValue]) -> Bool {
         guard decision.targetKbps != maxVideoBitrateKbps else { return false }
         let previousActiveKbps = maxVideoBitrateKbps
-        let resumeMs = currentResumeMs
+        let snapshot = playheadSnapshotForRestart(reason: "adaptive_bitrate")
+        let resumeMs = snapshot.positionMs
         var fields = baseFields
+        fields.merge(snapshot.diagnosticFields()) { _, new in new }
         fields["direction"] = .label(decision.direction.rawValue)
         fields["reason"] = .label(decision.reason)
         fields["from_quality"] = .label(StreamingQuality.label(kbps: previousActiveKbps))
@@ -4450,6 +4702,9 @@ final class PlaybackController {
             playbackLog.notice("seek: ignoring transient zero timeJump after primed offset targetMs=\(targetMs, privacy: .public) primedMs=\(self.lastPrimedOffsetMs, privacy: .public)")
             return
         }
+        rememberTrustworthyPlaybackPosition(targetMs,
+                                            source: "time_jump",
+                                            allowsNearZero: false)
 
         let targetIsWithinLoadedRange = isWithinLoadedRanges(seconds: now)
         let seekMode = RemoteSeekModePolicy.seekMode(streamKind: seekStreamKind,
@@ -4482,7 +4737,10 @@ final class PlaybackController {
         // Hold the scrubber on this target and make even the fallback branch of `currentResumeMs`
         // return it (instead of the stale pre-seek offset) for the whole rebuild window (GH #110).
         setSeeking(true, targetMs: targetMs)
-        pendingResumeMs = targetMs
+        setPendingResumeMs(targetMs, source: "seek_rebuild_target", allowsNearZero: true)
+        rememberTrustworthyPlaybackPosition(targetMs,
+                                            source: "seek_rebuild_target",
+                                            allowsNearZero: true)
         finalTargetRebuildPolicy.recordFinalTarget(offsetMs: targetMs)
         finalTargetSettleTask?.cancel()
         finalTargetSettleTask = Task { @MainActor [weak self] in
@@ -4501,7 +4759,10 @@ final class PlaybackController {
             self.finalTargetSettleTask = nil
             // Keep the hold target aligned with the settled (possibly newer) target.
             self.setSeeking(true, targetMs: target)
-            self.pendingResumeMs = target
+            self.setPendingResumeMs(target, source: "seek_rebuild_settled_target", allowsNearZero: true)
+            self.rememberTrustworthyPlaybackPosition(target,
+                                                     source: "seek_rebuild_settled_target",
+                                                     allowsNearZero: true)
             if self.remoteStreamReopener != nil {
                 self.reopenRemoteStream(offsetMs: target, bitrateKbps: self.maxVideoBitrateKbps)
             } else {
@@ -4529,6 +4790,10 @@ final class PlaybackController {
                                           removeObservers shouldRemoveObservers: Bool,
                                           swapRecoveryClient: Bool,
                                           preferShortRemoteHLSBuffer: Bool) {
+        setPendingResumeMs(offsetMs, source: "restart_target", allowsNearZero: true)
+        rememberTrustworthyPlaybackPosition(offsetMs,
+                                            source: "restart_target",
+                                            allowsNearZero: true)
         if resetFinalTarget { finalTargetRebuildPolicy.reset() }
         if resetAdaptive { adaptiveBitratePolicy.reset() }
         // User-driven restart (Retry, quality/audio change, ABR step): re-arm the GH #196
@@ -4557,7 +4822,10 @@ final class PlaybackController {
         // Hold the scrubber on the reopen target across the detach→renegotiate→ready window so the
         // label can't fall back to the stale offset while the item is nil (GH #110).
         setSeeking(true, targetMs: offsetMs)
-        pendingResumeMs = offsetMs
+        setPendingResumeMs(offsetMs, source: "remote_reopen_target", allowsNearZero: true)
+        rememberTrustworthyPlaybackPosition(offsetMs,
+                                            source: "remote_reopen_target",
+                                            allowsNearZero: true)
         playbackTask?.cancel()
         playbackGeneration += 1
         let generation = playbackGeneration
@@ -4689,7 +4957,10 @@ final class PlaybackController {
             lastPrimedOffsetMs = offsetMs
             // Hold the scrubber on the Plex rebuild target across the restart (GH #110).
             setSeeking(true, targetMs: offsetMs)
-            pendingResumeMs = offsetMs
+            setPendingResumeMs(offsetMs, source: "plex_rebuild_target", allowsNearZero: true)
+            rememberTrustworthyPlaybackPosition(offsetMs,
+                                                source: "plex_rebuild_target",
+                                                allowsNearZero: true)
             recordPlaybackDiagnostic("playback.seek_rebuild_start", fields: [
                 "target": .millisecondsBucket(offsetMs),
                 "generation": .int(generation),
