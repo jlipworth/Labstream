@@ -228,6 +228,11 @@ struct JellyfinSignInFlow: View {
         !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var hasCredentialInput: Bool {
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     @ViewBuilder
     private var credentialsForm: some View {
         VStack(spacing: DS.Space.md) {
@@ -275,7 +280,7 @@ struct JellyfinSignInFlow: View {
             password: $password,
             isWorking: isWorking,
             signInTitle: "Sign in with Jellyfin",
-            isSignInDisabled: isWorking,
+            isSignInDisabled: isWorking || !hasServerInput || !hasCredentialInput,
             onSignIn: onSignInWithCredentials,
             onChooseDifferent: onChooseDifferentFromCredentials)
     }
@@ -317,6 +322,11 @@ struct EmbySignInFlow: View {
 
     private var hasServerInput: Bool {
         !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasCredentialInput: Bool {
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @ViewBuilder
@@ -366,7 +376,7 @@ struct EmbySignInFlow: View {
             password: $password,
             isWorking: isWorking,
             signInTitle: "Sign in with Emby",
-            isSignInDisabled: isWorking || !hasServerInput,
+            isSignInDisabled: isWorking || !hasServerInput || !hasCredentialInput,
             onSignIn: onSignInWithCredentials,
             onChooseDifferent: onChooseDifferentFromCredentials)
     }
@@ -382,6 +392,7 @@ struct BackendServerURLField: View {
             .autocorrectionDisabled()
             .textContentType(.URL)
             .keyboardType(.URL)
+            .submitLabel(.next)
             .textFieldStyle(.roundedBorder)
             .frame(maxWidth: 420)
     }
@@ -546,18 +557,24 @@ struct BackendCredentialsSignInForm: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.username)
+                .submitLabel(.next)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
             SecureField("Password", text: password)
                 .textContentType(.password)
+                .submitLabel(.go)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 420)
 
-            Button(action: onSignIn) {
+            Button(action: submitIfAllowed) {
                 Group {
                     if isWorking {
-                        ProgressView()
+                        Label {
+                            Text("Signing in…")
+                        } icon: {
+                            ProgressView()
+                        }
                     } else {
                         Label(signInTitle, systemImage: systemImage)
                     }
@@ -565,12 +582,34 @@ struct BackendCredentialsSignInForm: View {
                 .backendPrimaryCTALabel()
             }
             .labstreamGlassProminentButtonStyle()
-            .disabled(isSignInDisabled)
+            .disabled(!canSubmit)
             .frame(maxWidth: 340)
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
                 .labstreamGlassButtonStyle()
         }
+        .onSubmit(submitIfAllowed)
+    }
+
+    private var hasRequiredFields: Bool {
+        let hasServer: Bool
+        if let serverURLText {
+            hasServer = !serverURLText.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } else {
+            hasServer = true
+        }
+        let hasUsername = !username.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasPassword = !password.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasServer && hasUsername && hasPassword
+    }
+
+    private var canSubmit: Bool {
+        !isWorking && !isSignInDisabled && hasRequiredFields
+    }
+
+    private func submitIfAllowed() {
+        guard canSubmit else { return }
+        onSignIn()
     }
 }
 

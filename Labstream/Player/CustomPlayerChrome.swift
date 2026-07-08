@@ -298,7 +298,7 @@ struct CustomPlayerChrome: View {
                             .font(.title3.weight(.semibold))
                             .frame(width: 52, height: 52)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     #else
                     // iOS system players use a subdued monochrome glass circle for
                     // dismiss, not a large accent-tinted platter.
@@ -620,9 +620,9 @@ struct CustomPlayerChrome: View {
     private func skipButton(seconds: Int) -> some View {
         let isForward = seconds > 0
         let amount = abs(seconds)
-        // 44pt on compact: the HIG-minimum touch target for a phone; the tighter 38pt
-        // square only ships inside the roomier regular/iPad strip.
-        let side: CGFloat = isCompactMobileChrome ? 44 : 38
+        // Keep every visible skip target at least 44pt; the old 38pt regular/visionOS
+        // square was too small for reliable gaze/pinch acquisition.
+        let side: CGFloat = 44
         return Button {
             performRelativeSkip(seconds: seconds)
         } label: {
@@ -655,7 +655,7 @@ struct CustomPlayerChrome: View {
                     .frame(minWidth: 112)
                     .padding(.horizontal, 6)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(!cinemaSession.hasActivePlayer || cinemaSession.presentationState == .inTransition)
         } else {
@@ -688,7 +688,7 @@ struct CustomPlayerChrome: View {
                 Label("Screen position", systemImage: "rectangle.arrowtriangle.2.outward")
                     .labelStyle(.iconOnly)
                     .font(.callout.weight(.semibold))
-                    .frame(width: 38, height: 32)
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -1167,7 +1167,7 @@ private struct CustomPlayerMenuPopover: View {
                 Button(action: onClose) {
                     Label("Close menu", systemImage: "xmark")
                         .labelStyle(.iconOnly)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.bordered)
             }
@@ -1260,12 +1260,12 @@ private struct CinemaScreenAdjustmentView: View {
                     Button { session.applyReclinedScreenPreset() } label: {
                         Label("I'm reclined", systemImage: "chair.lounge")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
 
                     Button { session.applyLyingDownScreenPreset() } label: {
                         Label("Lying down", systemImage: "bed.double")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                 }
 
                 Button { session.resetScreenAdjustment() } label: {
@@ -1369,7 +1369,7 @@ private struct CinemaScreenAdjustmentView: View {
                 Button(action: lowerAction) {
                     Label(lowerLabel, systemImage: lowerSystemImage)
                         .labelStyle(.iconOnly)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel(lowerLabel)
@@ -1379,7 +1379,7 @@ private struct CinemaScreenAdjustmentView: View {
                 Button(action: upperAction) {
                     Label(upperLabel, systemImage: upperSystemImage)
                         .labelStyle(.iconOnly)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel(upperLabel)

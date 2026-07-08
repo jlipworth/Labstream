@@ -132,7 +132,10 @@ extension EnvironmentValues {
 /// Lifts a poster/card on visionOS hover: a subtle scale + brighten that gives the
 /// browse grid the same tactile, gaze-responsive feel as Apple's own media apps.
 /// Hover is the primary "where am I looking" cue on visionOS, so every tappable
-/// poster gets it for free via `.posterHover()`.
+/// poster gets it for free via `.posterHover()`. iPad pointer hover is handled by
+/// `cardLink`'s platform-native `.hoverEffect(.lift)` instead of stacking this custom
+/// scale/shadow animation on top.
+#if os(visionOS)
 private struct PosterHoverEffect: ViewModifier {
     @State private var hovering = false
 
@@ -146,10 +149,18 @@ private struct PosterHoverEffect: ViewModifier {
             .onHover { hovering = $0 }
     }
 }
+#endif
 
 extension View {
     /// Apply the standard poster hover lift. Purely visual; does not affect hit-testing.
-    func posterHover() -> some View { modifier(PosterHoverEffect()) }
+    @ViewBuilder
+    func posterHover() -> some View {
+        #if os(visionOS)
+        modifier(PosterHoverEffect())
+        #else
+        self
+        #endif
+    }
 
     /// visionOS-safe style for poster/card `NavigationLink`s. MUST ride a BUILT-IN
     /// button style: any custom `ButtonStyle` gets its gaze/hover region registered
@@ -198,32 +209,30 @@ extension View {
         #endif
     }
 
-    /// Neutral secondary button: visionOS `.bordered` (already a glass platter there),
-    /// iOS 26 `.glass` (Liquid Glass). The iOS branch forces a `.primary` tint so the
-    /// label reads monochrome instead of inheriting the amber app accent — secondary
-    /// browse/detail/login chrome should look Apple-neutral, with amber reserved for the
-    /// genuine prominent CTA (`labstreamGlassProminentButtonStyle`). visionOS keeps the
-    /// accent it always had, so its rendering is unchanged.
+    /// Secondary glass button: visionOS `.bordered` (already a glass platter there),
+    /// iOS 26 `.glass` (Liquid Glass). Leave tint inheritance to the surrounding
+    /// context so the platform can choose the right accent/contrast for toolbar,
+    /// login, and player chrome instead of globally forcing every secondary button
+    /// into a neutral monochrome treatment.
     @ViewBuilder
     func labstreamGlassButtonStyle() -> some View {
         #if os(visionOS)
         self.buttonStyle(.bordered)
         #else
         self.buttonStyle(.glass)
-            .tint(.primary)
         #endif
     }
 
-    /// Prominent variant of `labstreamGlassButtonStyle`. The player chrome tints
-    /// controls white on iOS, so the prominent fill is white — the label must be
-    /// explicitly dark or it disappears into the pill (white-on-white).
+    /// Prominent variant of `labstreamGlassButtonStyle`. Do not force a global label
+    /// foreground here: `.glassProminent` and `.borderedProminent` derive contrast
+    /// from the active tint/material context, and hard-coded black is wrong for dark
+    /// platform surfaces.
     @ViewBuilder
     func labstreamGlassProminentButtonStyle() -> some View {
         #if os(visionOS)
         self.buttonStyle(.borderedProminent)
         #else
         self.buttonStyle(.glassProminent)
-            .foregroundStyle(.black)
         #endif
     }
 

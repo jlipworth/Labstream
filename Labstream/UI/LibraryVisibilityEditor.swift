@@ -13,7 +13,7 @@ struct LibraryVisibilityPrompt: Identifiable {
 
 /// First-run sheet that lets the user confirm which libraries to show. Toggles are framed as
 /// "Show" (on = visible); known-noise libraries start OFF (pre-checked to hide). Nothing is
-/// hidden until the user taps "Done"; "Show All" leaves everything visible.
+/// hidden until the user taps "Done"; "Show All" turns every toggle on before confirming.
 struct LibraryVisibilityPickerSheet: View {
     let prompt: LibraryVisibilityPrompt
     /// Called with the final HIDDEN id set on confirm.
@@ -50,11 +50,18 @@ struct LibraryVisibilityPickerSheet: View {
                 } footer: {
                     Text("Choose which libraries appear on the Libraries screen. Collections, folders, home-video, and trailer libraries are turned off by default — turn any back on to keep it. You can change this anytime in Settings.")
                 }
+
+                SwiftUI.Section {
+                    Button("Show All") {
+                        hidden.removeAll()
+                    }
+                    .disabled(hidden.isEmpty)
+                }
             }
             .navigationTitle("Choose Libraries")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Show All") { onCancel() }
+                    Button("Not Now", role: .cancel) { onCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { onConfirm(hidden) }

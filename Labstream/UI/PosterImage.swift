@@ -157,20 +157,30 @@ struct PosterImage: View {
 /// A reusable animated shimmer overlay used by loading skeletons. A diagonal
 /// highlight sweeps across translucently, the standard "content is on its way" cue.
 struct ShimmerView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase: CGFloat = -1
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            LinearGradient(
-                colors: [.clear, .white.opacity(0.18), .clear],
-                startPoint: .leading, endPoint: .trailing
-            )
-            .frame(width: w * 1.4)
-            .offset(x: phase * w * 1.6)
-            .onAppear {
-                withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
-                    phase = 1
+            if reduceMotion {
+                LinearGradient(
+                    colors: [.clear, .white.opacity(0.10), .clear],
+                    startPoint: .leading, endPoint: .trailing
+                )
+                .frame(width: w * 1.4)
+                .offset(x: -0.2 * w)
+            } else {
+                LinearGradient(
+                    colors: [.clear, .white.opacity(0.18), .clear],
+                    startPoint: .leading, endPoint: .trailing
+                )
+                .frame(width: w * 1.4)
+                .offset(x: phase * w * 1.6)
+                .onAppear {
+                    withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
+                        phase = 1
+                    }
                 }
             }
         }
