@@ -9,9 +9,9 @@ import PMSKit
 /// SwiftUI 26's native `.sectionIndexLabel` / `.listSectionIndexVisibility` is the
 /// long-term ideal for `List`/`Section` content, but these browse surfaces are paged
 /// `LazyVGrid`s. Until the grids move to a native sectioned container, keep this custom
-/// control visually close to UIKit's section index on iOS/iPadOS: a lightweight trailing
-/// stack of tinted glyphs, not a glass capsule full of mini buttons. visionOS keeps a
-/// material backing because gaze needs a stronger acquisition target in space.
+/// control visually close to UIKit's section index on iOS/iPadOS: a compact trailing
+/// stack of tinted glyphs with just enough backing/outline to read over posters. visionOS
+/// keeps a material backing because gaze needs a stronger acquisition target in space.
 ///
 /// A full A–Z+# rail is taller than iPhone landscape or a short iPad Split View pane,
 /// so the rail thins itself (every 2nd/3rd/4th bucket) until it fits the height it's
@@ -27,7 +27,7 @@ struct LibraryAlphabetRail: View {
         #if os(visionOS)
         34
         #else
-        24
+        30
         #endif
     }
 
@@ -54,6 +54,10 @@ private struct AlphabetRailColumn: View {
 
     /// Last bucket index delivered during an active scrub — dedupes onChanged spam.
     @State private var scrubIndex: Int?
+    /// Visual feedback for the current tap/scrub target. The rail is otherwise too
+    /// easy to lose against poster art, and drag scrubbing should show what will jump.
+    @State private var activeDisplay: String?
+    @State private var clearActiveTask: Task<Void, Never>?
 
     /// Row geometry shared by layout and the scrub math. iOS mirrors the compact native
     /// table index; visionOS keeps the larger pre-existing gaze-friendly rows.
@@ -64,24 +68,36 @@ private struct AlphabetRailColumn: View {
     private let horizontalPadding: CGFloat = 4
     private let labelWidth: CGFloat = 26
     #else
-    private let rowHeight: CGFloat = 14
-    private let rowSpacing: CGFloat = 0
-    private let verticalPadding: CGFloat = 4
-    private let horizontalPadding: CGFloat = 2
-    private let labelWidth: CGFloat = 18
+    private let rowHeight: CGFloat = 18
+    private let rowSpacing: CGFloat = 1
+    private let verticalPadding: CGFloat = 5
+    private let horizontalPadding: CGFloat = 3
+    private let labelWidth: CGFloat = 24
     #endif
 
     var body: some View {
         VStack(spacing: rowSpacing) {
             ForEach(entries, id: \.display) { entry in
                 Button {
-                    onPick(entry)
+                    pick(entry, clearsAfterDelay: true)
                 } label: {
                     Text(entry.display)
                         .font(labelFont)
                         .monospaced()
                         .foregroundStyle(labelForeground)
                         .frame(width: labelWidth, height: rowHeight)
+                        .background {
+                            if activeDisplay == entry.display {
+                                RoundedRectangle(cornerRadius: activeCornerRadius, style: .continuous)
+                                    .fill(.tint.opacity(activeFillOpacity))
+                            }
+                        }
+                        .overlay {
+                            if activeDisplay == entry.display {
+                                RoundedRectangle(cornerRadius: activeCornerRadius, style: .continuous)
+                                    .strokeBorder(.tint.opacity(activeStrokeOpacity), lineWidth: 1)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
                 #if os(visionOS)
@@ -107,18 +123,25 @@ private struct AlphabetRailColumn: View {
                     let index = min(max(raw, 0), entries.count - 1)
                     guard index != scrubIndex else { return }
                     scrubIndex = index
-                    onPick(entries[index])
+                    pick(entries[index], clearsAfterDelay: false)
                 }
-                .onEnded { _ in scrubIndex = nil }
+                .onEnded { _ in
+                    scrubIndex = nil
+                    clearActiveSoon()
+                }
         )
         #endif
+        .onDisappear {
+            clearActiveTask?.cancel()
+            clearActiveTask = nil
+        }
     }
 
     private var labelFont: Font {
         #if os(visionOS)
         .caption2.weight(.semibold)
         #else
-        .system(size: 11, weight: .semibold, design: .rounded)
+        .system(size: 12.5, weight: .semibold, design: .rounded)
         #endif
     }
 
@@ -129,6 +152,49 @@ private struct AlphabetRailColumn: View {
         AnyShapeStyle(.tint)
         #endif
     }
+
+    private var activeCornerRadius: CGFloat {
+        #if os(visionOS)
+        8
+        #else
+        6
+        #endif
+    }
+
+    private var activeFillOpacity: Double {
+        #if os(visionOS)
+        0.20
+        #else
+        0.16
+        #endif
+    }
+
+    private var activeStrokeOpacity: Double {
+        #if os(visionOS)
+        0.42
+        #else
+        0.36
+        #endif
+    }
+
+    private func pick(_ entry: AlphabetBucket, clearsAfterDelay: Bool) {
+        clearActiveTask?.cancel()
+        activeDisplay = entry.display
+        onPick(entry)
+        if clearsAfterDelay {
+            clearActiveSoon()
+        }
+    }
+
+    private func clearActiveSoon() {
+        clearActiveTask?.cancel()
+        clearActiveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled else { return }
+            activeDisplay = nil
+            clearActiveTask = nil
+        }
+    }
 }
 
 private extension View {
@@ -136,10 +202,20 @@ private extension View {
     func railBackdrop() -> some View {
         #if os(visionOS)
         background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(.secondary.opacity(0.20), lineWidth: 1)
+            }
         #else
-        // Native iOS section indexes float over table/list content without a persistent
-        // material pill. The whole strip remains the drag/scrub hit region.
-        contentShape(Rectangle())
+        // Native iOS section indexes float lightly over table/list content, but this
+        // grid sits on busy poster art; a faint material + outline keeps the index
+        // discoverable without going back to the old heavy glass-button rail.
+        background(.thinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(.tint.opacity(0.24), lineWidth: 0.75)
+            }
+            .contentShape(Rectangle())
         #endif
     }
 }
