@@ -8,11 +8,21 @@ public struct DiagnosticReportContext: Sendable, Equatable {
     public var builtAt: String?
     public var operatingSystem: String
     public var deviceName: String
+    public var platform: String?
+    public var bundleIdentifier: String?
+    public var keychainService: String?
+    public var sandboxContainerIdentifier: String?
     public var backend: String
     public var server: String?
     public var connectionScheme: String?
     public var selectedQuality: String
     public var adaptiveBitrateEnabled: Bool?
+    public var backgroundDownloadSessionIdentifier: String?
+    public var downloadStorageLocation: String?
+    public var downloadRecordCount: Int?
+    public var activeDownloadCount: Int?
+    public var completeDownloadCount: Int?
+    public var downloadQueuePaused: Bool?
     public var downloadReferencedBytes: Int?
     public var downloadDirectoryBytes: Int?
     public var downloadUnreferencedBytes: Int?
@@ -27,11 +37,21 @@ public struct DiagnosticReportContext: Sendable, Equatable {
                 builtAt: String? = nil,
                 operatingSystem: String,
                 deviceName: String,
+                platform: String? = nil,
+                bundleIdentifier: String? = nil,
+                keychainService: String? = nil,
+                sandboxContainerIdentifier: String? = nil,
                 backend: String,
                 server: String? = nil,
                 connectionScheme: String? = nil,
                 selectedQuality: String,
                 adaptiveBitrateEnabled: Bool? = nil,
+                backgroundDownloadSessionIdentifier: String? = nil,
+                downloadStorageLocation: String? = nil,
+                downloadRecordCount: Int? = nil,
+                activeDownloadCount: Int? = nil,
+                completeDownloadCount: Int? = nil,
+                downloadQueuePaused: Bool? = nil,
                 downloadReferencedBytes: Int? = nil,
                 downloadDirectoryBytes: Int? = nil,
                 downloadUnreferencedBytes: Int? = nil,
@@ -45,11 +65,21 @@ public struct DiagnosticReportContext: Sendable, Equatable {
         self.builtAt = builtAt
         self.operatingSystem = operatingSystem
         self.deviceName = deviceName
+        self.platform = platform
+        self.bundleIdentifier = bundleIdentifier
+        self.keychainService = keychainService
+        self.sandboxContainerIdentifier = sandboxContainerIdentifier
         self.backend = backend
         self.server = server
         self.connectionScheme = connectionScheme
         self.selectedQuality = selectedQuality
         self.adaptiveBitrateEnabled = adaptiveBitrateEnabled
+        self.backgroundDownloadSessionIdentifier = backgroundDownloadSessionIdentifier
+        self.downloadStorageLocation = downloadStorageLocation
+        self.downloadRecordCount = downloadRecordCount
+        self.activeDownloadCount = activeDownloadCount
+        self.completeDownloadCount = completeDownloadCount
+        self.downloadQueuePaused = downloadQueuePaused
         self.downloadReferencedBytes = downloadReferencedBytes
         self.downloadDirectoryBytes = downloadDirectoryBytes
         self.downloadUnreferencedBytes = downloadUnreferencedBytes
@@ -78,6 +108,15 @@ public enum DiagnosticReportRenderer {
         lines.append("- Built: \(redact(context.builtAt ?? "unknown"))")
         lines.append("- OS: \(redact(context.operatingSystem))")
         lines.append("- Device: \(redact(context.deviceName))")
+        if context.platform != nil
+            || context.bundleIdentifier != nil
+            || context.keychainService != nil
+            || context.sandboxContainerIdentifier != nil {
+            lines.append("- Platform: \(redact(context.platform ?? "unknown"))")
+            lines.append("- Bundle ID: \(redact(context.bundleIdentifier ?? "unknown"))")
+            lines.append("- Keychain service: \(redact(context.keychainService ?? "unknown"))")
+            lines.append("- Sandbox/container identity: \(redact(context.sandboxContainerIdentifier ?? "unknown"))")
+        }
         lines.append("- Backend: \(redact(context.backend))")
         if let server = context.server, !server.isEmpty {
             lines.append("- Server: \(redact(server))")
@@ -91,9 +130,15 @@ public enum DiagnosticReportRenderer {
         }
         if context.downloadReferencedBytes != nil
             || context.downloadDirectoryBytes != nil
-            || context.downloadOrphanCandidateCount != nil {
+            || context.downloadOrphanCandidateCount != nil
+            || context.downloadRecordCount != nil
+            || context.backgroundDownloadSessionIdentifier != nil {
             lines.append("")
             lines.append("Downloads")
+            lines.append("- Background session: \(redact(context.backgroundDownloadSessionIdentifier ?? "unknown"))")
+            lines.append("- Storage location: \(redact(context.downloadStorageLocation ?? "unknown"))")
+            lines.append("- Queue paused: \(context.downloadQueuePaused.map { $0 ? "yes" : "no" } ?? "unknown")")
+            lines.append("- Records: \(context.downloadRecordCount ?? 0) total, \(context.activeDownloadCount ?? 0) active, \(context.completeDownloadCount ?? 0) complete")
             lines.append("- Referenced bytes: \(byteBucket(context.downloadReferencedBytes))")
             lines.append("- Directory bytes: \(byteBucket(context.downloadDirectoryBytes))")
             lines.append("- Unreferenced bytes: \(byteBucket(context.downloadUnreferencedBytes))")
