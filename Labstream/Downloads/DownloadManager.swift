@@ -465,6 +465,23 @@ public final class DownloadManager {
                                      backend: String,
                                      allowReplacingExistingActiveRow: Bool = false) -> Bool {
         let existingStatus = store.records.first(where: { $0.ratingKey == ratingKey })?.status
+        if allowReplacingExistingActiveRow,
+           existingStatus?.isActiveWork == true,
+           activeJobs.contains(ratingKey),
+           !session.isTrackingTransfer(ratingKey: ratingKey) {
+            // A static-range system resume may persist an active `.queued` row while the app-level
+            // activeJobs slot outlives the URLSession task that was cancelled/superseded. If the
+            // backend rebuild then tries to seed the replacement with both markers present, the
+            // duplicate guard rejects it and the auto-resume scanner keeps burning a slot on a row
+            // that never reaches `range_start`. Treat "active row + active slot + no live task" as
+            // stale only for explicit recovery replacement.
+            recordDownloadDiagnostic("downloads.inflight_recovered", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend),
+                "reason": .label("replace_active_without_task"),
+            ])
+            releaseInFlight(ratingKey: ratingKey)
+        }
         switch DownloadStartSlotPolicy.decision(existingRecordStatus: existingStatus,
                                                 hasActiveSlot: activeJobs.contains(ratingKey),
                                                 allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) {
