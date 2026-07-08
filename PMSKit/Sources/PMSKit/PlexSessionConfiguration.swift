@@ -34,10 +34,17 @@ public enum PlexSessionConfiguration {
     /// connection silent for ~7–9s before PMS emits the first segment. Set the deadline above
     /// that ceiling so a legitimate prime completes inside it; a socket that produces nothing
     /// past the deadline is treated as wedged and triggers a rotate.
-    public static func mediaUpstream(timeout: TimeInterval = 20) -> URLSessionConfiguration {
+    ///
+    /// `timeout` maps to `timeoutIntervalForRequest`, which resets whenever data arrives, so
+    /// it only trips a genuinely silent socket. `resourceTimeout` bounds the WHOLE transfer:
+    /// the proxy is store-and-forward (`URLSession.data`), so a tens-of-MB video-copy segment
+    /// flowing slowly over WAN can legitimately take minutes — it must not be killed by the
+    /// wedge deadline and misclassified as a rotate-worthy socket failure.
+    public static func mediaUpstream(timeout: TimeInterval = 20,
+                                     resourceTimeout: TimeInterval = 300) -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = timeout
+        config.timeoutIntervalForResource = resourceTimeout
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.urlCache = nil
         config.httpCookieStorage = nil
