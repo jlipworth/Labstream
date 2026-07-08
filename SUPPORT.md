@@ -1,12 +1,14 @@
 # Labstream — Support
 
-Labstream is a native Apple Vision Pro client for **your own Plex Media Server, Jellyfin server, or Emby server**.
+Labstream is a native Apple-platform client for **your own Plex Media Server, Jellyfin server, or Emby server**.
 
 ## Requirements
 
-- Apple Vision Pro running **visionOS 26.0** or later.
+- Apple Vision Pro running **visionOS 26.0** or later, or an iPhone/iPad running **iOS/iPadOS 26.1** or later.
 - A reachable **Plex Media Server**, **Jellyfin server**, or **Emby server** you administer or have access to.
   Plex mode requires a Plex account for PIN/OAuth sign-in; Emby mode can use Emby Connect PIN sign-in or a manual Emby server URL.
+- Labstream does not provide, host, sell, or bundle media. Playback and offline
+  downloads are for media you are authorized to access on the server you choose.
 - Local-network playback is free. Plex remote (off-LAN) streaming may require Plex
   Pass or Remote Watch Pass on your account — this is a Plex server-side
   requirement, not a Labstream feature.
@@ -37,8 +39,7 @@ The fastest path is the [bug report form](https://github.com/jlipworth/Labstream
 See the [bug reporting guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
 for the step-by-step flow, including what the diagnostic report does and does not include.
 
-Open an issue with steps to reproduce, your visionOS version, and the app
-version from **Settings ▸ About**:
+Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, or iPad), OS version, and the app version from **Settings ▸ About**:
 
 <https://github.com/jlipworth/Labstream/issues>
 
@@ -62,6 +63,4 @@ usernames, library paths, filenames, and media titles.
 
 ## Privacy
 
-See the [Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md). Labstream sends no analytics,
-diagnostics, or personal data to the developer; app state and optional
-diagnostic reports stay local unless you choose to share them.
+See the [Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md). Labstream does not automatically send analytics, diagnostics, or personal data to the developer; app state and optional diagnostic reports stay local unless you choose to copy, export, share, or open a GitHub issue.

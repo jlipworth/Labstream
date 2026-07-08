@@ -9,12 +9,11 @@ yet human-verified on device/simulator. Work through them in one pass._
 Items without a number shipped without a dedicated issue. Build/install/launch commands live in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — reminder: a same-bundle-id upgrade install usually preserves the container; deleting the app, erasing the sim, or switching install sources starts fresh and requires sign-in again.
 
-> **Automated coverage map (issue #75):** this checklist is the *manual* device/sim pass. Its
-> automated counterpart — which mocked-unit / live-probe layer covers each screen, menu, playback,
-> download, profile and subtitle flow — is [`docs/TESTING-LIVE-MATRIX.md`](docs/TESTING-LIVE-MATRIX.md),
-> with live-server requirements + CI enablement in
-> [`docs/TESTING-LIVE-REQUIREMENTS.md`](docs/TESTING-LIVE-REQUIREMENTS.md). Device-only rows below
-> are exactly the ones those docs mark as manual gates.
+> **Automated coverage map:** this checklist is the manual device/sim pass.
+> Current layered validation is summarized in
+> [`docs/TESTING-STRATEGY.md`](docs/TESTING-STRATEGY.md); live-server probes
+> live under `scripts/` and remain secret-gated. Device-only rows below are
+> manual gates.
 
 ---
 
@@ -63,11 +62,12 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       entering retry/restart hell. The dialog should avoid flashing during dismissal/exit.
 - [~] **Progress scrobble / mark-watched** — watch past ~90% → marked watched and leaves/refreshes
       Continue Watching; stop mid-way → reopening offers Resume at that offset.
-- [~] **Download integrity + progress** — ⏸️ awaiting final human check. Fresh download progresses
-      (no instant "unknown error"), %/bar climb with live speed + resolution caption, completes, plays
-      offline. Both paths now serve a STATIC file with a real Content-Length, so the % is server-
-      reported (no estimate/ETA). (Simulator uses a foreground URLSession — `nsurlsessiond` is
-      unavailable there; device keeps the background session.) Logs:
+- [~] **Download integrity + progress** — ⏸️ awaiting final human check. Fresh download progresses,
+      shows the correct route caption, completes, and plays offline. Static/original/existing/
+      prepared-static rows should show exact byte progress from Content-Length/range checkpoints.
+      Live-forward remux/transcode rows may show estimated progress/ETA and must not be described
+      as durable static downloads. Simulator uses a foreground URLSession; physical devices keep
+      the background session. Logs:
       `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.Labstream"'`
 - [ ] **Background static Range continuation (GH #169, DEVICE-ONLY)** — start a large
       static/original/existing-version download while the app is active, wait for
@@ -104,8 +104,9 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [x] **Simultaneous cross-backend downloads (GH #84)** ✅ verified live — a Plex optimized download
       and a Jellyfin optimized download running at the same time each progress through their own
       phases and complete independently; neither orphans or false-fails the other. Offline rows show
-      a per-backend badge (Plex/Jellyfin/Emby) when the library mixes backends. Emby optimized
-      (live-transcode stream) download also verified concurrently.
+      a per-backend badge (Plex/Jellyfin/Emby) when the library mixes backends. Emby optimize should
+      use convert-then-static or reuse an existing converted source; Emby compatible-remux remains
+      the forward-only encoder-stream case.
 - [x] **Active-backend switch DURING a download (GH #84)** ✅ verified live (2026-06-21) — an Emby
       live-transcode download (no Content-Length) completed cleanly (~1.06 GB, HTTP 200) through
       repeated Plex↔Emby active-backend switches, while a concurrent Plex server-prep job also
@@ -121,8 +122,9 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
 - [ ] **Pending-prep row, lane signed out (GH #84)** — sign out of the backend that owns a queued
       server-prep row: the row reads "Paused — <Backend> signed out" (not "Preparing on server…") and
       auto-resumes when that backend is signed back in.
-- [ ] **Incomplete static download can never verify (416 family)** — take the headset off mid static
-      download, put it back on after the chunk 416s/stalls: the row must NOT become
+- [ ] **Incomplete static download can never verify (416 family)** — background/lock the target
+      device — or take the Vision Pro off — mid static download, then foreground/unlock/wear it
+      again after the chunk 416s/stalls: the row must NOT become
       complete/unverified at a fraction of the source size; it stays failed/retryable ("Download is
       incomplete (X of Y MB)") or keeps downloading from the checkpoint. Previously-broken rows are
       demoted by the size audit at launch/scene-active and Retry continues from the durable bytes.
@@ -141,14 +143,12 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       lane badged "Transcode"/correct resolution. A SECOND download of the same item REUSES the kept
       converted file (no new Sync job, no `- tv (N)` duplicate); a different preset converts fresh.
       Verified against the live Emby server (job/source/library-folder state).
-- [ ] **Convert-then-download resume — DEVICE-ONLY** — the sim cannot validate this: a hard
-      `simctl terminate` produces no `NSURLSessionDownloadTaskResumeData` and the sim doesn't keep a
-      background `URLSession` alive across a kill, so kill→relaunch dead-ends in a failed row. On the
-      device: start a convert/download, background/lock the device for a few minutes,
-      foreground/unlock it → confirm the transfer CONTINUES/RESUMES from its offset rather than failing or
-      restarting from 0. (Resume today relies on iOS background continuation + resume-data blobs; the
-      app does NOT yet self-resume via HTTP `Range` from the on-disk partial — see #128-adjacent
-      follow-up if device testing shows hard-kill/OOM restarts from 0.)
+- [ ] **Convert-then-download resume — DEVICE-ONLY** — the simulator cannot prove real background
+      continuation. On a physical device: start an Emby convert, wait for the converted/static
+      handoff, then background/lock the device. Foreground/unlock and confirm the static transfer
+      continues or resumes from the durable byte-range checkpoint, not from 0. If interruption
+      happens before the static handoff, the server-prep row should resume polling or fail retryably
+      without corrupting the row.
 
 ## B. Player features
 

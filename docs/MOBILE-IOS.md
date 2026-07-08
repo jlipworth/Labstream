@@ -9,7 +9,7 @@ Labstream has two native Apple app targets:
 
 `LabstreamMobile` is the universal iPhone/iPad target. It shares the app source tree and
 `PMSKit` package with the visionOS target, but uses the mobile app entry point and an
-adaptive mobile shell. The public mobile support floor is iOS/iPadOS 26+.
+adaptive mobile shell. The public mobile support floor is iOS/iPadOS 26.1+.
 
 ## Current mobile behavior
 
@@ -90,7 +90,7 @@ xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 ```
 
 A compatible installed iOS Simulator runtime is required. The mobile target is iOS/iPadOS
-26+, so older local Xcode/SDK installations may report deployment-target warnings or fail
+26.1+, so older local Xcode/SDK installations may report deployment-target warnings or fail
 before app code compiles; install the matching platform/runtime in Xcode Settings before
 treating the mobile target as broken.
 
@@ -121,4 +121,4 @@ First-time hardware deploy still requires the one-time Apple steps outside the s
   an iOS simulator.
 - Continued iPhone compact-width QA across signed-in Plex/Jellyfin/Emby libraries, music,
   offline rows, and long metadata titles.
-- App Store metadata/release work for the intended unified universal-purchase product.
+- If App Store distribution is pursued, metadata/release work for the intended unified universal-purchase product.

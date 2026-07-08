@@ -116,7 +116,7 @@ struct SettingsView: View {
     /// Single source of truth for the web bug-report link (template-prefilled new-issue URL).
     static let feedbackIssuesURL = URL(string: "https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml")!
 
-    /// "26.5"-style version for prefilling the bug form's visionOS field (the full
+    /// "26.5"-style OS version for prefilling the bug form (the full
     /// `operatingSystemVersionString` carries a build suffix the form doesn't want).
     static var shortOSVersion: String {
         let v = ProcessInfo.processInfo.operatingSystemVersion
@@ -563,7 +563,7 @@ struct SettingsView: View {
             }
 
             Toggle(isOn: $allowCellularDownloads) {
-                Label("Allow Cellular Downloads", systemImage: "antenna.radiowaves.left.and.right")
+                Label("Use cellular data for downloads", systemImage: "antenna.radiowaves.left.and.right")
             }
 
             Picker(selection: $prioritizeQuickDownloads) {
@@ -602,7 +602,7 @@ struct SettingsView: View {
         } header: {
             Text("Downloads")
         } footer: {
-            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular transfers are off by default on iPhone/iPad and apply to freshly created request-based tasks; active/resume-data tasks keep their existing OS policy. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads moves a new job ahead of pending conversions on the server (never the one already transcoding); it requires server admin permission.")
+            Text("Download quality is the default for new downloads; Original still appears only when feasible. Cellular downloads are off by default where cellular data is available, and the setting applies to new transfers only. The storage limit is checked before enqueue/start and won’t delete existing downloads automatically. Prioritizing quick downloads only affects Plex server-side optimize jobs: when permitted, Labstream moves the new conversion behind the currently active one. Jellyfin and Emby keep their normal order.")
         }
         .confirmationDialog("Remove completed downloads?", isPresented: $confirmingRemoveCompletedDownloads, titleVisibility: .visible) {
             Button("Remove Completed", role: .destructive) {

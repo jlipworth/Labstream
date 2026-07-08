@@ -8,7 +8,7 @@ flowchart TD
   Runtime[Runtime events] --> Fields[Typed diagnostic fields]
   Fields --> Redactor[Redaction]
   Redactor --> Ring
-  MetricKit[MetricKit crash/hang summaries] --> MXRedact[Redacted local summaries]
+  MetricKit[MetricKit diagnostic summaries] --> MXRedact[Redacted local summaries]
   Ring --> Report[Diagnostic report]
   MXRedact --> Report
   Report --> Preview[User preview]
@@ -47,7 +47,7 @@ A report may include:
 - selected quality settings;
 - Adaptive Bitrate state;
 - recent playback snapshot;
-- passive redacted MetricKit crash/hang summaries;
+- passive redacted MetricKit crash/hang/CPU/disk-write diagnostic summaries;
 - recent redacted event summaries.
 
 ## Public issue reminder

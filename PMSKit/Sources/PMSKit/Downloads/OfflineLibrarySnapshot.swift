@@ -27,8 +27,8 @@ public struct OfflineLibrarySnapshot: Sendable, Equatable {
 
     public var footerText: String {
         isQueuePaused
-            ? "Download queue paused. Resume when you're ready to continue transfers."
-            : "Background transfers pause while the headset is off and resume when it's worn again."
+            ? "Download queue paused. Resume when you're ready to continue queued transfers."
+            : "Background transfers are best-effort. Keep this device on power and reopen Labstream to let downloads resume and checkpoint."
     }
 
     public var ratingKeys: [String] { rows.map(\.id) }

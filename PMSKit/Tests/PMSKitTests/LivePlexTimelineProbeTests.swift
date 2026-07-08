@@ -9,7 +9,7 @@ import FoundationNetworking
 /// the Plex counterpart to the Emby progress + `activeEncodingStop` coverage in `LiveEmbyProbe`).
 /// This hits the network and MUTATES the test account's resume point, so it is OPT-IN and must run
 /// ONLY against a dedicated test account — see "Cleanup / reset" in
-/// `docs/TESTING-LIVE-REQUIREMENTS.md`. With no creds it returns immediately, leaving plain
+/// `docs/TESTING-STRATEGY.md`. With no creds it returns immediately, leaving plain
 /// `swift test` and CI hermetic. NOTHING is hardcoded — server, token and item key arrive via the
 /// environment, so no secret is ever committed.
 ///

@@ -1,6 +1,6 @@
 # Labstream docs
 
-Labstream is a native Apple-platform media client for Plex, Jellyfin, and Emby. The primary shipping path remains Apple Vision Pro, and the repo now also contains a native iPhone/iPad target. It is distributed as source for local builds and is designed around privacy: the app talks to the media server you choose and does not send diagnostics or analytics to the developer.
+Labstream is a native Apple-platform media client for Plex, Jellyfin, and Emby. The primary shipping path remains Apple Vision Pro, and the repo now also contains a native iPhone/iPad target. It is distributed as source for local builds and is designed around privacy: the app has no developer-operated backend, talks to the media services/server you choose, and does not automatically send diagnostics or analytics to the developer.
 
 ```mermaid
 flowchart LR

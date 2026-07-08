@@ -2,27 +2,22 @@
 
 _Last updated: 2026-07-05_
 
-Labstream is a personal media client for Apple Vision Pro that connects to a
-Plex Media Server, Jellyfin server, or Emby server **that you choose and
-control**. It is designed to collect as little as possible.
+Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. It is designed to collect as little as possible.
 
 ## What Labstream does not do
 
-- **No data is collected by or sent to the developer.** There is no analytics,
-  no developer-operated telemetry pipeline, no crash reporting to the developer,
-  and no advertising.
+- **No automatic developer collection.** Labstream does not automatically collect or transmit analytics, diagnostics, crash reports, media-server data, or personal data to the developer. If you choose to copy, export, share, or open a GitHub issue, the redacted report and any note you include leave the device only via GitHub or the destination you choose.
 - **No tracking.** Labstream does not track you across apps or websites and
   contains no third-party tracking SDKs.
-- **No developer servers.** Labstream communicates only with the media backend
-  you configure. Plex sign-in uses Plex (`plex.tv`) plus the Plex Media Server
-  you select; Jellyfin mode talks to the Jellyfin server URL you enter; Emby
-  mode uses Emby Connect (`emby.media`) for PIN sign-in when selected and then
-  talks to the Emby server URL you choose.
+- **No developer servers.** Labstream has no developer-operated backend. Depending on the backend you choose, it contacts Plex services for sign-in/server discovery plus the Plex Media Server you select, the Jellyfin server URL you enter, or Emby Connect plus your selected Emby server.
+- **No bundled media.** Labstream does not provide, host, sell, or bundle movies,
+  TV, music, or other media. It connects only to servers you choose, and offline
+  downloads are for media you are authorized to access and download under the
+  applicable server/service terms.
 
 ## What stays on your device
 
-- **Your media-server credentials/tokens** are stored in the iOS/visionOS
-  **Keychain** on your device. Plex tokens are sent only to Plex and the selected
+- **Your media-server credentials/tokens** are stored in the Apple **Keychain** on your device. Plex tokens are sent only to Plex and the selected
   Plex server; Jellyfin access tokens are sent only to your Jellyfin server;
   Emby access tokens are sent only to Emby Connect during sign-in and to your
   selected Emby server. They are never transmitted to the developer.
@@ -32,6 +27,11 @@ control**. It is designed to collect as little as possible.
 - **Offline downloads** you choose to make are stored in Labstream's private app
   container on your device and can be deleted from within the app or by removing
   the app.
+- **Local Network access** may be requested by iOS/iPadOS/visionOS when your
+  selected server is on your local network, uses a `.local` name, or resolves to
+  a LAN address. Labstream uses that access only to connect to the media server
+  you choose for browsing, playback, and downloads; it does not scan the network
+  for advertising or analytics.
 - **Spotlight, Siri, and Shortcuts media suggestions** can expose browsed media
   titles and summaries to Apple system surfaces on your device. You can turn this
   off in Settings with **Show Media in Spotlight & Siri**; turning it off stops
@@ -41,11 +41,7 @@ control**. It is designed to collect as little as possible.
   in Settings, Labstream keeps recent app events in bounded local storage so you
   can copy, export, or share a bug-report summary after reproducing a problem.
   This diagnostic report is user-initiated only and is not uploaded automatically.
-- **Passive MetricKit crash/hang summaries** may be delivered by visionOS after a
-  bad run and stored locally in a small bounded list. Labstream keeps only
-  redacted summary fields for inclusion in a report you explicitly preview/copy/
-  export; these summaries are not uploaded automatically and are separate from
-  opt-in event logging.
+- **Passive MetricKit diagnostic summaries** — crash, hang, CPU exception, or disk-write exception — may be delivered by iOS or visionOS after a problematic run and stored locally in a small bounded list. Labstream keeps only redacted summary fields for inclusion in a report you explicitly preview/copy/export; these summaries are not uploaded automatically and are separate from opt-in event logging.
 
 ## Diagnostic reports
 
@@ -65,9 +61,7 @@ personal detail that automated redaction cannot identify. Review the preview and
 edit anything you do not want to make public before opening a GitHub issue or
 sharing the report.
 
-Diagnostic logging does not add analytics, developer telemetry, remote log
-upload, or background reporting. The report leaves your device only if you
-choose to paste, attach, or share it somewhere.
+Diagnostic logging does not add analytics, developer telemetry, remote log upload, or background reporting. The report leaves your device only if you choose to copy, export, paste, attach, share it somewhere, or open a GitHub issue.
 
 ## Data shared with Plex, Jellyfin, and Emby
 
