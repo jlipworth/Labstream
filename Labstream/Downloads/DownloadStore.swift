@@ -546,7 +546,7 @@ final class DownloadStore: @unchecked Sendable {
     /// its relative path on the row's metadata, so a manual Resume (even after relaunch) can
     /// continue from the byte offset via `downloadTask(withResumeData:)`. The blob is written as
     /// a sibling `.resume` file (it can be large). No-op if the row/metadata is gone.
-    func setResumeData(ratingKey: String, _ data: Data) {
+    func setResumeData(ratingKey: String, _ data: Data, displayBytes: Int? = nil) {
         // H9: `updateMetadata` is a no-op when a row carries no metadata snapshot (a
         // legacy pre-D5 row). Writing the blob first and only then discovering the path
         // can't be recorded would orphan a potentially large `.resume` file on disk. Bail
@@ -568,7 +568,12 @@ final class DownloadStore: @unchecked Sendable {
                   ratingKey, DiagnosticRedactor.safeErrorSummary(error))
             return
         }
-        updateMetadata(ratingKey: ratingKey) { $0.resumeDataRelativePath = url.lastPathComponent }
+        updateMetadata(ratingKey: ratingKey) {
+            $0.resumeDataRelativePath = url.lastPathComponent
+            if let displayBytes, displayBytes > 0 {
+                $0.resumeDisplayBytes = max(displayBytes, $0.resumeDisplayBytes ?? 0)
+            }
+        }
     }
 
     /// #95: the persisted resume blob for a row, if present on disk. `nil` when the row has no
@@ -617,7 +622,10 @@ final class DownloadStore: @unchecked Sendable {
         if let relative, !relative.isEmpty {
             try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(relative))
         }
-        updateMetadata(ratingKey: ratingKey) { $0.resumeDataRelativePath = nil }
+        updateMetadata(ratingKey: ratingKey) {
+            $0.resumeDataRelativePath = nil
+            $0.resumeDisplayBytes = nil
+        }
     }
 
     /// #169: the HTTP validator (`ETag`/`Last-Modified`) for a static byte-range download, captured

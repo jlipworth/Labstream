@@ -434,6 +434,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Resume after relaunch continue from the byte offset via `downloadTask(withResumeData:)`
     /// instead of restarting at 0. Only range-resumable sources (static originals) ever set it.
     public var resumeDataRelativePath: String?
+    /// Display-only byte count for a paused URLSession resume blob. Unlike `DownloadRecord.bytes`,
+    /// this may include resumable OS-temp bytes from a continuous Range remainder that have not yet
+    /// been appended to the durable partial. Only set while a surviving resume blob exists.
+    public var resumeDisplayBytes: Int?
     /// Emby convert-then-download: the server-side "Convert Media" Sync job id for a `.preparing`
     /// row. Persisted so an app relaunch re-hydrates the row and RESUMES polling that job (rather
     /// than restarting the conversion), and so deleting a `.preparing` row can also cancel the
@@ -513,6 +517,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 downloadLane: DownloadLane? = nil,
                 resumeMode: DownloadResumeMode? = nil,
                 resumeDataRelativePath: String? = nil,
+                resumeDisplayBytes: Int? = nil,
                 embyConvertJobID: Int? = nil,
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
@@ -568,6 +573,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.downloadLane = downloadLane
         self.resumeMode = resumeMode
         self.resumeDataRelativePath = resumeDataRelativePath
+        self.resumeDisplayBytes = resumeDisplayBytes
         self.embyConvertJobID = embyConvertJobID
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
@@ -627,6 +633,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
         resumeMode = try c.decodeIfPresent(DownloadResumeMode.self, forKey: .resumeMode)
         resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
+        resumeDisplayBytes = try c.decodeIfPresent(Int.self, forKey: .resumeDisplayBytes)
         embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
@@ -659,6 +666,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         if resumeDataRelativePath == nil {
             resumeDataRelativePath = previous.resumeDataRelativePath
+        }
+        if resumeDisplayBytes == nil {
+            resumeDisplayBytes = previous.resumeDisplayBytes
         }
         if rangeValidator == nil {
             rangeValidator = previous.rangeValidator

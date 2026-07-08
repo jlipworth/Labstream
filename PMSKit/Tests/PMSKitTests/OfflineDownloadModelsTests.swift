@@ -491,17 +491,20 @@ struct OfflineDownloadModelsTests {
         #expect(embyConvert.resolvedResumeMode(ratingKey: "emby:42") == .serverPrepThenStatic)
     }
 
-    @Test("OfflineMetadata carries resumeDataRelativePath through encode/decode")
-    func metadataCarriesResumeDataPath() throws {
+    @Test("OfflineMetadata carries resume data display fields through encode/decode")
+    func metadataCarriesResumeDataDisplayFields() throws {
         let meta = OfflineMetadata(ratingKey: "jellyfin:42", title: "Movie", type: "movie",
-                                   resumeDataRelativePath: "jellyfin_42.resume")
+                                   resumeDataRelativePath: "jellyfin_42.resume",
+                                   resumeDisplayBytes: 5_500_000_000)
         let round = try JSONDecoder().decode(OfflineMetadata.self,
                                              from: try JSONEncoder().encode(meta))
         #expect(round.resumeDataRelativePath == "jellyfin_42.resume")
-        // Legacy metadata without the field decodes to nil (no silent failure).
+        #expect(round.resumeDisplayBytes == 5_500_000_000)
+        // Legacy metadata without the fields decodes to nil (no silent failure).
         let legacy = try decode(OfflineMetadata.self,
                                 from: #"{"ratingKey":"x","title":"T","type":"movie"}"#)
         #expect(legacy.resumeDataRelativePath == nil)
+        #expect(legacy.resumeDisplayBytes == nil)
     }
 
 
