@@ -6,6 +6,10 @@ set -euo pipefail
 # This deliberately uses an isolated dev bundle id by default so it can launch to the
 # signed-out/auth screen without touching a normal worktree's Mac app container or keychain
 # service. It does not validate real auth, playback, downloads, or subjective UI quality.
+#
+# Do not reset the sandbox container by default: macOS may protect container-manager
+# metadata even when the app data is otherwise throwaway, and a reset failure would make
+# this smoke flaky. Override LABSTREAM_MAC_SMOKE_SUFFIX for a fresh identity if needed.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -27,8 +31,7 @@ echo "duration:     ${DURATION_SECONDS}s"
 
 DEPLOY_LOG="$LOG_DIR/macos-smoke-deploy.log"
 scripts/deploy-macos-to-host.sh \
-  --bundle-id-suffix "$SUFFIX" \
-  --reset-container >"$DEPLOY_LOG" 2>&1 || {
+  --bundle-id-suffix "$SUFFIX" >"$DEPLOY_LOG" 2>&1 || {
     tail -80 "$DEPLOY_LOG" >&2 || true
     die "Mac host build/stage failed (log: $DEPLOY_LOG)"
   }
