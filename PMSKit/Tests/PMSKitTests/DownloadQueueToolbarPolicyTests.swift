@@ -26,14 +26,14 @@ struct DownloadQueueToolbarPolicyTests {
         }
     }
 
-    @Test("active downloads dominate incomplete mixed state")
-    func activeDownloadsDominateIncompleteMixedState() {
+    @Test("idle incomplete downloads dominate active mixed state")
+    func idleIncompleteDownloadsDominateActiveMixedState() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [.paused, .downloading]) == .pauseQueue)
+                                                  statuses: [.paused, .downloading]) == .resumeQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [.failed, .downloading]) == .pauseQueue)
+                                                  statuses: [.failed, .downloading]) == .resumeQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
-                                                  statuses: [.paused, .queued]) == .pauseQueue)
+                                                  statuses: [.paused, .queued]) == .resumeQueue)
     }
 
     @Test("queue-paused state always shows Resume Queue")
