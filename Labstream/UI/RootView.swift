@@ -13,6 +13,10 @@ struct RootView: View {
     let musicPlayer: MusicPlayerController
 
     @State private var selection: AppTab = .home
+    /// Last non-Search tab, so clearing the dedicated Search surface returns to the
+    /// browse chrome the user came from instead of leaving them stranded on the
+    /// search role tab with the normal top/tab chrome still hidden.
+    @State private var lastNonSearchSelection: AppTab = .home
     /// Music tab's navigation path, lifted here so Now Playing's "go to
     /// artist/album" (which lives in a sheet, outside the stack) can push into it.
     @State private var musicPath = NavigationPath()
@@ -108,6 +112,11 @@ struct RootView: View {
             musicPath = NavigationPath()
             musicPlayer.stopIfBrowseSessionChanged()
         }
+        .onChange(of: selection) { _, newSelection in
+            if newSelection != .search {
+                lastNonSearchSelection = newSelection
+            }
+        }
         // Now Playing's "go to artist/album": land on the Music tab and push.
         .onChange(of: musicPlayer.navigationRequest) { _, item in
             guard let item else { return }
@@ -182,7 +191,9 @@ struct RootView: View {
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
+                NavigationStack(path: $searchPath) {
+                    SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+                }
                     .environment(\.cinemaOriginTab, .search)
                     .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
@@ -308,7 +319,9 @@ struct RootView: View {
                 .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .search:
-            NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
+            NavigationStack(path: $searchPath) {
+                SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+            }
                 .environment(\.cinemaOriginTab, .search)
                 .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
@@ -484,6 +497,14 @@ struct RootView: View {
     private func focusSearch() {
         selection = .search
         searchFocusRequest += 1
+    }
+
+    /// Search's Clear button should close the dedicated search role/surface as well
+    /// as emptying the query. On iOS that restores the normal top/floating tab chrome
+    /// for Home/Libraries/Music/Offline; on visionOS it returns to the previous tab.
+    private func exitSearch() {
+        searchPath = NavigationPath()
+        selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection
     }
 
     /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have
