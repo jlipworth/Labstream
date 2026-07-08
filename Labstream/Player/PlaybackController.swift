@@ -1,7 +1,6 @@
 import Foundation
 import AVKit
 import AVFAudio
-import UIKit
 import os
 import PMSKit
 
@@ -429,6 +428,9 @@ final class PlaybackController {
     /// Resume target (ms) for the current item, retained so the status observer can do a
     /// client-side seek fallback if PMS's `#EXT-X-START` priming didn't land (P2 #9).
     private var pendingResumeMs: Int?
+    /// One-shot guard for a diagnostic that catches the user-visible desync where the HLS item
+    /// restarts near zero but the chrome keeps showing a stale resume/seek target.
+    private var didLogResumeClockDesync = false
 
     /// True from the moment a user seek is dispatched (`performUserSeek` / scheduled final-target
     /// rebuild / remote reopen) until playback actually lands at the requested target. While set,
@@ -549,16 +551,53 @@ final class PlaybackController {
     private let initialResumeMsOverride: Int?
 
     /// Best-effort current playhead (ms), used to rebuild the player after a failure without
-    /// losing the user's position. Prefers the live time when it's valid, then the pending
-    /// resume target, then the item's saved offset, then 0.
+    /// losing the user's position. Once playback has actually started, trust AVPlayer's live
+    /// clock even when it is exactly zero — a failed/restarted HLS item can play from true 0:00
+    /// while `pendingResumeMs` still contains the old resume/seek target, and the chrome must not
+    /// stay pinned to that stale value.
     var currentResumeMs: Int {
-        let secs = player.currentTime().seconds
-        if secs.isFinite, secs > 0 { return Int(secs * 1000) }
+        if let live = livePlaybackClockMs {
+            noteResumeClockDesyncIfNeeded(liveMs: live)
+            return live
+        }
         // During an in-flight user seek the live clock is briefly invalid (item detached for a
         // reopen, or pre-prime); fall back to the seek target rather than the stale offset so the
         // scrubber/resume position never regresses to the OLD position (GH #110).
         if isSeeking, let seekHoldTargetMs { return seekHoldTargetMs }
         return pendingResumeMs ?? item.viewOffset ?? 0
+    }
+
+    /// AVPlayer's current clock when it is trustworthy for user-facing chrome. Before the first
+    /// playback signal, a zero clock can just mean "the item has not primed yet", so the chrome may
+    /// temporarily show the pending resume target. After `.playing` / observed playback, zero is a
+    /// real clock value and must win over stale resume state.
+    private var livePlaybackClockMs: Int? {
+        let secs = player.currentTime().seconds
+        guard secs.isFinite else { return nil }
+        let ms = max(0, Int((secs * 1000).rounded()))
+        if secs > 0 || hasObservedPlayback || currentTimeControlStatus == .playing {
+            return ms
+        }
+        return nil
+    }
+
+    private func noteResumeClockDesyncIfNeeded(liveMs: Int) {
+        guard !didLogResumeClockDesync,
+              !isSeeking,
+              (hasObservedPlayback || currentTimeControlStatus == .playing),
+              let pending = pendingResumeMs,
+              pending > 10_000,
+              liveMs + 10_000 < pending else { return }
+        didLogResumeClockDesync = true
+        recordPlaybackDiagnostic("playback.resume_clock_desync", fields: [
+            "live_position": .millisecondsBucket(liveMs),
+            "pending_resume": .millisecondsBucket(pending),
+            "item_generation": .int(currentPlayerItemGeneration),
+            "time_control_status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
+        ])
+        NSLog("PlaybackController: AVPlayer live clock (%dms) is behind pending resume (%dms); trusting live clock",
+              liveMs, pending)
+        pendingResumeMs = liveMs
     }
 
     // MARK: - Zombie-playback detector (starved rebuild reporting `.playing`)
@@ -1936,7 +1975,11 @@ final class PlaybackController {
     func performRelativeUserSeek(bySeconds deltaSeconds: Int,
                                  from baseMs: Int? = nil,
                                  durationMs: Int? = nil) -> Int {
-        let base = baseMs ?? currentResumeMs
+        let live = livePlaybackClockMs
+        if let live {
+            noteResumeClockDesyncIfNeeded(liveMs: live)
+        }
+        let base = live ?? baseMs ?? currentResumeMs
         let deltaMs = deltaSeconds * 1000
         let upperBound = durationMs.flatMap { $0 > 0 ? $0 : nil } ?? knownDurationMs
         let unclamped = base + deltaMs
@@ -2694,6 +2737,11 @@ final class PlaybackController {
     /// Artwork is only fetched for streaming sessions (where we have the server + token to hit
     /// `/photo/:/transcode`); local-file playback gets the text items only.
     private func attachExternalMetadata(to playerItem: AVPlayerItem) {
+        #if os(macOS)
+        // `externalMetadata` is unavailable on native macOS AVPlayerItem; keep playback
+        // functional and let the Mac playback slice design Now Playing/player metadata.
+        return
+        #else
         let textItems = textExternalMetadata()
         playerItem.externalMetadata = textItems
 
@@ -2715,6 +2763,7 @@ final class PlaybackController {
                 playerItem.externalMetadata = textItems + [Self.artworkMetadataItem(data: data)]
             }
         }
+        #endif
     }
 
     /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it can't
@@ -2826,6 +2875,7 @@ final class PlaybackController {
         didApplyAudioPreference = false
         hdrProbeConclusive = false
         pendingResumeMs = resumeOffsetMs
+        didLogResumeClockDesync = false
         // Echo baseline: the resume seek's own `timeJumpedNotification` lands at this offset;
         // suppress nearby jumps so a rebuild does not immediately schedule another rebuild.
         lastPrimedOffsetMs = resumeOffsetMs ?? 0
@@ -2976,6 +3026,47 @@ final class PlaybackController {
                                   resumeOffsetMs: Int?,
                                   itemGeneration: Int,
                                   observedPlaybackGeneration: Int) {
+        // Defensive current-item monitor for reload/reopen edges. The per-item observers below
+        // are tied to the AVPlayerItem we intentionally loaded; if AVFoundation drops to nil or a
+        // different item without going through our `load(_:)` path, the chrome can otherwise keep
+        // reporting the stale pending resume/seek target. Log it for postmortems and force the
+        // user-facing clock/status back to the live player state.
+        observers.store(player.observe(\.currentItem, options: [.new]) { [weak self] avPlayer, _ in
+            guard let self else { return }
+            Task { @MainActor in
+                let current = avPlayer.currentItem
+                let matchesExpectedItem = current === playerItem
+                let liveMs = self.livePlaybackClockMs
+                self.recordPlaybackDiagnostic("playback.current_item_changed", fields: [
+                    "has_item": .bool(current != nil),
+                    "matches_expected_item": .bool(matchesExpectedItem),
+                    "item_generation": .int(itemGeneration),
+                    "current_item_generation": .int(self.currentPlayerItemGeneration),
+                    "observed_playback_generation": .int(observedPlaybackGeneration),
+                    "playback_generation": .int(self.playbackGeneration),
+                    "live_position": .millisecondsBucket(liveMs),
+                    "pending_resume": .millisecondsBucket(self.pendingResumeMs),
+                ])
+
+                guard self.currentPlayerItemGeneration == itemGeneration,
+                      self.playbackGeneration == observedPlaybackGeneration,
+                      !matchesExpectedItem else { return }
+
+                if let liveMs {
+                    self.noteResumeClockDesyncIfNeeded(liveMs: liveMs)
+                    self.pendingResumeMs = liveMs
+                }
+                if current == nil {
+                    self.timeline.isReadyForReporting = false
+                    self.setSeeking(false)
+                    if !self.userWantsPaused, !self.playbackError.isFailed {
+                        self.beginReconnectStatus()
+                    }
+                }
+                self.updateTransportStatus()
+            }
+        })
+
         // Observe item status for its WHOLE lifetime (P4 #8): handle both the resume
         // seek on `.readyToPlay` AND a later `.failed`. The old code self-nilled this
         // observation inside the readyToPlay branch, so a subsequent ready→failed

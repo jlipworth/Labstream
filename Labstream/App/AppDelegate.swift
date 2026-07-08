@@ -1,3 +1,4 @@
+#if os(iOS) || os(visionOS)
 import SwiftUI
 
 /// App delegate whose ONLY job is to receive background `URLSession` relaunch events.
@@ -29,3 +30,5 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 }
+
+#endif

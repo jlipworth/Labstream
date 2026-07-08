@@ -175,13 +175,16 @@ extension View {
         self.buttonStyle(.plain)
             .contentShape(.hoverEffect,
                           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        #else
+        #elseif os(iOS)
         // iPad pointer idiom: cards lift under the cursor, like Home Screen icons.
         self.buttonStyle(.plain)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(.hoverEffect,
                           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .hoverEffect(.lift)
+        #else
+        self.buttonStyle(.plain)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         #endif
     }
 
@@ -218,6 +221,8 @@ extension View {
     func labstreamGlassButtonStyle() -> some View {
         #if os(visionOS)
         self.buttonStyle(.bordered)
+        #elseif os(macOS)
+        self.buttonStyle(.bordered)
         #else
         self.buttonStyle(.glass)
         #endif
@@ -230,6 +235,8 @@ extension View {
     @ViewBuilder
     func labstreamGlassProminentButtonStyle() -> some View {
         #if os(visionOS)
+        self.buttonStyle(.borderedProminent)
+        #elseif os(macOS)
         self.buttonStyle(.borderedProminent)
         #else
         self.buttonStyle(.glassProminent)

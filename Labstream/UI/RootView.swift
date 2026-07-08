@@ -35,6 +35,11 @@ struct RootView: View {
     @State private var systemEntryGeneration = 0
     /// Incremented by the ⌘F shortcut to route to Search and (re-)focus its field.
     @State private var searchFocusRequest = 0
+    #if os(macOS)
+    @State private var macPlayerPresenter = MacPlayerPresentationStore()
+    @State private var macColumnVisibility: NavigationSplitViewVisibility = .all
+    @State private var macColumnVisibilityBeforePlayer: NavigationSplitViewVisibility = .all
+    #endif
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     /// Compact-width Settings presentation (see `usesCompactTabSet`).
@@ -161,12 +166,199 @@ struct RootView: View {
 
     @ViewBuilder
     private var rootContent: some View {
-        #if os(iOS)
+        #if os(macOS)
+        macRootContent
+        #elseif os(iOS)
         mobileRootContent
         #else
         visionRootContent
         #endif
     }
+
+    #if os(macOS)
+    private var macRootContent: some View {
+        ZStack {
+            NavigationSplitView(columnVisibility: $macColumnVisibility) {
+                List(selection: $selection) {
+                    Section("Browse") {
+                        macSidebarRow(.home)
+                        macSidebarRow(.libraries)
+                        macSidebarRow(.search)
+                    }
+                    Section("Media") {
+                        macSidebarRow(.music)
+                        macSidebarRow(.offline)
+                    }
+                    Section("Status") {
+                        macSidebarStatusRow(macBackendStatusTitle,
+                                            systemImage: appModel.isBrowseReady ? "checkmark.circle" : "exclamationmark.circle")
+                        macSidebarStatusRow(macDownloadStatusTitle,
+                                            systemImage: "arrow.down.circle")
+                    }
+                }
+                .navigationTitle("Labstream")
+                .frame(minWidth: 220)
+            } detail: {
+                macTabContent(for: selection)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .navigationSplitViewStyle(.balanced)
+            .safeAreaInset(edge: .bottom) {
+                if musicPlayer.current != nil, !macPlayerPresenter.isPresented {
+                    MiniPlayerBar()
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(.regularMaterial)
+                }
+            }
+            .toolbar {
+                if !macPlayerPresenter.isPresented {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        Button(action: focusSearch) {
+                            Label("Search", systemImage: "magnifyingglass")
+                        }
+                        .labelStyle(.iconOnly)
+                        .controlSize(.regular)
+                        .help("Search")
+
+                        Button { selection = .offline } label: {
+                            Label("Offline", systemImage: "arrow.down.circle")
+                        }
+                        .labelStyle(.iconOnly)
+                        .controlSize(.regular)
+                        .help("Offline")
+                    }
+                }
+            }
+
+            if let presentation = macPlayerPresenter.presentation {
+                presentation.content
+                    .id(presentation.contentID)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
+                    .ignoresSafeArea()
+                    .transition(.opacity.combined(with: .scale(scale: 0.998)))
+                    .zIndex(10)
+            }
+        }
+        .background {
+            MacWindowToolbarVisibilityController(hidesToolbar: macPlayerPresenter.isPresented)
+                .frame(width: 0, height: 0)
+        }
+        .environment(\.macPlayerPresentationStore, macPlayerPresenter)
+        .animation(.easeInOut(duration: 0.16), value: macPlayerPresenter.isPresented)
+        .onChange(of: macPlayerPresenter.isPresented) { _, isPresented in
+            updateMacNavigationChrome(forPlayerPresentation: isPresented)
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .labstreamMacFocusSearch) {
+                focusSearch()
+            }
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .labstreamMacSelectOffline) {
+                guard !macPlayerPresenter.isPresented else { continue }
+                selection = .offline
+            }
+        }
+    }
+
+    private func updateMacNavigationChrome(forPlayerPresentation isPresented: Bool) {
+        if isPresented {
+            if macColumnVisibility != .detailOnly {
+                macColumnVisibilityBeforePlayer = macColumnVisibility
+            }
+            macColumnVisibility = .detailOnly
+        } else {
+            macColumnVisibility = macColumnVisibilityBeforePlayer
+        }
+    }
+
+    private func macSidebarRow(_ tab: AppTab) -> some View {
+        Label(tab.title, systemImage: tab.systemImage)
+            .tag(tab)
+    }
+
+    private func macSidebarStatusRow(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .help(title)
+    }
+
+    private var macBackendStatusTitle: String {
+        if appModel.isBrowseReady {
+            "\(appModel.activeBackend.displayName) connected"
+        } else {
+            "\(appModel.activeBackend.displayName) sign-in needed"
+        }
+    }
+
+    private var macDownloadStatusTitle: String {
+        let records = downloadManager.records
+        guard !records.isEmpty else { return "No offline downloads" }
+
+        let activeCount = records.filter { $0.status.isActiveWork }.count
+        let savedCount = records.filter(\.isComplete).count
+
+        if activeCount > 0, savedCount > 0 {
+            return "\(activeCount) active, \(savedCount) saved"
+        } else if activeCount > 0 {
+            return "\(activeCount) active download\(activeCount == 1 ? "" : "s")"
+        } else if savedCount > 0 {
+            return "\(savedCount) saved offline"
+        } else {
+            return "\(records.count) download\(records.count == 1 ? "" : "s")"
+        }
+    }
+
+    @ViewBuilder
+    private func macTabContent(for tab: AppTab) -> some View {
+        switch tab {
+        case .home:
+            NavigationStack(path: $homePath) {
+                HomeView()
+                    .navigationTitle("Home")
+            }
+            .environment(\.cinemaOriginTab, .home)
+            .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
+            .id(appModel.activeBrowseSessionKey)
+        case .libraries:
+            NavigationStack(path: $librariesPath) {
+                LibrariesView()
+                    .navigationTitle("Libraries")
+            }
+            .environment(\.cinemaOriginTab, .libraries)
+            .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
+            .id(appModel.activeBrowseSessionKey)
+        case .search:
+            NavigationStack(path: $searchPath) {
+                SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+                    .navigationTitle("Search")
+            }
+            .environment(\.cinemaOriginTab, .search)
+            .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
+            .id(appModel.activeBrowseSessionKey)
+        case .music:
+            NavigationStack(path: $musicPath) {
+                MusicLibraryView()
+                    .navigationTitle("Music")
+            }
+            .id(appModel.activeBrowseSessionKey)
+        case .offline:
+            NavigationStack {
+                OfflineLibraryView(manager: downloadManager,
+                                   focusedRatingKey: $offlineReturnRatingKey)
+                    .navigationTitle("Offline")
+            }
+        case .settings:
+            ContentUnavailableView("Settings live in the app menu",
+                                   systemImage: "gearshape",
+                                   description: Text("Choose Labstream > Settings to manage accounts and preferences."))
+        }
+    }
+    #endif
 
     #if os(visionOS)
     private var visionRootContent: some View {
@@ -495,6 +687,9 @@ struct RootView: View {
     /// ⌘F: land on the Search tab and bump the focus request so SearchView focuses its
     /// field whether it was already mounted or is mounting fresh from the tab switch.
     private func focusSearch() {
+        #if os(macOS)
+        guard !macPlayerPresenter.isPresented else { return }
+        #endif
         selection = .search
         searchFocusRequest += 1
     }

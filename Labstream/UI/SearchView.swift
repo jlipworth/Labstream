@@ -92,10 +92,15 @@ struct SearchView: View {
         .searchFocused($searchFieldFocused)
         .toolbar {
             if showsClearSearchButton {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Clear") { clearSearch() }
-                        .accessibilityLabel("Clear Search")
+                #if os(macOS)
+                ToolbarItem {
+                    clearSearchToolbarButton
                 }
+                #else
+                ToolbarItem(placement: .topBarTrailing) {
+                    clearSearchToolbarButton
+                }
+                #endif
             }
         }
         .task(id: searchTaskID) {
@@ -117,6 +122,11 @@ struct SearchView: View {
 
     private var showsClearSearchButton: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loadState != .idle
+    }
+
+    private var clearSearchToolbarButton: some View {
+        Button("Clear") { clearSearch() }
+            .accessibilityLabel("Clear Search")
     }
 
     private func clearSearch() {

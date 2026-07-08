@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 import UniformTypeIdentifiers
 import PMSKit
 
@@ -10,6 +14,7 @@ struct SettingsView: View {
 
     @Environment(AppModel.self) private var appModel
     @Environment(DownloadManager.self) private var downloadManager
+    @Environment(\.dismiss) private var dismiss
 
     @State private var rediscovering = false
     @State private var selectingPlexServerID: String?
@@ -105,7 +110,7 @@ struct SettingsView: View {
                             titleVisibility: .visible) {
             Button("Sign Out and Continue", role: .destructive) {
                 confirmingDifferentServerSignIn = nil
-                authManager.signOut()
+                signOutAndHandoffIfNeeded()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -284,12 +289,7 @@ struct SettingsView: View {
             Picker("Media Backend", selection: Binding(
                 get: { appModel.activeBackend },
                 set: { backend in
-                    guard backend != appModel.activeBackend else { return }
-                    switchingBackend = backend
-                    Task {
-                        await authManager.switchBackend(backend)
-                        switchingBackend = nil
-                    }
+                    switchToBackend(backend)
                 })) {
                     ForEach(MediaBackendKind.allCases) { backend in
                         Text(backend.displayName).tag(backend)
@@ -309,6 +309,19 @@ struct SettingsView: View {
             Text("Backend")
         } footer: {
             Text("Switching keeps each backend’s credentials separate. If the selected backend has a saved session, Labstream reconnects automatically; otherwise it opens that backend’s sign-in flow.")
+        }
+    }
+
+    private func switchToBackend(_ backend: MediaBackendKind) {
+        guard backend != appModel.activeBackend else { return }
+        switchingBackend = backend
+        Task {
+            await authManager.switchBackend(backend)
+            let requiresSignIn = appModel.activeBackend == backend && !appModel.isBrowseReady
+            switchingBackend = nil
+            if requiresSignIn {
+                handoffRequiredSignInToMainWindow()
+            }
         }
     }
 
@@ -722,7 +735,7 @@ struct SettingsView: View {
                     "events_in_buffer": .int(AppDiagnostics.events().count),
                     "logging_enabled": .bool(diagnosticLoggingEnabled),
                 ])
-                UIPasteboard.general.string = diagnosticReportText
+                PlatformPasteboard.copy(diagnosticReportText)
                 copiedDiagnostics = true
                 scheduleCopiedDiagnosticsReset()
             } label: {
@@ -983,7 +996,7 @@ struct SettingsView: View {
                 titleVisibility: .visible
             ) {
                 Button("Sign Out", role: .destructive) {
-                    authManager.signOut()
+                    signOutAndHandoffIfNeeded()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -991,4 +1004,44 @@ struct SettingsView: View {
             }
         }
     }
+
+    private func signOutAndHandoffIfNeeded() {
+        authManager.signOut()
+        handoffRequiredSignInToMainWindow()
+    }
+
+    private func handoffRequiredSignInToMainWindow() {
+        #if os(macOS)
+        dismiss()
+        Task { @MainActor in
+            // Let SwiftUI apply the dismissal before asking AppKit to foreground the
+            // main window. This avoids the Settings window staying key while the
+            // sign-in screen is already visible behind it.
+            await Task.yield()
+            MacSettingsSignInHandoff.focusMainWindow()
+        }
+        #endif
+    }
 }
+
+#if os(macOS)
+private enum MacSettingsSignInHandoff {
+    @MainActor
+    static func focusMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let mainWindow = NSApp.windows.first(where: { window in
+            window.isVisible &&
+            window.canBecomeKey &&
+            !window.isMiniaturized &&
+            !window.title.localizedCaseInsensitiveContains("settings")
+        }) {
+            mainWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey })?
+            .makeKeyAndOrderFront(nil)
+    }
+}
+#endif

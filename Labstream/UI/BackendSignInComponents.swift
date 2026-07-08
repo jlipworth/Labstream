@@ -5,16 +5,37 @@ import SwiftUI
 /// These are deliberately presentation-only: callers own validation, auth-manager actions,
 /// cancellation, and credential storage semantics.
 
+private enum BackendAuthMetrics {
+    #if os(macOS)
+    static let pickerWidth: CGFloat = 300
+    static let buttonWidth: CGFloat = 300
+    static let fieldWidth: CGFloat = 340
+    static let helperWidth: CGFloat = 330
+    #else
+    static let pickerWidth: CGFloat = 360
+    static let buttonWidth: CGFloat = 340
+    static let fieldWidth: CGFloat = 420
+    static let helperWidth: CGFloat = 360
+    #endif
+}
+
 /// Uniform footprint for every primary sign-in CTA: a 52-pt-tall block capped at the
 /// method-chooser's 340-pt width, so the Plex, Jellyfin, and Emby entry buttons read as
 /// the same control instead of a mix of text-hugging pills and full-width blocks. The
 /// 340-pt cap fits a compact iPhone column (390 − page padding) and matches the width
-/// used by the cross-platform chooser.
+/// used by the cross-platform chooser. Native macOS keeps the same width rhythm but
+/// uses a standard-height button so the login card does not read as a scaled-up iPad form.
 private struct BackendPrimaryCTALabel: ViewModifier {
     func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .font(.callout.weight(.medium))
+            .frame(maxWidth: .infinity, minHeight: 28)
+        #else
         content
             .font(.title3.weight(.semibold))
             .frame(maxWidth: .infinity, minHeight: 52)
+        #endif
     }
 }
 
@@ -45,7 +66,10 @@ struct BackendSelectionPicker: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 360)
+            #if os(macOS)
+            .controlSize(.regular)
+            #endif
+            .frame(maxWidth: BackendAuthMetrics.pickerWidth)
     }
 }
 
@@ -96,6 +120,9 @@ struct PlexLinkCodeView: View {
 
             Button("Open Plex sign-in on this device instead", action: onOpenOnDevice)
                 .labstreamGlassButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
         }
     }
 }
@@ -111,8 +138,11 @@ struct PlexSignInStartView: View {
                     .backendPrimaryCTALabel()
             }
             .labstreamGlassProminentButtonStyle()
+            #if os(macOS)
+            .controlSize(.regular)
+            #endif
             .disabled(isWorking)
-            .frame(maxWidth: 340)
+            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
 
             Text("Uses a code at plex.tv/link.")
                 .font(.callout)
@@ -137,18 +167,24 @@ struct PlexRestoreFailureView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
 
             Button(action: onRetry) {
                 Label("Reconnect to Plex", systemImage: "arrow.clockwise")
                     .backendPrimaryCTALabel()
             }
             .labstreamGlassProminentButtonStyle()
+            #if os(macOS)
+            .controlSize(.regular)
+            #endif
             .disabled(isWorking)
-            .frame(maxWidth: 340)
+            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
 
             Button("Sign in again", action: onSignInAgain)
                 .labstreamGlassButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
                 .disabled(isWorking)
         }
     }
@@ -171,7 +207,7 @@ struct JellyfinQuickConnectCodeView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
+                        .frame(maxWidth: BackendAuthMetrics.fieldWidth)
                 }
             }
     }
@@ -194,7 +230,7 @@ struct EmbyConnectPinCodeView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
+                        .frame(maxWidth: BackendAuthMetrics.fieldWidth)
                 }
             }
     }
@@ -387,6 +423,12 @@ struct BackendServerURLField: View {
     @Binding var text: String
 
     var body: some View {
+        #if os(macOS)
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.regular)
+            .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+        #else
         TextField(placeholder, text: $text)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -394,7 +436,8 @@ struct BackendServerURLField: View {
             .keyboardType(.URL)
             .submitLabel(.next)
             .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 420)
+            .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+        #endif
     }
 }
 
@@ -447,6 +490,9 @@ struct BackendSignInMethodChooser: View {
                         .backendPrimaryCTALabel()
                 }
                 .labstreamGlassProminentButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
                 .disabled(primaryDisabled)
 
                 Button(action: onSecondary) {
@@ -454,9 +500,12 @@ struct BackendSignInMethodChooser: View {
                         .backendPrimaryCTALabel()
                 }
                 .labstreamGlassButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
                 .disabled(secondaryDisabled)
             }
-            .frame(maxWidth: 340)
+            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
 
             if let disabledHint, !disabledHint.isEmpty {
                 Text(disabledHint)
@@ -469,7 +518,7 @@ struct BackendSignInMethodChooser: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
+                    .frame(maxWidth: BackendAuthMetrics.helperWidth)
             }
         }
     }
@@ -500,12 +549,18 @@ struct BackendAuthStartView: View {
                         .backendPrimaryCTALabel()
                 }
                 .labstreamGlassProminentButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
                 .disabled(isStartDisabled)
-                .frame(maxWidth: 340)
+                .frame(maxWidth: BackendAuthMetrics.buttonWidth)
             }
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
                 .labstreamGlassButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
         }
     }
 }
@@ -553,19 +608,31 @@ struct BackendCredentialsSignInForm: View {
                 BackendServerURLField(placeholder: serverURLPlaceholder, text: serverURLText)
             }
 
+            #if os(macOS)
+            TextField("Username", text: username)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.regular)
+                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+
+            SecureField("Password", text: password)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.regular)
+                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+            #else
             TextField("Username", text: username)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textContentType(.username)
                 .submitLabel(.next)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
 
             SecureField("Password", text: password)
                 .textContentType(.password)
                 .submitLabel(.go)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+            #endif
 
             Button(action: submitIfAllowed) {
                 Group {
@@ -582,11 +649,17 @@ struct BackendCredentialsSignInForm: View {
                 .backendPrimaryCTALabel()
             }
             .labstreamGlassProminentButtonStyle()
+            #if os(macOS)
+            .controlSize(.regular)
+            #endif
             .disabled(!canSubmit)
-            .frame(maxWidth: 340)
+            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
                 .labstreamGlassButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
         }
         .onSubmit(submitIfAllowed)
     }
@@ -630,7 +703,7 @@ struct EmbyConnectServerPicker: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
+                    .frame(maxWidth: BackendAuthMetrics.fieldWidth)
             }
 
             VStack(spacing: DS.Space.sm) {
@@ -660,13 +733,19 @@ struct EmbyConnectServerPicker: View {
                         .padding(.vertical, DS.Space.xs)
                     }
                     .labstreamGlassButtonStyle()
+                    #if os(macOS)
+                    .controlSize(.regular)
+                    #endif
                     .disabled(isWorking || selectingServerID != nil)
                 }
             }
-            .frame(maxWidth: 420)
+            .frame(maxWidth: BackendAuthMetrics.fieldWidth)
 
             Button("Cancel", action: onCancel)
                 .labstreamGlassButtonStyle()
+                #if os(macOS)
+                .controlSize(.regular)
+                #endif
                 .disabled(isWorking || selectingServerID != nil)
         }
     }

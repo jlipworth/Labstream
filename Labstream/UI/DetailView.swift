@@ -46,6 +46,11 @@ struct DetailView: View {
     /// originating tab's detail instead of always Home (#87). `nil` → fall back to the system-entry
     /// (Home) path, preserving prior behavior.
     @Environment(\.cinemaOriginTab) private var cinemaOriginTab
+    #if os(macOS)
+    /// Root-level macOS presenter. When available, playback is lifted out of the split-view detail
+    /// so it owns the whole main window surface instead of leaving the browse sidebar visible.
+    @Environment(\.macPlayerPresentationStore) private var macPlayerPresenter
+    #endif
 
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
@@ -91,6 +96,9 @@ struct DetailView: View {
     /// value from `detailed`"; once the user toggles we hold their intent here so the row
     /// reflects it immediately, before/independent of the scrobble round-trip.
     @State private var watchedOverride: Bool?
+    #if os(macOS)
+    @State private var macPlayerPresentationOwnerID = UUID()
+    #endif
 
     init(item: MediaItem, originBackend: MediaBackendKind? = nil) {
         self.item = item
@@ -302,17 +310,30 @@ struct DetailView: View {
     /// The play/download detail for a LEAF item (movie or episode). Actions target this
     /// item's own ratingKey, which is guaranteed to own a Media/Part.
     private var leafDetail: some View {
-        ScrollView {
-            #if os(iOS)
-            detailLayout
-                .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
-                .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
+        ZStack {
+            #if os(macOS)
+            if macPlayerPresenter == nil {
+                // Preview/fallback path only. In the app, RootView provides a presenter and the
+                // player is elevated above NavigationSplitView so the sidebar/toolbars disappear.
+                leafDetailScroll
+                    .opacity(isMacPlayerPresented ? 0 : 1)
+                    .allowsHitTesting(!isMacPlayerPresented)
+
+                if isMacPlayerPresented {
+                    macPlayerPresentation
+                        .transition(.opacity.combined(with: .scale(scale: 0.995)))
+                        .zIndex(1)
+                }
+            } else {
+                leafDetailScroll
+            }
             #else
-            detailLayout
-                .padding(DS.Space.xxxl)
+            leafDetailScroll
             #endif
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(artBackdrop)
+        .animation(.easeInOut(duration: 0.16), value: isMacPlayerPresentedValue)
         .navigationTitle(detailed.title)
         // Re-fetch when the chosen movie version changes (#108) as well as on first appear;
         // `activeVersionRatingKey` defaults to `item.ratingKey`, so single-version items run
@@ -337,17 +358,36 @@ struct DetailView: View {
         .task(id: item.ratingKey) {
             await resolveMovieVersionLabels()
         }
+        #if os(macOS)
+        .sheet(isPresented: $showDownloadOptions) {
+            DownloadOptionsSheet(item: detailed,
+                                 mediaIndex: selectedMediaIndex,
+                                 backend: actionBackend.downloadBackendKind)
+        }
+        .onChange(of: isMacPlayerPresented) { _, _ in
+            syncMacPlayerPresentation()
+        }
+        .onChange(of: localPlaybackRequest?.id) { _, _ in
+            syncMacPlayerPresentation()
+        }
+        .onChange(of: presentingPlayer) { _, _ in
+            syncMacPlayerPresentation()
+        }
+        .onChange(of: playingItem?.ratingKey) { _, _ in
+            syncMacPlayerPresentation()
+        }
+        .onChange(of: remotePlayback?.id) { _, _ in
+            syncMacPlayerPresentation()
+        }
+        .onChange(of: embyRemotePlayback?.id) { _, _ in
+            syncMacPlayerPresentation()
+        }
+        .onDisappear {
+            dismissMacPlayerPresentation()
+        }
+        #else
         .fullScreenCover(item: $localPlaybackRequest) { request in
-            CustomPlayerView(localFile: request.url,
-                             item: request.item,
-                             trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
-                                                                       url: request.trickPlayURL,
-                                                                       chapterImageURLs: request.chapterImageURLs,
-                                                                       offlineChapters: request.offlineChapters),
-                             offlineTextSubtitles: request.offlineTextSubtitles,
-                             offlineChapterImageURLs: request.chapterImageURLs,
-                             cinemaOrigin: .offline(ratingKey: request.downloadRatingKey),
-                             onClose: { localPlaybackRequest = nil })
+            localPlayerView(for: request)
                 .ignoresSafeArea()
         }
         .fullScreenCover(isPresented: $presentingPlayer) {
@@ -358,7 +398,97 @@ struct DetailView: View {
                                  mediaIndex: selectedMediaIndex,
                                  backend: actionBackend.downloadBackendKind)
         }
+        #endif
     }
+
+    private var leafDetailScroll: some View {
+        ScrollView {
+            #if os(iOS)
+            detailLayout
+                .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
+                .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
+            #else
+            detailLayout
+                .padding(DS.Space.xxxl)
+            #endif
+        }
+    }
+
+    private var isMacPlayerPresentedValue: Bool {
+        #if os(macOS)
+        isMacPlayerPresented
+        #else
+        false
+        #endif
+    }
+
+    #if os(macOS)
+    private var isMacPlayerPresented: Bool {
+        presentingPlayer || localPlaybackRequest != nil
+    }
+
+    private var macPlayerContentID: AnyHashable {
+        if let request = localPlaybackRequest {
+            return AnyHashable("local-\(request.id.uuidString)")
+        }
+        let playingRatingKey = playingItem?.ratingKey ?? detailed.ratingKey
+        if let remotePlayback {
+            return AnyHashable("jellyfin-\(remotePlayback.id.uuidString)-\(playingRatingKey)")
+        }
+        if let embyRemotePlayback {
+            return AnyHashable("emby-\(embyRemotePlayback.id.uuidString)-\(playingRatingKey)")
+        }
+        return AnyHashable("plex-\(playingRatingKey)")
+    }
+
+    private func syncMacPlayerPresentation() {
+        guard let macPlayerPresenter else { return }
+        guard isMacPlayerPresented else {
+            macPlayerPresenter.dismiss(ownerID: macPlayerPresentationOwnerID)
+            return
+        }
+
+        macPlayerPresenter.present(ownerID: macPlayerPresentationOwnerID,
+                                   contentID: macPlayerContentID) {
+            macPlayerPresentation
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+        }
+    }
+
+    private func dismissMacPlayerPresentation() {
+        macPlayerPresenter?.dismiss(ownerID: macPlayerPresentationOwnerID)
+    }
+
+    @ViewBuilder
+    private var macPlayerPresentation: some View {
+        if let request = localPlaybackRequest {
+            localPlayerView(for: request)
+                .id(request.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+        } else if presentingPlayer {
+            playerCover
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private func localPlayerView(for request: LocalPlaybackRequest) -> some View {
+        CustomPlayerView(localFile: request.url,
+                         item: request.item,
+                         trickPlayProvider: localTrickPlayProvider(kind: request.trickPlayKind,
+                                                                   url: request.trickPlayURL,
+                                                                   chapterImageURLs: request.chapterImageURLs,
+                                                                   offlineChapters: request.offlineChapters),
+                         offlineTextSubtitles: request.offlineTextSubtitles,
+                         offlineChapterImageURLs: request.chapterImageURLs,
+                         cinemaOrigin: .offline(ratingKey: request.downloadRatingKey),
+                         onClose: { localPlaybackRequest = nil })
+    }
+
 
     // MARK: - Backdrop
 

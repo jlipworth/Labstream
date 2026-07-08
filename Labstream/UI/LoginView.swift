@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 import PMSKit
 
 /// Sign-in screen. Drives the Plex PIN-OAuth flow via `AuthManager`:
@@ -48,10 +51,8 @@ struct LoginView: View {
         #endif
     }
 
-    private var formStack: some View {
+    private var formControlsStack: some View {
         VStack(spacing: DS.Space.xl) {
-            LoginBrandHeader()
-
             backendPicker
 
             content
@@ -59,6 +60,14 @@ struct LoginView: View {
             if let errorMessage {
                 BackendAuthErrorBanner(message: errorMessage)
             }
+        }
+    }
+
+    private var formStack: some View {
+        VStack(spacing: DS.Space.xl) {
+            LoginBrandHeader()
+
+            formControlsStack
         }
     }
 
@@ -85,6 +94,9 @@ struct LoginView: View {
     }
 
     var body: some View {
+        #if os(macOS)
+        macLoginLayout
+        #else
         Group {
             if isCompactWidth {
                 // Full-screen phone layout: brand gradient owns the display, and the
@@ -142,7 +154,59 @@ struct LoginView: View {
             webAuth.cancel()
             authManager.cancelPendingLogin()
         }
+        #endif
     }
+
+    #if os(macOS)
+    /// Native Mac sign-in shell: a compact setup-style panel integrated with the
+    /// window surface. Keep the mobile/vision glass login untouched, but avoid the
+    /// oversized marketing/split-card treatment that feels detached in a Mac window.
+    private var macLoginLayout: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: DS.Space.xl) {
+                    MacLoginHeader()
+
+                    formControlsStack
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 28)
+                .padding(.vertical, 26)
+                .frame(maxWidth: 430)
+                .background(MacLoginCardBackground())
+                .frame(maxWidth: .infinity,
+                       minHeight: proxy.size.height,
+                       alignment: .center)
+                .padding(.horizontal, 32)
+                .padding(.vertical, 24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MacLoginWindowBackground())
+        .onChange(of: authManager.state) { _, newValue in
+            switch newValue {
+            case .failed(let message):
+                errorMessage = message
+                working = false
+                selectingEmbyConnectServerID = nil
+                webAuth.cancel()
+            case .authenticated:
+                working = false
+                selectingEmbyConnectServerID = nil
+                webAuth.cancel()
+            case .awaitingJellyfinQuickConnect, .awaitingEmbyConnectPin, .awaitingEmbyServerSelection:
+                working = false
+            default:
+                break
+            }
+        }
+        .onDisappear {
+            webAuth.cancel()
+            authManager.cancelPendingLogin()
+        }
+    }
+    #endif
 
     private var backendPicker: some View {
         BackendSelectionPicker(selection: appModel.activeBackend,
@@ -399,3 +463,72 @@ struct LoginView: View {
         working = false
     }
 }
+
+#if os(macOS)
+private struct MacLoginHeader: View {
+    var body: some View {
+        VStack(spacing: DS.Space.md) {
+            HStack(spacing: DS.Space.md) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(DS.Brand.iconPlateGradient)
+
+                    Image("LabstreamGlyph")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 31, height: 31)
+                }
+                .frame(width: 46, height: 46)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 4)
+
+                HStack(spacing: 0) {
+                    Text("Lab")
+                    Text("stream")
+                        .foregroundStyle(DS.Brand.amber)
+                }
+                .font(.title2.weight(.semibold))
+                .lineLimit(1)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Labstream")
+            }
+
+            Text("Sign in to connect your media library.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct MacLoginCardBackground: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.92))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 6)
+    }
+}
+
+private struct MacLoginWindowBackground: View {
+    var body: some View {
+        Color(nsColor: .windowBackgroundColor)
+            .overlay(alignment: .top) {
+                LinearGradient(colors: [
+                    DS.Brand.deepTeal.opacity(0.08),
+                    Color.clear
+                ], startPoint: .top, endPoint: .bottom)
+                .frame(height: 220)
+            }
+            .ignoresSafeArea()
+    }
+}
+#endif

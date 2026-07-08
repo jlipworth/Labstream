@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 import PMSKit
 
 /// The first-run library picker payload (#104): the candidates to choose from, the backend key
@@ -32,6 +35,9 @@ struct LibraryVisibilityPickerSheet: View {
     }
 
     var body: some View {
+        #if os(macOS)
+        macDialog
+        #else
         NavigationStack {
             Form {
                 SwiftUI.Section {
@@ -68,6 +74,7 @@ struct LibraryVisibilityPickerSheet: View {
                 }
             }
         }
+        #endif
     }
 
     private func bindingForVisible(_ id: String) -> Binding<Bool> {
@@ -78,7 +85,100 @@ struct LibraryVisibilityPickerSheet: View {
             }
         )
     }
+
+    #if os(macOS)
+    private var macDialog: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text("Choose Libraries")
+                    .font(.title2.weight(.semibold))
+                Text("Pick which libraries should appear in Labstream. You can change this later in Settings.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(prompt.candidates.enumerated()), id: \.element.id) { index, candidate in
+                        LibraryVisibilityMacRow(candidate: candidate,
+                                                isVisible: bindingForVisible(candidate.id))
+
+                        if index < prompt.candidates.count - 1 {
+                            Divider()
+                                .padding(.leading, 16)
+                        }
+                    }
+                }
+                .background(Color(nsColor: .controlBackgroundColor),
+                            in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 0.5)
+                }
+                .padding(20)
+            }
+            .frame(minHeight: 180, maxHeight: 340)
+
+            Divider()
+
+            HStack(spacing: DS.Space.md) {
+                Button("Show All") {
+                    hidden.removeAll()
+                }
+                .disabled(hidden.isEmpty)
+
+                Spacer()
+
+                Button("Not Now", role: .cancel) { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+
+                Button("Done") { onConfirm(hidden) }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+        }
+        .frame(width: 520)
+    }
+    #endif
 }
+
+#if os(macOS)
+private struct LibraryVisibilityMacRow: View {
+    let candidate: LibraryVisibility.Candidate
+    @Binding var isVisible: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: DS.Space.md) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(candidate.title)
+                    .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(LibrarySectionKind(visibilityKindToken: candidate.kind).subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: DS.Space.lg)
+
+            Toggle("", isOn: $isVisible)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+#endif
 
 /// Settings editor (#104): live per-library Show/Hide toggles for the active backend, persisting
 /// to `LibraryVisibilityStore`. Re-fetches the current library list on appear so newly-added

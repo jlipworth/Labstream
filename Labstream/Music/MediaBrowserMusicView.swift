@@ -53,14 +53,15 @@ struct MediaBrowserMusicView: View {
         .navigationTitle("Music")
         .toolbar {
             if libraries.count > 1 {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Picker("Library", selection: $selectedLibraryID) {
-                        ForEach(libraries) { library in
-                            Text(library.title).tag(Optional(library.id))
-                        }
-                    }
-                    .pickerStyle(.menu)
+                #if os(macOS)
+                ToolbarItem {
+                    musicLibraryPicker
                 }
+                #else
+                ToolbarItem(placement: .topBarTrailing) {
+                    musicLibraryPicker
+                }
+                #endif
             }
         }
         .navigationDestination(for: MediaItem.self) { item in
@@ -68,6 +69,15 @@ struct MediaBrowserMusicView: View {
         }
         .task(id: backendIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private var musicLibraryPicker: some View {
+        Picker("Library", selection: $selectedLibraryID) {
+            ForEach(libraries) { library in
+                Text(library.title).tag(Optional(library.id))
+            }
+        }
+        .pickerStyle(.menu)
     }
 
     private func load(force: Bool = false) async {

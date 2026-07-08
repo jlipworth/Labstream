@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 import PMSKit
 
 /// Async artwork loader for Plex thumbnails / art.
