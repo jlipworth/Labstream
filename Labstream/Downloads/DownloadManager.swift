@@ -2109,7 +2109,7 @@ public final class DownloadManager {
         for record in fresh where record.status == .downloading {
             var estimator = rateEstimators[record.ratingKey]
                 ?? DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
-            let sampleBytes = liveDisplayBytes(for: record, now: now) ?? record.bytes
+            let sampleBytes = displayBytes(for: record, now: now) ?? record.bytes
             let rate = estimator.sample(bytes: sampleBytes, at: now)
             // Recover the expected final size for the ETA: the exact Content-Length path
             // (`bytes / progress`) when the server reported a size, the persisted static Part size
@@ -2439,7 +2439,7 @@ public final class DownloadManager {
     public func displayFraction(for record: DownloadRecord) -> DownloadProgressDisplay.Fraction? {
         DownloadProgressDisplay.fraction(
             for: record,
-            displayBytes: liveDisplayBytes(for: record),
+            displayBytes: displayBytes(for: record),
             staticExpectedBytes: liveRangeProgress[record.ratingKey]?.expectedBytes ?? staticRangeExpectedBytes(for: record),
             estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record))
     }
@@ -2461,6 +2461,15 @@ public final class DownloadManager {
             isCheckpointPausing: staticRangeRecovery.isCheckpointPausing(record.ratingKey))
     }
 
+    private func displayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
+        if let live = liveDisplayBytes(for: record, now: now) { return live }
+        guard record.status == .paused,
+              store.hasResumeData(ratingKey: record.ratingKey),
+              let resumeBytes = record.metadata?.resumeDisplayBytes,
+              resumeBytes > record.bytes else { return nil }
+        return resumeBytes
+    }
+
     private func staticRangeExpectedBytes(for record: DownloadRecord) -> Int? {
         DownloadExpectedBytesPolicy.staticRangeExpectedBytes(for: record)
     }
@@ -2470,7 +2479,7 @@ public final class DownloadManager {
             records: records,
             isQueuePaused: isQueuePaused,
             downloadSpeed: downloadSpeed,
-            displayBytes: { record in liveDisplayBytes(for: record) },
+            displayBytes: { record in displayBytes(for: record) },
             errorMessage: { record in
                 guard record.status == .failed else { return nil }
                 return lastError[record.ratingKey].map(message(for:))
@@ -2497,7 +2506,7 @@ public final class DownloadManager {
             record: record,
             backend: backend,
             displayFraction: displayFraction(for: record),
-            displayBytes: liveDisplayBytes(for: record),
+            displayBytes: displayBytes(for: record),
             isActive: isActive,
             isCheckpointPausing: isCheckpointPausing,
             isBackendConfigured: isBackendConfigured(for: record),

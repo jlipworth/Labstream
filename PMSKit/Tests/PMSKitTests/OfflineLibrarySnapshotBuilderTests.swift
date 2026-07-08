@@ -61,6 +61,23 @@ struct OfflineLibrarySnapshotBuilderTests {
         #expect(embyRow.isCheckpointPausing == false)
     }
 
+    @Test("snapshot aggregate uses paused resumable display bytes")
+    func snapshotAggregateUsesPausedResumableDisplayBytes() {
+        let paused = record("plex-1", status: .paused, bytes: 270, sideAssetBytes: 20)
+        let snapshot = OfflineLibrarySnapshotBuilder.make(
+            records: [paused],
+            isQueuePaused: false,
+            downloadSpeed: [:],
+            displayBytes: { $0.ratingKey == "plex-1" ? 5_500 : nil },
+            errorMessage: { _ in nil },
+            displayProgress: { _ in 0.35 },
+            statusCaption: { _, _ in "Paused • 35% • 5.5 KB" },
+            isRetrying: { _ in false },
+            isCheckpointPausing: { _ in false })
+
+        #expect(snapshot.aggregateStats.downloadedBytes == 5_520)
+    }
+
     @Test("single-backend paused snapshot hides badges and exposes resume footer")
     func singleBackendPausedSnapshotHidesBadges() throws {
         let snapshot = OfflineLibrarySnapshotBuilder.make(

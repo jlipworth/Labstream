@@ -142,6 +142,53 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(DownloadRowStatusCaptionPolicy.caption(context).contains("server-paced"))
     }
 
+    @Test("paused captions can use resumable display bytes")
+    func pausedCaptionUsesResumableDisplayBytes() {
+        let record = DownloadRecord(
+            ratingKey: "plex-1",
+            title: "Movie",
+            localURL: URL(fileURLWithPath: "/tmp/movie.mp4"),
+            bytes: 270_000_000,
+            progress: 0.017,
+            status: .paused,
+            metadata: OfflineMetadata(ratingKey: "plex-1",
+                                      title: "Movie",
+                                      type: "movie",
+                                      sourcePartSize: 15_669_460_890,
+                                      downloadLane: .original,
+                                      resumeMode: .staticByteRange,
+                                      resumeDataRelativePath: "plex-1.resume",
+                                      resumeDisplayBytes: 5_500_000_000))
+
+        let fraction = DownloadProgressDisplay.fraction(
+            for: record,
+            displayBytes: record.metadata?.resumeDisplayBytes,
+            staticExpectedBytes: record.metadata?.sourcePartSize,
+            estimatedTotalBytes: nil)
+
+        let caption = DownloadRowStatusCaptionPolicy.caption(.init(
+            record: record,
+            backend: .plex,
+            displayFraction: fraction,
+            displayBytes: record.metadata?.resumeDisplayBytes,
+            isActive: false,
+            isCheckpointPausing: false,
+            isBackendConfigured: true,
+            isTranscodeLimited: false,
+            serverPrepState: nil,
+            serverPrepProgress: nil,
+            serverPrepETA: nil,
+            downloadETA: nil,
+            downloadSpeedBytesPerSecond: nil,
+            isRetrying: false,
+            failureCaption: nil))
+
+        #expect(caption.contains("Paused"))
+        #expect(caption.contains("35%"))
+        #expect(caption.contains("5.5 GB"))
+        #expect(!caption.contains("270 MB"))
+    }
+
     @Test("row captions include side-asset bytes without affecting phase")
     func rowCaptionIncludesSideAssetBytesWithoutAffectingPhase() {
         let record = DownloadRecord(
