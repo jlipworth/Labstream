@@ -71,16 +71,26 @@ struct LoginView: View {
             .background(LoginPanelBackground())
     }
 
+    /// Compact phone layout keeps the full-bleed brand backdrop, but still gives the
+    /// form an adaptive readable surface so iOS can stay in the user's light/dark
+    /// appearance instead of forcing the whole login environment to dark.
+    private var compactLoginSurface: some View {
+        formStack
+            .padding(.horizontal, DS.Space.lg)
+            .padding(.vertical, DS.Space.xl)
+            .frame(maxWidth: .infinity)
+            .background(LoginPanelBackground())
+            .padding(.horizontal, DS.Space.lg)
+            .padding(.vertical, DS.Space.xl)
+    }
+
     var body: some View {
         Group {
             if isCompactWidth {
-                // Full-screen phone layout: brand gradient owns the whole display,
+                // Full-screen phone layout: brand gradient owns the display, and the
                 // content flows in a scroll view so the keyboard can push it around.
                 ScrollView {
-                    formStack
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.vertical, DS.Space.xl)
-                        .frame(maxWidth: .infinity)
+                    compactLoginSurface
                 }
                 .scrollBounceBehavior(.basedOnSize)
             } else {
@@ -105,12 +115,9 @@ struct LoginView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #if os(iOS)
-        // The dark login panel was authored against the visionOS glass window. A bare
-        // iOS window is white, which reads as a gray slab floating in a void — give
-        // mobile a full-bleed brand backdrop and render the panel's materials and
-        // secondary text in dark mode to match.
-        .background(DS.Brand.iconPlateGradient.ignoresSafeArea())
-        .environment(\.colorScheme, .dark)
+        // Keep the mobile brand backdrop without forcing the entire login hierarchy
+        // into dark mode; the panel backgrounds adapt to the user's appearance.
+        .background(LoginBrandBackdrop())
         #endif
         .onChange(of: authManager.state) { _, newValue in
             switch newValue {

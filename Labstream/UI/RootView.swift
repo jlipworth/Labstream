@@ -13,9 +13,6 @@ struct RootView: View {
     let musicPlayer: MusicPlayerController
 
     @State private var selection: AppTab = .home
-    /// Last non-Search tab, so the Search role/surface has an explicit Cancel path back
-    /// to the user's previous browse context instead of relying on the search field's tiny clear button.
-    @State private var lastNonSearchSelection: AppTab = .home
     /// Music tab's navigation path, lifted here so Now Playing's "go to
     /// artist/album" (which lives in a sheet, outside the stack) can push into it.
     @State private var musicPath = NavigationPath()
@@ -96,11 +93,6 @@ struct RootView: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
-        }
-        .onChange(of: selection) { _, newSelection in
-            if newSelection != .search {
-                lastNonSearchSelection = newSelection
-            }
         }
         // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
         // session-keyed NavigationStacks (see `.id(appModel.activeBrowseSessionKey)` above) do
@@ -190,7 +182,7 @@ struct RootView: View {
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest, onExitSearch: exitSearch) }
+                NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
                     .environment(\.cinemaOriginTab, .search)
                     .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
@@ -283,44 +275,54 @@ struct RootView: View {
         }
     }
 
+    @ToolbarContentBuilder
+    private var compactSettingsToolbar: some ToolbarContent {
+        if usesCompactTabSet {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showsSettingsSheet = true
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func tabContent(for tab: AppTab) -> some View {
         switch tab {
         case .home:
             NavigationStack(path: $homePath) {
                 HomeView()
-                    .toolbar {
-                        if usesCompactTabSet {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button {
-                                    showsSettingsSheet = true
-                                } label: {
-                                    Label("Settings", systemImage: "gearshape")
-                                }
-                            }
-                        }
-                    }
+                    .toolbar { compactSettingsToolbar }
             }
                 .environment(\.cinemaOriginTab, .home)
                 .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .libraries:
-            NavigationStack(path: $librariesPath) { LibrariesView() }
+            NavigationStack(path: $librariesPath) {
+                LibrariesView()
+                    .toolbar { compactSettingsToolbar }
+            }
                 .environment(\.cinemaOriginTab, .libraries)
                 .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .search:
-            NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest, onExitSearch: exitSearch) }
+            NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
                 .environment(\.cinemaOriginTab, .search)
                 .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .music:
-            NavigationStack(path: $musicPath) { MusicLibraryView() }
+            NavigationStack(path: $musicPath) {
+                MusicLibraryView()
+                    .toolbar { compactSettingsToolbar }
+            }
                 .id(appModel.activeBrowseSessionKey)
         case .offline:
             NavigationStack {
                 OfflineLibraryView(manager: downloadManager,
                                    focusedRatingKey: $offlineReturnRatingKey)
+                    .toolbar { compactSettingsToolbar }
             }
         case .settings:
             NavigationStack { SettingsView(authManager: authManager) }
@@ -482,12 +484,6 @@ struct RootView: View {
     private func focusSearch() {
         selection = .search
         searchFocusRequest += 1
-    }
-
-    /// Explicit Search cancel: clear any pushed search result and return to the last real tab.
-    private func exitSearch() {
-        searchPath = NavigationPath()
-        selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection
     }
 
     /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have

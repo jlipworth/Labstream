@@ -276,7 +276,7 @@ private struct EpisodeRailCell: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
-            PosterImage(path: item.thumb,
+            PosterImage(path: item.episodeRailArtworkPath,
                         width: width,
                         height: height,
                         cornerRadius: DS.Radius.poster)
@@ -307,6 +307,15 @@ private struct EpisodeRailCell: View {
 
     private var progressSliver: some View {
         ProgressSliver(offset: item.viewOffset, duration: item.duration)
+    }
+}
+
+private extension MediaItem {
+    /// Episode rails want a 16:9 still first. If a backend omits the episode still, fall back
+    /// through backdrop-style art before using season/show posters so the card is less likely to
+    /// be an empty tile.
+    var episodeRailArtworkPath: String? {
+        thumb ?? art ?? parentThumb ?? grandparentThumb
     }
 }
 
