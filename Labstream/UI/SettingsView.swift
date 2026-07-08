@@ -823,6 +823,7 @@ struct SettingsView: View {
     /// filenames, usernames, or library paths.
     private var diagnosticReportText: String {
         let storageAudit = downloadManager.storageAudit
+        let downloadRecords = downloadManager.records
         return AppDiagnostics.report(context: DiagnosticReportContext(
             product: appModel.identity.product,
             appVersion: Self.appVersion,
@@ -831,11 +832,21 @@ struct SettingsView: View {
             builtAt: Self.buildDateUTC,
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
             deviceName: appModel.identity.deviceName,
+            platform: Self.platformName,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            keychainService: Self.keychainService,
+            sandboxContainerIdentifier: Self.sandboxContainerIdentifier,
             backend: appModel.activeBackend.displayName,
             server: diagnosticServerLine,
             connectionScheme: diagnosticConnectionScheme,
             selectedQuality: "Home: \(StreamingQuality.label(kbps: homeMaxVideoBitrateKbps)); Remote: \(StreamingQuality.label(kbps: remoteMaxVideoBitrateKbps))",
             adaptiveBitrateEnabled: adaptiveBitrateEnabled,
+            backgroundDownloadSessionIdentifier: BackgroundDownloadSession.identifier,
+            downloadStorageLocation: Self.downloadStorageLocationDescription,
+            downloadRecordCount: downloadRecords.count,
+            activeDownloadCount: downloadRecords.filter { $0.status.isActiveWork }.count,
+            completeDownloadCount: downloadRecords.filter(\.isComplete).count,
+            downloadQueuePaused: downloadManager.isQueuePaused,
             downloadReferencedBytes: storageAudit.referencedBytes,
             downloadDirectoryBytes: storageAudit.directoryBytes,
             downloadUnreferencedBytes: storageAudit.unreferencedBytes,
@@ -843,6 +854,41 @@ struct SettingsView: View {
             downloadOrphanCandidateBytes: storageAudit.orphanCandidateBytes,
             loggingEnabled: diagnosticLoggingEnabled
         ))
+    }
+
+    private static var platformName: String {
+        #if os(macOS)
+        "macOS"
+        #elseif os(visionOS)
+        "visionOS"
+        #elseif os(iOS)
+        "iOS/iPadOS"
+        #else
+        "Apple"
+        #endif
+    }
+
+    private static var keychainService: String? {
+        Bundle.main.object(forInfoDictionaryKey: "LabstreamKeychainService") as? String
+    }
+
+    private static var sandboxContainerIdentifier: String? {
+        #if os(macOS)
+        // Do not export the full container path because it includes the user's home directory.
+        // The bundle id is the relevant Mac sandbox identity and is enough to distinguish
+        // production from per-worktree dev apps in a redacted diagnostic report.
+        return Bundle.main.bundleIdentifier
+        #else
+        return nil
+        #endif
+    }
+
+    private static var downloadStorageLocationDescription: String {
+        #if os(macOS)
+        "app-container/Application Support/Labstream/Downloads"
+        #else
+        "Application Support/Labstream/Downloads"
+        #endif
     }
 
     private func scheduleCopiedDiagnosticsReset() {
