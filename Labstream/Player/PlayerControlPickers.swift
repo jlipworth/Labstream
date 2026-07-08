@@ -1,7 +1,11 @@
 import AVFoundation
 import PMSKit
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 
 /// Shared, observable selection state for the player menus (e.g. the active bitrate
 /// cap so the Quality menu shows the right checkmark even after a programmatic reload).

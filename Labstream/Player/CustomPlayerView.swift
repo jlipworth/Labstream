@@ -1,7 +1,12 @@
 import AVFoundation
 import PMSKit
 import SwiftUI
+#if os(macOS)
+import AppKit
+import QuartzCore
+#elseif canImport(UIKit)
 import UIKit
+#endif
 
 /// The app's video player: app-owned chrome + scrubber over an `AVPlayerLayer` presenter.
 ///
@@ -213,6 +218,76 @@ struct CustomPlayerView: View {
     }
 }
 
+#if os(macOS)
+/// Minimal AppKit bridge whose backing layer is AVPlayerLayer.
+struct PlayerLayerView: NSViewRepresentable {
+    let player: AVPlayer?
+
+    func makeNSView(context: Context) -> PlayerLayerHostView {
+        let view = PlayerLayerHostView()
+        view.playerLayer.videoGravity = .resizeAspect
+        view.setPlayer(player)
+        return view
+    }
+
+    func updateNSView(_ nsView: PlayerLayerHostView, context: Context) {
+        nsView.setPlayer(player)
+    }
+}
+
+final class PlayerLayerHostView: NSView {
+    let playerLayer = AVPlayerLayer()
+    private var loggedZeroSizedLayer = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureLayerHost()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureLayerHost()
+    }
+
+    func setPlayer(_ player: AVPlayer?) {
+        guard playerLayer.player !== player else { return }
+        playerLayer.player = player
+        NSLog("LabstreamMacPlayerLayer: player %@", player == nil ? "detached" : "attached")
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+
+        if bounds.width < 2 || bounds.height < 2 {
+            if !loggedZeroSizedLayer {
+                loggedZeroSizedLayer = true
+                NSLog("LabstreamMacPlayerLayer: zero-sized AVPlayerLayer bounds=%@", NSStringFromRect(bounds))
+            }
+        } else if loggedZeroSizedLayer {
+            loggedZeroSizedLayer = false
+            NSLog("LabstreamMacPlayerLayer: AVPlayerLayer bounds restored=%@", NSStringFromRect(bounds))
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NSLog("LabstreamMacPlayerLayer: view %@", window == nil ? "detached from window" : "attached to window")
+    }
+
+    private func configureLayerHost() {
+        wantsLayer = true
+        let rootLayer = CALayer()
+        rootLayer.backgroundColor = NSColor.black.cgColor
+        layer = rootLayer
+        playerLayer.backgroundColor = NSColor.black.cgColor
+        rootLayer.addSublayer(playerLayer)
+    }
+}
+#else
 /// Minimal UIKit bridge whose backing layer is AVPlayerLayer.
 struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer?
@@ -246,3 +321,4 @@ private final class PlayerLayerHostView: UIView {
         layer as! AVPlayerLayer
     }
 }
+#endif

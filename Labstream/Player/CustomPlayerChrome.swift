@@ -2,7 +2,11 @@ import AVFoundation
 import AVKit
 import PMSKit
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 
 /// Shared scrubber-clock tick used by both the windowed custom player and the Cinema scene.
 ///
@@ -77,6 +81,9 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
+    #if os(macOS)
+    @State private var macWindowBridge = MacPlayerWindowBridge()
+    #endif
     /// True only between a Slider `onEditingChanged(true)` and its matching `(false)`. Guards the
     /// scrubber binding's defensive `beginDrag` so a trailing value-set arriving after the commit
     /// cannot re-open the drag (see `scrubberBinding`).
@@ -177,8 +184,8 @@ struct CustomPlayerChrome: View {
 
                 if shouldShowChrome, selectedMenu == nil {
                     controls
-                        .padding(.horizontal, isCompactMobileChrome ? 14 : 34)
-                        .padding(.bottom, isCompactMobileChrome ? 18 : 28)
+                        .padding(.horizontal, bottomChromeHorizontalInset)
+                        .padding(.bottom, bottomChromeBottomInset)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -202,13 +209,16 @@ struct CustomPlayerChrome: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            #if os(iOS)
+            #if os(iOS) || os(macOS)
             // Hardware-keyboard transport. These zero-size buttons stay in the hierarchy
             // regardless of `shouldShowChrome`, so the shortcuts fire even while the chrome
             // is auto-hidden (the on-screen transport buttons are gone at that point).
             keyboardShortcuts
             #endif
         }
+        #if os(macOS)
+        .background(MacPlayerWindowReader(bridge: macWindowBridge))
+        #endif
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
         .animation(.easeInOut(duration: 0.18), value: controller.skipMarker.active != nil)
@@ -246,6 +256,22 @@ struct CustomPlayerChrome: View {
         horizontalSizeClass == .compact
         #else
         false
+        #endif
+    }
+
+    private var bottomChromeHorizontalInset: CGFloat {
+        #if os(macOS)
+        22
+        #else
+        isCompactMobileChrome ? 14 : 34
+        #endif
+    }
+
+    private var bottomChromeBottomInset: CGFloat {
+        #if os(macOS)
+        18
+        #else
+        isCompactMobileChrome ? 18 : 28
         #endif
     }
 
@@ -297,6 +323,8 @@ struct CustomPlayerChrome: View {
                             .frame(width: 52, height: 52)
                     }
                     .buttonStyle(.bordered)
+                    #elseif os(macOS)
+                    EmptyView()
                     #else
                     // iOS system players use a subdued monochrome glass circle for
                     // dismiss, not a large accent-tinted platter.
@@ -334,11 +362,37 @@ struct CustomPlayerChrome: View {
                         .padding(.top, 10)
                 }
                 #endif
+
+                #if os(macOS)
+                macTopTrailingControls
+                #endif
             }
-            .padding(28)
+            #if os(macOS)
+            .padding(.leading, topChromeHorizontalInset)
+            .padding(.trailing, topChromeHorizontalInset)
+            #else
+            .padding(.horizontal, topChromeHorizontalInset)
+            #endif
+            .padding(.top, topChromeTopInset)
 
             Spacer()
         }
+    }
+
+    private var topChromeHorizontalInset: CGFloat {
+        #if os(macOS)
+        16
+        #else
+        28
+        #endif
+    }
+
+    private var topChromeTopInset: CGFloat {
+        #if os(macOS)
+        14
+        #else
+        28
+        #endif
     }
 
     #if os(iOS)
@@ -365,10 +419,65 @@ struct CustomPlayerChrome: View {
         .buttonBorderShape(.circle)
         .tint(.primary)
     }
+    #endif
 
+    #if os(macOS)
+    @ViewBuilder
+    private var macTopTrailingControls: some View {
+        HStack(spacing: 10) {
+            macFullscreenButton
+            if let onClose {
+                macTopChromeButton("Close Player", systemImage: "xmark") {
+                    requestPlayerClose(onClose)
+                }
+            }
+        }
+    }
+
+    private var macFullscreenButton: some View {
+        macTopChromeButton("Toggle Full Screen",
+                           systemImage: "arrow.up.left.and.arrow.down.right") {
+            macWindowBridge.toggleFullScreen()
+        }
+        .keyboardShortcut("f", modifiers: [.command, .control])
+    }
+
+    private func macTopChromeButton(_ help: String,
+                                    systemImage: String,
+                                    action: @escaping () -> Void) -> some View {
+        Button {
+            revealChrome(keepVisible: true)
+            action()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(.black.opacity(0.42))
+                    .frame(width: 34, height: 34)
+                Circle()
+                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
+                    .frame(width: 34, height: 34)
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            // Keep the visible control subtle, but make the actual pointer/tap target match
+            // Apple's 44pt minimum. The old 30pt hit target was easy to miss near the macOS
+            // titlebar/fullscreen chrome even when the cursor looked like it was inside the
+            // visible circle.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+    #endif
+
+    #if os(iOS) || os(macOS)
     /// Zero-size buttons whose only job is to register hardware-keyboard shortcuts. Space
-    /// toggles play/pause, ←/→ skip 10s back / 30s forward (matching the on-screen skip
-    /// buttons), and Esc closes the player. Kept out of the visible layout via `opacity(0)`.
+    /// toggles play/pause; ←/→ perform the fast 30s jumps; ⇧←/⇧→ perform the finer 10s
+    /// jumps; Esc closes the player. Kept out of the visible layout via `opacity(0)`.
     @ViewBuilder private var keyboardShortcuts: some View {
         Group {
             Button("Play or pause") {
@@ -378,8 +487,8 @@ struct CustomPlayerChrome: View {
             }
             .keyboardShortcut(.space, modifiers: [])
 
-            Button("Skip back 10 seconds") {
-                performRelativeSkip(seconds: -10)
+            Button("Skip back 30 seconds") {
+                performRelativeSkip(seconds: -30)
             }
             .keyboardShortcut(.leftArrow, modifiers: [])
 
@@ -388,10 +497,20 @@ struct CustomPlayerChrome: View {
             }
             .keyboardShortcut(.rightArrow, modifiers: [])
 
+            Button("Skip back 10 seconds") {
+                performRelativeSkip(seconds: -10)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: .shift)
+
+            Button("Skip forward 10 seconds") {
+                performRelativeSkip(seconds: 10)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: .shift)
+
             if let onClose {
                 Button("Close player") {
                     revealChrome()
-                    onClose()
+                    requestPlayerClose(onClose)
                 }
                 .keyboardShortcut(.escape, modifiers: [])
             }
@@ -405,6 +524,9 @@ struct CustomPlayerChrome: View {
 
     @ViewBuilder
     private var controls: some View {
+        #if os(macOS)
+        macControls
+        #else
         if isCompactMobileChrome {
             compactControls
                 .padding(.horizontal, 14)
@@ -416,7 +538,164 @@ struct CustomPlayerChrome: View {
                 .padding(.vertical, 16)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
+        #endif
     }
+
+    #if os(macOS)
+    private var macControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            macControlsHeader
+
+            if scrubState.isDragging, trickPlayProvider != nil {
+                trickPlayPreview
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            HStack(spacing: 14) {
+                macTransportControls
+
+                Text(format(ms: scrubState.displayedPositionMs))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.68))
+                    .frame(width: 62, alignment: .trailing)
+
+                Slider(value: scrubberBinding, in: 0...1) { editing in
+                    handleScrubEditingChanged(editing)
+                }
+                .controlSize(.small)
+                .disabled(scrubState.durationMs <= 0)
+                .tint(.white)
+
+                Text(format(ms: scrubState.durationMs))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.68))
+                    .frame(width: 62, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 1_120)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(0.11), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.34), radius: 18, y: 8)
+        .colorScheme(.dark)
+    }
+
+    private var macControlsHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 18) {
+                macTitleLabel
+
+                Spacer(minLength: 20)
+
+                macMenuStrip
+            }
+
+            VStack(alignment: .leading, spacing: 9) {
+                macTitleLabel
+                macMenuStrip
+            }
+        }
+    }
+
+    private var macTitleLabel: some View {
+        Text(title)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(minWidth: 160, idealWidth: 300, maxWidth: 460, alignment: .leading)
+            .layoutPriority(1)
+            .accessibilityLabel(title)
+    }
+
+    private var macTransportControls: some View {
+        HStack(spacing: 7) {
+            macSkipButton(seconds: -30)
+            macSkipButton(seconds: -10)
+            macPlayPauseButton
+            macSkipButton(seconds: 10)
+            macSkipButton(seconds: 30)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var macPlayPauseButton: some View {
+        Button {
+            revealChrome()
+            controller.togglePlayback()
+            scheduleChromeHideIfNeeded()
+        } label: {
+            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 32, height: 32)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background(.white.opacity(0.14), in: Circle())
+        .overlay {
+            Circle()
+                .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
+        }
+        .help(controller.transport.showsPausedControl ? "Play" : "Pause")
+    }
+
+    private func macSkipButton(seconds: Int) -> some View {
+        let isForward = seconds > 0
+        let amount = abs(seconds)
+        return Button {
+            performRelativeSkip(seconds: seconds)
+        } label: {
+            Image(systemName: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
+                .font(.system(size: 12.5, weight: .medium))
+                .frame(width: 30, height: 30)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white.opacity(scrubState.durationMs <= 0 ? 0.34 : 0.82))
+        .background(.white.opacity(0.075), in: Circle())
+        .overlay {
+            Circle()
+                .strokeBorder(.white.opacity(0.09), lineWidth: 0.5)
+        }
+        .disabled(scrubState.durationMs <= 0)
+        .help(isForward ? "Skip Forward \(amount) Seconds" : "Skip Back \(amount) Seconds")
+        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
+    }
+
+    private var macMenuStrip: some View {
+        HStack(spacing: 7) {
+            ForEach(availableMenus) { menu in
+                Button {
+                    openMenu(menu)
+                } label: {
+                    Label(menu.shortTitle, systemImage: menu.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 9)
+                        .frame(minWidth: menu.minChromeWidth, minHeight: 30)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(selectedMenu == menu ? 1 : 0.78))
+                .background(.white.opacity(selectedMenu == menu ? 0.18 : 0.075),
+                            in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(.white.opacity(selectedMenu == menu ? 0.18 : 0.09), lineWidth: 0.5)
+                }
+                .help(menu.title)
+                .accessibilityLabel(menu.title)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+    #endif
 
     private var regularControls: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -785,7 +1064,7 @@ struct CustomPlayerChrome: View {
                 .controlSize(.small)
             }
         }
-        #else
+        #elseif os(iOS)
         // Flat menus, no "…" overflow (an ellipsis submenu was tried and reverted — it
         // buried Quality/Chapters/Speed behind an extra hop, killing the tap-video →
         // change-setting flow the visionOS pill strip was designed for). Every width
@@ -797,6 +1076,18 @@ struct CustomPlayerChrome: View {
         ViewThatFits(in: .horizontal) {
             labeledMenuStrip
             scrollableLabeledMenuStrip
+        }
+        #else
+        HStack(spacing: 8) {
+            ForEach(availableMenus) { menu in
+                Button {
+                    openMenu(menu)
+                } label: {
+                    Label(menu.shortTitle, systemImage: menu.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .frame(minWidth: menu.minChromeWidth)
+                }
+            }
         }
         #endif
     }
@@ -955,10 +1246,19 @@ struct CustomPlayerChrome: View {
     private func performRelativeSkip(seconds: Int) {
         revealChrome(keepVisible: true)
         let target = controller.performRelativeUserSeek(bySeconds: seconds,
-                                                        from: scrubState.displayedPositionMs,
                                                         durationMs: scrubState.durationMs)
         _ = scrubState.commit(toMs: target)
         revealChrome()
+    }
+
+    private func requestPlayerClose(_ close: () -> Void) {
+        #if os(macOS)
+        revealChrome(keepVisible: true)
+        guard !macWindowBridge.exitFullScreenIfNeeded() else { return }
+        #else
+        revealChrome()
+        #endif
+        close()
     }
 
     private func toggleCinemaMode() async {
@@ -1117,6 +1417,54 @@ private struct AirPlayRoutePickerButton: UIViewRepresentable {
 }
 #endif
 
+#if os(macOS)
+/// Weak bridge from SwiftUI chrome to the AppKit window that hosts the custom player.
+///
+/// The fullscreen action intentionally uses the native macOS window transition for the
+/// whole SwiftUI/AVPlayerLayer surface rather than introducing AVKit's stock
+/// `AVPlayerView`/fullscreen controller.
+@MainActor
+private final class MacPlayerWindowBridge {
+    weak var window: NSWindow?
+
+    func toggleFullScreen() {
+        (window ?? NSApp.keyWindow)?.toggleFullScreen(nil)
+    }
+
+    @discardableResult
+    func exitFullScreenIfNeeded() -> Bool {
+        guard let targetWindow = window ?? NSApp.keyWindow,
+              targetWindow.styleMask.contains(.fullScreen) else { return false }
+        targetWindow.toggleFullScreen(nil)
+        return true
+    }
+}
+
+private struct MacPlayerWindowReader: NSViewRepresentable {
+    let bridge: MacPlayerWindowBridge
+
+    func makeNSView(context: Context) -> MacPlayerWindowReaderView {
+        let view = MacPlayerWindowReaderView()
+        view.bridge = bridge
+        return view
+    }
+
+    func updateNSView(_ nsView: MacPlayerWindowReaderView, context: Context) {
+        nsView.bridge = bridge
+        bridge.window = nsView.window
+    }
+}
+
+private final class MacPlayerWindowReaderView: NSView {
+    weak var bridge: MacPlayerWindowBridge?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        bridge?.window = window
+    }
+}
+#endif
+
 private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     case screen
     case quality
@@ -1173,6 +1521,16 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     }
 
     var popoverSize: CGSize {
+        #if os(macOS)
+        switch self {
+        case .screen: CGSize(width: 360, height: 320)
+        case .quality: CGSize(width: 300, height: 270)
+        case .speed: CGSize(width: 270, height: 220)
+        case .subtitles, .audio: CGSize(width: 340, height: 240)
+        case .chapters: CGSize(width: 920, height: 210)
+        case .stats: CGSize(width: 420, height: 285)
+        }
+        #else
         switch self {
         case .screen: CGSize(width: 430, height: 390)
         case .quality: CGSize(width: 340, height: 315)
@@ -1181,6 +1539,7 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .chapters: CGSize(width: 1_120, height: 228)
         case .stats: CGSize(width: 470, height: 330)
         }
+        #endif
     }
 
     var popoverAlignment: Alignment {
@@ -1213,23 +1572,27 @@ private struct CustomPlayerMenuPopover: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Label(menu.title, systemImage: menu.systemImage)
-                    .font(.title3.weight(.semibold))
-                    .frame(maxHeight: 44, alignment: .center)
+                    .font(headerFont)
+                    .frame(maxHeight: headerHeight, alignment: .center)
                 Spacer()
                 Button(action: onClose) {
                     Label("Close menu", systemImage: "xmark")
                         .labelStyle(.iconOnly)
-                        .frame(width: 44, height: 44)
+                        .frame(width: closeButtonSide, height: closeButtonSide)
                 }
                 #if os(iOS)
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .tint(.primary)
+                #elseif os(macOS)
+                .buttonStyle(.plain)
+                .background(.white.opacity(0.08), in: Circle())
+                .help("Close")
                 #else
                 .buttonStyle(.bordered)
                 #endif
             }
-            .frame(width: size.width, height: 44, alignment: .center)
+            .frame(width: size.width, height: headerHeight, alignment: .center)
 
             Divider()
                 .opacity(0.35)
@@ -1238,10 +1601,70 @@ private struct CustomPlayerMenuPopover: View {
             menuContent
                 .frame(width: size.width, height: size.height, alignment: .topLeading)
         }
-        .padding(18)
-        .frame(width: size.width + 36, alignment: .leading)
-        .labstreamOverlayPlatter(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .shadow(radius: 18)
+        .padding(popoverPadding)
+        .frame(width: size.width + popoverPadding * 2, alignment: .leading)
+        #if os(macOS)
+        .background(popoverMaterial, in: RoundedRectangle(cornerRadius: popoverCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: popoverCornerRadius, style: .continuous)
+                .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+        }
+        #else
+        .labstreamOverlayPlatter(.regularMaterial,
+                                 in: RoundedRectangle(cornerRadius: popoverCornerRadius, style: .continuous))
+        #endif
+        .shadow(color: .black.opacity(0.30), radius: 18, y: 8)
+        #if os(macOS)
+        .colorScheme(.dark)
+        #endif
+    }
+
+    private var headerFont: Font {
+        #if os(macOS)
+        .headline
+        #else
+        .title3.weight(.semibold)
+        #endif
+    }
+
+    private var headerHeight: CGFloat {
+        #if os(macOS)
+        30
+        #else
+        44
+        #endif
+    }
+
+    private var closeButtonSide: CGFloat {
+        #if os(macOS)
+        24
+        #else
+        44
+        #endif
+    }
+
+    private var popoverPadding: CGFloat {
+        #if os(macOS)
+        14
+        #else
+        18
+        #endif
+    }
+
+    private var popoverCornerRadius: CGFloat {
+        #if os(macOS)
+        15
+        #else
+        24
+        #endif
+    }
+
+    private var popoverMaterial: Material {
+        #if os(macOS)
+        .regularMaterial
+        #else
+        .ultraThinMaterial
+        #endif
     }
 
     /// Shrinks the content frame to fit `maxPopoverHeight` when the popover is height-constrained
@@ -1250,7 +1673,7 @@ private struct CustomPlayerMenuPopover: View {
     /// through unchanged.
     private func clampedContentHeight(base: CGFloat) -> CGFloat {
         guard let maxPopoverHeight else { return base }
-        let chrome: CGFloat = 18 * 2 + 44 + 12 * 2 + 1
+        let chrome: CGFloat = popoverPadding * 2 + headerHeight + 12 * 2 + 1
         return min(base, max(120, maxPopoverHeight - chrome))
     }
 

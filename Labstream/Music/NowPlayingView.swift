@@ -125,7 +125,9 @@ struct NowPlayingView: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                #if !os(macOS)
                 .hoverEffect(.highlight)
+                #endif
                 .disabled(artistItem == nil)
             }
             if let albumTitle = player.current?.parentTitle {
@@ -140,7 +142,9 @@ struct NowPlayingView: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                #if !os(macOS)
                 .hoverEffect(.highlight)
+                #endif
                 .disabled(albumItem == nil)
             }
         }

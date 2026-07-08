@@ -173,7 +173,9 @@ struct AlbumDetailView: View {
                             .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    #if !os(macOS)
                     .hoverEffect(.highlight)
+                    #endif
                     .padding(.leading, -DS.Space.sm) // keep text flush with the title
                 } else {
                     Text(artist)

@@ -1,8 +1,28 @@
 import Foundation
 import AVFoundation
+#if !os(macOS)
 import AVFAudio
 import PMSKit
 import UIKit
+#endif
+
+#if os(macOS)
+/// Native macOS has no AVAudioSession. Keep the shared playback controllers calling the
+/// same lifecycle hooks while deferring real Mac media-session behavior to the playback
+/// feature slice.
+@MainActor
+final class AudioSessionCoordinator {
+    init(player: AVPlayer,
+         mode: PlatformAudioSessionMode = .moviePlayback,
+         pausesOnBackground: Bool = true,
+         shouldContinueOnBackground: @escaping @MainActor () -> Bool = { false }) {}
+
+    func activate() {}
+    func deactivate() {}
+    func installObservers() {}
+    func removeObservers() {}
+}
+#else
 
 /// Owns the shared `AVAudioSession` and the interruption / route-change /
 /// app-lifecycle handling for one playback session (#17, P5).
@@ -23,7 +43,7 @@ final class AudioSessionCoordinator {
 
     /// `AVAudioSession` mode applied in `activate()`. `.moviePlayback` for video
     /// (the default, matching the original extraction), `.default` for music.
-    private let mode: AVAudioSession.Mode
+    private let mode: PlatformAudioSessionMode
 
     /// Whether losing the foreground should pause playback. True for video (it can't
     /// decode/render in the background); false for music, which should keep playing.
@@ -45,7 +65,7 @@ final class AudioSessionCoordinator {
     private var wasPlayingBeforeInterruption = false
 
     init(player: AVPlayer,
-         mode: AVAudioSession.Mode = .moviePlayback,
+         mode: PlatformAudioSessionMode = .moviePlayback,
          pausesOnBackground: Bool = true,
          shouldContinueOnBackground: @escaping @MainActor () -> Bool = { false }) {
         self.player = player
@@ -243,3 +263,4 @@ final class AudioSessionCoordinator {
     }
     #endif
 }
+#endif

@@ -2,8 +2,14 @@ import Foundation
 import Observation
 import AVFoundation
 import AVFAudio
+#if !os(macOS)
 import MediaPlayer
+#endif
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 import PMSKit
 
 /// Queue-based music playback for the Plexamp-style music module (#17).

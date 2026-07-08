@@ -27,6 +27,12 @@
 	<key>LabstreamBuildDateUTC</key>
 	<string>$(LABSTREAM_BUILD_DATE_UTC)</string>
 
+	<!-- macOS host debug deploys can override this to isolate per-worktree keychain
+	     items when using a dev bundle id. Existing iOS/visionOS behavior keeps the
+	     KeychainStore default unless the app bootstrap explicitly opts in. -->
+	<key>LabstreamKeychainService</key>
+	<string>$(LABSTREAM_KEYCHAIN_SERVICE)</string>
+
 	<!-- Export compliance (#appstore): the app does not implement proprietary or
 	     non-standard cryptography. When encrypted transport is used, it relies on
 	     standard Apple networking/TLS; loopback/LAN HTTP routes are cleartext.

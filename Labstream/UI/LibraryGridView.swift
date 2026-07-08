@@ -372,21 +372,18 @@ struct LibraryGridView: View {
                         LazyVGrid(columns: columns,
                                   spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
                             ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
-                                if let item = slot {
-                                    NavigationLink(value: item) {
-                                        PosterCell(item: item,
-                                                   width: DS.Poster.gridMin(compact: compactWidth))
-                                    }
-                                    .cardLink()
-                                    .id(index)
-                                    .videoCardContextMenu(for: item)
-                                } else {
-                                    LibraryPlaceholderPoster()
-                                        .id(index)
-                                        .onAppear {
-                                            prefetchPage(containing: index)
-                                        }
+                                LibraryGridSlot(index: index,
+                                                item: slot,
+                                                width: DS.Poster.gridMin(compact: compactWidth)) {
+                                    prefetchPage(containing: index)
                                 }
+                                // Keep the stable sparse-grid offset as the scroll target for
+                                // the A–Z rail while giving the loaded/placeholder subtrees
+                                // different identities below. Without the inner identity split,
+                                // SwiftUI can recycle a placeholder view after a fast alphabet
+                                // jump and leave the slot blank/missing metadata once the page
+                                // arrives.
+                                .id(index)
                             }
                         }
                         .padding(DS.pagePadding(compact: compactWidth))
@@ -446,6 +443,30 @@ struct LibraryGridView: View {
                 withAnimation(.snappy(duration: 0.16)) {
                     proxy.scrollTo(entry.offset, anchor: .top)
                 }
+            }
+        }
+    }
+}
+
+private struct LibraryGridSlot: View {
+    let index: Int
+    let item: MediaItem?
+    let width: CGFloat
+    let onPlaceholderAppear: () -> Void
+
+    var body: some View {
+        Group {
+            if let item {
+                NavigationLink(value: item) {
+                    PosterCell(item: item, width: width)
+                }
+                .cardLink()
+                .videoCardContextMenu(for: item)
+                .id("loaded-\(item.ratingKey)")
+            } else {
+                LibraryPlaceholderPoster()
+                    .id("placeholder-\(index)")
+                    .onAppear(perform: onPlaceholderAppear)
             }
         }
     }

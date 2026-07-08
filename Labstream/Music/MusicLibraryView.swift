@@ -56,14 +56,15 @@ struct MusicLibraryView: View {
         .toolbar {
             // Library switcher only when the server has more than one music section.
             if sections.count > 1 {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Picker("Library", selection: $selectedSectionKey) {
-                        ForEach(sections) { section in
-                            Text(section.title).tag(Optional(section.key))
-                        }
-                    }
-                    .pickerStyle(.menu)
+                #if os(macOS)
+                ToolbarItem {
+                    musicSectionPicker
                 }
+                #else
+                ToolbarItem(placement: .topBarTrailing) {
+                    musicSectionPicker
+                }
+                #endif
             }
         }
         .navigationDestination(for: MediaItem.self) { item in
@@ -71,6 +72,15 @@ struct MusicLibraryView: View {
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private var musicSectionPicker: some View {
+        Picker("Library", selection: $selectedSectionKey) {
+            ForEach(sections) { section in
+                Text(section.title).tag(Optional(section.key))
+            }
+        }
+        .pickerStyle(.menu)
     }
 
     private var loadIdentity: String {
@@ -579,7 +589,7 @@ struct MusicSkeleton: View {
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: MusicArt.gridMin(compact: compactWidth),
                             maximum: MusicArt.gridMax(compact: compactWidth)),
-                  spacing: DS.gridGutter(compact: compactWidth))]
+                  spacing: MusicArt.gridGutter(compact: compactWidth))]
     }
 
     var body: some View {
@@ -597,7 +607,7 @@ struct MusicSkeleton: View {
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
             }
 
-            LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
+            LazyVGrid(columns: columns, spacing: MusicArt.gridRowSpacing(compact: compactWidth)) {
                 ForEach(0..<8, id: \.self) { _ in
                     skeletonBlock(width: MusicArt.gridMin(compact: compactWidth),
                                   height: MusicArt.gridMin(compact: compactWidth),
@@ -606,7 +616,7 @@ struct MusicSkeleton: View {
             }
             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
         }
-        .padding(.vertical, DS.Space.xl)
+        .padding(.vertical, MusicArt.gridVerticalPadding)
     }
 
     private func skeletonBlock(width: CGFloat, height: CGFloat, radius: CGFloat) -> some View {
@@ -654,9 +664,60 @@ enum MusicArt {
         static let gridMax: CGFloat = 150
     }
 
+    #if os(macOS)
+    /// Native Mac music browse grids should read like a desktop media library: denser
+    /// than the touch/visionOS tiles, but still large enough for artwork recognition.
+    enum MacGrid {
+        static let gridMin: CGFloat = 126
+        static let gridMax: CGFloat = 148
+        static let gutter: CGFloat = 18
+        static let rowSpacing: CGFloat = 22
+        static let verticalPadding: CGFloat = 16
+        static let alphabetRailGridReservation: CGFloat = 46
+    }
+    #endif
+
     static func railSize(compact: Bool) -> CGFloat { compact ? Compact.railSize : railSize }
-    static func gridMin(compact: Bool) -> CGFloat { compact ? Compact.gridMin : gridMin }
-    static func gridMax(compact: Bool) -> CGFloat { compact ? Compact.gridMax : gridMax }
+    static func gridMin(compact: Bool) -> CGFloat {
+        #if os(macOS)
+        MacGrid.gridMin
+        #else
+        compact ? Compact.gridMin : gridMin
+        #endif
+    }
+    static func gridMax(compact: Bool) -> CGFloat {
+        #if os(macOS)
+        MacGrid.gridMax
+        #else
+        compact ? Compact.gridMax : gridMax
+        #endif
+    }
+    static func gridGutter(compact: Bool) -> CGFloat {
+        #if os(macOS)
+        MacGrid.gutter
+        #else
+        DS.gridGutter(compact: compact)
+        #endif
+    }
+    static func gridRowSpacing(compact: Bool) -> CGFloat {
+        #if os(macOS)
+        MacGrid.rowSpacing
+        #else
+        compact ? DS.Space.lg : DS.Space.xxl
+        #endif
+    }
+
+    static var gridVerticalPadding: CGFloat {
+        #if os(macOS)
+        MacGrid.verticalPadding
+        #else
+        DS.Space.xl
+        #endif
+    }
+
+    #if os(macOS)
+    static var macAlphabetRailGridReservation: CGFloat { MacGrid.alphabetRailGridReservation }
+    #endif
 }
 
 /// Square artwork + title (+ optional subtitle) cell shared by the music rails and
@@ -675,6 +736,14 @@ struct SquareArtCell: View {
         size ?? MusicArt.gridMin(compact: compactWidth)
     }
 
+    private var usesMacGridMetrics: Bool {
+        #if os(macOS)
+        size == nil
+        #else
+        false
+        #endif
+    }
+
     private var artRadius: CGFloat {
         item.kind == .artist ? resolvedSize / 2 : DS.Radius.poster
     }
@@ -688,7 +757,7 @@ struct SquareArtCell: View {
     }
 
     var body: some View {
-        VStack(alignment: textAlignment, spacing: DS.Space.sm) {
+        VStack(alignment: textAlignment, spacing: usesMacGridMetrics ? DS.Space.xs : DS.Space.sm) {
             PosterImage(path: item.thumb, width: resolvedSize, height: resolvedSize,
                         cornerRadius: artRadius,
                         placeholderSymbol: item.kind == .artist ? "music.microphone" : "music.note")
@@ -696,12 +765,12 @@ struct SquareArtCell: View {
 
             VStack(alignment: textAlignment, spacing: 2) {
                 Text(item.title)
-                    .font(.headline)
+                    .font(titleFont)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: frameAlignment)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.subheadline)
+                        .font(subtitleFont)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: frameAlignment)
@@ -711,5 +780,13 @@ struct SquareArtCell: View {
         .frame(width: resolvedSize, alignment: frameAlignment)
         // NOTE: highlight comes from the wrapping link's `.cardLink()` — a custom
         // ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
+    }
+
+    private var titleFont: Font {
+        usesMacGridMetrics ? .subheadline.weight(.semibold) : .headline
+    }
+
+    private var subtitleFont: Font {
+        usesMacGridMetrics ? .caption : .subheadline
     }
 }

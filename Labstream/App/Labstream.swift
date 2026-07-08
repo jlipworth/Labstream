@@ -1,6 +1,5 @@
 #if os(visionOS)
 import Foundation
-import PMSKit
 import SwiftUI
 
 @main
@@ -24,25 +23,13 @@ struct Labstream: App {
     @State private var realityTheaterSession = RealityTheaterSessionStore()
 
     init() {
-        // Register App Shortcuts at process start, per Apple guidance; Home refreshes
-        // dynamic media parameters again after browse data loads.
-        LabstreamShortcuts.updateAppShortcutParameters()
+        AppStartup.prepareForLaunch()
 
-        // Adopt MetricKit as the passive crash/hang channel (#116). Registering this early lets
-        // the OS deliver any diagnostics queued from a previous (crashed) run; they surface only
-        // through the existing user-initiated, redacted feedback report.
-        MetricKitDiagnostics.shared.register()
-
-        // Build a stable identity from the persisted client identifier. Version comes from the
-        // bundle (#26) so the X-Plex-Version header can't silently drift from the marketing version.
-        let keychain = KeychainStore()
-        let identity = PlatformClientIdentity.make(clientIdentifier: keychain.clientIdentifier())
-        let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
-        _appModel = State(initialValue: model)
-        _authManager = State(initialValue: AuthManager(appModel: model, keychain: keychain))
-        _downloadManager = State(initialValue: DownloadManager(appModel: model))
-        // Single long-lived music player (#17): the queue/audio session outlive any one screen.
-        _musicPlayer = State(initialValue: MusicPlayerController(appModel: model))
+        let services = AppServices.make()
+        _appModel = State(initialValue: services.appModel)
+        _authManager = State(initialValue: services.authManager)
+        _downloadManager = State(initialValue: services.downloadManager)
+        _musicPlayer = State(initialValue: services.musicPlayer)
     }
 
     var body: some Scene {
@@ -93,17 +80,7 @@ struct Labstream: App {
     }
 
     private func recordScenePhase(_ phase: ScenePhase) {
-        let label: String
-        switch phase {
-        case .active: label = "active"
-        case .inactive: label = "inactive"
-        case .background: label = "background"
-        @unknown default: label = "unknown"
-        }
-        AppDiagnostics.record(.downloads, "app.scene_phase", fields: [
-            "phase": .label(label),
-        ])
-        downloadManager.noteAppScenePhase(label)
+        AppStartup.recordScenePhase(phase, downloadManager: downloadManager)
     }
 }
 

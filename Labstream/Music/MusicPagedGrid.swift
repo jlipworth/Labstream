@@ -36,7 +36,7 @@ struct MusicPagedGrid: View {
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: MusicArt.gridMin(compact: compactWidth),
                             maximum: MusicArt.gridMax(compact: compactWidth)),
-                  spacing: DS.gridGutter(compact: compactWidth))]
+                  spacing: MusicArt.gridGutter(compact: compactWidth))]
     }
 
     private var pagingSource: LibraryPagingSource {
@@ -89,7 +89,7 @@ struct MusicPagedGrid: View {
             }
             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
 
-            LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
+            LazyVGrid(columns: columns, spacing: MusicArt.gridRowSpacing(compact: compactWidth)) {
                 // Position-keyed: a slot's identity is its place in the listing; its content
                 // arrives when the page loads (same contract as the video grid's slots).
                 ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
@@ -104,10 +104,21 @@ struct MusicPagedGrid: View {
             // On compact the 16-pt page padding leaves the last column under the
             // A–Z section index, which intercepts taps while scrubbing — reserve
             // the rail's narrow strip instead of overlapping (same fix as the
-            // video LibraryGridView).
-            .padding(.trailing, compactWidth && paging.alphabetBuckets.count > 1 ? LibraryAlphabetRail.compactGridTrailingReservation : 0)
+            // video LibraryGridView). macOS also reserves the floating rail so the
+            // denser desktop music grid doesn't tuck its final album/artist card
+            // underneath the index.
+            .padding(.trailing, alphabetRailGridReservation)
         }
-        .padding(.vertical, DS.Space.xl)
+        .padding(.vertical, MusicArt.gridVerticalPadding)
+    }
+
+    private var alphabetRailGridReservation: CGFloat {
+        guard paging.alphabetBuckets.count > 1 else { return 0 }
+        #if os(macOS)
+        return MusicArt.macAlphabetRailGridReservation
+        #else
+        return compactWidth ? LibraryAlphabetRail.compactGridTrailingReservation : 0
+        #endif
     }
 
     private var sortMenu: some View {

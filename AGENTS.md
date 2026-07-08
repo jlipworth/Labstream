@@ -126,3 +126,20 @@ xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|<branch-fragment>' || true
 
 Do not delete the golden main-worktree simulator. Only this linked worktree's `vpwt-*`,
 `iphonewt-*`, and/or `ipadwt-*` simulators should disappear during closeout.
+
+## Native macOS host deploy/run
+
+There is no macOS simulator lane. Use the host helper, which builds `LabstreamMac` for
+`platform=macOS,arch=arm64` and defaults to a per-worktree dev bundle id so parallel
+worktrees do not collide with the production sandbox/keychain identity:
+
+```sh
+scripts/deploy-macos-to-host.sh
+scripts/deploy-macos-to-host.sh --launch
+scripts/deploy-macos-to-host.sh --no-build --launch
+```
+
+Use `--use-production-bundle-id` only intentionally. `--reset-container` is explicit and
+production reset requires `--allow-production-container-reset`. The script never uses
+`simctl`/`devicectl` and never deletes `/Applications/Labstream.app`. Details:
+`docs/MACOS-HOST-DEPLOYMENT.md`.

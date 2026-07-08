@@ -1,6 +1,10 @@
 import SwiftUI
 import PMSKit
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 
 /// Lists offline downloads with live progress + delete, and plays a completed
 /// file through the custom player (`CustomPlayerView(localFile:item:)`).
@@ -11,11 +15,17 @@ import UIKit
 public struct OfflineLibraryView: View {
     @Environment(MusicPlayerController.self) private var musicPlayer
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    #if os(macOS)
+    @Environment(\.macPlayerPresentationStore) private var macPlayerPresenter
+    #endif
     @State private var manager: DownloadManager
     @State private var playing: DownloadRecord?
     @Binding private var focusedRatingKey: String?
     @State private var highlightedRatingKey: String?
     @State private var pendingDeletion: PendingOfflineDeletion?
+    #if os(macOS)
+    @State private var macPlayerPresentationOwnerID = UUID()
+    #endif
 
     public init(manager: DownloadManager, focusedRatingKey: Binding<String?> = .constant(nil)) {
         _manager = State(initialValue: manager)
@@ -80,20 +90,18 @@ public struct OfflineLibraryView: View {
                 }
             }
         }
-        .fullScreenCover(item: $playing) { record in
-            CustomPlayerView(localFile: record.localURL,
-                             item: offlineItem(from: record),
-                             trickPlayProvider: localTrickPlayProvider(for: record),
-                             offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
-                             offlineChapterImageURLs: record.chapterImageURLs,
-                             cinemaOrigin: .offline(ratingKey: record.ratingKey),
-                             onLocalPlaybackProgress: { positionMs, durationMs in
-                                 manager.updateLocalPlaybackPosition(ratingKey: record.ratingKey,
-                                                                     positionMs: positionMs,
-                                                                     durationMs: durationMs)
-                             },
-                             onClose: { playing = nil })
+        #if os(macOS)
+        .onChange(of: playing?.id) { _, _ in
+            syncMacPlayerPresentation()
         }
+        .onDisappear {
+            dismissMacPlayerPresentation()
+        }
+        #else
+        .fullScreenCover(item: $playing) { record in
+            offlinePlayerView(for: record)
+        }
+        #endif
         .confirmationDialog(pendingDeletion?.dialogTitle ?? "Delete download?",
                             isPresented: Binding(
                                 get: { pendingDeletion != nil },
@@ -114,6 +122,42 @@ public struct OfflineLibraryView: View {
             }
         }
     }
+
+    private func offlinePlayerView(for record: DownloadRecord) -> some View {
+        CustomPlayerView(localFile: record.localURL,
+                         item: offlineItem(from: record),
+                         trickPlayProvider: localTrickPlayProvider(for: record),
+                         offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
+                         offlineChapterImageURLs: record.chapterImageURLs,
+                         cinemaOrigin: .offline(ratingKey: record.ratingKey),
+                         onLocalPlaybackProgress: { positionMs, durationMs in
+                             manager.updateLocalPlaybackPosition(ratingKey: record.ratingKey,
+                                                                 positionMs: positionMs,
+                                                                 durationMs: durationMs)
+                         },
+                         onClose: { playing = nil })
+    }
+
+    #if os(macOS)
+    private func syncMacPlayerPresentation() {
+        guard let macPlayerPresenter else { return }
+        guard let playing else {
+            macPlayerPresenter.dismiss(ownerID: macPlayerPresentationOwnerID)
+            return
+        }
+
+        macPlayerPresenter.present(ownerID: macPlayerPresentationOwnerID,
+                                   contentID: AnyHashable("offline-\(playing.id)")) {
+            offlinePlayerView(for: playing)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
+        }
+    }
+
+    private func dismissMacPlayerPresentation() {
+        macPlayerPresenter?.dismiss(ownerID: macPlayerPresentationOwnerID)
+    }
+    #endif
 
     fileprivate static let rowActionControlSize: CGFloat = 56
 
@@ -144,32 +188,42 @@ public struct OfflineLibraryView: View {
     }
 
     /// The Offline toolbar. On iOS 26 bare toolbar items get Liquid Glass (and adjacent items
-    /// share one glass background) automatically, so the metrics + queue action ride a plain
-    /// `ToolbarItemGroup` with no hand-rolled material. visionOS keeps the custom capsule cluster.
+    /// share one glass background) automatically, so the metrics + queue action keep their
+    /// top-trailing `ToolbarItemGroup` with no hand-rolled material. macOS uses the default
+    /// native toolbar placement, and visionOS keeps the custom capsule cluster.
     @ToolbarContentBuilder
     private func offlineToolbar(snapshot: OfflineLibrarySnapshot) -> some ToolbarContent {
         if snapshot.aggregateStats.hasVisibleMetrics || snapshot.queueToolbarAction != nil {
-            #if os(iOS)
+            #if os(macOS)
+            ToolbarItemGroup {
+                offlineToolbarInlineItems(snapshot: snapshot)
+            }
+            #elseif os(iOS)
             ToolbarItemGroup(placement: .topBarTrailing) {
-                if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
-                    aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
-                                           systemImage: "speedometer",
-                                           accessibilityLabel: "Active download speed")
-                }
-                if snapshot.aggregateStats.downloadedBytes > 0 {
-                    aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
-                                           systemImage: "externaldrive.fill",
-                                           accessibilityLabel: "Downloaded data")
-                }
-                if let queueToolbarAction = snapshot.queueToolbarAction {
-                    queueToolbarButton(queueToolbarAction)
-                }
+                offlineToolbarInlineItems(snapshot: snapshot)
             }
             #else
             ToolbarItem(placement: .topBarTrailing) {
                 offlineToolbarCluster(snapshot: snapshot)
             }
             #endif
+        }
+    }
+
+    @ViewBuilder
+    private func offlineToolbarInlineItems(snapshot: OfflineLibrarySnapshot) -> some View {
+        if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
+            aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
+                                   systemImage: "speedometer",
+                                   accessibilityLabel: "Active download speed")
+        }
+        if snapshot.aggregateStats.downloadedBytes > 0 {
+            aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
+                                   systemImage: "externaldrive.fill",
+                                   accessibilityLabel: "Downloaded data")
+        }
+        if let queueToolbarAction = snapshot.queueToolbarAction {
+            queueToolbarButton(queueToolbarAction)
         }
     }
 

@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 import UniformTypeIdentifiers
 import PMSKit
 
@@ -94,14 +98,14 @@ struct FeedbackSheet: View {
 
                 SwiftUI.Section {
                     Button {
-                        UIPasteboard.general.string = reportText
+                        PlatformPasteboard.copy(reportText)
                         openURL(githubIssueURL)
                     } label: {
                         Label("Open a GitHub issue", systemImage: "ant")
                     }
 
                     Button {
-                        UIPasteboard.general.string = reportText
+                        PlatformPasteboard.copy(reportText)
                         copied = true
                         resetCopiedSoon()
                     } label: {
