@@ -27,6 +27,64 @@ if rg -n '^(<<<<<<<|=======|>>>>>>>)' Labstream PMSKit scripts docs Config . --g
   exit 1
 fi
 
+log_step "Mac app icon asset check"
+python3 - <<'PY'
+import json
+import struct
+import sys
+from pathlib import Path
+
+root = Path("Labstream/Assets.xcassets/MacAppIcon.appiconset")
+contents_path = root / "Contents.json"
+expected = {
+    ("16x16", "1x"): (16, 16),
+    ("16x16", "2x"): (32, 32),
+    ("32x32", "1x"): (32, 32),
+    ("32x32", "2x"): (64, 64),
+    ("128x128", "1x"): (128, 128),
+    ("128x128", "2x"): (256, 256),
+    ("256x256", "1x"): (256, 256),
+    ("256x256", "2x"): (512, 512),
+    ("512x512", "1x"): (512, 512),
+    ("512x512", "2x"): (1024, 1024),
+}
+
+def png_size(path: Path) -> tuple[int, int]:
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise ValueError(f"{path} is not a PNG with an IHDR header")
+    return struct.unpack(">II", data[16:24])
+
+try:
+    contents = json.loads(contents_path.read_text())
+    images = contents.get("images", [])
+    seen = {}
+    for image in images:
+        if image.get("idiom") != "mac":
+            continue
+        key = (image.get("size"), image.get("scale"))
+        filename = image.get("filename")
+        if key not in expected:
+            raise ValueError(f"unexpected Mac icon slot: {key}")
+        if not filename:
+            raise ValueError(f"Mac icon slot {key} has no filename")
+        path = root / filename
+        if not path.exists():
+            raise FileNotFoundError(f"missing Mac icon file for {key}: {path}")
+        actual = png_size(path)
+        if actual != expected[key]:
+            raise ValueError(f"{path} is {actual}, expected {expected[key]} for slot {key}")
+        seen[key] = filename
+    missing = sorted(set(expected) - set(seen))
+    if missing:
+        raise ValueError(f"missing Mac icon slots: {missing}")
+except Exception as exc:
+    print(f"Mac app icon validation failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+print("Mac app icon asset check passed.")
+PY
+
 log_step "macOS host build"
 run_logged macos-build \
   scripts/xcodebuild-versioned.sh \
