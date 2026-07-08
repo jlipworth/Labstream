@@ -58,16 +58,60 @@ struct LoginBrandHeader: View {
     }
 }
 
+/// Full-bleed branded login backdrop for iOS. In light appearance, a subtle veil keeps
+/// the gradient from fighting adaptive light panels while preserving the Labstream color.
+struct LoginBrandBackdrop: View {
+    #if os(iOS)
+    @Environment(\.colorScheme) private var colorScheme
+    #endif
+
+    var body: some View {
+        #if os(iOS)
+        DS.Brand.iconPlateGradient
+            .ignoresSafeArea()
+            .overlay {
+                if colorScheme == .light {
+                    Color.white.opacity(0.10)
+                        .ignoresSafeArea()
+                }
+            }
+        #else
+        DS.Brand.iconPlateGradient
+            .ignoresSafeArea()
+        #endif
+    }
+}
+
 /// Shared visual container for the sign-in panel.
 struct LoginPanelBackground: View {
+    #if os(iOS)
+    @Environment(\.colorScheme) private var colorScheme
+    #endif
+
     var body: some View {
         panelShape
-            .fill(Color.black.opacity(0.58))
+            .fill(panelFill)
             .background(.regularMaterial, in: panelShape)
-            .overlay(panelShape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+            .overlay(panelShape.strokeBorder(panelStroke, lineWidth: 0.5))
     }
 
     private var panelShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+    }
+
+    private var panelFill: Color {
+        #if os(iOS)
+        colorScheme == .light ? Color.white.opacity(0.72) : Color.black.opacity(0.58)
+        #else
+        Color.black.opacity(0.58)
+        #endif
+    }
+
+    private var panelStroke: Color {
+        #if os(iOS)
+        colorScheme == .light ? Color.black.opacity(0.08) : Color.white.opacity(0.10)
+        #else
+        Color.white.opacity(0.10)
+        #endif
     }
 }

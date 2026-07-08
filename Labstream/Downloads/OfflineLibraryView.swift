@@ -15,6 +15,7 @@ public struct OfflineLibraryView: View {
     @State private var playing: DownloadRecord?
     @Binding private var focusedRatingKey: String?
     @State private var highlightedRatingKey: String?
+    @State private var pendingDeletion: PendingOfflineDeletion?
 
     public init(manager: DownloadManager, focusedRatingKey: Binding<String?> = .constant(nil)) {
         _manager = State(initialValue: manager)
@@ -40,13 +41,25 @@ public struct OfflineLibraryView: View {
                     List {
                         SwiftUI.Section {
                             ForEach(snapshot.rows) { rowSnapshot in
+                                #if os(iOS)
                                 row(for: rowSnapshot)
                                     .id(rowSnapshot.id)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            confirmDelete(rowSnapshot)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                                #else
+                                row(for: rowSnapshot)
+                                    .id(rowSnapshot.id)
+                                #endif
                             }
                             .onDelete { offsets in
-                                for index in offsets {
-                                    manager.delete(ratingKey: snapshot.rows[index].id)
-                                }
+                                confirmDelete(rows: offsets.compactMap { index in
+                                    snapshot.rows.indices.contains(index) ? snapshot.rows[index] : nil
+                                })
                             }
                         } footer: {
                             Text(snapshot.footerText)
@@ -81,9 +94,54 @@ public struct OfflineLibraryView: View {
                              },
                              onClose: { playing = nil })
         }
+        .confirmationDialog(pendingDeletion?.dialogTitle ?? "Delete download?",
+                            isPresented: Binding(
+                                get: { pendingDeletion != nil },
+                                set: { isPresented in
+                                    if !isPresented { pendingDeletion = nil }
+                                }
+                            ),
+                            titleVisibility: .visible) {
+            Button(pendingDeletion?.actionTitle ?? "Delete Download", role: .destructive) {
+                commitPendingDeletion()
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeletion = nil
+            }
+        } message: {
+            if let pendingDeletion {
+                Text(pendingDeletion.message)
+            }
+        }
     }
 
     fileprivate static let rowActionControlSize: CGFloat = 56
+
+    private struct PendingOfflineDeletion: Identifiable {
+        let id = UUID()
+        let ratingKeys: [String]
+        let title: String?
+
+        var isMultiple: Bool { ratingKeys.count > 1 }
+
+        var dialogTitle: String {
+            isMultiple ? "Delete \(ratingKeys.count) downloads?" : "Delete download?"
+        }
+
+        var actionTitle: String {
+            isMultiple ? "Delete Downloads" : "Delete Download"
+        }
+
+        var message: String {
+            if isMultiple {
+                return "This removes \(ratingKeys.count) downloads from offline storage. You can download them again later."
+            }
+            if let title, !title.isEmpty {
+                return "This removes “\(title)” from offline storage. You can download it again later."
+            }
+            return "This removes the download from offline storage. You can download it again later."
+        }
+    }
 
     /// The Offline toolbar. On iOS 26 bare toolbar items get Liquid Glass (and adjacent items
     /// share one glass background) automatically, so the metrics + queue action ride a plain
@@ -205,6 +263,32 @@ public struct OfflineLibraryView: View {
             return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playlist)
         }
         return LocalBIFTrickPlayThumbnailProvider(bifURL: record.plexBIFURL)
+    }
+
+    private var showsInlineDeleteControl: Bool {
+        #if os(iOS)
+        return !compactWidth
+        #else
+        return true
+        #endif
+    }
+
+    private func confirmDelete(_ rowSnapshot: OfflineDownloadRowSnapshot) {
+        confirmDelete(rows: [rowSnapshot])
+    }
+
+    private func confirmDelete(rows: [OfflineDownloadRowSnapshot]) {
+        let rows = rows.filter { !$0.id.isEmpty }
+        guard !rows.isEmpty else { return }
+        let title = rows.count == 1 ? displayTitle(for: rows[0].record) : nil
+        pendingDeletion = PendingOfflineDeletion(ratingKeys: rows.map(\.id),
+                                                title: title)
+    }
+
+    private func commitPendingDeletion() {
+        guard let pendingDeletion else { return }
+        pendingDeletion.ratingKeys.forEach { manager.delete(ratingKey: $0) }
+        self.pendingDeletion = nil
     }
 
     @ViewBuilder
@@ -357,20 +441,20 @@ public struct OfflineLibraryView: View {
                     .accessibilityLabel("Pause download")
                 }
 
-                // Explicit delete on every row (complete / failed / in-progress). The List's
-                // swipe-to-delete still works, but a visible trash control is far more
-                // discoverable on visionOS — and lets the user clear a FAILED or no-longer-
-                // wanted download directly. `manager.delete` cancels any live task and removes
-                // the file + cached poster + record.
-                Button {
-                    manager.delete(ratingKey: record.ratingKey)
-                } label: {
-                    Image(systemName: "trash.circle.fill")
+                if showsInlineDeleteControl {
+                    // Explicit delete stays visible on visionOS / regular-width layouts, where
+                    // swipe affordances are less discoverable. Compact iOS relies on the trailing
+                    // swipe action to keep the row controls from crowding the title column.
+                    Button {
+                        confirmDelete(rowSnapshot)
+                    } label: {
+                        Image(systemName: "trash.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .offlineRowActionControl()
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Delete download")
                 }
-                .buttonStyle(.plain)
-                .offlineRowActionControl()
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Delete download")
             }
         }
         .padding(.vertical, 4)

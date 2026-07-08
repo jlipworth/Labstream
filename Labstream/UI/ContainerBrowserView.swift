@@ -69,6 +69,7 @@ struct ContainerBrowserView: View {
                     PosterCell(item: season, width: DS.Poster.gridMin(compact: compactWidth))
                 }
                 .cardLink()
+                .videoCardContextMenu(for: season)
             }
         }
         .padding(DS.pagePadding(compact: compactWidth))
@@ -83,6 +84,7 @@ struct ContainerBrowserView: View {
                     EpisodeRow(episode: episode)
                 }
                 .cardLink(cornerRadius: DS.Radius.card)
+                .videoCardContextMenu(for: episode)
             }
         }
         .padding(DS.pagePadding(compact: compactWidth))

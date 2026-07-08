@@ -5,8 +5,8 @@ import PMSKit
 /// for every backend. The path is either a Plex image path (served through the
 /// `/photo/:/transcode` resizer) or a `jellyfin://` / `emby://` synthetic ref minted by
 /// `MediaBrowserBaseItemDto`. The ref's scheme is authoritative — search can surface
-/// items from a backend that is not the active one — so each backend lane is tried by
-/// scheme, then Plex as the default.
+/// items from a backend that is not the active one — so a synthetic scheme resolves only
+/// through its owning backend, and Plex is used only for ordinary unschemed image paths.
 ///
 /// Both `PosterImage` (grid/detail art) and `MusicPlayerController` (system Now Playing
 /// card) resolve artwork through here so there is a single, consistent construction.
@@ -21,28 +21,30 @@ enum MediaArtwork {
                              pixelHeight: Int) -> URLRequest? {
         guard let path, !path.isEmpty else { return nil }
 
-        if let base = appModel.embyServerBaseURL,
-           let token = appModel.embyAccessToken,
-           let userId = appModel.embyUserID,
-           let req = (try? EmbyLibrary.posterRequest(syntheticRef: path,
-                                                     server: base,
-                                                     token: token,
-                                                     identity: appModel.identity.emby,
-                                                     userId: userId,
-                                                     width: pixelWidth,
-                                                     height: pixelHeight)) ?? nil {
-            return req
+        let scheme = URL(string: path)?.scheme
+
+        if scheme == EmbyFlavor.syntheticScheme {
+            guard let base = appModel.embyServerBaseURL,
+                  let token = appModel.embyAccessToken,
+                  let userId = appModel.embyUserID else { return nil }
+            return (try? EmbyLibrary.posterRequest(syntheticRef: path,
+                                                   server: base,
+                                                   token: token,
+                                                   identity: appModel.identity.emby,
+                                                   userId: userId,
+                                                   width: pixelWidth,
+                                                   height: pixelHeight)) ?? nil
         }
 
-        if let base = appModel.jellyfinServerBaseURL,
-           let token = appModel.jellyfinAccessToken,
-           let req = (try? JellyfinLibrary.posterRequest(syntheticRef: path,
-                                                         server: base,
-                                                         token: token,
-                                                         identity: appModel.identity.jellyfin,
-                                                         width: pixelWidth,
-                                                         height: pixelHeight)) ?? nil {
-            return req
+        if scheme == JellyfinFlavor.syntheticScheme {
+            guard let base = appModel.jellyfinServerBaseURL,
+                  let token = appModel.jellyfinAccessToken else { return nil }
+            return (try? JellyfinLibrary.posterRequest(syntheticRef: path,
+                                                       server: base,
+                                                       token: token,
+                                                       identity: appModel.identity.jellyfin,
+                                                       width: pixelWidth,
+                                                       height: pixelHeight)) ?? nil
         }
 
         if let url = plexTranscodeURL(path: path, appModel: appModel,
@@ -55,8 +57,8 @@ enum MediaArtwork {
     /// Which backend an artwork `path` resolves against — used only for instrumentation
     /// labels, so it inspects the ref scheme without needing live credentials.
     static func backendLabel(for path: String?) -> String {
-        if MediaBrowserSyntheticImageRef.parse(path, scheme: EmbyFlavor.syntheticScheme) != nil { return "Emby" }
-        if MediaBrowserSyntheticImageRef.parse(path, scheme: JellyfinFlavor.syntheticScheme) != nil { return "Jellyfin" }
+        if URL(string: path ?? "")?.scheme == EmbyFlavor.syntheticScheme { return "Emby" }
+        if URL(string: path ?? "")?.scheme == JellyfinFlavor.syntheticScheme { return "Jellyfin" }
         return "Plex"
     }
 

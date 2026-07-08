@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var selectingPlexServerID: String?
     @State private var checkingPlexServers = false
     @State private var confirmingSignOut = false
+    @State private var confirmingDifferentServerSignIn: MediaBackendKind?
     @State private var confirmingReset = false
     @State private var confirmingRemoveAllDownloads = false
     @State private var confirmingRemoveCompletedDownloads = false
@@ -98,6 +99,17 @@ struct SettingsView: View {
                           githubIssuesURL: Self.feedbackIssuesURL,
                           appVersionBuild: "\(Self.appVersion) (\(Self.appBuild))",
                           osVersion: Self.shortOSVersion)
+        }
+        .confirmationDialog(differentServerConfirmationTitle,
+                            isPresented: differentServerConfirmationBinding,
+                            titleVisibility: .visible) {
+            Button("Sign Out and Continue", role: .destructive) {
+                confirmingDifferentServerSignIn = nil
+                authManager.signOut()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(differentServerConfirmationMessage)
         }
     }
 
@@ -373,7 +385,11 @@ struct SettingsView: View {
                     Task { await checkPlexServerReachability() }
                 } label: {
                     if checkingPlexServers {
-                        ProgressView()
+                        Label {
+                            Text("Checking server reachability…")
+                        } icon: {
+                            ProgressView()
+                        }
                     } else {
                         Label("Check server reachability", systemImage: "dot.radiowaves.left.and.right")
                     }
@@ -394,7 +410,11 @@ struct SettingsView: View {
                     }
                 } label: {
                     if rediscovering {
-                        ProgressView()
+                        Label {
+                            Text("Re-discovering servers…")
+                        } icon: {
+                            ProgressView()
+                        }
                     } else {
                         Label("Re-discover servers", systemImage: "arrow.clockwise")
                     }
@@ -411,8 +431,8 @@ struct SettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Button {
-                    authManager.signOut()
+                Button(role: .destructive) {
+                    confirmingDifferentServerSignIn = .jellyfin
                 } label: {
                     Label("Sign in to a different Jellyfin server", systemImage: "arrow.triangle.2.circlepath")
                 }
@@ -427,8 +447,8 @@ struct SettingsView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                Button {
-                    authManager.signOut()
+                Button(role: .destructive) {
+                    confirmingDifferentServerSignIn = .emby
                 } label: {
                     Label("Sign in to a different Emby server", systemImage: "arrow.triangle.2.circlepath")
                 }
@@ -860,6 +880,34 @@ struct SettingsView: View {
             return "Signing back in requires connecting to your Jellyfin server again."
         case .emby:
             return "Signing back in requires connecting to your Emby server again."
+        }
+    }
+
+    private var differentServerConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { confirmingDifferentServerSignIn != nil },
+            set: { presented in
+                if !presented { confirmingDifferentServerSignIn = nil }
+            }
+        )
+    }
+
+    private var differentServerConfirmationBackend: MediaBackendKind {
+        confirmingDifferentServerSignIn ?? appModel.activeBackend
+    }
+
+    private var differentServerConfirmationTitle: String {
+        "Sign in to a different \(differentServerConfirmationBackend.displayName) server?"
+    }
+
+    private var differentServerConfirmationMessage: String {
+        switch differentServerConfirmationBackend {
+        case .plex:
+            return signOutConfirmationMessage
+        case .jellyfin:
+            return "This signs out of the current Jellyfin server. Signing back in requires reconnecting to a Jellyfin server."
+        case .emby:
+            return "This signs out of the current Emby server. Signing back in requires reconnecting to an Emby server."
         }
     }
 

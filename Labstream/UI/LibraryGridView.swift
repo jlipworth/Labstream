@@ -328,9 +328,8 @@ struct LibraryGridView: View {
     }
 
     /// Mirrors the trailing A–Z rail's own visibility condition below so the grid can
-    /// reserve room for it. The rail (a ~34 pt capsule inset 10 pt from the trailing edge)
-    /// occupies ~44 pt of the trailing edge; on compact width the 16 pt page padding leaves
-    /// the last poster column under the capsule, which then intercepts its taps (#209).
+    /// reserve room for it. On compact width the 16 pt page padding leaves the last
+    /// poster column under the section-index strip, which then intercepts scrubs/taps (#209).
     private var alphabetRailVisible: Bool {
         guard case .loaded = paging.loadState else { return false }
         return paging.alphabetBuckets.count > 1
@@ -391,10 +390,10 @@ struct LibraryGridView: View {
                             }
                         }
                         .padding(DS.pagePadding(compact: compactWidth))
-                        // Reserve the rail's own width past the base padding so the last
-                        // poster column clears the trailing A–Z rail on compact (#209);
+                        // Reserve the rail's own narrow strip past the base padding so the last
+                        // poster column clears the trailing A–Z index on compact (#209);
                         // regular width has ample gutter and needs no reservation.
-                        .padding(.trailing, alphabetRailVisible && compactWidth ? 34 : 0)
+                        .padding(.trailing, alphabetRailVisible && compactWidth ? LibraryAlphabetRail.compactGridTrailingReservation : 0)
                     }
                 }
             }

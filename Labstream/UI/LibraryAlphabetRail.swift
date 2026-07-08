@@ -6,12 +6,30 @@ import PMSKit
 /// character; the offset math lives in `AlphabetBucket`, so every backend's rail jumps to
 /// the same place. Extracted from `LibraryGridView` so the music grids reuse it verbatim.
 ///
-/// A full A–Z+# rail is ~610 pt tall — taller than iPhone landscape or a short iPad
-/// Split View pane — so the rail thins itself (every 2nd/3rd/4th bucket) until it fits
-/// the height it's offered instead of clipping the ends off-screen unreachably.
+/// SwiftUI 26's native `.sectionIndexLabel` / `.listSectionIndexVisibility` is the
+/// long-term ideal for `List`/`Section` content, but these browse surfaces are paged
+/// `LazyVGrid`s. Until the grids move to a native sectioned container, keep this custom
+/// control visually close to UIKit's section index on iOS/iPadOS: a lightweight trailing
+/// stack of tinted glyphs, not a glass capsule full of mini buttons. visionOS keeps a
+/// material backing because gaze needs a stronger acquisition target in space.
+///
+/// A full A–Z+# rail is taller than iPhone landscape or a short iPad Split View pane,
+/// so the rail thins itself (every 2nd/3rd/4th bucket) until it fits the height it's
+/// offered instead of clipping the ends off-screen unreachably.
 struct LibraryAlphabetRail: View {
     let entries: [AlphabetBucket]
     let onPick: (AlphabetBucket) -> Void
+
+    /// Extra trailing room compact grids should reserve when the rail is visible.
+    /// The iOS rail is intentionally narrow like a native table section index; visionOS
+    /// keeps the older, roomier target because it is acquired by gaze rather than touch.
+    static var compactGridTrailingReservation: CGFloat {
+        #if os(visionOS)
+        34
+        #else
+        24
+        #endif
+    }
 
     var body: some View {
         ViewThatFits(in: .vertical) {
@@ -37,10 +55,21 @@ private struct AlphabetRailColumn: View {
     /// Last bucket index delivered during an active scrub — dedupes onChanged spam.
     @State private var scrubIndex: Int?
 
-    /// Row geometry shared by layout and the scrub math (20-pt row + 2-pt spacing).
+    /// Row geometry shared by layout and the scrub math. iOS mirrors the compact native
+    /// table index; visionOS keeps the larger pre-existing gaze-friendly rows.
+    #if os(visionOS)
     private let rowHeight: CGFloat = 20
     private let rowSpacing: CGFloat = 2
     private let verticalPadding: CGFloat = 8
+    private let horizontalPadding: CGFloat = 4
+    private let labelWidth: CGFloat = 26
+    #else
+    private let rowHeight: CGFloat = 14
+    private let rowSpacing: CGFloat = 0
+    private let verticalPadding: CGFloat = 4
+    private let horizontalPadding: CGFloat = 2
+    private let labelWidth: CGFloat = 18
+    #endif
 
     var body: some View {
         VStack(spacing: rowSpacing) {
@@ -49,26 +78,29 @@ private struct AlphabetRailColumn: View {
                     onPick(entry)
                 } label: {
                     Text(entry.display)
-                        .font(.caption2.weight(.semibold))
+                        .font(labelFont)
                         .monospaced()
-                        .frame(width: 26, height: rowHeight)
+                        .foregroundStyle(labelForeground)
+                        .frame(width: labelWidth, height: rowHeight)
                 }
                 .buttonStyle(.plain)
+                #if os(visionOS)
                 .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .hoverEffect(.highlight)
+                #endif
                 .accessibilityLabel("Jump to \(entry.display)")
             }
         }
         .padding(.vertical, verticalPadding)
-        .padding(.horizontal, 4)
-        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.horizontal, horizontalPadding)
+        .railBackdrop()
         #if os(iOS)
-        // Section-index scrub: the 20-pt rows are precise enough for a pointer or
-        // gaze but not a fingertip, so a drag anywhere on the capsule sweeps through
-        // buckets UITableView-style. simultaneousGesture keeps plain taps on the
+        // Section-index scrub: the rows are precise enough for a pointer but not a
+        // fingertip, so a drag anywhere on the strip sweeps through buckets
+        // UITableView-style. simultaneousGesture keeps plain taps on the
         // per-letter buttons working.
         .simultaneousGesture(
-            DragGesture(minimumDistance: 6)
+            DragGesture(minimumDistance: 3)
                 .onChanged { value in
                     let pitch = rowHeight + rowSpacing
                     let raw = Int((value.location.y - verticalPadding) / pitch)
@@ -79,6 +111,35 @@ private struct AlphabetRailColumn: View {
                 }
                 .onEnded { _ in scrubIndex = nil }
         )
+        #endif
+    }
+
+    private var labelFont: Font {
+        #if os(visionOS)
+        .caption2.weight(.semibold)
+        #else
+        .system(size: 11, weight: .semibold, design: .rounded)
+        #endif
+    }
+
+    private var labelForeground: AnyShapeStyle {
+        #if os(visionOS)
+        AnyShapeStyle(.secondary)
+        #else
+        AnyShapeStyle(.tint)
+        #endif
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func railBackdrop() -> some View {
+        #if os(visionOS)
+        background(.ultraThinMaterial, in: Capsule())
+        #else
+        // Native iOS section indexes float over table/list content without a persistent
+        // material pill. The whole strip remains the drag/scrub hit region.
+        contentShape(Rectangle())
         #endif
     }
 }

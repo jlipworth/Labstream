@@ -12,12 +12,9 @@ struct SearchView: View {
     /// counter (not a Bool) so every press re-triggers the focus `.task`, even when the
     /// Search tab is already frontmost.
     let focusRequest: Int
-    /// Optional shell hook for leaving the dedicated Search tab/surface after clearing the query.
-    let onExitSearch: (() -> Void)?
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissSearch) private var dismissSearch
-    @Environment(\.isSearching) private var isSearching
 
     @State private var query = ""
     @State private var results: SearchResults = .empty
@@ -27,9 +24,8 @@ struct SearchView: View {
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
     @FocusState private var searchFieldFocused: Bool
 
-    init(focusRequest: Int = 0, onExitSearch: (() -> Void)? = nil) {
+    init(focusRequest: Int = 0) {
         self.focusRequest = focusRequest
-        self.onExitSearch = onExitSearch
     }
 
     var body: some View {
@@ -91,10 +87,10 @@ struct SearchView: View {
         .searchable(text: $query, prompt: "Movies, shows, music…")
         .searchFocused($searchFieldFocused)
         .toolbar {
-            if showsExitSearchButton {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { exitSearch() }
-                        .accessibilityLabel("Exit Search")
+            if showsClearSearchButton {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Clear") { clearSearch() }
+                        .accessibilityLabel("Clear Search")
                 }
             }
         }
@@ -115,18 +111,17 @@ struct SearchView: View {
         "\(appModel.activeBrowseSessionKey):\(query)"
     }
 
-    private var showsExitSearchButton: Bool {
-        isSearching || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loadState != .idle
+    private var showsClearSearchButton: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loadState != .idle
     }
 
-    private func exitSearch() {
+    private func clearSearch() {
         query = ""
         results = .empty
         loadedQuery = nil
         loadState = .idle
         searchFieldFocused = false
         dismissSearch()
-        onExitSearch?()
     }
 
     // MARK: - Faceting

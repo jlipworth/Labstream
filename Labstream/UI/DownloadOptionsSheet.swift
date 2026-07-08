@@ -55,6 +55,7 @@ struct DownloadOptionsSheet: View {
     @State private var selectedChoice: DownloadSelection?
     @State private var retryingExistingDownload = false
     @State private var isStartingDownload = false
+    @State private var confirmingExistingDownloadRemoval = false
 
     private var sheetBackend: DownloadBackendKind {
         backend ?? appModel.activeBackend.downloadBackendKind
@@ -114,6 +115,17 @@ struct DownloadOptionsSheet: View {
             }
         }
         .task { await runProbe() }
+        .confirmationDialog(existingDownloadRemovalTitle,
+                            isPresented: $confirmingExistingDownloadRemoval,
+                            titleVisibility: .visible) {
+            Button(existingDownloadRemovalActionTitle, role: .destructive) {
+                deleteExistingDownload()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(existingDownloadRemovalMessage)
+        }
     }
 
     // MARK: - Probe
@@ -857,8 +869,7 @@ struct DownloadOptionsSheet: View {
                     .foregroundStyle(.secondary)
             }
             Button(role: .destructive) {
-                downloadManager.delete(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
-                dismiss()
+                confirmingExistingDownloadRemoval = true
             } label: {
                 Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
             }
@@ -892,6 +903,25 @@ struct DownloadOptionsSheet: View {
             backend: record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey),
             isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true)
+    }
+
+    private var existingDownloadRemovalTitle: String {
+        existingRecord?.isComplete == true ? "Remove downloaded file?" : "Cancel this download?"
+    }
+
+    private var existingDownloadRemovalActionTitle: String {
+        existingRecord?.isComplete == true ? "Remove Download" : "Cancel Download"
+    }
+
+    private var existingDownloadRemovalMessage: String {
+        if existingRecord?.isComplete == true {
+            return "This removes the offline copy from this device. You can download it again later."
+        }
+        return "This stops the transfer and removes any partial file from this device."
+    }
+
+    private func deleteExistingDownload() {
+        downloadManager.delete(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
     }
 
     private func retryDownload() {
