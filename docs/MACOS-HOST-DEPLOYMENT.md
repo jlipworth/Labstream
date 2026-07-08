@@ -16,6 +16,11 @@ the local debug bundle id to a deterministic per-worktree value such as
 Mac keychain service for local debug runs, so parallel worktrees do not share the same
 sandbox container/keychain namespace by accident.
 
+The Mac download background-session identifier is also derived from the effective bundle id
+for local host builds, so an in-flight dev download from one worktree does not get reattached
+by another worktree's Mac app. iOS/visionOS keep their existing shipped background-session
+identifier for update compatibility.
+
 Use `--use-production-bundle-id` only when intentionally testing the App Store identity
 `com.jlipworth.Labstream`. Release/App Store configuration remains canonical in the Xcode
 target; the dev identity is a deploy-script build override.
