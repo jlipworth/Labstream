@@ -102,6 +102,18 @@ struct RootView: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
+
+            #if os(macOS)
+            // Mac convention: Escape backs out of a pushed content/detail submenu when
+            // there is no higher-priority surface active. Player chrome owns Escape while
+            // playback is presented, and sheets/dialogs keep their own cancel handling.
+            Button("Back", action: macNavigateBack)
+                .keyboardShortcut(.escape, modifiers: [])
+                .disabled(!canMacNavigateBack)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+            #endif
         }
         // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
         // session-keyed NavigationStacks (see `.id(appModel.activeBrowseSessionKey)` above) do
@@ -271,6 +283,38 @@ struct RootView: View {
             macColumnVisibility = .detailOnly
         } else {
             macColumnVisibility = macColumnVisibilityBeforePlayer
+        }
+    }
+
+    private var canMacNavigateBack: Bool {
+        guard !macPlayerPresenter.isPresented else { return false }
+        switch selection {
+        case .home:
+            return !homePath.isEmpty
+        case .libraries:
+            return !librariesPath.isEmpty
+        case .search:
+            return !searchPath.isEmpty
+        case .music:
+            return !musicPath.isEmpty
+        case .offline, .settings:
+            return false
+        }
+    }
+
+    private func macNavigateBack() {
+        guard canMacNavigateBack else { return }
+        switch selection {
+        case .home:
+            homePath.removeLast()
+        case .libraries:
+            librariesPath.removeLast()
+        case .search:
+            searchPath.removeLast()
+        case .music:
+            musicPath.removeLast()
+        case .offline, .settings:
+            break
         }
     }
 
