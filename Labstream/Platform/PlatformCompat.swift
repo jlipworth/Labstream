@@ -4,6 +4,7 @@ import SwiftUI
 #if os(macOS)
 import AppKit
 import AVFoundation
+import MediaPlayer
 
 /// Lightweight native-image compatibility for the first macOS slice.
 ///
@@ -56,64 +57,6 @@ enum PlatformPasteboard {
 enum PlatformAudioSessionMode {
     case `default`
     case moviePlayback
-}
-
-// Minimal MediaPlayer stand-ins used by the shared music code until a Mac Now Playing
-// implementation is designed. These are intentionally inert.
-let MPMediaItemPropertyTitle = "title"
-let MPMediaItemPropertyPlaybackDuration = "duration"
-let MPMediaItemPropertyArtist = "artist"
-let MPMediaItemPropertyAlbumTitle = "albumTitle"
-let MPMediaItemPropertyArtwork = "artwork"
-let MPNowPlayingInfoPropertyElapsedPlaybackTime = "elapsedPlaybackTime"
-let MPNowPlayingInfoPropertyPlaybackRate = "playbackRate"
-
-struct MPMediaItemArtwork {
-    let boundsSize: CGSize
-    init(boundsSize: CGSize, requestHandler: @escaping (CGSize) -> UIImage) {
-        self.boundsSize = boundsSize
-    }
-}
-
-@MainActor
-final class MPNowPlayingInfoCenter {
-    static let shared = MPNowPlayingInfoCenter()
-    class func `default`() -> MPNowPlayingInfoCenter { shared }
-    var nowPlayingInfo: [String: Any]?
-}
-
-class MPRemoteCommandEvent {}
-final class MPChangePlaybackPositionCommandEvent: MPRemoteCommandEvent {
-    let positionTime: TimeInterval
-    init(positionTime: TimeInterval) { self.positionTime = positionTime }
-}
-
-enum MPRemoteCommandHandlerStatus {
-    case success
-    case noActionableNowPlayingItem
-    case commandFailed
-}
-
-@MainActor
-final class MPRemoteCommand {
-    var isEnabled = true
-    @discardableResult
-    func addTarget(_ handler: @escaping (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus) -> Any {
-        UUID()
-    }
-    func removeTarget(_ target: Any?) {}
-}
-
-@MainActor
-final class MPRemoteCommandCenter {
-    static let sharedCenter = MPRemoteCommandCenter()
-    class func shared() -> MPRemoteCommandCenter { sharedCenter }
-    let playCommand = MPRemoteCommand()
-    let pauseCommand = MPRemoteCommand()
-    let togglePlayPauseCommand = MPRemoteCommand()
-    let nextTrackCommand = MPRemoteCommand()
-    let previousTrackCommand = MPRemoteCommand()
-    let changePlaybackPositionCommand = MPRemoteCommand()
 }
 
 #elseif canImport(UIKit)
