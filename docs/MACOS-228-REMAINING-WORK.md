@@ -113,6 +113,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 - `git diff --check`
 - Conflict-marker scan.
 - Mac app icon asset slot/file/dimension validation.
+- Mac identity wiring static checks.
 - `LabstreamMac` host Debug build.
 - `Labstream` visionOS simulator build for shared-code regressions.
 - `LabstreamMobile` iOS simulator build for shared-code regressions.

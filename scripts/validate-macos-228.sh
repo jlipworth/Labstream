@@ -85,6 +85,41 @@ except Exception as exc:
 print("Mac app icon asset check passed.")
 PY
 
+log_step "Mac identity wiring static checks"
+python3 - <<'PY'
+from pathlib import Path
+import sys
+
+checks = [
+    ("Config/Info.plist",
+     ["LabstreamKeychainService", "$(LABSTREAM_KEYCHAIN_SERVICE)"],
+     "Mac keychain service build setting must be present in Info.plist"),
+    ("scripts/deploy-macos-to-host.sh",
+     ["PRODUCT_BUNDLE_IDENTIFIER=\"$EFFECTIVE_BUNDLE_ID\"", "LABSTREAM_KEYCHAIN_SERVICE=\"$KEYCHAIN_SERVICE\""],
+     "Mac host deploy must override bundle id and keychain service together"),
+    ("Labstream/Downloads/BackgroundDownloadSession.swift",
+     ["#if os(macOS)", "Bundle.main.bundleIdentifier", ".downloads.background"],
+     "Mac background download session id must derive from effective bundle id"),
+    ("Labstream/UI/SettingsView.swift",
+     ["backgroundDownloadSessionIdentifier: BackgroundDownloadSession.identifier", "keychainService: Self.keychainService", "sandboxContainerIdentifier: Self.sandboxContainerIdentifier"],
+     "Mac diagnostics must include keychain/container/background-session context"),
+]
+
+failures = []
+for file, needles, description in checks:
+    text = Path(file).read_text()
+    missing = [needle for needle in needles if needle not in text]
+    if missing:
+        failures.append((file, description, missing))
+
+if failures:
+    for file, description, missing in failures:
+        print(f"{description}: {file} missing {missing}", file=sys.stderr)
+    raise SystemExit(1)
+
+print("Mac identity wiring static checks passed.")
+PY
+
 log_step "macOS host build"
 run_logged macos-build \
   scripts/xcodebuild-versioned.sh \
