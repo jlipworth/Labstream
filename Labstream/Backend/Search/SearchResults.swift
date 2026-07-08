@@ -28,11 +28,16 @@ struct SearchResults: Sendable {
     /// so Plex, Jellyfin, and Emby all render the same top-level shape (#103). If PMS
     /// omits library attribution for a hit, keep it visible in a fallback group.
     static func plexNativeHubs(_ hubs: [Hub], sections: [Section]) -> SearchResults {
-        let sectionTitles = Dictionary(uniqueKeysWithValues: sections.map { ($0.key, $0.title) })
-        let sectionIDs = Dictionary(uniqueKeysWithValues: sections.compactMap { section -> (Int, String)? in
-            guard let id = Int(section.key) else { return nil }
-            return (id, section.key)
-        })
+        var sectionTitles: [String: String] = [:]
+        var sectionIDs: [Int: String] = [:]
+        for section in sections {
+            let normalizedKey = normalizedPlexSectionKey(section.key) ?? section.key
+            sectionTitles[section.key] = section.title
+            sectionTitles[normalizedKey] = section.title
+            if let id = Int(normalizedKey) {
+                sectionIDs[id] = normalizedKey
+            }
+        }
 
         var itemsByLibrary: [String: [MediaItem]] = [:]
         var libraryOrder: [String] = []
@@ -40,7 +45,7 @@ struct SearchResults: Sendable {
         var seen = Set<String>()
 
         for item in hubs.flatMap(\.metadata) where seen.insert(item.ratingKey).inserted {
-            let sectionKey = item.librarySectionKey
+            let sectionKey = normalizedPlexSectionKey(item.librarySectionKey)
                 ?? item.librarySectionID.flatMap { sectionIDs[$0] }
                 ?? item.librarySectionID.map(String.init)
             guard let sectionKey else {
@@ -64,6 +69,22 @@ struct SearchResults: Sendable {
             groups.append(fallback)
         }
         return SearchResults(groups: groups)
+    }
+
+    /// Plex search hits may report `librarySectionKey` either as a bare numeric key (`5`)
+    /// or as an endpoint-ish path (`/library/sections/5`). Normalize both shapes so the
+    /// group title resolves through `/library/sections` instead of leaking the path as UI.
+    private static func normalizedPlexSectionKey(_ rawKey: String?) -> String? {
+        guard let rawKey else { return nil }
+        let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        if let sectionsIndex = parts.lastIndex(of: "sections"),
+           parts.indices.contains(parts.index(after: sectionsIndex)) {
+            return parts[parts.index(after: sectionsIndex)]
+        }
+        return parts.last ?? trimmed
     }
 }
 

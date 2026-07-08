@@ -13,6 +13,9 @@ struct RootView: View {
     let musicPlayer: MusicPlayerController
 
     @State private var selection: AppTab = .home
+    /// Last non-Search tab, so the Search role/surface has an explicit Cancel path back
+    /// to the user's previous browse context instead of relying on the search field's tiny clear button.
+    @State private var lastNonSearchSelection: AppTab = .home
     /// Music tab's navigation path, lifted here so Now Playing's "go to
     /// artist/album" (which lives in a sheet, outside the stack) can push into it.
     @State private var musicPath = NavigationPath()
@@ -93,6 +96,11 @@ struct RootView: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
+        }
+        .onChange(of: selection) { _, newSelection in
+            if newSelection != .search {
+                lastNonSearchSelection = newSelection
+            }
         }
         // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
         // session-keyed NavigationStacks (see `.id(appModel.activeBrowseSessionKey)` above) do
@@ -182,7 +190,7 @@ struct RootView: View {
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
+                NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest, onExitSearch: exitSearch) }
                     .environment(\.cinemaOriginTab, .search)
                     .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
@@ -302,7 +310,7 @@ struct RootView: View {
                 .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .search:
-            NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest) }
+            NavigationStack(path: $searchPath) { SearchView(focusRequest: searchFocusRequest, onExitSearch: exitSearch) }
                 .environment(\.cinemaOriginTab, .search)
                 .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
@@ -474,6 +482,12 @@ struct RootView: View {
     private func focusSearch() {
         selection = .search
         searchFocusRequest += 1
+    }
+
+    /// Explicit Search cancel: clear any pushed search result and return to the last real tab.
+    private func exitSearch() {
+        searchPath = NavigationPath()
+        selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection
     }
 
     /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have
