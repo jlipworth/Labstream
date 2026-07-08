@@ -14,6 +14,21 @@ public enum RangeTransferHTTPPolicy {
         kind == .boundedCheckpoint || kind == .backgroundCheckpoint
     }
 
+    /// A durable checkpoint segment is a closed Range request. If URLSession reports substantially
+    /// more bytes than that closed segment could contain, the task is no longer useful as a
+    /// checkpoint: letting it continue can park gigabytes in a temp file while the durable partial
+    /// stays pinned at the old 64MB boundary.
+    public static func isDurableSegmentOverrun(segmentKind: RangeTransferSegmentKind,
+                                               chunkBytesWritten: Int,
+                                               expectedSegmentBytes: Int?,
+                                               graceBytes: Int) -> Bool {
+        guard isDurableCheckpointSegment(segmentKind),
+              let expectedSegmentBytes,
+              expectedSegmentBytes > 0,
+              graceBytes >= 0 else { return false }
+        return chunkBytesWritten > expectedSegmentBytes + graceBytes
+    }
+
     /// #220: whether an HTTP 200 body may replace the whole durable partial.
     ///
     /// A 200 to a ranged request means the server ignored/refused the range — the body is either
