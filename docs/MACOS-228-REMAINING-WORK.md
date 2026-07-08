@@ -9,6 +9,9 @@ This document captures the agreed scope and sequence for finishing the first nat
 - Baseline commit: `4088d32 Implement native macOS app pass`
 - Quality-switch follow-up commit: `57d001a Fix quality reload playhead snapshots`
 - Follow-up redesign issue: #232, `Mac shell/sidebar redesign pass`
+- Deterministic validation script: `scripts/validate-macos-228.sh`
+- Manual validation split: `docs/MACOS-228-VALIDATION.md`
+- Minimal release scaffolding notes: `docs/MACOS-RELEASE-SCAFFOLDING.md`
 
 ## Scope decisions
 
@@ -46,6 +49,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 7. **Release/versioning/App Store mechanics**
    - Minimal scaffolding/docs in #228.
    - Defer final App Store Connect/TestFlight/universal-purchase plan.
+   - Current scaffolding notes live in `docs/MACOS-RELEASE-SCAFFOLDING.md`.
 
 8. **Mac shell/menu/sidebar polish**
    - Polish current shell enough for v1.
@@ -61,6 +65,7 @@ This document captures the agreed scope and sequence for finishing the first nat
     - User does not need to perform every item manually.
     - Agents/lead should cover build checks, static checks, non-auth automated checks, deterministic runtime smoke, logs, and documentation.
     - User covers real-auth, subjective UI feel, and real-server playback/download cases where local interaction is needed.
+    - Agent-runnable checks are scripted in `scripts/validate-macos-228.sh`; the manual split is tracked in `docs/MACOS-228-VALIDATION.md`.
 
 ## Recommended implementation sequence
 
@@ -93,10 +98,12 @@ This document captures the agreed scope and sequence for finishing the first nat
 7. **Release scaffolding/docs**
    - Document Mac build/deploy/versioning/release caveats.
    - No full App Store Connect plan in this ticket.
+   - Done for the current #228 scope in `docs/MACOS-RELEASE-SCAFFOLDING.md`.
 
 8. **Validation matrix sweep**
    - Automated/static/build checks by agents/lead.
    - Focused user testing for real auth/playback/download/UI feel.
+   - Repeatable non-interactive sweep: `scripts/validate-macos-228.sh`.
 
 ## Validation matrix draft
 
