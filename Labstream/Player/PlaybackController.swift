@@ -259,6 +259,16 @@ final class PlaybackController {
     private var hasObservedPlayback = false
     private var currentTimeControlStatus: AVPlayer.TimeControlStatus = .paused
     private var hasObservedTimeControlStatus = false
+    /// True while the controller is actively producing a fresh AVPlayerItem — from entering a
+    /// begin/reopen path (detach → negotiate → prewarm → proxy standup → load) until the new
+    /// item's first `timeControlStatus` KVO or `.readyToPlay`. During that window the cached
+    /// KVO fields above are STALE (they hold the previous item's last value and are only reset
+    /// in `load()`), so `resolvedTransportStatus()` would otherwise fall through to `.none`
+    /// over a black, item-less video surface — the recurring "black screen, no indicator"
+    /// class (GH #110 follow-up; every begin/reopen lane, not just seek rebuilds).
+    private var itemPreparationInProgress = false
+    private var itemPreparationWatchdogTask: Task<Void, Never>?
+    private var itemPreparationProgressBaseline: StallProgressSignature?
     private var lastLoggedTransportStatus: PlaybackTransportStatus = .none
     /// Observer for `AVPlayerItem.timeJumpedNotification` — the only in-process signal of a user
     /// seek on visionOS (#25): AVKit's user-navigation delegate callbacks
@@ -924,6 +934,7 @@ final class PlaybackController {
         playbackTask = nil
         setSeeking(false)
         endReconnectStatus()
+        endItemPreparation()
         upNextTask?.cancel()
         upNextTask = nil
         playbackGeneration += 1
@@ -1972,6 +1983,7 @@ final class PlaybackController {
     private func beginStreaming(resumeOffsetMsOverride: Int? = nil,
                                 stoppingPreviousTranscode: Bool = true,
                                 finalTargetRebuildGeneration: Int? = nil) {
+        beginItemPreparation()
         playbackTask?.cancel()
         if let activeFinalTargetRebuildGeneration {
             finalTargetRebuildPolicy.cancelRebuild(generation: activeFinalTargetRebuildGeneration)
@@ -2509,6 +2521,7 @@ final class PlaybackController {
                                    headers: [String: String],
                                    resumeOffsetMs: Int?,
                                    playMethod: MediaBrowserPlayMethod?) {
+        beginItemPreparation()
         let generation = playbackGeneration
         playbackTask?.cancel()
         playbackTask = Task { @MainActor [weak self] in
@@ -2900,6 +2913,13 @@ final class PlaybackController {
         } else {
             player.play()
         }
+        // GH #33 first-start net: while still inside the preparation window (streaming lanes;
+        // local files never enter it) arm the post-attach watchdog so a cold hang that never
+        // fires a KVO or an error converts to Retry instead of an eternal spinner. Cancelled
+        // by the same signals that end preparation.
+        if itemPreparationInProgress {
+            armItemPreparationWatchdog()
+        }
         updateTransportStatus()
     }
 
@@ -2974,6 +2994,9 @@ final class PlaybackController {
                 }
                 switch pItem.status {
                 case .readyToPlay:
+                    // Ready item = preparation over, even when a user pause means no
+                    // timeControlStatus transition will ever arrive for this item.
+                    self.endItemPreparation()
                     self.recordPlaybackDiagnostic("playback.item_status", fields: [
                         "status": .label("readyToPlay"),
                         "duration": .secondsBucket(pItem.duration.seconds),
@@ -3227,6 +3250,9 @@ final class PlaybackController {
     private func handleTimeControlTransport(status: AVPlayer.TimeControlStatus) {
         currentTimeControlStatus = status
         hasObservedTimeControlStatus = true
+        // First live signal from the fresh item: the preparation window is over and the
+        // normal timeControlStatus-driven machinery owns the overlay from here.
+        endItemPreparation()
         // FINDING 7: a seek near end-of-file can settle at a live clock that never crosses
         // `target - slack` (the file ends first), so the tick-loop "landed" check
         // (`clearSeekHoldIfLanded`) would never release the hold and the label (and
@@ -3339,6 +3365,65 @@ final class PlaybackController {
         }
     }
 
+    // MARK: - Item preparation window (black-screen indicator coverage)
+
+    /// Enter the preparation window: called at the top of every begin/reopen lane so the
+    /// buffering overlay covers detach → negotiate → prewarm → proxy standup → load instead
+    /// of the stale-KVO `.none` fallthrough. Local-file loads skip this (synchronous attach).
+    private func beginItemPreparation() {
+        itemPreparationInProgress = true
+        updateTransportStatus()
+    }
+
+    /// Leave the preparation window. Safe to call repeatedly; cheap no-op when not preparing.
+    /// Called on the fresh item's first `timeControlStatus` KVO, on `.readyToPlay` (a
+    /// user-paused load never produces a KVO transition), on `surfaceFailure`, and on `stop()`.
+    private func endItemPreparation() {
+        guard itemPreparationInProgress || itemPreparationWatchdogTask != nil else { return }
+        itemPreparationInProgress = false
+        itemPreparationWatchdogTask?.cancel()
+        itemPreparationWatchdogTask = nil
+        itemPreparationProgressBaseline = nil
+        updateTransportStatus()
+    }
+
+    /// GH #33 first-start coverage: a poisoned cold `start.m3u8` can hang after attach with no
+    /// AVPlayer error and no `timeControlStatus` transition, so neither the stall watchdog nor
+    /// `handlePlaybackFailure` ever fires. The recovery paths (retry, seek-hold ceiling, zombie
+    /// escalation) are protected by the 20s reconnect watchdog; this is the same net for the
+    /// preparation window, armed in `load()` once the item is attached. Progress-deferred like
+    /// the stall watchdog so a slow-but-working prime is never false-failed.
+    private func armItemPreparationWatchdog() {
+        itemPreparationWatchdogTask?.cancel()
+        itemPreparationProgressBaseline = currentStallProgressSignature()
+        itemPreparationWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard let self, !Task.isCancelled else { return }
+            self.handleItemPreparationTimeout()
+        }
+    }
+
+    private func handleItemPreparationTimeout() {
+        let baseline = itemPreparationProgressBaseline
+        itemPreparationWatchdogTask = nil
+        itemPreparationProgressBaseline = nil
+        guard itemPreparationInProgress, !playbackError.isFailed else { return }
+        // A user pause during preparation legitimately never transitions the status; hold the
+        // net open rather than failing a session the user asked to wait.
+        if userWantsPaused || stallMadeTransportProgress(since: baseline) {
+            recordPlaybackDiagnostic("playback.item_preparation_watchdog_deferred", fields: [
+                "user_wants_paused": .bool(userWantsPaused),
+            ])
+            armItemPreparationWatchdog()
+            return
+        }
+        recordPlaybackDiagnostic("playback.item_preparation_watchdog_fired", fields: [
+            "resume": .millisecondsBucket(currentResumeMs),
+        ])
+        NSLog("PlaybackController: item preparation watchdog timed out, surfacing failure (#33 first start)")
+        surfaceFailure(ReconnectTimeoutError())
+    }
+
     private func updateTransportStatus() {
         let nextStatus = resolvedTransportStatus()
         transportStatus.set(nextStatus)
@@ -3351,6 +3436,7 @@ final class PlaybackController {
             "user_wants_paused": .bool(userWantsPaused),
             "has_observed_playback": .bool(hasObservedPlayback),
             "reconnecting": .bool(reconnectInProgress),
+            "item_preparing": .bool(itemPreparationInProgress),
             "failed": .bool(playbackError.isFailed),
         ])
     }
@@ -3361,6 +3447,18 @@ final class PlaybackController {
         }
         if reconnectInProgress {
             return .reconnecting
+        }
+        // Preparation window: a begin/reopen lane is producing a fresh item, so the cached
+        // KVO fields below hold the PREVIOUS item's last value (usually `.playing`) until
+        // `load()` resets them — both the waiting-status guard and the isSeeking branch are
+        // defeated by that staleness, and the viewer would get dead chrome over a black,
+        // detached surface for the whole negotiate/prewarm/proxy window. Report buffering
+        // explicitly instead of inferring it from a player that has no item.
+        if itemPreparationInProgress {
+            if userWantsPaused || transport.pauseRequested || transport.isPaused {
+                return .pausedBuffering
+            }
+            return .buffering
         }
         guard hasObservedTimeControlStatus,
               currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
@@ -3834,6 +3932,7 @@ final class PlaybackController {
         player.pause()
         playbackError.set(error)
         endReconnectStatus()
+        endItemPreparation()
         updateTransportStatus()
     }
 
@@ -3985,8 +4084,17 @@ final class PlaybackController {
         stallWatchdogObservers.reset()
         stallProgressBaseline = nil
         guard !playbackError.isFailed, let current = player.currentItem else { return }
-        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
-              !current.isPlaybackLikelyToKeepUp else { return }
+        // Not waiting anymore → genuine resume or pause; the next `.waiting` KVO transition
+        // re-arms. But still-waiting with `isPlaybackLikelyToKeepUp` is a transient AVFoundation
+        // state (the flag usually flips just before `.playing`): if we bail WITHOUT re-arming
+        // and the player never resumes, no KVO transition ever comes and the safety net is
+        // silently gone — unbounded spinner with no Retry. Re-arm instead.
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+        if current.isPlaybackLikelyToKeepUp {
+            recordPlaybackDiagnostic("playback.stall_watchdog_rearmed_keep_up")
+            armStallWatchdog()
+            return
+        }
         var fields = runtimeSnapshotFields()
         fields["keep_up"] = .bool(current.isPlaybackLikelyToKeepUp)
         fields["adaptive_bitrate_enabled"] = .bool(adaptiveBitrateEnabled)
@@ -4140,7 +4248,13 @@ final class PlaybackController {
     }
 
     private func stallMadeTransportProgress(since baseline: StallProgressSignature?) -> Bool {
-        guard isStreaming, let baseline else { return false }
+        // Any network lane defers on progress — Plex (`isStreaming`) AND backend-resolved
+        // Jellyfin/Emby remote streams, whose sessions carry no Plex server/token. Gating on
+        // `isStreaming` alone made this permanently false for MediaBrowser backends, so the
+        // slow-but-working deferral (Emby re-priming a deep-offset 4K transcode >20s) never
+        // applied to the very case it documents. Local files still bypass: their "transport"
+        // is disk I/O and a stall there should escalate on the plain timeout.
+        guard localFile == nil, let baseline else { return false }
         let current = currentStallProgressSignature()
         return current.transferredBytes > baseline.transferredBytes
             || current.loadedEndMs > baseline.loadedEndMs
@@ -4348,6 +4462,7 @@ final class PlaybackController {
                                     bitrateKbps: Int,
                                     preferShortRemoteHLSBuffer: Bool = true) {
         guard let remoteStreamReopener else { return }
+        beginItemPreparation()
         // Hold the scrubber on the reopen target across the detach→renegotiate→ready window so the
         // label can't fall back to the stale offset while the item is nil (GH #110).
         setSeeking(true, targetMs: offsetMs)
