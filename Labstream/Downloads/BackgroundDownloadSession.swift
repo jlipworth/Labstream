@@ -49,7 +49,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// The fixed background-session identifier. Shared with the app delegate so it can
     /// route `handleEventsForBackgroundURLSession` to THIS session's completion handler.
+    #if os(macOS)
+    /// macOS has no simulator/container-per-worktree isolation, so local host builds use
+    /// per-worktree bundle ids. The background URLSession namespace must follow that effective
+    /// app identity too; otherwise two Mac worktrees can accidentally reattach each other's
+    /// in-flight transfers even though their sandbox containers are separate.
+    static var identifier: String {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.jlipworth.Labstream"
+        return "\(bundleID).downloads.background"
+    }
+    #else
+    /// Preserve the shipped iOS/visionOS background session identifier so existing background
+    /// transfers can still reattach across app updates.
     static let identifier = "com.visionplay.downloads.background"
+    #endif
 
     private let store: DownloadStore
     private let fileManager = FileManager.default
