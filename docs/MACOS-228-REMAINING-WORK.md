@@ -102,6 +102,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 
 8. **Validation matrix sweep**
    - Automated/static/build checks by agents/lead.
+   - Deterministic Mac host launch smoke by agents/lead.
    - Focused user testing for real auth/playback/download/UI feel.
    - Repeatable non-interactive sweep: `scripts/validate-macos-228.sh`.
 
@@ -114,6 +115,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 - `LabstreamMac` host Debug build.
 - `Labstream` visionOS simulator build for shared-code regressions.
 - `LabstreamMobile` iOS simulator build for shared-code regressions.
+- Isolated Mac host launch smoke (`scripts/smoke-macos-host.sh`).
 
 ### Auth/account
 
