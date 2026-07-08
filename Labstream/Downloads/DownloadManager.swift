@@ -87,8 +87,12 @@ public final class DownloadManager {
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
     /// Physical headset launch can otherwise resume every interrupted static Range row at once.
-    /// Keep automatic scanner starts conservative; manual row Resume/Retry still bypasses this cap.
-    private let maxAutomaticStaticRangeResumes = 2
+    /// Limit automatic recovery to a small START batch, not a steady-state active-download cap;
+    /// subsequent batches ramp the rest in after a short cooldown. Manual row Resume/Retry still
+    /// bypasses this surge guard.
+    private let maxAutomaticStaticRangeResumeStartsPerBatch = 2
+    private let automaticStaticRangeResumeBatchInterval: TimeInterval = 10
+    private var lastAutomaticStaticRangeResumeBatchAt: Date?
     /// App-level retry guard/presentation/handoff markers. The handoff sentinel prevents refresh
     /// cleanup from treating a transient `.failed` retry row as terminal before replacement work is
     /// seeded, while `retrying` still guards async retry continuations.
@@ -857,19 +861,38 @@ public final class DownloadManager {
     private func resumePendingStaticRangeDownloads() {
         let keys = staticRangeRecovery.resumablePendingKeys(isQueuePaused: isQueuePaused)
         guard !keys.isEmpty else { return }
-        var remainingStarts = max(0, maxAutomaticStaticRangeResumes - session.diagnosticSnapshot().rangeInflightCount)
+        let now = Date()
+        var remainingStarts = automaticStaticRangeResumeBatchBudget(now: now)
+        if remainingStarts > 0 {
+            noteAutomaticStaticRangeResumeBatchIfNeeded(startedCount: remainingStarts, now: now)
+        }
         for key in keys.sorted() {
             guard remainingStarts > 0 else {
                 recordDownloadDiagnostic("downloads.range_auto_resume_deferred", fields: [
                     "download_id": .identifier(key),
-                    "reason": .label("automatic_range_limit"),
+                    "reason": .label("automatic_batch_limit"),
                     "range_inflight_count": .int(session.diagnosticSnapshot().rangeInflightCount),
-                    "max_automatic": .int(maxAutomaticStaticRangeResumes),
+                    "max_automatic_start_batch": .int(maxAutomaticStaticRangeResumeStartsPerBatch),
                 ])
                 continue
             }
             remainingStarts -= 1
             resumeStaticRangeWhenReady(ratingKey: key, reason: "backend_ready")
+        }
+    }
+
+    private func automaticStaticRangeResumeBatchBudget(now: Date) -> Int {
+        guard let lastAutomaticStaticRangeResumeBatchAt else {
+            return maxAutomaticStaticRangeResumeStartsPerBatch
+        }
+        return now.timeIntervalSince(lastAutomaticStaticRangeResumeBatchAt) >= automaticStaticRangeResumeBatchInterval
+            ? maxAutomaticStaticRangeResumeStartsPerBatch
+            : 0
+    }
+
+    private func noteAutomaticStaticRangeResumeBatchIfNeeded(startedCount: Int, now: Date) {
+        if startedCount > 0 {
+            lastAutomaticStaticRangeResumeBatchAt = now
         }
     }
 
@@ -1397,7 +1420,11 @@ public final class DownloadManager {
     /// partial (or byte 0). Rows whose background task DID survive are in `liveKeys` (already
     /// continuing) and skipped.
     private func resumeInterruptedStaticByteRangeDownloads(candidateKeys: [String], liveKeys: Set<String>) {
-        var remainingStarts = max(0, maxAutomaticStaticRangeResumes - session.diagnosticSnapshot().rangeInflightCount)
+        let now = Date()
+        var remainingStarts = automaticStaticRangeResumeBatchBudget(now: now)
+        if remainingStarts > 0 {
+            noteAutomaticStaticRangeResumeBatchIfNeeded(startedCount: remainingStarts, now: now)
+        }
         for ratingKey in candidateKeys.sorted() where !liveKeys.contains(ratingKey) {
             guard let status = records.first(where: { $0.ratingKey == ratingKey })?.status,
                   status == .paused || status == .failed else { continue }
@@ -1405,9 +1432,9 @@ public final class DownloadManager {
                 staticRangeRecovery.addPendingResume(ratingKey)
                 recordDownloadDiagnostic("downloads.range_auto_resume_deferred", fields: [
                     "download_id": .identifier(ratingKey),
-                    "reason": .label("launch_range_limit"),
+                    "reason": .label("launch_batch_limit"),
                     "range_inflight_count": .int(session.diagnosticSnapshot().rangeInflightCount),
-                    "max_automatic": .int(maxAutomaticStaticRangeResumes),
+                    "max_automatic_start_batch": .int(maxAutomaticStaticRangeResumeStartsPerBatch),
                 ])
                 continue
             }
