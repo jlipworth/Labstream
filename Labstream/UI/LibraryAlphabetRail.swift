@@ -110,6 +110,15 @@ private struct AlphabetRailColumn: View {
         .padding(.vertical, verticalPadding)
         .padding(.horizontal, horizontalPadding)
         .railBackdrop()
+        .overlay(alignment: .leading) {
+            if let activeDisplay {
+                selectedLetterCallout(activeDisplay)
+                    .offset(x: calloutOffsetX)
+                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.snappy(duration: 0.16), value: activeDisplay)
         #if os(iOS)
         // Section-index scrub: the rows are precise enough for a pointer but not a
         // fingertip, so a drag anywhere on the strip sweeps through buckets
@@ -175,6 +184,44 @@ private struct AlphabetRailColumn: View {
         #else
         0.36
         #endif
+    }
+
+    private var calloutSize: CGFloat {
+        #if os(visionOS)
+        56
+        #else
+        48
+        #endif
+    }
+
+    private var calloutOffsetX: CGFloat {
+        #if os(visionOS)
+        -68
+        #else
+        -56
+        #endif
+    }
+
+    private var calloutFont: Font {
+        #if os(visionOS)
+        .title2.weight(.bold)
+        #else
+        .title3.weight(.bold)
+        #endif
+    }
+
+    private func selectedLetterCallout(_ display: String) -> some View {
+        Text(display)
+            .font(calloutFont)
+            .monospaced()
+            .foregroundStyle(.primary)
+            .frame(width: calloutSize, height: calloutSize)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: calloutSize / 3, style: .continuous)
+                    .strokeBorder(.tint.opacity(0.32), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
     }
 
     private func pick(_ entry: AlphabetBucket, clearsAfterDelay: Bool) {
