@@ -2,9 +2,7 @@ import Foundation
 import Observation
 import AVFoundation
 import AVFAudio
-#if !os(macOS)
 import MediaPlayer
-#endif
 #if os(macOS)
 import AppKit
 #elseif canImport(UIKit)
@@ -739,6 +737,7 @@ final class MusicPlayerController {
     private func updateNowPlayingInfo(for track: MediaItem) {
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: track.title,
+            MPMediaItemPropertyMediaType: MPMediaType.music.rawValue,
             MPMediaItemPropertyPlaybackDuration: durationSeconds,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedSeconds,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
@@ -752,7 +751,9 @@ final class MusicPlayerController {
         if let currentArtwork {
             info[MPMediaItemPropertyArtwork] = currentArtwork
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = info
+        center.playbackState = isPlaying ? .playing : .paused
     }
 
     /// Lightweight refresh of the time-varying Now Playing fields (playhead + rate)
@@ -768,6 +769,7 @@ final class MusicPlayerController {
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsedSeconds
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         center.nowPlayingInfo = info
+        center.playbackState = isPlaying ? .playing : .paused
     }
 
     /// Best-effort 600×600 artwork fetch for the system Now Playing card, resolved by the

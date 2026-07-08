@@ -17,7 +17,7 @@ import UIKit
 struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
-    #if os(iOS)
+    #if os(iOS) || os(macOS)
     /// Only read to build the authenticated Now Playing artwork request; the player
     /// itself never touches browse state.
     @Environment(AppModel.self) private var appModel
@@ -41,6 +41,9 @@ struct CustomPlayerView: View {
     @State private var clockTaskID = UUID()
     #if os(iOS)
     @State private var mobileSystemCoordinator = MobilePlayerSystemCoordinator()
+    #endif
+    #if os(macOS)
+    @State private var macSystemCoordinator = MacPlayerSystemCoordinator()
     #endif
 
     init(item: MediaItem,
@@ -154,6 +157,9 @@ struct CustomPlayerView: View {
             #if os(iOS)
             mobileSystemCoordinator.teardown()
             #endif
+            #if os(macOS)
+            macSystemCoordinator.teardown()
+            #endif
             if cinemaSession.presentationState == .closed {
                 controller?.stop()
                 cinemaSession.clear()
@@ -183,6 +189,14 @@ struct CustomPlayerView: View {
             mobileSystemCoordinator.configure(controller: playback, item: item,
                                               artworkRequest: artworkRequest)
             #endif
+            #if os(macOS)
+            let artworkRequest = MediaArtwork.imageRequest(path: item.thumb,
+                                                           appModel: appModel,
+                                                           pixelWidth: 600,
+                                                           pixelHeight: 900)
+            macSystemCoordinator.configure(controller: playback, item: item,
+                                           artworkRequest: artworkRequest)
+            #endif
             #if os(visionOS)
             cinemaSession.activate(title: item.title,
                                    item: item,
@@ -206,6 +220,9 @@ struct CustomPlayerView: View {
                     refreshScrubberClock(from: controller)
                     #if os(iOS)
                     mobileSystemCoordinator.updateNowPlayingInfo()
+                    #endif
+                    #if os(macOS)
+                    macSystemCoordinator.updateNowPlayingInfo()
                     #endif
                 }
             }
