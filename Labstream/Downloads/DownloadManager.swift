@@ -825,6 +825,9 @@ public final class DownloadManager {
             "reason": .label(reason),
             "checkpoint_bytes": .bytes(store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)),
         ])
+        if retryState.isRetrying(ratingKey) {
+            return
+        }
         // A relaunch-adopted chunk can leave app-level retry/active bookkeeping behind even though
         // URLSession has no live task and the row is merely a queued continuation intent. Clear that
         // presentation/handoff state before driving the backend retry, or `retry` can no-op and the
@@ -2088,6 +2091,15 @@ public final class DownloadManager {
             }
         }
         for record in fresh where retryState.isRetryHandoff(record.ratingKey) {
+            if staticRangeRecovery.hasPendingResume(record.ratingKey),
+               record.status.isActiveWork,
+               !session.isTrackingTransfer(ratingKey: record.ratingKey) {
+                // A static-range resume deliberately keeps the persisted row `.queued` while the
+                // backend retry is still rebuilding the replacement URLSession request. Do not
+                // treat that pre-existing active row as "replacement seeded"; clearing the retry
+                // marker here makes retryAttemptCanContinue() abort before it reaches download().
+                continue
+            }
             if record.status.isActiveWork || record.status == .complete || record.status == .unverified {
                 markRetryReplacementSeeded(ratingKey: record.ratingKey)
             }
