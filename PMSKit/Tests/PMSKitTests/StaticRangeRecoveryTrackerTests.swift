@@ -50,6 +50,16 @@ struct StaticRangeRecoveryTrackerTests {
         #expect(!tracker.isCheckpointPausing("drop"))
     }
 
+    @Test("Checkpoint pause keys can be removed when a quick resume cancels the drain")
+    func checkpointPauseRemoval() {
+        var tracker = StaticRangeRecoveryTracker()
+        tracker.markCheckpointPause("row")
+
+        tracker.removeCheckpointPause("row")
+
+        #expect(!tracker.isCheckpointPausing("row"))
+    }
+
     @Test("Restart counter preservation is one-shot")
     func restartCounterPreservationIsOneShot() {
         var tracker = StaticRangeRecoveryTracker()

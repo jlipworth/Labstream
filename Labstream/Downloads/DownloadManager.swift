@@ -573,6 +573,9 @@ public final class DownloadManager {
         isQueuePaused = false
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
+        for record in records where staticRangeRecovery.isCheckpointPausing(record.ratingKey) {
+            cancelPendingCheckpointPause(ratingKey: record.ratingKey)
+        }
         let retryKeys = records
             .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
             .map(\.ratingKey)
@@ -580,6 +583,21 @@ public final class DownloadManager {
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()
         refreshRecords()
+    }
+
+    @discardableResult
+    private func cancelPendingCheckpointPause(ratingKey: String) -> Bool {
+        guard staticRangeRecovery.isCheckpointPausing(ratingKey),
+              session.cancelPendingCheckpointPause(ratingKey: ratingKey) else {
+            return false
+        }
+        staticRangeRecovery.removeCheckpointPause(ratingKey)
+        activeJobs.insert(ratingKey)
+        lastError[ratingKey] = nil
+        recordDownloadDiagnostic("downloads.range_checkpoint_pause_resumed", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
+        return true
     }
 
     /// Auth restore and background URLSession reattachment can complete in different turns.
@@ -846,6 +864,10 @@ public final class DownloadManager {
         guard !retryState.isRetrying(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         guard record.status != .complete, record.status != .unverified else { return }
+        if cancelPendingCheckpointPause(ratingKey: ratingKey) {
+            refreshRecords()
+            return
+        }
         let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
         let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
             || StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record)

@@ -1503,6 +1503,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.unlock()
     }
 
+    @discardableResult
+    func cancelPendingCheckpointPause(ratingKey: String) -> Bool {
+        lock.lock()
+        let wasPending = gracefulRangePauseKeys.remove(ratingKey) != nil
+        let liveRangeTaskCount = rangeInflight.values.filter { $0.ratingKey == ratingKey }.count
+        lock.unlock()
+
+        guard wasPending else { return false }
+        AppDiagnostics.record(.downloads, "downloads.range_checkpoint_pause_cancelled", fields: [
+            "download_id": .identifier(ratingKey),
+            "live_range_task_count": .int(liveRangeTaskCount),
+        ])
+        onChange?()
+        return true
+    }
+
     private func consumeGracefulRangePause(ratingKey: String) -> Bool {
         lock.lock()
         let requested = gracefulRangePauseKeys.remove(ratingKey) != nil
