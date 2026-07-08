@@ -41,6 +41,11 @@ struct LabstreamMac: App {
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandMenu("Navigate") {
+                Button("Back") {
+                    NotificationCenter.default.post(name: .labstreamMacNavigateBack, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: .command)
+
                 Button("Search") {
                     NotificationCenter.default.post(name: .labstreamMacFocusSearch, object: nil)
                 }
@@ -76,6 +81,7 @@ struct LabstreamMac: App {
 }
 
 extension Notification.Name {
+    static let labstreamMacNavigateBack = Notification.Name("LabstreamMacNavigateBack")
     static let labstreamMacFocusSearch = Notification.Name("LabstreamMacFocusSearch")
     static let labstreamMacSelectOffline = Notification.Name("LabstreamMacSelectOffline")
 }
