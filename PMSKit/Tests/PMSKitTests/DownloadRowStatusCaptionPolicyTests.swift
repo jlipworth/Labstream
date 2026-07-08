@@ -132,6 +132,7 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(context.status == .downloading)
         #expect(context.progress == 0.25)
         #expect(context.bytes == 1_000)
+        #expect(context.captionBytes == 1_000)
         #expect(context.backend == .emby)
         #expect(context.lane == .compatibleRemux)
         #expect(context.resumeMode == .liveForwardOnly)
@@ -139,6 +140,82 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(context.resolutionLabel == "720p")
         #expect(context.hasServerPrepQueueTitle)
         #expect(DownloadRowStatusCaptionPolicy.caption(context).contains("server-paced"))
+    }
+
+    @Test("row captions include side-asset bytes without affecting phase")
+    func rowCaptionIncludesSideAssetBytesWithoutAffectingPhase() {
+        let record = DownloadRecord(
+            ratingKey: "plex-1",
+            title: "Movie",
+            localURL: URL(fileURLWithPath: "/tmp/movie.mp4"),
+            bytes: 0,
+            progress: 0,
+            status: .downloading,
+            metadata: OfflineMetadata(ratingKey: "plex-1",
+                                      title: "Movie",
+                                      type: "movie",
+                                      downloadLane: .original,
+                                      resumeMode: .staticByteRange),
+            sideAssetBytes: 21_000_000)
+
+        let context = DownloadRowStatusCaptionPolicy.Context(
+            record: record,
+            backend: .plex,
+            displayFraction: nil,
+            isActive: true,
+            isCheckpointPausing: false,
+            isBackendConfigured: true,
+            isTranscodeLimited: false,
+            serverPrepState: nil,
+            serverPrepProgress: nil,
+            serverPrepETA: nil,
+            downloadETA: nil,
+            downloadSpeedBytesPerSecond: nil,
+            isRetrying: false,
+            failureCaption: nil)
+
+        #expect(context.bytes == 0)
+        #expect(context.captionBytes == 21_000_000)
+        #expect(DownloadRowStatusCaptionPolicy.phase(context) == .activeStaticZeroByteTransfer)
+        #expect(DownloadRowStatusCaptionPolicy.caption(context).contains("21 MB"))
+    }
+
+    @Test("active captions use live display bytes when provided")
+    func activeCaptionUsesLiveDisplayBytes() {
+        let record = DownloadRecord(
+            ratingKey: "plex-1",
+            title: "Movie",
+            localURL: URL(fileURLWithPath: "/tmp/movie.mp4"),
+            bytes: 256 * 1_024 * 1_024,
+            progress: 0.017,
+            status: .downloading,
+            metadata: OfflineMetadata(ratingKey: "plex-1",
+                                      title: "Movie",
+                                      type: "movie",
+                                      downloadLane: .original,
+                                      resumeMode: .staticByteRange,
+                                      serverPreparedVersion: true))
+
+        let caption = DownloadRowStatusCaptionPolicy.caption(.init(
+            record: record,
+            backend: .plex,
+            displayFraction: .init(value: 0.37, isEstimated: false),
+            displayBytes: 5_500_000_000,
+            isActive: true,
+            isCheckpointPausing: false,
+            isBackendConfigured: true,
+            isTranscodeLimited: false,
+            serverPrepState: nil,
+            serverPrepProgress: nil,
+            serverPrepETA: nil,
+            downloadETA: nil,
+            downloadSpeedBytesPerSecond: nil,
+            isRetrying: false,
+            failureCaption: nil))
+
+        #expect(caption.contains("37%"))
+        #expect(caption.contains("5.5 GB"))
+        #expect(!caption.contains("256 MB"))
     }
 
     @Test("Transfer finalizing caption uses local verification wording")

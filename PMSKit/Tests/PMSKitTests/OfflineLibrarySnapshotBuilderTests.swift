@@ -28,6 +28,7 @@ struct OfflineLibrarySnapshotBuilderTests {
             records: records,
             isQueuePaused: false,
             downloadSpeed: ["plex-1": 10.5, "emby:2": 100],
+            displayBytes: { record in record.ratingKey == "plex-1" ? 420 : nil },
             errorMessage: { record in record.status == .failed ? "boom" : nil },
             displayProgress: { record in record.ratingKey == "plex-1" ? 0.42 : nil },
             statusCaption: { record, backend in "\(backend.displayName):\(record.status.rawValue)" },
@@ -37,10 +38,10 @@ struct OfflineLibrarySnapshotBuilderTests {
 
         #expect(snapshot.queueToolbarAction == .pauseQueue)
         #expect(snapshot.isQueuePaused == false)
-        #expect(snapshot.aggregateStats.downloadedBytes == 155)
+        #expect(snapshot.aggregateStats.downloadedBytes == 455)
         #expect(snapshot.aggregateStats.activeSpeedBytesPerSecond == 10.5)
         #expect(snapshot.ratingKeys == ["plex-1", "emby:2"])
-        #expect(snapshot.footerText.contains("Background transfers pause"))
+        #expect(snapshot.footerText.contains("Background transfers are best-effort"))
 
         let plexRow = try #require(snapshot.rows.first)
         #expect(plexRow.showBackendBadge)

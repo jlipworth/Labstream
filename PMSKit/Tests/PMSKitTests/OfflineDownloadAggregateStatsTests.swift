@@ -43,6 +43,23 @@ struct OfflineDownloadAggregateStatsTests {
         #expect(stats.hasVisibleMetrics)
     }
 
+    @Test("active live display bytes override durable checkpoint bytes")
+    func activeLiveDisplayBytesOverrideDurableCheckpointBytes() {
+        let rows = [
+            record("downloading", status: .downloading, bytes: 256, sideAssetBytes: 10),
+            record("paused", status: .paused, bytes: 128)
+        ]
+
+        let stats = OfflineDownloadAggregateStats.make(records: rows,
+                                                       speedsByRatingKey: [:],
+                                                       displayBytesByRatingKey: [
+                                                           "downloading": 5_500,
+                                                           "paused": 64
+                                                       ])
+
+        #expect(stats.downloadedBytes == 5_638)
+    }
+
     @Test("active speed sums measured active rows only")
     func activeSpeedSumsActiveMeasuredRowsOnly() {
         let rows = [

@@ -11,6 +11,7 @@ public enum DownloadRowStatusCaptionPolicy {
         public let status: DownloadStatus
         public let progress: Double
         public let bytes: Int
+        public let captionBytes: Int
         public let lane: DownloadLane
         public let backend: DownloadBackendKind
         public let resumeMode: DownloadResumeMode?
@@ -33,6 +34,7 @@ public enum DownloadRowStatusCaptionPolicy {
         public init(status: DownloadStatus,
                     progress: Double,
                     bytes: Int,
+                    captionBytes: Int? = nil,
                     lane: DownloadLane,
                     backend: DownloadBackendKind,
                     resumeMode: DownloadResumeMode?,
@@ -54,6 +56,7 @@ public enum DownloadRowStatusCaptionPolicy {
             self.status = status
             self.progress = progress
             self.bytes = bytes
+            self.captionBytes = captionBytes ?? bytes
             self.lane = lane
             self.backend = backend
             self.resumeMode = resumeMode
@@ -77,6 +80,7 @@ public enum DownloadRowStatusCaptionPolicy {
         public init(record: DownloadRecord,
                     backend: DownloadBackendKind? = nil,
                     displayFraction: DownloadProgressDisplay.Fraction?,
+                    displayBytes: Int? = nil,
                     isActive: Bool,
                     isCheckpointPausing: Bool,
                     isBackendConfigured: Bool,
@@ -89,9 +93,11 @@ public enum DownloadRowStatusCaptionPolicy {
                     isRetrying: Bool,
                     failureCaption: String?) {
             let snapshot = DownloadJobSnapshot(record: record)
+            let mediaBytes = max(snapshot.bytes, displayBytes ?? 0)
             self.init(status: snapshot.status,
                       progress: snapshot.progress,
-                      bytes: snapshot.bytes,
+                      bytes: mediaBytes,
+                      captionBytes: mediaBytes + max(0, record.sideAssetBytes),
                       lane: snapshot.lane,
                       backend: backend ?? snapshot.backend,
                       resumeMode: snapshot.resumeMode,
@@ -182,10 +188,10 @@ public enum DownloadRowStatusCaptionPolicy {
             return context.failureCaption ?? "Download failed. Tap to retry."
         case .paused:
             return DownloadRowDisplayPolicy.pausedCaption(fraction: context.displayFraction,
-                                                          bytes: context.bytes)
+                                                          bytes: context.captionBytes)
         case .complete(let isUnverified):
             return DownloadRowDisplayPolicy.completeCaption(isUnverified: isUnverified,
-                                                            bytes: context.bytes,
+                                                            bytes: context.captionBytes,
                                                             resolutionLabel: context.resolutionLabel)
         case .transferFinalizing:
             return transferFinalizingCaption(context)
@@ -222,6 +228,9 @@ public enum DownloadRowStatusCaptionPolicy {
             head += " • ~\(left) left"
         }
         pieces.append(head)
+        if context.captionBytes > 0 {
+            pieces.append(DownloadRowDisplayPolicy.byteString(context.captionBytes))
+        }
         if let speed = context.downloadSpeedBytesPerSecond, speed > 0 {
             pieces.append("\(DownloadRowDisplayPolicy.byteString(Int(speed)))/s")
         }
@@ -259,7 +268,7 @@ public enum DownloadRowStatusCaptionPolicy {
             pieces.append(percentPiece)
         }
 
-        pieces.append(DownloadRowDisplayPolicy.byteString(context.bytes))
+        pieces.append(DownloadRowDisplayPolicy.byteString(context.captionBytes))
         if context.isActive, let speed = context.downloadSpeedBytesPerSecond, speed > 0 {
             let rate = "\(DownloadRowDisplayPolicy.byteString(Int(speed)))/s"
             pieces.append(context.isTranscodeLimited ? "\(rate) server-paced" : rate)
@@ -270,7 +279,7 @@ public enum DownloadRowStatusCaptionPolicy {
 
     private static func transferFinalizingCaption(_ context: Context) -> String {
         var pieces = ["Verifying download…"]
-        if context.bytes > 0 { pieces.append(DownloadRowDisplayPolicy.byteString(context.bytes)) }
+        if context.captionBytes > 0 { pieces.append(DownloadRowDisplayPolicy.byteString(context.captionBytes)) }
         if let resolutionLabel = context.resolutionLabel { pieces.append(resolutionLabel) }
         return pieces.joined(separator: " • ")
     }

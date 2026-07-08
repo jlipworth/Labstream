@@ -12,8 +12,10 @@ public struct OfflineDownloadAggregateStats: Sendable, Equatable {
     /// trustworthy rate yet, which lets the UI stay quiet instead of showing noisy `0 B/s`.
     public var activeSpeedBytesPerSecond: Double?
 
-    /// Total local bytes recorded across complete and incomplete rows. This includes paused/failed
-    /// partials because those bytes are already present in the app's offline download store.
+    /// Total local bytes recorded across complete and incomplete rows. For active static-range
+    /// transfers, callers may provide live display bytes so this aggregate matches the row progress
+    /// while URLSession owns a large in-flight temp file between durable checkpoints. Paused/failed
+    /// rows should pass no live overlay so the total snaps back to resumable local bytes honestly.
     public var downloadedBytes: Int
 
     public init(activeSpeedBytesPerSecond: Double?, downloadedBytes: Int) {
@@ -26,14 +28,16 @@ public struct OfflineDownloadAggregateStats: Sendable, Equatable {
     }
 
     public static func make(records: some Sequence<DownloadRecord>,
-                            speedsByRatingKey: [String: Double]) -> OfflineDownloadAggregateStats {
+                            speedsByRatingKey: [String: Double],
+                            displayBytesByRatingKey: [String: Int] = [:]) -> OfflineDownloadAggregateStats {
         var totalSpeed = 0.0
         var hasActiveSpeed = false
         var totalBytes = 0
 
         for record in records {
-            if record.bytes > 0 {
-                totalBytes += record.bytes
+            let effectiveBytes = max(record.bytes, displayBytesByRatingKey[record.ratingKey] ?? 0)
+            if effectiveBytes > 0 {
+                totalBytes += effectiveBytes
             }
             if record.sideAssetBytes > 0 {
                 totalBytes += record.sideAssetBytes

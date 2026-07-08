@@ -115,11 +115,7 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
             info[MPMediaItemPropertyAlbumTitle] = subtitle
         }
         if let artworkImage {
-            // The request handler runs on an arbitrary queue; a decoded UIImage is immutable,
-            // so handing it back directly is safe and keeps decode off the Now Playing path.
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in
-                artworkImage
-            }
+            info[MPMediaItemPropertyArtwork] = Self.makeArtwork(artworkImage)
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = controller.transport.showsPausedControl ? .paused : .playing
@@ -169,6 +165,14 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         }
         return item.year.map(String.init)
+    }
+
+    /// `MPMediaItemArtwork` invokes its image request handler on MediaPlayer's private queue while
+    /// serializing Now Playing info. If the closure is formed inside this `@MainActor` class it
+    /// inherits MainActor isolation and can SIGTRAP in Swift's executor check. Build the artwork in a
+    /// nonisolated context, matching `MusicPlayerController.makeArtwork(_:)`.
+    private nonisolated static func makeArtwork(_ image: UIImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
     private func registerRemoteCommands() {
