@@ -150,12 +150,18 @@ struct MusicPagedGrid: View {
 
     private func jump(to entry: AlphabetBucket, proxy: ScrollViewProxy) {
         let source = pagingSource
+        // The sparse grid already has a placeholder at every server offset, so move
+        // immediately and let the page fill in as soon as it arrives. Waiting for the
+        // network page first made rail scrubbing feel delayed.
+        withAnimation(.snappy(duration: 0.16)) {
+            proxy.scrollTo(entry.offset, anchor: .top)
+        }
         Task {
             await paging.loadPage(containing: entry.offset, source: source) {
                 loadIdentity == source.identity
             }
             await MainActor.run {
-                withAnimation(.snappy(duration: 0.25)) {
+                withAnimation(.snappy(duration: 0.16)) {
                     proxy.scrollTo(entry.offset, anchor: .top)
                 }
             }
