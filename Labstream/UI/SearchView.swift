@@ -12,6 +12,9 @@ struct SearchView: View {
     /// counter (not a Bool) so every press re-triggers the focus `.task`, even when the
     /// Search tab is already frontmost.
     let focusRequest: Int
+    /// Shell hook for leaving the dedicated Search tab/surface after the user clears
+    /// the query. In the iOS search-role tab this restores the normal browse tab chrome.
+    let onClearSearch: (() -> Void)?
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissSearch) private var dismissSearch
@@ -24,8 +27,9 @@ struct SearchView: View {
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
     @FocusState private var searchFieldFocused: Bool
 
-    init(focusRequest: Int = 0) {
+    init(focusRequest: Int = 0, onClearSearch: (() -> Void)? = nil) {
         self.focusRequest = focusRequest
+        self.onClearSearch = onClearSearch
     }
 
     var body: some View {
@@ -122,6 +126,7 @@ struct SearchView: View {
         loadState = .idle
         searchFieldFocused = false
         dismissSearch()
+        onClearSearch?()
     }
 
     // MARK: - Faceting
