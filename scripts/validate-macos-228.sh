@@ -60,6 +60,10 @@ log_step "PMSKit diagnostics/redaction tests"
 run_logged pmskit-diagnostic-tests \
   swift test --package-path PMSKit --filter DiagnosticLoggingTests
 
+log_step "macOS host launch smoke"
+run_logged macos-smoke \
+  scripts/smoke-macos-host.sh
+
 log_step "summary"
 printf 'Validation logs: %s\n' "$LOG_DIR"
 printf 'macOS #228 deterministic validation passed. Manual real-server/UI checks remain in docs/MACOS-228-VALIDATION.md.\n'

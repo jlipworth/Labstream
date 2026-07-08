@@ -18,6 +18,7 @@ This performs:
 - `Labstream` visionOS simulator build using this worktree's visionOS simulator
 - `LabstreamMobile` iOS simulator build using this worktree's iPhone simulator
 - `PMSKit` diagnostic/redaction tests (`DiagnosticLoggingTests`)
+- bounded native macOS host launch smoke via `scripts/smoke-macos-host.sh`
 
 Logs are written to:
 
@@ -25,7 +26,7 @@ Logs are written to:
 build/validation/macos-228/
 ```
 
-These checks prove the branch is syntactically clean, shared-code compile-safe, and that the diagnostics report renderer/redaction coverage still passes its focused tests. They do **not** prove real auth, subjective UI quality, system media-key runtime behavior, or live download robustness.
+These checks prove the branch is syntactically clean, shared-code compile-safe, that the Mac app can be staged/launched under an isolated dev bundle id, and that the diagnostics report renderer/redaction coverage still passes its focused tests. They do **not** prove real auth, subjective UI quality, system media-key runtime behavior, or live download robustness.
 
 ## User/manual validation still required
 
