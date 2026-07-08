@@ -14,6 +14,7 @@ This performs:
 
 - `git diff --check`
 - conflict-marker scan across source/docs/scripts/config
+- Mac app icon asset slot/file/dimension validation
 - `LabstreamMac` host Debug build
 - `Labstream` visionOS simulator build using this worktree's visionOS simulator
 - `LabstreamMobile` iOS simulator build using this worktree's iPhone simulator
