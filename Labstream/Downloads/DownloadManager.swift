@@ -2470,6 +2470,7 @@ public final class DownloadManager {
             records: records,
             isQueuePaused: isQueuePaused,
             downloadSpeed: downloadSpeed,
+            displayBytes: { record in liveDisplayBytes(for: record) },
             errorMessage: { record in
                 guard record.status == .failed else { return nil }
                 return lastError[record.ratingKey].map(message(for:))
@@ -2496,6 +2497,7 @@ public final class DownloadManager {
             record: record,
             backend: backend,
             displayFraction: displayFraction(for: record),
+            displayBytes: liveDisplayBytes(for: record),
             isActive: isActive,
             isCheckpointPausing: isCheckpointPausing,
             isBackendConfigured: isBackendConfigured(for: record),
