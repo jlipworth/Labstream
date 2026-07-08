@@ -10,6 +10,7 @@ public enum OfflineLibrarySnapshotBuilder {
     public static func make(records: [DownloadRecord],
                             isQueuePaused: Bool,
                             downloadSpeed: [String: Double],
+                            displayBytes: (DownloadRecord) -> Int? = { _ in nil },
                             errorMessage: (DownloadRecord) -> String?,
                             displayProgress: (DownloadRecord) -> Double?,
                             statusCaption: (DownloadRecord, DownloadBackendKind) -> String,
@@ -34,6 +35,10 @@ public enum OfflineLibrarySnapshotBuilder {
             )
         }
 
+        let displayBytesByRatingKey = Dictionary(uniqueKeysWithValues: records.compactMap { record in
+            displayBytes(record).map { (record.ratingKey, $0) }
+        })
+
         return OfflineLibrarySnapshot(
             rows: rows,
             queueToolbarAction: DownloadQueueToolbarPolicy.action(
@@ -42,7 +47,8 @@ public enum OfflineLibrarySnapshotBuilder {
             ),
             isQueuePaused: isQueuePaused,
             aggregateStats: OfflineDownloadAggregateStats.make(records: records,
-                                                               speedsByRatingKey: downloadSpeed)
+                                                               speedsByRatingKey: downloadSpeed,
+                                                               displayBytesByRatingKey: displayBytesByRatingKey)
         )
     }
 }
