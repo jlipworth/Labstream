@@ -83,6 +83,10 @@ public struct StaticRangeRecoveryTracker: Equatable, Sendable {
         checkpointPauseKeys.insert(key)
     }
 
+    public mutating func removeCheckpointPause(_ key: String) {
+        checkpointPauseKeys.remove(key)
+    }
+
     public func isCheckpointPausing(_ key: String) -> Bool {
         checkpointPauseKeys.contains(key)
     }
