@@ -263,6 +263,11 @@ struct RootView: View {
             updateMacNavigationChrome(forPlayerPresentation: isPresented)
         }
         .task {
+            for await _ in NotificationCenter.default.notifications(named: .labstreamMacNavigateBack) {
+                macNavigateBack()
+            }
+        }
+        .task {
             for await _ in NotificationCenter.default.notifications(named: .labstreamMacFocusSearch) {
                 focusSearch()
             }
