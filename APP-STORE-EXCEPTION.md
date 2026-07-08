@@ -11,7 +11,7 @@ version must still be made available under the GPLv3.
 ## 1. Apple framework linking
 
 You may link or combine this Program with the Apple SDKs, frameworks, and system
-libraries required to build and distribute a visionOS / iOS application (for
+libraries required to build and distribute a visionOS, iOS, or iPadOS application (for
 example AVKit, AVFoundation, SwiftUI, and the App Store submission toolchain),
 and distribute the resulting work, even though those Apple components are not
 themselves licensed under the GPLv3. The GPLv3 continues to govern all other

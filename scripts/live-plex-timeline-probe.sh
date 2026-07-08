@@ -7,7 +7,7 @@
 # with no orphaned transcode. No secrets are committed: the env file is gitignored.
 #
 # ⚠️  This probe WRITES a resume point — run it ONLY against a DEDICATED TEST ACCOUNT, never a real
-#     user's. See the "Cleanup / reset" section of docs/TESTING-LIVE-REQUIREMENTS.md.
+#     user's. See the "Cleanup / reset" section of docs/TESTING-STRATEGY.md.
 #
 # Setup once (shared with the decision probe):
 #   cp scripts/plex-live.env.example scripts/plex-live.env   # then fill in server/token/metadata key

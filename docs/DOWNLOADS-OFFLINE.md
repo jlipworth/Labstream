@@ -22,7 +22,10 @@ flowchart TD
 - A completed download must have a local playable file and a durable offline record.
 - Direct original downloads are offered only when Labstream expects the file to play locally.
 - Server-rendered or server-prepared routes are used when the original is not a safe local target.
-- Transfers must tolerate interruption and reconcile state on relaunch.
+- Transfers must reconcile cleanly on relaunch. Static/original and server-prepared
+  static routes should resume from durable checkpoints when possible; live-forward
+  remux/transcode streams may become retryable and restart from the beginning
+  rather than claiming unsafe byte-offset resume.
 - Offline records must not contain tokens, private server URLs, or unnecessary user-identifying details.
 
 ## Backend routes
@@ -87,15 +90,27 @@ Labstream's static byte-range lane is shaped around these limits:
   bounded checkpoint chunks; one with substantial progress keeps running rather than discard
   its bytes.
 
+Simulator caveat: Labstream intentionally uses a foreground/default `URLSession`
+in simulator builds because the background transfer daemon is unreliable there.
+Simulator passes can validate routing, progress UI, and retry policy, but not
+real background continuation, lock/off-head scheduling, or cellular policy.
+
 User-facing expectations worth setting (the "downloads disclaimer"):
 
 - Very large background downloads are best-effort. Keeping the device on power helps; briefly
   foregrounding the app resets the system's background rate limiter and lets the app fold
   finished work into durable checkpoints.
-- Server-rendered routes (optimize/convert) need the app awake for their *preparation* phase;
-  only the byte transfer itself survives app suspension.
-- Cellular downloads are disabled by default until the app has explicit policy UI for metered
-  data.
+- Plex optimize and Emby convert have a server-preparation phase that needs the
+  app awake; after they hand off to a static file, the byte transfer can use the
+  static recovery path.
+- Jellyfin optimized/compatible-remux downloads, and Emby compatible-remux
+  downloads, can be live-forward encoder streams. They may continue as
+  system-owned transfers while the OS allows it, but they are not durable
+  byte-range checkpoints and can require retry/restart after interruption.
+- Cellular downloads are off by default where cellular data is available.
+  Settings ▸ Downloads ▸ **Use cellular data for downloads** applies to newly
+  created request-based transfer tasks; active tasks and tasks resumed from OS
+  resume data keep the policy they were created with.
 
 ## Module ownership
 
