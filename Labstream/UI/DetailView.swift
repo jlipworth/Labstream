@@ -461,8 +461,6 @@ struct DetailView: View {
             }
             .font(.title3.weight(.semibold))
             .frame(maxWidth: compactWidth ? .infinity : nil)
-            .padding(.horizontal, DS.Space.md)
-            .padding(.vertical, DS.Space.xs)
         }
         .labstreamGlassProminentButtonStyle()
         .disabled(isResolvingPlayback || !metadataReadyForActions)

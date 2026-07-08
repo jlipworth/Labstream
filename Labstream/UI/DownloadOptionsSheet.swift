@@ -804,12 +804,13 @@ struct DownloadOptionsSheet: View {
             } else if isFailed {
                 Label("Download failed", systemImage: "exclamationmark.circle")
                     .foregroundStyle(.red)
-                Button {
+                existingDownloadActionButton(title: "Retry Download",
+                                             systemImage: "arrow.clockwise") {
                     guard !retryingExistingDownload else { return }
                     retryingExistingDownload = true
                     retryDownload()
                     dismiss()
-                } label: { Label("Retry Download", systemImage: "arrow.clockwise") }
+                }
                 .disabled(retryingExistingDownload)
             } else if isPaused {
                 Label("Download paused", systemImage: "pause.circle")
@@ -818,12 +819,13 @@ struct DownloadOptionsSheet: View {
                     Text(DownloadStorageLimitPolicy.byteString(record.bytes))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Button {
+                existingDownloadActionButton(title: "Resume Download",
+                                             systemImage: "play.circle") {
                     guard !retryingExistingDownload else { return }
                     retryingExistingDownload = true
                     retryDownload()
                     dismiss()
-                } label: { Label("Resume Download", systemImage: "play.circle") }
+                }
                 .disabled(retryingExistingDownload)
             } else if isPreparing {
                 // Emby convert-then-download: the server is rendering the file before any byte
@@ -842,10 +844,11 @@ struct DownloadOptionsSheet: View {
                 ProgressView(value: record.progress)
                 Text("\(Int(record.progress * 100))%")
                     .font(.caption).foregroundStyle(.secondary)
-                Button {
+                existingDownloadActionButton(title: "Pause Download",
+                                             systemImage: "pause.circle") {
                     downloadManager.pause(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
                     dismiss()
-                } label: { Label("Pause Download", systemImage: "pause.circle") }
+                }
             }
             if let bitrate = DownloadRowDisplayPolicy.downloadBitrateText(kbps: record.metadata?.downloadBitrateKbps,
                                                                            requestedProfileLabel: record.metadata?.requestedProfileLabel) {
@@ -863,6 +866,25 @@ struct DownloadOptionsSheet: View {
     }
 
     // MARK: - Action
+
+
+    /// Existing-download actions live inside a Form section, where default Button styling can
+    /// render accent-colored rows with subtly different glyph/text sizing across states. Keep
+    /// Retry/Resume/Pause visually identical and let the surrounding Form provide the row affordance.
+    private func existingDownloadActionButton(title: String,
+                                              systemImage: String,
+                                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.body.weight(.semibold))
+                .imageScale(.medium)
+                .foregroundStyle(.tint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
 
     private func existingDownloadPhaseLabel(for record: DownloadRecord) -> String {
         DownloadRowStatusCaptionPolicy.compactActiveCaption(

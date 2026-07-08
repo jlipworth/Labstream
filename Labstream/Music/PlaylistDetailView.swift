@@ -148,8 +148,6 @@ struct PlaylistDetailView: View {
                 } label: {
                     Label("Play", systemImage: "play.fill")
                         .font(.title3.weight(.semibold))
-                        .padding(.horizontal, DS.Space.md)
-                        .padding(.vertical, DS.Space.xs)
                 }
                 .labstreamGlassProminentButtonStyle()
 
