@@ -39,3 +39,17 @@ import Foundation
     #expect(config.waitsForConnectivity == false)
     #endif
 }
+
+// The proxy is store-and-forward: a large segment flowing slowly must not be killed by the
+// whole-transfer deadline while the wedge (request) timeout stays short. A resource timeout
+// equal to the request timeout hard-502'd any proxied transfer over 20s.
+@Test func mediaUpstreamResourceTimeoutBoundsWholeTransferGenerously() {
+    let config = PlexSessionConfiguration.mediaUpstream(timeout: 20)
+
+    #expect(config.timeoutIntervalForResource == 300)
+    #expect(config.timeoutIntervalForResource > config.timeoutIntervalForRequest)
+
+    let custom = PlexSessionConfiguration.mediaUpstream(timeout: 10, resourceTimeout: 120)
+    #expect(custom.timeoutIntervalForRequest == 10)
+    #expect(custom.timeoutIntervalForResource == 120)
+}
