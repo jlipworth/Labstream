@@ -2,6 +2,8 @@ import Foundation
 import PMSKit
 #if os(iOS) || os(visionOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 // @MainActor because `deviceName` reads `UIDevice.current` on iOS. Every caller is a
@@ -14,6 +16,8 @@ enum PlatformClientIdentity {
         "Apple Vision Pro"
         #elseif os(iOS)
         UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        #elseif os(macOS)
+        HostPlatformIdentity.modelName
         #else
         "Apple Device"
         #endif
@@ -24,6 +28,8 @@ enum PlatformClientIdentity {
         "visionOS"
         #elseif os(iOS)
         "iOS"
+        #elseif os(macOS)
+        "macOS"
         #else
         "Apple"
         #endif
@@ -40,3 +46,19 @@ enum PlatformClientIdentity {
                        device: deviceName)
     }
 }
+
+
+#if os(macOS)
+private enum HostPlatformIdentity {
+    static var modelName: String {
+        var size: size_t = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "Mac" }
+        var buffer = [CChar](repeating: 0, count: size)
+        let result = sysctlbyname("hw.model", &buffer, &size, nil, 0)
+        guard result == 0 else { return "Mac" }
+        let model = String(cString: buffer)
+        return model.isEmpty ? "Mac" : model
+    }
+}
+#endif

@@ -52,20 +52,26 @@ final class KeychainStore {
     private static let synchronizedAccounts: Set<String> = [tokenKey]
 
     private let service: String
+    private let synchronizesPlexToken: Bool
     private let fallbackPolicy: SecretFileFallbackPolicy
     private let fileManager: FileManager
+    private let usesDevelopmentFileStorage: Bool
 
     init(service: String = "com.visionplay.app",
+         synchronizesPlexToken: Bool = true,
          fallbackPolicy: SecretFileFallbackPolicy = .current,
-         fileManager: FileManager = .default) {
+         fileManager: FileManager = .default,
+         usesDevelopmentFileStorage: Bool = false) {
         self.service = service
+        self.synchronizesPlexToken = synchronizesPlexToken
         self.fallbackPolicy = fallbackPolicy
         self.fileManager = fileManager
+        self.usesDevelopmentFileStorage = usesDevelopmentFileStorage
     }
 
     /// Whether `account` is stored as an iCloud-synchronizable item.
     private func isSynchronized(_ account: String) -> Bool {
-        Self.synchronizedAccounts.contains(account)
+        synchronizesPlexToken && Self.synchronizedAccounts.contains(account)
     }
 
     /// Base match query for `account`. A keychain query matches ONLY device-local items
@@ -87,6 +93,10 @@ final class KeychainStore {
     @discardableResult
     func save(_ value: String, for account: String) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
+
+        if usesDevelopmentFileStorage {
+            return saveDevelopmentFileStorage(data, for: account)
+        }
 
         let synced = isSynchronized(account)
         let query = baseQuery(for: account, synchronizable: synced)
@@ -117,6 +127,10 @@ final class KeychainStore {
 
     /// Read the value for `account`, or `nil` if absent.
     func read(_ account: String) -> String? {
+        if usesDevelopmentFileStorage {
+            return readDevelopmentFileStorage(account)
+        }
+
         let synced = isSynchronized(account)
         let primary = readItem(account, synchronizable: synced)
         if let value = primary.value {
@@ -177,6 +191,11 @@ final class KeychainStore {
     /// via iCloud Keychain) and any legacy device-local copy.
     @discardableResult
     func delete(_ account: String) -> Bool {
+        if usesDevelopmentFileStorage {
+            cleanupFallback(for: account)
+            return true
+        }
+
         var query = baseQuery(for: account, synchronizable: false)
         if isSynchronized(account) {
             query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
@@ -187,6 +206,30 @@ final class KeychainStore {
     }
 
     // MARK: - File fallback (unsigned Simulator / missing-entitlement only)
+
+    private func saveDevelopmentFileStorage(_ data: Data, for account: String) -> Bool {
+        // macOS per-worktree dev apps are rebuilt/ad-hoc signed constantly. The standard login
+        // keychain then prompts once per touched generic-password item (and often again after the
+        // next rebuild), which makes real backend testing unusable. This path is deliberately
+        // opt-in from AppServices for non-canonical macOS dev bundle IDs only; production and all
+        // shipping iOS/visionOS paths continue to use Keychain.
+        saveFallback(data, for: account)
+    }
+
+    private func readDevelopmentFileStorage(_ account: String) -> String? {
+        let url = fallbackURL(for: account)
+        guard let data = try? Data(contentsOf: url),
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: url,
+            protection: CredentialArtifactStorage.credentialFallbackProtection,
+            fileManager: fileManager)
+        try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+            to: url.deletingLastPathComponent(),
+            protection: CredentialArtifactStorage.credentialFallbackProtection,
+            fileManager: fileManager)
+        return value
+    }
 
     private func saveToKeychain(_ data: Data,
                                 query: [String: Any],

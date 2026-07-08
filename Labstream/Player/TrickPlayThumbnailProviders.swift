@@ -1,6 +1,10 @@
 import Foundation
 import PMSKit
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
 
 /// Plex BIF-backed trick-play provider.
 ///

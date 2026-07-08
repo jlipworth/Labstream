@@ -11,12 +11,15 @@ struct PairingCodeCells: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    /// Compact phones can't fit the authored cell geometry (six 64-pt Quick Connect
-    /// cells + gaps = 444 pt on a 390-pt screen), so the whole cell scales down as a
-    /// unit; regular width keeps the visionOS/iPad sizes untouched.
+    /// Compact phones and native Mac login panels can't fit the authored cell geometry
+    /// (six 64-pt Quick Connect cells + gaps = 444 pt) without feeling oversized, so
+    /// the whole cell scales down as a unit; regular width keeps the visionOS/iPad
+    /// sizes untouched.
     private var scale: CGFloat {
         #if os(iOS)
         horizontalSizeClass == .compact ? 0.62 : 1
+        #elseif os(macOS)
+        0.72
         #else
         1
         #endif
@@ -89,6 +92,9 @@ struct PairingCodeView<Header: View>: View {
             if let fallbackTitle, let onFallback {
                 Button(fallbackTitle, action: onFallback)
                     .labstreamGlassButtonStyle()
+                    #if os(macOS)
+                    .controlSize(.regular)
+                    #endif
             }
         }
     }

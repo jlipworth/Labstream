@@ -25,7 +25,9 @@ struct DetailTitleHeader: View {
                                     .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
+                            #if !os(macOS)
                             .hoverEffect(.highlight)
+                            #endif
                             .padding(.leading, -DS.Space.sm)
                         } else {
                             Text(show)
