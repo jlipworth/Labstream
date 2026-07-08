@@ -80,6 +80,38 @@ struct RangeTransferHTTPPolicyTests {
         #expect(!RangeTransferHTTPPolicy.isDurableCheckpointSegment(.continuousRemainder))
     }
 
+    @Test("Durable checkpoint overruns are detected past the grace window")
+    func durableSegmentOverrun() {
+        let sixtyFourMiB = 64 * 1_024 * 1_024
+        let oneMiB = 1 * 1_024 * 1_024
+
+        #expect(!RangeTransferHTTPPolicy.isDurableSegmentOverrun(
+            segmentKind: .boundedCheckpoint,
+            chunkBytesWritten: sixtyFourMiB + oneMiB,
+            expectedSegmentBytes: sixtyFourMiB,
+            graceBytes: oneMiB))
+        #expect(RangeTransferHTTPPolicy.isDurableSegmentOverrun(
+            segmentKind: .boundedCheckpoint,
+            chunkBytesWritten: sixtyFourMiB + oneMiB + 1,
+            expectedSegmentBytes: sixtyFourMiB,
+            graceBytes: oneMiB))
+        #expect(RangeTransferHTTPPolicy.isDurableSegmentOverrun(
+            segmentKind: .backgroundCheckpoint,
+            chunkBytesWritten: sixtyFourMiB + oneMiB + 1,
+            expectedSegmentBytes: sixtyFourMiB,
+            graceBytes: oneMiB))
+        #expect(!RangeTransferHTTPPolicy.isDurableSegmentOverrun(
+            segmentKind: .continuousRemainder,
+            chunkBytesWritten: Int.max,
+            expectedSegmentBytes: sixtyFourMiB,
+            graceBytes: oneMiB))
+        #expect(!RangeTransferHTTPPolicy.isDurableSegmentOverrun(
+            segmentKind: .boundedCheckpoint,
+            chunkBytesWritten: sixtyFourMiB + oneMiB + 1,
+            expectedSegmentBytes: nil,
+            graceBytes: oneMiB))
+    }
+
     // #220: an HTTP 200 body replaces the whole partial only when it is plausibly the whole
     // resource. On an UNCHANGED resource (validator equal, or unknowable) a size mismatch means
     // a truncated body and must be rejected rather than overwrite a good partial checkpoint.
