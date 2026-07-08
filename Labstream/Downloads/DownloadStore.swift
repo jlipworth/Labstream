@@ -397,7 +397,15 @@ final class DownloadStore: @unchecked Sendable {
     /// every lane, but a transcode's finished output is legitimately smaller than its source, so
     /// only a byte-for-byte static download may be measured against this.
     func sourceExactBytes(ratingKey: String) -> Int? {
-        guard let row = rows[ratingKey],
+        // `rows` is shared with URLSession delegate callbacks; even read-only dictionary lookups
+        // must take the lock while downloads are actively mutating the store. A headset crash
+        // (Labstream-2026-07-08-235111.ips) showed this racing the range progress delegate during
+        // the completed-size audit, corrupting the dictionary bridge and aborting in
+        // `Dictionary._Variant.lookup`.
+        lock.lock()
+        let row = rows[ratingKey]
+        lock.unlock()
+        guard let row,
               let metadata = row.metadata,
               metadata.resolvedResumeMode(ratingKey: ratingKey) == .staticByteRange,
               let size = metadata.sourcePartSize, size > 0 else { return nil }
