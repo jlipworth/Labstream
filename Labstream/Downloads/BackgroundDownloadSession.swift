@@ -1374,6 +1374,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 } else if ids.contains(task.taskIdentifier) {
                     matched = true
                     if let downloadTask = task as? URLSessionDownloadTask {
+                        let displayBytes = Int(max(downloadTask.countOfBytesReceived, 0))
                         downloadTask.cancel { resumeData in
                             let resumeBytes = resumeData?.count ?? 0
                             let supportsResume = self.store.supportsPersistedResumeData(ratingKey: ratingKey)
@@ -1386,7 +1387,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             ])
                             guard self.pauseStillApplies(ratingKey: ratingKey) else { return }
                             if let resumeData, !resumeData.isEmpty, supportsResume {
-                                self.store.setResumeData(ratingKey: ratingKey, resumeData)
+                                self.store.setResumeData(ratingKey: ratingKey, resumeData, displayBytes: displayBytes)
                             }
                             self.markPausedAfterUserPause(ratingKey: ratingKey)
                         }
@@ -1447,6 +1448,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // chunks keep the plain checkpoint cancel (worst case loss is one chunk, and blob-resuming
         // a closed Range request is the combination the documented background resume bug mangles).
         let segmentKind = entry?.segmentKind ?? .boundedCheckpoint
+        let rangeResumeDisplayBytes = entry.map { rangeEntry in
+            rangeEntry.baseOffset + max(rangeEntry.chunkBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+        }
         if StaticRangeResumeDataPolicy.pauseDisposition(segmentKind: segmentKind)
             == .cancelProducingResumeData,
            let downloadTask = task as? URLSessionDownloadTask {
@@ -1456,7 +1460,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 if StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(hasResumeData: hasBlob,
                                                                        segmentKind: segmentKind),
                    let resumeData {
-                    self.store.setResumeData(ratingKey: ratingKey, resumeData)
+                    self.store.setResumeData(ratingKey: ratingKey, resumeData, displayBytes: rangeResumeDisplayBytes)
                 }
                 AppDiagnostics.record(.downloads, "downloads.range_pause_resume_data", fields: [
                     "download_id": .identifier(ratingKey),
@@ -3176,7 +3180,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 hasResumeData: rangeResumeData?.isEmpty == false,
                 segmentKind: rangeEntry.segmentKind
             ), let rangeResumeData {
-                store.setResumeData(ratingKey: rangeEntry.ratingKey, rangeResumeData)
+                let displayBytes = rangeEntry.baseOffset + max(rangeEntry.chunkBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                store.setResumeData(ratingKey: rangeEntry.ratingKey, rangeResumeData, displayBytes: displayBytes)
             }
             // A non-transient interruption (commonly a long headset-off that outlived the OS's own
             // retry, or connectivity loss) leaves the durable partial's COMPLETED chunks intact — the
@@ -3258,6 +3263,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             if case .pauseWithResumeData = opaqueDisposition, let resumeData {
+                let displayBytes = Int(max(task.countOfBytesReceived, 0))
                 let summary = DiagnosticRedactor.safeErrorSummary(error)
                 downloadLog.error("transfer-paused ratingKey=\(entry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytesReceived=\(task.countOfBytesReceived, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.transfer_paused", fields: [
@@ -3265,7 +3271,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "error": .error(error),
                     "bytes_received": .bytes(Int(task.countOfBytesReceived)),
                 ])
-                store.setResumeData(ratingKey: entry.ratingKey, resumeData)
+                store.setResumeData(ratingKey: entry.ratingKey, resumeData, displayBytes: displayBytes)
                 clearRetryCount(ratingKey: entry.ratingKey)
                 store.setStatus(ratingKey: entry.ratingKey, .paused)
                 onError?(entry.ratingKey, .interruptedResumable)
