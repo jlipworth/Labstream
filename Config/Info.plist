@@ -27,9 +27,10 @@
 	<key>LabstreamBuildDateUTC</key>
 	<string>$(LABSTREAM_BUILD_DATE_UTC)</string>
 
-	<!-- Export compliance (#appstore): the app uses only standard HTTPS/TLS
-	     (exempt encryption), so declare non-exempt encryption = NO. This skips
-	     the per-upload export-compliance question in App Store Connect. -->
+	<!-- Export compliance (#appstore): the app does not implement proprietary or
+	     non-standard cryptography. When encrypted transport is used, it relies on
+	     standard Apple networking/TLS; loopback/LAN HTTP routes are cleartext.
+	     Non-exempt encryption is declared NO only while this remains true. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 
@@ -38,16 +39,17 @@
 	     triggers the system Local Network prompt even over HTTPS. Plex's
 	     *.plex.direct hostnames can also resolve to LAN/WAN IPs. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Labstream connects to your Plex, Jellyfin, or Emby media server on your local network to browse and play your library.</string>
+	<string>Labstream connects to the Plex, Jellyfin, or Emby server you choose on your local network to browse, play, and download your personal media library.</string>
 
-	<!-- App Transport Security (#33): the media-session proxy fronts PMS behind an
+	<!-- App Transport Security (#33): the media-session proxy fronts media servers behind an
 	     app-owned loopback origin, so AVFoundation loads the stream from
 	     http://127.0.0.1:<port>/. ATS blocks cleartext loopback by default, and
 	     that failure surfaces at AVPlayerItem load (not at proxy open), bypassing
 	     the direct-URL fallback. NSAllowsLocalNetworking is the SCOPED exception
-	     that permits cleartext to loopback/.local only — it does NOT relax ATS for
-	     the public internet (never use NSAllowsArbitraryLoads). PMS itself is still
-	     reached over HTTPS via *.plex.direct, unaffected by this key. -->
+	     that permits the app-owned loopback HLS proxy and user-selected local/LAN
+	     media-server URLs, including local HTTP for Plex/Jellyfin/Emby. It does
+	     NOT relax ATS for arbitrary public-internet loads (never use
+	     NSAllowsArbitraryLoads). -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

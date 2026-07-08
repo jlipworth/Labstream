@@ -1,6 +1,6 @@
 # Testing strategy
 
-Labstream uses layered validation. Fast, hermetic tests protect the codebase by default; live-server and headset checks are opt-in because they depend on private servers, credentials, network conditions, and physical hardware.
+Labstream uses layered validation. Fast, hermetic tests protect the codebase by default; live-server and physical-device checks are opt-in because they depend on private servers, credentials, network conditions, and hardware.
 
 ```mermaid
 flowchart TD
@@ -9,7 +9,7 @@ flowchart TD
   Change --> Docs[mkdocs build --strict]
   Unit --> VisionSim[visionOS simulator build/smoke]
   Unit --> MobileSim[iPhone/iPad simulator build/smoke]
-  VisionSim --> Device[Physical headset checks]
+  VisionSim --> Device[Physical-device checks]
   Unit --> Live[Optional live-server probes]
 ```
 
@@ -61,11 +61,15 @@ Live probes are opt-in and must stay secret-gated. They validate real Plex/Jelly
 
 ## Physical-device checks
 
-Use a real headset for behavior the simulator cannot prove reliably:
+Use real hardware for behavior the simulator cannot prove reliably. Use Apple
+Vision Pro for visionOS media-plane and immersive/Cinema checks; use physical
+iPhone/iPad hardware for mobile background playback, PiP/AirPlay,
+cellular-transfer policy, Control Center/lock-screen behavior, and App
+Intents/Spotlight invocation.
 
-- AVPlayer media-plane rendering;
-- immersive/Cinema presentation;
-- background and off-head downloads;
+- AVPlayer media-plane rendering, especially on Apple Vision Pro;
+- immersive/Cinema presentation on visionOS;
+- background, locked, off-head, and cellular download scheduling;
 - audio route/interruption behavior;
 - Spotlight, Shortcuts, and App Intents end-to-end.
 

@@ -3,9 +3,7 @@
 <plist version="1.0">
 <dict>
 	<!-- App Store privacy manifest (#appstore).
-	     Labstream talks only to the user's own Plex Media Server and stores the
-	     Plex token in the Keychain on-device. No data is collected by or sent to
-	     the developer, and there is no tracking or third-party SDK. -->
+	     Labstream talks to the user-selected Plex, Jellyfin, or Emby server, plus Plex/Emby auth services when selected. No data is automatically collected by or sent to the developer; optional diagnostics are user-initiated, and there is no tracking or third-party SDK. -->
 
 	<key>NSPrivacyTracking</key>
 	<false/>

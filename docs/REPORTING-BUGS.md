@@ -2,9 +2,7 @@
 
 Found something broken in Labstream? Here's the fastest way to get it fixed.
 
-Labstream sends **nothing** to the developer — it talks only to your own Plex,
-Jellyfin, or Emby server (see the [Privacy Policy](privacy.md)). That means a GitHub
-issue is the only way we learn about a problem, and the more reproducible detail
+Labstream does not automatically send diagnostics to the developer and has no developer-operated backend (see the [Privacy Policy](privacy.md)). Depending on your sign-in choice it talks to Plex services and your selected Plex server, your Jellyfin server URL, or Emby Connect plus your selected Emby server. A GitHub issue is the way we learn about a problem, and the more reproducible detail
 you give, the faster it gets fixed. The app has a built-in, **redacted**
 diagnostic report to make that easy and safe.
 
@@ -38,7 +36,7 @@ context like:
 - backend name (Plex / Jellyfin / Emby) and connection scheme
 - server product/version where known
 - your selected quality settings
-- a recent playback snapshot, passive redacted MetricKit crash/hang summaries
+- a recent playback snapshot, passive redacted MetricKit diagnostic summaries
   when available, and recent **redacted** event summaries
 
 It is designed to **omit** sensitive values, including:
@@ -48,7 +46,7 @@ It is designed to **omit** sensitive values, including:
 - usernames, library paths, filenames, and media titles
 
 Diagnostics are **off by default**, kept in bounded local storage, and **never
-uploaded by the app** — the report leaves your device only when *you* copy,
+uploaded automatically by the app** — the report leaves your device only when *you* copy,
 export, or share it. For the full contract, see
 [Diagnostics and privacy](DIAGNOSTICS-PRIVACY.md) and the [Privacy Policy](privacy.md).
 

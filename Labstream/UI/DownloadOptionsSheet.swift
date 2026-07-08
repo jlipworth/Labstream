@@ -534,7 +534,7 @@ struct DownloadOptionsSheet: View {
             Text("Original quality")
         } footer: {
             Label {
-                Text("Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This is not an optimized server version; it can be slower and restarts from the beginning if interrupted.")
+                Text("Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This uses a live server remux, not a prebuilt offline copy; it can be slower and may restart from the beginning if interrupted.")
             } icon: {
                 Image(systemName: "info.circle")
             }
@@ -617,14 +617,14 @@ struct DownloadOptionsSheet: View {
                 .buttonStyle(.plain)
             }
         } header: {
-            Text("Optimize on server")
+            Text(optimizeSectionTitle)
         } footer: {
             Label {
                 Text(probeFailed
-                     ? "Couldn't check compatibility, so your server will render a compatible version. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted."
+                     ? "Couldn't check compatibility, so Labstream will ask the server for a compatible offline version. Server work can take a while and may require retry if interrupted."
                      : originalAvailable
-                        ? "Your server renders a bitrate-capped compatible copy. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted."
-                        : "Your server renders a compatible offline version. This can take a while, uses server CPU/GPU, and may restart instead of resuming if interrupted.")
+                        ? "The server prepares a bitrate-capped compatible copy. This can take a while and can continue from checkpoints when the server provides a static file; live streams may require retry if interrupted."
+                        : "The server prepares a compatible offline version. This can take a while and can continue from checkpoints when the server provides a static file; live streams may require retry if interrupted.")
             } icon: {
                 Image(systemName: "exclamationmark.triangle")
             }
@@ -645,6 +645,15 @@ struct DownloadOptionsSheet: View {
             }
             selectedChoice = preferredSelection(originalAvailable: originalAvailable,
                                                 compatibleRemuxAvailable: false, presets: allPresets)
+        }
+    }
+
+    private var optimizeSectionTitle: String {
+        switch sheetBackend {
+        case .plex:
+            "Optimize on server"
+        case .jellyfin, .emby:
+            "Convert on server"
         }
     }
 

@@ -5,7 +5,7 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 ## Requirements
 
 - macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
-- The iOS/iPadOS 26+ SDK/runtime for the `LabstreamMobile` target.
+- The iOS/iPadOS 26.1+ SDK/runtime for the `LabstreamMobile` target.
 - An Apple Vision Pro simulator runtime compatible with the project deployment target.
 - Swift Package Manager for `PMSKit` tests.
 - `uv` for the repo's Python tooling checks.
@@ -88,7 +88,7 @@ scripts/deploy-to-device.sh --launch   # install and launch while the headset is
 scripts/deploy-to-device.sh --no-build # reinstall the last build
 ```
 
-The development build uses the same bundle identifier as the App Store identity, so installing a local build can replace another installed build and its app state.
+The development build uses the same bundle identifier as the intended App Store identity, so installing a local build can replace another installed build and its app state. If App Store/TestFlight distribution is used later, installing a development build over that build can clear the app container as a normal same-bundle-id replacement.
 
 ## Credentials and iCloud Keychain sync
 

@@ -8,8 +8,8 @@ body:
       value: |
         Thanks for taking the time to file a bug.
 
-        Labstream talks only to **your own** Plex / Jellyfin / Emby server and sends
-        nothing to the developer, so this issue is the only thing we'll see — please
+        Labstream has no developer-operated backend and does not automatically send
+        diagnostics to the developer, so this issue is what we'll see — please
         give us enough to reproduce it. The fastest, safest way to share context is the
         built-in **diagnostic report** (Settings ▸ Diagnostics), which is redacted for
         you. See the field near the bottom of this form.
@@ -78,11 +78,11 @@ body:
     validations:
       required: true
   - type: input
-    id: visionos-version
+    id: os-version
     attributes:
-      label: visionOS version
-      description: "Settings ▸ General ▸ About on the headset. Example: visionOS 26.5."
-      placeholder: "26.5"
+      label: Device and OS version
+      description: "Settings ▸ General ▸ About on your device. Examples: visionOS 26.5, iOS 26.5, iPadOS 26.5."
+      placeholder: "visionOS 26.5 / iOS 26.5 / iPadOS 26.5"
     validations:
       required: true
   - type: input

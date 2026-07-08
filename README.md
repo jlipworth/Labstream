@@ -1,11 +1,13 @@
 # Labstream
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Platform: visionOS 26 + iOS/iPadOS 26+](https://img.shields.io/badge/Platform-visionOS%2026%20%2B%20iOS%2FiPadOS%2026%2B-black.svg)](https://developer.apple.com/)
+[![Platform: visionOS 26 + iOS/iPadOS 26.1+](https://img.shields.io/badge/Platform-visionOS%2026%20%2B%20iOS%2FiPadOS%2026.1%2B-black.svg)](https://developer.apple.com/)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
 **Labstream is a native Apple-platform media client for your own Plex, Jellyfin, or Emby server.**
+
+Labstream does not provide, host, sell, or bundle movies, TV, music, or other media. It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
 
 It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a native iPhone/iPad shell, music browsing, privacy-preserving diagnostics, and offline downloads to a source-first SwiftUI app.
 
@@ -43,7 +45,7 @@ It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a
 
 ### Downloads and offline
 
-- Offline downloads with metadata, poster/side-asset support, integrity checks, and resume/reconcile behavior.
+- Offline downloads with metadata, poster/side-asset support, integrity checks, and route-specific recovery: static/original and server-prepared static files use checkpoints, while live remux/transcode streams reconcile safely but may need retry/restart after interruption.
 - Direct original downloads only when Labstream expects the file to be locally playable.
 - Server-prepared or server-rendered compatible files when the original is not a safe offline target.
 
@@ -65,7 +67,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ## Tech stack
 
-- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26+.
+- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26.1+.
 - Swift 6 with strict concurrency.
 - Custom AVFoundation playback and offline playback paths.
 - `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models, diagnostics primitives, and pure policy state machines.
@@ -75,8 +77,8 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ### Requirements
 
-- macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 26+ SDK/runtime for mobile builds.
-- A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPhone/iPad simulator runtime for mobile builds, or a paired Apple Vision Pro for device installs.
+- macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 26.1+ SDK/runtime for mobile builds.
+- A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPhone/iPad simulator runtime for mobile builds, or paired Apple Vision Pro / iPhone / iPad hardware for device installs.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
 ### Build for the visionOS simulator
@@ -126,6 +128,13 @@ uv run --with-requirements requirements.txt mkdocs build --strict
 ```sh
 scripts/deploy-to-device.sh            # build + install
 scripts/deploy-to-device.sh --launch   # also launch while the headset is awake/worn
+```
+
+### Install on a physical iPhone or iPad
+
+```sh
+scripts/deploy-mobile-to-device.sh            # build + install
+scripts/deploy-mobile-to-device.sh --launch   # also launch after install
 ```
 
 Both app targets use the bundle identifier `com.jlipworth.Labstream` for the intended unified product identity.

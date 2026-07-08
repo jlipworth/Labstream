@@ -19,7 +19,7 @@ struct FeedbackSheet: View {
     let githubIssuesURL: URL
     /// "1.2.0 (1)" — prefills the form's version field. Empty string omits it.
     let appVersionBuild: String
-    /// "26.5" — prefills the visionOS-version field. Empty string omits it.
+    /// "26.5" — prefills the OS-version field. Empty string omits it.
     let osVersion: String
 
     @Environment(\.dismiss) private var dismiss
@@ -60,7 +60,7 @@ struct FeedbackSheet: View {
         var items: [(String, String)] = [("template", "bug_report.yml")]
         if !redactedNote.isEmpty { items.append(("what-happened", redactedNote)) }
         if !appVersionBuild.isEmpty { items.append(("app-version", appVersionBuild)) }
-        if !osVersion.isEmpty { items.append(("visionos-version", osVersion)) }
+        if !osVersion.isEmpty { items.append(("os-version", osVersion)) }
 
         func url(_ pairs: [(String, String)]) -> String {
             let query = pairs
