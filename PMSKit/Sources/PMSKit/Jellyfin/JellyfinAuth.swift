@@ -78,6 +78,21 @@ public enum JellyfinAuth {
         return req
     }
 
+    /// `POST /Sessions/Logout` for an explicit user-initiated sign-out.
+    ///
+    /// Callers must clear the local credential even when this best-effort request fails.
+    /// Restore failures and background connectivity errors must never call this endpoint.
+    public static func logoutRequest(server: URL,
+                                     token: String,
+                                     identity: JellyfinClientIdentity) -> URLRequest {
+        var req = URLRequest(url: server.appendingPathComponent("Sessions/Logout"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(authorizationHeader(identity: identity, token: token),
+                     forHTTPHeaderField: "Authorization")
+        return req
+    }
+
     public static func quickConnectEnabledRequest(server: URL,
                                                   identity: JellyfinClientIdentity) -> URLRequest {
         var req = URLRequest(url: server.appendingPathComponent("QuickConnect/Enabled"))

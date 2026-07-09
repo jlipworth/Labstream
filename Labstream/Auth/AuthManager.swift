@@ -295,29 +295,17 @@ final class AuthManager {
 
     /// Validate the saved Jellyfin session with a live `userViews` probe.
     ///
-    /// A 401 is treated as an invalid token immediately. A 403, however, is NOT proof of an
-    /// expired token during a network reconnect (#93): some setups answer 403 transiently
-    /// for a still-valid token while a Wi-Fi transition settles. So a 403 gets ONE bounded
-    /// retry; only if the retry also returns 401/403 do we treat the session as unauthorized
-    /// and let the caller wipe creds. Any other error (timeout/unreachable) propagates and is
-    /// preserved as `.failed` without wiping, matching `restorePlexSession`.
+    /// Only a 401 proves that the token is invalid. A 403 is an authorization/policy failure,
+    /// not evidence of revocation, so it must preserve the credential just like availability
+    /// and server errors. This keeps a restricted library or reverse proxy from signing users out.
     private func probeJellyfinReachability(server: URL, token: String, userID: String) async throws {
         let status = try await jellyfinUserViewsStatus(server: server, token: token, userID: userID)
-        switch status {
-        case 200..<300:
+        switch CredentialValidationPolicy.decision(httpStatus: status) {
+        case .valid:
             return
-        case 401:
+        case .invalidCredential:
             throw JellyfinAuthError.unauthorized
-        case 403:
-            // Bounded single retry before trusting a 403 enough to sign the user out.
-            NSLog("[#93] restoreJellyfinSession: probe returned 403; retrying once before wiping creds")
-            let retry = try await jellyfinUserViewsStatus(server: server, token: token, userID: userID)
-            switch retry {
-            case 200..<300: return
-            case 401, 403: throw JellyfinAuthError.unauthorized
-            default: throw JellyfinAuthError.http(retry)
-            }
-        default:
+        case .preserveCredential, .refreshExpiredCredential:
             throw JellyfinAuthError.http(status)
         }
     }
@@ -375,10 +363,11 @@ final class AuthManager {
                                                        userId: snapshot.userID)
             let (_, response) = try await authDataLoader(req)
             if let http = response as? HTTPURLResponse {
-                switch http.statusCode {
-                case 200..<300: break
-                case 401, 403: throw EmbyAuthError.unauthorized
-                default: throw EmbyAuthError.http(http.statusCode)
+                switch CredentialValidationPolicy.decision(httpStatus: http.statusCode) {
+                case .valid: break
+                case .invalidCredential: throw EmbyAuthError.unauthorized
+                case .preserveCredential, .refreshExpiredCredential:
+                    throw EmbyAuthError.http(http.statusCode)
                 }
             }
             guard isCurrentAuthAttempt(attemptID) else { return false }
@@ -1543,11 +1532,33 @@ final class AuthManager {
         case .plex:
             signOutPlex()
         case .jellyfin:
+            revokeJellyfinSessionIfPossible()
             signOutJellyfin()
         case .emby:
+            revokeEmbySessionIfPossible()
             signOutEmby()
         }
         state = .idle
+    }
+
+    /// Remote revocation is deliberately best effort. Capture the live values before local
+    /// clearing, then always complete the local sign-out synchronously from the caller's view.
+    private func revokeJellyfinSessionIfPossible() {
+        guard let server = appModel.jellyfinServerBaseURL,
+              let token = appModel.jellyfinAccessToken else { return }
+        let request = JellyfinAuth.logoutRequest(server: server, token: token, identity: jellyfinIdentity)
+        Task { _ = try? await Self.mediaBrowserAuthSession.data(for: request) }
+    }
+
+    private func revokeEmbySessionIfPossible() {
+        guard let server = appModel.embyServerBaseURL,
+              let token = appModel.embyAccessToken,
+              let userID = appModel.embyUserID,
+              let request = try? EmbyAuth.logoutRequest(server: server,
+                                                        token: token,
+                                                        identity: embyIdentity,
+                                                        userId: userID) else { return }
+        Task { _ = try? await Self.mediaBrowserAuthSession.data(for: request) }
     }
 
     private func signOutPlex() {
