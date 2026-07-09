@@ -296,12 +296,14 @@ final class PlayerLayerHostView: NSView {
     }
 
     private func configureLayerHost() {
-        wantsLayer = true
+        // Layer-HOSTING contract: assign the custom layer BEFORE wantsLayer, or AppKit treats the
+        // view as merely layer-backed and may manage/replace the layer tree it thinks it owns.
         let rootLayer = CALayer()
         rootLayer.backgroundColor = NSColor.black.cgColor
-        layer = rootLayer
         playerLayer.backgroundColor = NSColor.black.cgColor
         rootLayer.addSublayer(playerLayer)
+        layer = rootLayer
+        wantsLayer = true
     }
 }
 #else
