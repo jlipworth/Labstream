@@ -15,7 +15,7 @@ struct DownloadLiveRangeProgressPolicyTests {
                        status: status)
     }
 
-    @Test("Merging keeps monotonic bytes within a chunk and lower re-baselines")
+    @Test("Merging keeps live display bytes monotonic")
     func mergedSampleBytes() {
         let now = Date(timeIntervalSince1970: 1_000)
         let first = DownloadLiveRangeProgressPolicy.mergedSample(liveBytes: 200,
@@ -32,15 +32,15 @@ struct DownloadLiveRangeProgressPolicyTests {
         #expect(higher.bytes == 250)
         #expect(higher.expectedBytes == 1_000)
 
-        let rebaselined = DownloadLiveRangeProgressPolicy.mergedSample(liveBytes: 150,
-                                                                       expectedBytes: nil,
-                                                                       previous: higher,
-                                                                       updatedAt: now.addingTimeInterval(2))
-        #expect(rebaselined.bytes == 150)
-        #expect(rebaselined.expectedBytes == 1_000)
+        let lower = DownloadLiveRangeProgressPolicy.mergedSample(liveBytes: 150,
+                                                                 expectedBytes: nil,
+                                                                 previous: higher,
+                                                                 updatedAt: now.addingTimeInterval(2))
+        #expect(lower.bytes == 250)
+        #expect(lower.expectedBytes == 1_000)
     }
 
-    @Test("Live display bytes require fresh forward progress on an active downloading row")
+    @Test("Live display bytes require forward progress on an active downloading row")
     func liveDisplayBytes() {
         let now = Date(timeIntervalSince1970: 2_000)
         let fresh = DownloadLiveRangeProgressSample(bytes: 150, expectedBytes: nil, updatedAt: now.addingTimeInterval(-15))
@@ -51,12 +51,25 @@ struct DownloadLiveRangeProgressPolicyTests {
                                                                  now: now) == 150)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(),
                                                                  sample: stale,
-                                                                 now: now) == nil)
+                                                                 now: now) == 150)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(bytes: 150),
                                                                  sample: fresh,
                                                                  now: now) == nil)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(status: .paused),
                                                                  sample: fresh,
                                                                  now: now) == nil)
+    }
+
+    @Test("Resume display watermark treats lower task counts as incremental")
+    func resumedTaskDisplayBytes() {
+        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+            taskBytes: 2_000,
+            resumeDisplayBytes: 200_000_000) == 200_002_000)
+        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+            taskBytes: 250_000_000,
+            resumeDisplayBytes: 200_000_000) == 250_000_000)
+        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+            taskBytes: 0,
+            resumeDisplayBytes: 200_000_000) == 200_000_000)
     }
 }
