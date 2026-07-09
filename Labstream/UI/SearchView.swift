@@ -4,9 +4,9 @@ import PMSKit
 /// Search tab: queries the active backend and renders normalized library/type groups
 /// into the same Detail flow as browse. Debounced via `.task(id:)`.
 ///
-/// Music results are faceted Plexamp-style (MUSIC-DESIGN §5): Artists and Albums
-/// rails up top routing through the shared `musicDestination`, then a Songs list
-/// whose rows PLAY on tap (tracks never navigate), then non-music library groups.
+/// Results stay inside their source library in backend-native library order. Within
+/// a library, video types precede Artists, Albums, Songs, and Playlists; song rows
+/// play while music containers retain the library id needed for rich navigation.
 struct SearchView: View {
     /// Bumped by RootView's ⌘F shortcut to request focus of the search field. A plain
     /// counter (not a Bool) so every press re-triggers the focus `.task`, even when the
@@ -50,23 +50,12 @@ struct SearchView: View {
                                        description: Text(message))
                 .frame(maxWidth: .infinity, minHeight: 300)
             case .loaded:
-                if nonMusicGroups.isEmpty && artistResults.isEmpty
-                    && albumResults.isEmpty && trackResults.isEmpty {
+                if results.presentationGroups.isEmpty {
                     ContentUnavailableView.search(text: query)
                         .frame(maxWidth: .infinity, minHeight: 300)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
-                        // Music facets first, Plexamp order: Artists, Albums, Songs.
-                        if !artistResults.isEmpty {
-                            MusicRail(title: "Artists", items: artistResults)
-                        }
-                        if !albumResults.isEmpty {
-                            MusicRail(title: "Albums", items: albumResults)
-                        }
-                        if !trackResults.isEmpty {
-                            SearchSongsSection(tracks: trackResults)
-                        }
-                        ForEach(nonMusicGroups) { group in
+                        ForEach(results.presentationGroups) { group in
                             SearchLibrarySection(group: group,
                                                  query: query,
                                                  backend: appModel.activeBackend,
@@ -79,17 +68,12 @@ struct SearchView: View {
         }
         .navigationTitle("Search")
         .navigationDestination(for: MediaItem.self) { item in
-            // Artist/album results resolve through the shared music routing; search
-            // results are cross-section so there's no music sectionKey (the artist
-            // view falls back to the children endpoint). Everything else keeps the
-            // video Detail flow.
-            if item.isMusicContainer {
-                musicDestination(for: item, sectionKey: nil)
-            } else {
-                // Capture the active backend as the item's origin (#100) so actions resolve
-                // against the source backend even after a backend switch.
-                DetailView(item: item, originBackend: appModel.activeBackend)
-            }
+            // Capture the active backend as the item's origin (#100) so actions resolve
+            // against the source backend even after a backend switch.
+            DetailView(item: item, originBackend: appModel.activeBackend)
+        }
+        .navigationDestination(for: SearchMusicDestination.self) { destination in
+            musicDestination(for: destination.item, sectionKey: destination.libraryID)
         }
         .navigationDestination(for: RailViewAllDestination.self) { destination in
             RailViewAllView(destination: destination)
@@ -143,39 +127,6 @@ struct SearchView: View {
         searchFieldFocused = false
         dismissSearch()
         onClearSearch?()
-    }
-
-    // MARK: - Faceting
-
-    /// Non-music hubs, with any music items stripped from mixed hubs (they reappear
-    /// above, faceted — stripping here is dedup, not hiding) and hubs left empty
-    /// dropped. Local on purpose: the app-wide `hidingMusic` hide is gone (#17
-    /// Phase 7) — Home now keeps music and only drops tracks.
-    private var nonMusicGroups: [SearchResultGroup] {
-        results.groups.compactMap { group -> SearchResultGroup? in
-            let nonMusicHubs: [Hub] = group.hubs.compactMap { hub -> Hub? in
-                let kept = hub.metadata.filter { !$0.isMusic }
-                guard !kept.isEmpty else { return nil }
-                return Hub(hubKey: hub.hubKey, key: hub.key, title: hub.title, type: hub.type,
-                           hubIdentifier: hub.hubIdentifier, size: kept.count, metadata: kept)
-            }
-            guard !nonMusicHubs.isEmpty else { return nil }
-            return SearchResultGroup(id: group.id, title: group.title, hubs: nonMusicHubs,
-                                     backendID: group.backendID, libraryID: group.libraryID)
-        }
-    }
-
-    private var artistResults: [MediaItem] { musicResults(of: .artist) }
-    private var albumResults: [MediaItem] { musicResults(of: .album) }
-    private var trackResults: [MediaItem] { musicResults(of: .track) }
-
-    /// `/hubs/search` groups results into per-type hubs, but collect across ALL
-    /// hubs (deduped) so a music item surfaced by an unexpected hub still facets.
-    private func musicResults(of kind: MediaItem.Kind) -> [MediaItem] {
-        var seen = Set<String>()
-        return results.groups.flatMap(\.hubs).flatMap(\.metadata).filter {
-            $0.kind == kind && seen.insert($0.ratingKey).inserted
-        }
     }
 
     private var currentSearchAuthorityKey: String {
@@ -260,9 +211,17 @@ enum SearchRequestAuthority {
     }
 }
 
+/// Navigation identity for a music result includes its source library. A bare
+/// `MediaItem` loses this context and makes Plex artist pages fall back to the
+/// under-listing `/children` endpoint.
+private struct SearchMusicDestination: Hashable {
+    let item: MediaItem
+    let libraryID: String?
+}
+
 /// One source-library section containing one or more type/native result hubs.
 private struct SearchLibrarySection: View {
-    let group: SearchResultGroup
+    let group: SearchPresentationGroup
     let query: String
     let backend: MediaBackendKind
     let sessionIdentity: String
@@ -275,31 +234,41 @@ private struct SearchLibrarySection: View {
                 .font(compactWidth ? .title2.bold() : .title.bold())
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
-            ForEach(group.hubs) { hub in
-                SearchHubSection(hub: hub,
-                                 destination: destination(for: hub))
+            ForEach(group.sections) { section in
+                switch section.kind {
+                case .artists, .albums, .playlists:
+                    SearchMusicRail(section: section, libraryID: group.libraryID)
+                case .songs:
+                    SearchSongsSection(tracks: section.items)
+                case .standard:
+                    SearchHubSection(section: section,
+                                     destination: destination(for: section))
+                }
             }
         }
     }
 
-    private func destination(for hub: Hub) -> RailViewAllDestination? {
+    /// MediaBrowser (Jellyfin/Emby) search hubs get a "View All" paging destination
+    /// scoped to this library; Plex and music hubs don't (music routes through
+    /// `SearchMusicRail`, and only mediaBrowser search supports the paged query).
+    private func destination(for section: SearchPresentationSection) -> RailViewAllDestination? {
         guard backend.isMediaBrowser,
               let libraryID = group.libraryID,
-              let itemTypes = mediaBrowserItemTypes(for: hub.type) else { return nil }
-        return RailViewAllDestination(title: hub.title, backend: backend,
+              let itemTypes = mediaBrowserItemTypes(for: section) else { return nil }
+        return RailViewAllDestination(title: section.title, backend: backend,
                                       sessionIdentity: sessionIdentity,
                                       query: .mediaBrowserSearch(text: query,
                                                                  parentID: libraryID,
                                                                  itemTypes: itemTypes))
     }
 
-    private func mediaBrowserItemTypes(for type: String?) -> String? {
-        switch type {
-        case "movie": return "Movie"
-        case "show": return "Series"
-        case "season": return "Season"
-        case "episode": return "Episode"
-        case "video": return "Video"
+    private func mediaBrowserItemTypes(for section: SearchPresentationSection) -> String? {
+        switch section.items.first?.kind {
+        case .movie: return "Movie"
+        case .show: return "Series"
+        case .season: return "Season"
+        case .episode: return "Episode"
+        case .other("video"): return "Video"
         default: return nil
         }
     }
@@ -307,18 +276,18 @@ private struct SearchLibrarySection: View {
 
 /// One titled section of search results (a hub) rendered as a horizontal rail.
 private struct SearchHubSection: View {
-    let hub: Hub
+    let section: SearchPresentationSection
     let destination: RailViewAllDestination?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
-            RailSectionHeader(title: hub.title, destination: destination)
+            RailSectionHeader(title: section.title, destination: destination)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
-                    ForEach(hub.metadata) { item in
+                    ForEach(section.items) { item in
                         NavigationLink(value: item) {
                             RailMediaCell(item: item)
                         }
@@ -330,6 +299,36 @@ private struct SearchHubSection: View {
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
+            .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+        }
+    }
+}
+
+/// Artist/album/playlist rail that carries the source library into the destination.
+private struct SearchMusicRail: View {
+    let section: SearchPresentationSection
+    let libraryID: String?
+
+    @Environment(\.labstreamCompactWidth) private var compactWidth
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
+            Text(section.title)
+                .font(compactWidth ? .title3.bold() : .title2.bold())
+                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
+                    ForEach(section.items) { item in
+                        NavigationLink(value: SearchMusicDestination(item: item,
+                                                                     libraryID: libraryID)) {
+                            RailMediaCell(item: item)
+                        }
+                        .cardLink()
+                    }
+                }
+                .padding(.vertical, DS.Space.sm)
+            }
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
