@@ -10,7 +10,7 @@ public enum BackgroundDownloadPauseCancellationPolicy {
         return !hasReplacementTask
     }
 
-    /// `startRangeChunk` can throw during user pause/delete races. A halted row or explicit
+    /// Starting the static Range remainder can throw during user pause/delete races. A halted row or explicit
     /// cancellation is owned by the pause/delete path and should not be surfaced as a transfer error.
     public static func shouldSuppressRangeStartFailure(isHalted: Bool,
                                                        isCancellation: Bool) -> Bool {

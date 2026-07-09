@@ -1027,7 +1027,7 @@ public final class DownloadManager {
                                                             in: currentItem)
                 self.releaseInFlight(ratingKey: ratingKey)
                 // Keep the row in place even when there is no durable media partial yet. `upsert`
-                // preserves cached poster/chapter/trickplay paths, while `startRangeChunk` resumes
+                // preserves cached poster/chapter/trickplay paths, while the static Range lane resumes
                 // from the durable file size (0 when no checkpoint exists). Removing here made Plex
                 // existing-version retries forget side materials and appear to restart from scratch.
                 await self.download(currentItem, choice: resolved.choice,
