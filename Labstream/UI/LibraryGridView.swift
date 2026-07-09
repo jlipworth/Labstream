@@ -630,6 +630,22 @@ struct LibraryGridView: View {
         let query = LibraryBrowsePreferenceStore().query(for: identity)
         sort = query.sort
         filter = query.filter
+        // Capability discovery and preference restoration are independent tasks. If the
+        // server answered first, validate the restored selection now; if preferences won
+        // the race, `loadBrowseCapabilities()` validates them when discovery completes.
+        switch source {
+        case .plex:
+            switch capabilityState {
+            case .loaded(let capabilities):
+                enforceCapabilities(capabilities)
+            case .unavailable:
+                enforceCapabilities(.defaultOnly)
+            case .loading:
+                break
+            }
+        case .jellyfin, .emby:
+            enforceCapabilities(availableCapabilities)
+        }
         loadedPreferenceIdentity = identity
     }
 
