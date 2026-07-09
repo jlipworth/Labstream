@@ -41,6 +41,7 @@ struct CustomPlayerView: View {
     @State private var clockTaskID = UUID()
     #if os(iOS)
     @State private var mobileSystemCoordinator = MobilePlayerSystemCoordinator()
+    @State private var mobileOrientationCoordinator = MobilePlayerOrientationCoordinator()
     #endif
     #if os(macOS)
     @State private var macSystemCoordinator = MacPlayerSystemCoordinator()
@@ -157,9 +158,15 @@ struct CustomPlayerView: View {
             }
         }
         .task(id: clockTaskID) { await runPlayer() }
+        #if os(iOS)
+        .onAppear {
+            mobileOrientationCoordinator.enterLandscapeIfNeeded()
+        }
+        #endif
         .onDisappear {
             #if os(iOS)
             mobileSystemCoordinator.teardown()
+            mobileOrientationCoordinator.restoreIfNeeded()
             #endif
             #if os(macOS)
             macSystemCoordinator.teardown()
