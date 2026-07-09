@@ -8,39 +8,24 @@
 public enum StaticRangeSegmentStrategyPolicy {
     public struct SceneStrategy: Sendable, Equatable {
         public let normalizedPhase: String
-        public let preferenceReason: String?
+        /// Constant since #227 (continuous remainder is the only strategy); kept as a field so
+        /// scene-phase diagnostics keep a stable "strategy" label.
         public let diagnosticStrategy: String
-        public let shouldCountDurableCandidates: Bool
 
         public init(normalizedPhase: String,
-                    preferenceReason: String?,
-                    diagnosticStrategy: String,
-                    shouldCountDurableCandidates: Bool) {
+                    diagnosticStrategy: String) {
             self.normalizedPhase = normalizedPhase
-            self.preferenceReason = preferenceReason
             self.diagnosticStrategy = diagnosticStrategy
-            self.shouldCountDurableCandidates = shouldCountDurableCandidates
         }
     }
 
     public static func sceneStrategy(phase: String) -> SceneStrategy {
-        let normalized = phase.lowercased()
-        let reason = (normalized == "inactive" || normalized == "background")
-            ? "scene_\(normalized)"
-            : "single_remainder"
-        return SceneStrategy(
-            normalizedPhase: normalized,
-            preferenceReason: reason,
-            diagnosticStrategy: "continuous_remainder",
-            shouldCountDurableCandidates: false
+        SceneStrategy(
+            normalizedPhase: phase.lowercased(),
+            diagnosticStrategy: "continuous_remainder"
         )
     }
 
-    public static func segmentPreference(sceneReason: String?)
-        -> (kind: RangeTransferSegmentKind, reason: String?) {
-        if let sceneReason {
-            return (.continuousRemainder, sceneReason)
-        }
-        return (.continuousRemainder, "single_remainder")
-    }
+    /// The single post-#227 segment shape: one open-ended continuous remainder.
+    public static let segmentReason = "single_remainder"
 }
