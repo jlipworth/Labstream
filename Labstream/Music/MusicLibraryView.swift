@@ -597,14 +597,18 @@ struct MusicSkeleton: View {
             VStack(alignment: .leading, spacing: DS.Space.lg) {
                 skeletonBlock(width: 220, height: 26, radius: DS.Radius.chip)
                     .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
-                HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
-                    ForEach(0..<5, id: \.self) { _ in
-                        skeletonBlock(width: MusicArt.railSize(compact: compactWidth),
-                                      height: MusicArt.railSize(compact: compactWidth),
-                                      radius: DS.Radius.poster)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
+                        ForEach(0..<5, id: \.self) { _ in
+                            skeletonBlock(width: MusicArt.railSize(compact: compactWidth),
+                                          height: MusicArt.railSize(compact: compactWidth),
+                                          radius: DS.Radius.poster)
+                        }
                     }
+                    .padding(.vertical, DS.Space.xs)
                 }
-                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+                .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth),
+                                      clipDisabled: false)
             }
 
             LazyVGrid(columns: columns, spacing: MusicArt.gridRowSpacing(compact: compactWidth)) {
