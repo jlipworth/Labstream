@@ -83,6 +83,7 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
     #if os(macOS)
     @State private var macWindowBridge = MacPlayerWindowBridge()
+    @State private var macKeyMonitor: Any?
     #endif
     /// True only between a Slider `onEditingChanged(true)` and its matching `(false)`. Guards the
     /// scrubber binding's defensive `beginDrag` so a trailing value-set arriving after the commit
@@ -228,10 +229,18 @@ struct CustomPlayerChrome: View {
         // stays in the browse UI; inside the player it reads as non-native.
         .tint(.white)
         #endif
-        .onAppear { revealChrome() }
+        .onAppear {
+            revealChrome()
+            #if os(macOS)
+            installMacKeyMonitor()
+            #endif
+        }
         .onDisappear {
             hideTask?.cancel()
             trickPlayPreviewTask?.cancel()
+            #if os(macOS)
+            removeMacKeyMonitor()
+            #endif
         }
         .onChange(of: controller.transport.isPaused) { _, _ in scheduleChromeHideIfNeeded() }
         .onChange(of: controller.transport.pauseRequested) { _, _ in scheduleChromeHideIfNeeded() }
@@ -487,6 +496,7 @@ struct CustomPlayerChrome: View {
             }
             .keyboardShortcut(.space, modifiers: [])
 
+            #if os(iOS)
             Button("Skip back 30 seconds") {
                 performRelativeSkip(seconds: -30)
             }
@@ -506,6 +516,7 @@ struct CustomPlayerChrome: View {
                 performRelativeSkip(seconds: 10)
             }
             .keyboardShortcut(.rightArrow, modifiers: .shift)
+            #endif
 
             if let onClose {
                 Button("Close player") {
@@ -519,6 +530,53 @@ struct CustomPlayerChrome: View {
         .opacity(0)
         .accessibilityHidden(true)
         .allowsHitTesting(false)
+    }
+    #endif
+
+    #if os(macOS)
+    private func installMacKeyMonitor() {
+        guard macKeyMonitor == nil else { return }
+        macKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if handleMacKeyDown(event) {
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeMacKeyMonitor() {
+        guard let macKeyMonitor else { return }
+        NSEvent.removeMonitor(macKeyMonitor)
+        self.macKeyMonitor = nil
+    }
+
+    private func handleMacKeyDown(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        let seconds: Int?
+        switch event.keyCode {
+        case 123: // left arrow
+            if modifiers.isEmpty {
+                seconds = -30
+            } else if modifiers == .shift {
+                seconds = -10
+            } else {
+                seconds = nil
+            }
+        case 124: // right arrow
+            if modifiers.isEmpty {
+                seconds = 30
+            } else if modifiers == .shift {
+                seconds = 10
+            } else {
+                seconds = nil
+            }
+        default:
+            seconds = nil
+        }
+
+        guard let seconds else { return false }
+        performRelativeSkip(seconds: seconds)
+        return true
     }
     #endif
 

@@ -44,6 +44,7 @@ These checks prove the branch is syntactically clean, shared-code compile-safe, 
 ### Navigation/UI
 
 - Home, Libraries, Search, Music, and Offline load in the Mac shell.
+- Music page transition/render does not momentarily resize or kick the whole app shell left.
 - Movie/show/season/music detail navigation works.
 - Escape pops a content/detail submenu when no player/sheet owns Escape.
 - Navigate > Back / `⌘[` pops the same submenu.
