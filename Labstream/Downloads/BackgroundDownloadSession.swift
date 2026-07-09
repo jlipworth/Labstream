@@ -1377,6 +1377,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     ratingKey: rangeEntry.ratingKey,
                     expectedBytes: rangeEntry.expectedBytes
                 )
+                // Hold the background completion handler across the main-actor request rebuild
+                // (#212): releasing it here lets the OS suspend us before the next task exists.
+                beginRangeRequestRebuildGrace(ratingKey: rangeEntry.ratingKey)
                 store.setStatus(ratingKey: rangeEntry.ratingKey, .queued)
                 AppDiagnostics.record(.downloads, "downloads.range_counter_reset_rebuild", fields: [
                     "download_id": .identifier(rangeEntry.ratingKey),
