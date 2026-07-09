@@ -1,6 +1,51 @@
 import SwiftUI
 import PMSKit
 
+#if os(visionOS)
+/// Gaze-friendly replacement for the persistent edge index on visionOS. The popover
+/// keeps all available buckets spatially close while the button makes jumping an
+/// intentional browse action instead of permanent chrome over the poster grid.
+struct LibraryAlphabetJumpButton: View {
+    let entries: [AlphabetBucket]
+    let onPick: (AlphabetBucket) -> Void
+
+    @State private var isPresented = false
+    private let columns = Array(repeating: GridItem(.fixed(44), spacing: DS.Space.sm), count: 6)
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            Label("Jump", systemImage: "textformat.abc")
+                .font(.callout)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("Jump through library")
+        .popover(isPresented: $isPresented, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: DS.Space.md) {
+                Text("Jump to")
+                    .font(.headline)
+
+                LazyVGrid(columns: columns, spacing: DS.Space.sm) {
+                    ForEach(entries, id: \.display) { entry in
+                        Button(entry.display) {
+                            isPresented = false
+                            onPick(entry)
+                        }
+                        .buttonStyle(.bordered)
+                        .font(.callout.weight(.semibold).monospaced())
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("Jump to \(entry.display)")
+                    }
+                }
+            }
+            .padding(DS.Space.lg)
+            .frame(width: 340)
+        }
+    }
+}
+#endif
+
 /// The trailing A–Z jump rail shared by the movies/TV `LibraryGridView` and the music
 /// `MusicPagedGrid` (#96, #111). Each entry scrolls the grid to the first item under that
 /// character; the offset math lives in `AlphabetBucket`, so every backend's rail jumps to
