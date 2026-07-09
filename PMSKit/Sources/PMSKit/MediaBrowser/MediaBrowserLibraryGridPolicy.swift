@@ -27,6 +27,18 @@ public enum MediaBrowserLibraryGridPolicy {
         collectionType?.lowercased() == "movies"
     }
 
+    /// Sort/filter facets safe to offer for a MediaBrowser library grid. TV grids list
+    /// `Series` containers, which never carry a resume position in Jellyfin/Emby, so
+    /// `Filters=IsResumable` on them deterministically returns zero items — hide the
+    /// "In Progress" facet there instead of offering a filter that always comes back empty.
+    public static func browseCapabilities(collectionType: String?) -> LibraryBrowseCapabilities {
+        guard itemTypes(collectionType: collectionType) != "Series" else {
+            return LibraryBrowseCapabilities(sorts: LibraryBrowseSort.allCases,
+                                             filters: LibraryBrowseFilter.allCases.filter { $0 != .inProgress })
+        }
+        return .videoMVP
+    }
+
     public static func recursive(collectionType: String?) -> Bool {
         switch collectionType?.lowercased() {
         case "movies":

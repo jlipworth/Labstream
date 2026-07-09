@@ -33,7 +33,11 @@ public enum EmbyLibrary {
                                     fields: String = fullItemFields,
                                     albumArtistIds: String? = nil,
                                     artistIds: String? = nil,
-                                    filters: [String] = []) throws -> URLRequest {
+                                    filters: [String] = [],
+                                    browseQuery: LibraryBrowseQuery = .default) throws -> URLRequest {
+        let combinedFilters = filters + browseQuery.mediaBrowserFilters
+        let effectiveSortBy = browseQuery == .default ? sortBy : browseQuery.mediaBrowserSortBy
+        let effectiveSortOrder = browseQuery == .default ? sortOrder : browseQuery.mediaBrowserSortOrder
         let shape = requestFactory.items(
             userId: userId,
             parentId: parentId,
@@ -42,13 +46,13 @@ public enum EmbyLibrary {
             limit: limit,
             searchTerm: searchTerm,
             nameStartsWith: nameStartsWith,
-            sortBy: sortBy,
-            sortOrder: sortOrder,
+            sortBy: effectiveSortBy,
+            sortOrder: effectiveSortOrder,
             includeItemTypes: includeItemTypes,
             fields: fields,
             albumArtistIds: albumArtistIds,
             artistIds: artistIds,
-            filters: filters
+            filters: combinedFilters
         )
         let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)

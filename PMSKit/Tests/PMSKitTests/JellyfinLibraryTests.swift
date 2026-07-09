@@ -713,4 +713,25 @@ struct JellyfinLibraryTests {
         #expect(URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?.isEmpty ?? true)
     }
 
+
+    @Test func itemsRequestAppliesBrowseQuerySortAndFilter() throws {
+        let request = try JellyfinLibrary.itemsRequest(server: server,
+                                                       token: "token-abc",
+                                                       identity: identity,
+                                                       userId: "user-1",
+                                                       parentId: "view-1",
+                                                       recursive: true,
+                                                       startIndex: 0,
+                                                       limit: 50,
+                                                       includeItemTypes: "Movie",
+                                                       browseQuery: LibraryBrowseQuery(sort: .releaseDate,
+                                                                                       filter: .inProgress))
+        let query = try queryMap(request)
+
+        #expect(query["sortBy"] == "PremiereDate")
+        #expect(query["sortOrder"] == "Descending")
+        #expect(query["filters"] == "IsResumable")
+        #expect(query["includeItemTypes"] == "Movie")
+    }
+
 }
