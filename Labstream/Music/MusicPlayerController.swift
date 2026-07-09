@@ -796,13 +796,10 @@ final class MusicPlayerController {
         }
     }
 
-    /// MPMediaItemArtwork's request handler is invoked on MediaPlayer's own serial queue
-    /// (e.g. while serializing Now Playing info), so it must NOT be actor-isolated — a
-    /// closure formed inside this @MainActor class inherits MainActor isolation and the
-    /// runtime's dispatch_assert_queue check SIGTRAPs (seen live: crash on first song).
-    /// Building it in a nonisolated context keeps the handler callable from any thread.
+    // Artwork must be built in a nonisolated context (SIGTRAP otherwise); the shared
+    // `NowPlayingArtwork` factory carries the full rationale.
     private nonisolated static func makeArtwork(_ image: UIImage) -> MPMediaItemArtwork {
-        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        NowPlayingArtwork.make(image)
     }
 
     /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it
