@@ -48,8 +48,9 @@ struct QualityTabView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
                         .padding(.vertical, DS.Space.sm)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -91,8 +92,9 @@ struct SpeedTabView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
                         .padding(.vertical, DS.Space.sm)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -408,8 +410,9 @@ struct SubtitlesTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
-                            .contentShape(Rectangle())
                             .padding(.vertical, DS.Space.sm)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -496,8 +499,9 @@ struct AudioTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
-                            .contentShape(Rectangle())
                             .padding(.vertical, DS.Space.sm)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -573,8 +577,9 @@ struct AudioStreamsTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
-                            .contentShape(Rectangle())
                             .padding(.vertical, DS.Space.sm)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }

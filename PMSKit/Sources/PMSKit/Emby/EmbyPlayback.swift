@@ -283,7 +283,8 @@ public enum EmbyPlayback {
                                                    userId: String,
                                                    itemId: String,
                                                    mediaSourceId: String? = nil,
-                                                   maxStaticBitrate: Int) throws -> URLRequest {
+                                                   maxStaticBitrate: Int,
+                                                   audioStreamIndex: Int? = nil) throws -> URLRequest {
         let url = try embyURL(server: server,
                               path: "/Items/\(itemId)/PlaybackInfo",
                               queryItems: [URLQueryItem(name: "UserId", value: userId)])
@@ -305,6 +306,7 @@ public enum EmbyPlayback {
             "DeviceProfile": downloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
+        if let audioStreamIndex { body["AudioStreamIndex"] = audioStreamIndex }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req
     }
@@ -319,7 +321,8 @@ public enum EmbyPlayback {
                                                                   userId: String,
                                                                   itemId: String,
                                                                   mediaSourceId: String? = nil,
-                                                                  maxStaticBitrate: Int) throws -> URLRequest {
+                                                                  maxStaticBitrate: Int,
+                                                                  audioStreamIndex: Int? = nil) throws -> URLRequest {
         let url = try embyURL(server: server,
                               path: "/Items/\(itemId)/PlaybackInfo",
                               queryItems: [URLQueryItem(name: "UserId", value: userId)])
@@ -341,6 +344,7 @@ public enum EmbyPlayback {
             "DeviceProfile": compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
+        if let audioStreamIndex { body["AudioStreamIndex"] = audioStreamIndex }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req
     }

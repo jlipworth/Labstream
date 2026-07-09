@@ -37,4 +37,31 @@ struct DownloadMediaSelectionPolicyTests {
         #expect(selection.mediaSourceID == nil)
         #expect(DownloadMediaSelectionPolicy.containerExtension(selection: selection) == "mp4")
     }
+
+    @Test("Download audio selection prefers override, then selected/default/first")
+    func audioSelectionFallbacks() {
+        let streams = [
+            Stream(id: 1, streamType: StreamType.audio.rawValue, codec: "aac",
+                   language: "English", isDefault: true, channels: 2),
+            Stream(id: 4, streamType: StreamType.audio.rawValue, codec: "dts",
+                   displayTitle: "Japanese DTS-HD MA 5.1", selected: true, channels: 6),
+        ]
+        let part = Part(id: 1, key: "/Videos/item/stream.mkv", streams: streams)
+
+        let selected = DownloadAudioSelectionPolicy.selectedAudioTrack(part: part)
+        #expect(selected?.streamIndex == 4)
+        #expect(selected?.displayName == "Japanese DTS-HD MA 5.1")
+
+        let override = DownloadAudioSelectionPolicy.selectedAudioTrack(part: part, overrideStreamIndex: 1)
+        #expect(override?.streamIndex == 1)
+        #expect(override?.displayName == "English · AAC 2.0")
+    }
+
+    @Test("Download audio override survives sparse metadata")
+    func audioOverrideWithoutStreams() {
+        let selected = DownloadAudioSelectionPolicy.selectedAudioTrack(part: nil, overrideStreamIndex: 7)
+        #expect(selected?.streamIndex == 7)
+        #expect(selected?.displayName == "Track 7")
+        #expect(DownloadAudioSelectionPolicy.selectedAudioStreamIndex(part: nil) == nil)
+    }
 }

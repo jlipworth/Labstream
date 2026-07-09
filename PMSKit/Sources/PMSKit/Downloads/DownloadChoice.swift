@@ -15,6 +15,21 @@ public enum DownloadIntentChoice: Sendable, Equatable {
     case existingVersion
 }
 
+/// Fully-resolved download start intent.
+///
+/// `choice` says which lane to use; `audioStreamIndex` pins the single audio stream for
+/// server-prepared/remux/transcode lanes. Byte-for-byte original/existing-version lanes can ignore
+/// the audio index because they naturally preserve every track in the source file.
+public struct DownloadIntentRequest: Sendable, Equatable {
+    public let choice: DownloadIntentChoice
+    public let audioStreamIndex: Int?
+
+    public init(choice: DownloadIntentChoice, audioStreamIndex: Int? = nil) {
+        self.choice = choice
+        self.audioStreamIndex = audioStreamIndex
+    }
+}
+
 /// Pure persistence/diagnostic mapping for a user download choice.
 public enum DownloadChoicePolicy {
     public static func diagnosticChoiceLabel(_ choice: DownloadIntentChoice) -> String {

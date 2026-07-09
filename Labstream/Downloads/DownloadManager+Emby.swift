@@ -29,6 +29,7 @@ extension DownloadManager {
     public func downloadEmby(_ item: MediaItem, choice: DownloadChoice,
                              mediaIndex: Int = 0,
                              partIndex: Int = 0,
+                             audioStreamIndex: Int? = nil,
                              mediaSourceIDOverride: String? = nil,
                              deferStaticStartWhenQueuePaused: Bool = false,
                              requestedProfileLabelOverride: String? = nil,
@@ -107,13 +108,15 @@ extension DownloadManager {
                     server: server, token: token, identity: identity,
                     userId: userId, itemId: itemId,
                     mediaSourceId: embyMediaSourceHint,
-                    maxStaticBitrate: 200_000_000)
+                    maxStaticBitrate: 200_000_000,
+                    audioStreamIndex: audioStreamIndex)
             } else {
                 infoReq = try EmbyPlayback.downloadPlaybackInfoRequest(
                     server: server, token: token, identity: identity,
                     userId: userId, itemId: itemId,
                     mediaSourceId: embyMediaSourceHint,
-                    maxStaticBitrate: 200_000_000)
+                    maxStaticBitrate: 200_000_000,
+                    audioStreamIndex: audioStreamIndex)
             }
             let (data, response) = try await URLSession.shared.data(for: infoReq)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -193,7 +196,8 @@ extension DownloadManager {
             break
         case .rerouteConvert(let targetName):
             await triggerConvertAndDownload(item: item, targetName: targetName,
-                                            metadata: metadata, session: backendSession)
+                                            metadata: metadata, session: backendSession,
+                                            audioStreamIndex: audioStreamIndex)
             return
         case .fail(let reason):
             var fields: [String: DiagnosticFieldValue] = [
@@ -249,7 +253,8 @@ extension DownloadManager {
                     videoCodec: remuxEligibility.videoCodec ?? "h264",
                     audioCodec: remuxEligibility.audioCodec,
                     copyAudio: remuxEligibility.copiesAudio,
-                    audioBitrate: 192_000)
+                    audioBitrate: 192_000,
+                    audioStreamIndex: audioStreamIndex)
                 expectedBytes = decision.size
 
             case .transcode:
@@ -267,7 +272,8 @@ extension DownloadManager {
                     itemId: itemId, mediaSourceId: decision.mediaSourceId,
                     playSessionId: decision.playSessionId,
                     videoBitrate: profile.videoBitrateBps,
-                    audioBitrate: 192_000)
+                    audioBitrate: 192_000,
+                    audioStreamIndex: audioStreamIndex)
                 expectedBytes = TranscodeSizeEstimator.bytes(durationMs: item.duration,
                                                              videoBitrateBps: profile.videoBitrateBps)
             }

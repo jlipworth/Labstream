@@ -10,6 +10,7 @@ struct DownloadOptionsSheet: View {
     let item: MediaItem
     var mediaIndex: Int = 0
     var partIndex: Int = 0
+    var audioStreamIndexOverride: Int? = nil
     var backend: DownloadBackendKind? = nil
 
     @Environment(AppModel.self) private var appModel
@@ -59,6 +60,31 @@ struct DownloadOptionsSheet: View {
 
     private var sheetBackend: DownloadBackendKind {
         backend ?? appModel.activeBackend.downloadBackendKind
+    }
+
+    private var selectedDownloadAudioTrack: DownloadAudioTrackSelection? {
+        let selection = DownloadMediaSelectionPolicy.selection(item: item,
+                                                               mediaIndex: mediaIndex,
+                                                               partIndex: partIndex)
+        return DownloadAudioSelectionPolicy.selectedAudioTrack(
+            part: selection.part,
+            overrideStreamIndex: audioStreamIndexOverride)
+    }
+
+    private var selectedDownloadAudioStreamIndex: Int? {
+        selectedDownloadAudioTrack?.streamIndex
+    }
+
+    private var serverPreparedAudioCaption: String? {
+        guard sheetBackend == .jellyfin || sheetBackend == .emby,
+              let track = selectedDownloadAudioTrack else { return nil }
+        return "Audio: \(track.displayName)"
+    }
+
+    private func serverPreparedSubtitle(_ subtitle: String?) -> String? {
+        guard let serverPreparedAudioCaption else { return subtitle }
+        guard let subtitle, !subtitle.isEmpty else { return serverPreparedAudioCaption }
+        return "\(subtitle)\n\(serverPreparedAudioCaption)"
     }
 
     private var existingRecord: DownloadRecord? {
@@ -210,7 +236,7 @@ struct DownloadOptionsSheet: View {
                         footer: "Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This uses a live server remux, not a prebuilt offline copy; it can be slower and may restart from the beginning if interrupted."
                     ) {
                         macSelectionRow(title: "Original quality (compatible)",
-                                        subtitle: compatibleRemux.codecSummary ?? "Keeps original video, converts to a compatible MP4",
+                                        subtitle: serverPreparedSubtitle(compatibleRemux.codecSummary ?? "Keeps original video, converts to a compatible MP4"),
                                         systemImage: "wand.and.stars",
                                         selected: selectedChoice == .optimizeCompatible) {
                             selectedChoice = .optimizeCompatible
@@ -299,7 +325,7 @@ struct DownloadOptionsSheet: View {
         ) {
             ForEach(presets, id: \.self) { preset in
                 macSelectionRow(title: preset,
-                                subtitle: nil,
+                                subtitle: serverPreparedAudioCaption,
                                 systemImage: "gauge.with.dots.needle.bottom.50percent",
                                 selected: selectedChoice == .optimize(preset)) {
                     selectedChoice = .optimize(preset)
@@ -478,6 +504,7 @@ struct DownloadOptionsSheet: View {
                              resolution: DownloadPresetPolicy.resolutionLabel(for: media))
             : nil
         let mediaSourceId = selection.mediaSourceID
+        let audioStreamIndex = selectedDownloadAudioStreamIndex
         // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
         // not decide remux eligibility from the local Part alone. Ask PlaybackInfo whenever the
         // raw file is not already locally playable, then use the server's authoritative codec and
@@ -510,7 +537,8 @@ struct DownloadOptionsSheet: View {
                     let req = try JellyfinPlayback.downloadPlaybackInfoRequest(
                         server: server, token: token, identity: appModel.identity.jellyfin,
                         itemId: item.ratingKey, userId: userId, mediaSourceId: mediaSourceId,
-                        maxStaticBitrate: 200_000_000)
+                        maxStaticBitrate: 200_000_000,
+                        audioStreamIndex: audioStreamIndex)
                     let (data, response) = try await URLSession.shared.data(for: req)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         throw URLError(.badServerResponse)
@@ -577,6 +605,7 @@ struct DownloadOptionsSheet: View {
         let part = selection.part
         let presets = embyPresets
         let mediaSourceId = selection.mediaSourceID
+        let audioStreamIndex = selectedDownloadAudioStreamIndex
         guard let server = appModel.embyServerBaseURL,
               let token = appModel.embyAccessToken,
               let userId = appModel.embyUserID else {
@@ -601,7 +630,8 @@ struct DownloadOptionsSheet: View {
                 server: server, token: token, identity: identity,
                 userId: userId, itemId: item.ratingKey,
                 mediaSourceId: mediaSourceId,
-                maxStaticBitrate: 200_000_000)
+                maxStaticBitrate: 200_000_000,
+                audioStreamIndex: audioStreamIndex)
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw URLError(.badServerResponse)
@@ -646,7 +676,8 @@ struct DownloadOptionsSheet: View {
                     server: server, token: token, identity: identity,
                     userId: userId, itemId: item.ratingKey,
                     mediaSourceId: mediaSourceId,
-                    maxStaticBitrate: 200_000_000)
+                    maxStaticBitrate: 200_000_000,
+                    audioStreamIndex: audioStreamIndex)
                 let (data, response) = try await URLSession.shared.data(for: remuxReq)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw URLError(.badServerResponse)
@@ -810,7 +841,7 @@ struct DownloadOptionsSheet: View {
                         .foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Original quality (compatible)").foregroundStyle(.primary)
-                        Text(option.codecSummary ?? "Keeps original video, converts to a compatible MP4")
+                        Text(serverPreparedSubtitle(option.codecSummary ?? "Keeps original video, converts to a compatible MP4") ?? "")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -898,7 +929,14 @@ struct DownloadOptionsSheet: View {
                     selectedChoice = .optimize(preset)
                 } label: {
                     HStack {
-                        Text(preset).foregroundStyle(.primary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset).foregroundStyle(.primary)
+                            if let serverPreparedAudioCaption {
+                                Text(serverPreparedAudioCaption)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Spacer()
                         if selectedChoice == .optimize(preset) {
                             Image(systemName: "checkmark").foregroundStyle(.tint)
@@ -1025,8 +1063,9 @@ struct DownloadOptionsSheet: View {
         if case .embyExistingVersion(_, let sizeBytes) = selectedChoice {
             addedBytes = sizeBytes
         } else {
+            let intent = managerIntent(for: selectedChoice)
             addedBytes = downloadManager.estimatedBytes(
-                for: item, choice: managerChoice(for: selectedChoice),
+                for: item, choice: intent.choice,
                 mediaIndex: mediaIndex(for: selectedChoice),
                 partIndex: partIndex(for: selectedChoice))
         }
@@ -1093,6 +1132,21 @@ struct DownloadOptionsSheet: View {
         case .existingVersion: return .existingVersion
         case .embyExistingVersion: return .existingVersion
         }
+    }
+
+    private func audioStreamIndex(for selection: DownloadSelection) -> Int? {
+        switch selection {
+        case .original, .existingVersion, .embyExistingVersion, .plexOriginalQuality:
+            return nil
+        case .optimize, .optimizeCompatible:
+            guard sheetBackend == .jellyfin || sheetBackend == .emby else { return nil }
+            return selectedDownloadAudioStreamIndex
+        }
+    }
+
+    private func managerIntent(for selection: DownloadSelection) -> DownloadIntentRequest {
+        DownloadIntentRequest(choice: managerChoice(for: selection),
+                              audioStreamIndex: audioStreamIndex(for: selection))
     }
 
     // MARK: - Already-downloaded state
@@ -1280,7 +1334,9 @@ struct DownloadOptionsSheet: View {
     private func startDownload() {
         guard !isStartingDownload, existingRecord == nil, let selectedChoice else { return }
         isStartingDownload = true
-        let choice = managerChoice(for: selectedChoice)
+        let intent = managerIntent(for: selectedChoice)
+        let choice = intent.choice
+        let audioStreamIndex = intent.audioStreamIndex
         // #112: an existing-version pick downloads from THAT version's `Media` index (part 0), not
         // the selected source index. Every other choice resolves to the sheet's media/part index.
         let downloadMediaIndex = mediaIndex(for: selectedChoice)
@@ -1294,7 +1350,8 @@ struct DownloadOptionsSheet: View {
         case .jellyfin:
             Task { await downloadManager.downloadJellyfin(item, choice: choice,
                                                           mediaIndex: downloadMediaIndex,
-                                                          partIndex: downloadPartIndex) }
+                                                          partIndex: downloadPartIndex,
+                                                          audioStreamIndex: audioStreamIndex) }
         case .emby:
             // #126: an existing-version pick addresses a specific converted MediaSource by id; pass
             // it as the override so the lane downloads THAT copy byte-for-byte (no new conversion).
@@ -1302,11 +1359,13 @@ struct DownloadOptionsSheet: View {
                 Task { await downloadManager.downloadEmby(item, choice: choice,
                                                           mediaIndex: downloadMediaIndex,
                                                           partIndex: downloadPartIndex,
+                                                          audioStreamIndex: audioStreamIndex,
                                                           mediaSourceIDOverride: mediaSourceId) }
             } else {
                 Task { await downloadManager.downloadEmby(item, choice: choice,
                                                           mediaIndex: downloadMediaIndex,
-                                                          partIndex: downloadPartIndex) }
+                                                          partIndex: downloadPartIndex,
+                                                          audioStreamIndex: audioStreamIndex) }
             }
         }
         dismiss()

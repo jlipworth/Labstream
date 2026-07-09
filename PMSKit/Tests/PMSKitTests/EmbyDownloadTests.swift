@@ -78,11 +78,46 @@ struct EmbyDownloadTests {
         #expect(q["AudioCodec"] == "aac")
         #expect(q["VideoBitrate"] == "8000000")
         #expect(q["AudioBitrate"] == "192000")
+        #expect(q["AudioStreamIndex"] == nil)
         // The minted PlaySessionId is what makes this hand-built URL valid (else Emby 400s).
         #expect(q["PlaySessionId"] == "sess-1")
         #expect(q["MediaSourceId"] == "mediasource_1")
         #expect(q["api_key"] == "token-abc")
         #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
+    }
+
+    @Test func transcodedDownloadRequestCarriesSelectedAudioStreamIndexWhenSet() throws {
+        let request = try EmbyLibrary.transcodedDownloadRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-9",
+            itemId: "item-1",
+            mediaSourceId: "mediasource_1",
+            playSessionId: "sess-1",
+            videoBitrate: 8_000_000,
+            audioBitrate: 192_000,
+            audioStreamIndex: 4)
+
+        #expect(try queryMap(request)["AudioStreamIndex"] == "4")
+    }
+
+    @Test func compatibleRemuxDownloadRequestCarriesSelectedAudioStreamIndexWhenSet() throws {
+        let request = try EmbyLibrary.compatibleRemuxDownloadRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-9",
+            itemId: "item-1",
+            mediaSourceId: "mediasource_1",
+            playSessionId: "sess-1",
+            videoCodec: "hevc",
+            audioCodec: "dts",
+            copyAudio: false,
+            audioBitrate: 192_000,
+            audioStreamIndex: 5)
+
+        #expect(try queryMap(request)["AudioStreamIndex"] == "5")
     }
 
     // MARK: - Download device profile
@@ -121,10 +156,27 @@ struct EmbyDownloadTests {
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["MaxStreamingBitrate"] as? Int == 200_000_000)
         #expect(object["MediaSourceId"] as? String == "mediasource_1")
+        #expect(object["AudioStreamIndex"] == nil)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "Labstream-Download")
         let transcoding = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
         #expect(transcoding.first?["Protocol"] as? String == "http")
+    }
+
+    @Test func downloadPlaybackInfoRequestCarriesSelectedAudioStreamIndex() throws {
+        let request = try EmbyPlayback.downloadPlaybackInfoRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-9",
+            itemId: "item-1",
+            mediaSourceId: "mediasource_1",
+            maxStaticBitrate: 200_000_000,
+            audioStreamIndex: 4)
+
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["AudioStreamIndex"] as? Int == 4)
     }
 
     @Test func compatibleRemuxPlaybackInfoRequestAdvertisesHEVCStaticMp4() throws {
@@ -155,6 +207,7 @@ struct EmbyDownloadTests {
         #expect(object["MediaSourceId"] as? String == "mediasource_1")
         #expect(object["MaxStaticBitrate"] as? Int == 200_000_000)
         #expect(object["MaxStreamingBitrate"] as? Int == 200_000_000)
+        #expect(object["AudioStreamIndex"] == nil)
         #expect(object["AllowVideoStreamCopy"] as? Bool == true)
         #expect(object["AutoOpenLiveStream"] as? Bool == false)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
@@ -165,6 +218,22 @@ struct EmbyDownloadTests {
         #expect(first["Protocol"] as? String == "http")
         #expect(first["Context"] as? String == "Static")
         #expect(first["VideoCodec"] as? String == "h264,hevc")
+    }
+
+    @Test func compatibleRemuxPlaybackInfoRequestCarriesSelectedAudioStreamIndex() throws {
+        let request = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            userId: "user-9",
+            itemId: "item-1",
+            mediaSourceId: "mediasource_1",
+            maxStaticBitrate: 200_000_000,
+            audioStreamIndex: 5)
+
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["AudioStreamIndex"] as? Int == 5)
     }
 
     // MARK: - Negotiated verdict decoding (the crux)

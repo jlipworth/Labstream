@@ -59,7 +59,8 @@ extension DownloadManager {
     // two entry points are `internal` (not `private`) now that the subsystem lives in its own file.
     func triggerConvertAndDownload(item: MediaItem, targetName: String,
                                            metadata: OfflineMetadata,
-                                           session: BackendSession) async {
+                                           session: BackendSession,
+                                           audioStreamIndex: Int? = nil) async {
         let itemId = item.ratingKey
         let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
         let server = session.baseURL
@@ -206,7 +207,8 @@ extension DownloadManager {
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
                 quality: quality.quality, profile: quality.profile, bitrate: quality.bitrate,
                 name: jobName,
-                container: quality.container, videoCodec: quality.videoCodec, audioCodec: quality.audioCodec)
+                container: quality.container, videoCodec: quality.videoCodec, audioCodec: quality.audioCodec,
+                audioStreamIndex: audioStreamIndex)
             let (data, response) = try await URLSession.shared.data(for: req)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
