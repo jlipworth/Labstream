@@ -144,6 +144,17 @@ public final class DownloadManager {
     /// Σdb/Σdt window average — all pinned by `DownloadRateEstimatorTests`. Ephemeral; never persisted.
     private var rateEstimators: [String: DownloadRateEstimator] = [:]
 
+    /// Background URLSession can report a large amount of already-transferred body data in
+    /// its first foreground callback. That is real byte progress, but it did not occur inside
+    /// the foreground sampling interval; suppress and continually re-baseline the UI estimator
+    /// until a fresh window is available (#224).
+    private var rateEstimatorForegroundGraceUntil: [String: Date] = [:]
+
+    /// A headset wake can leave static Range tasks untracked until the background session is
+    /// enumerated again. Coalesce the recovery sweep so repeated active/inactive scene events
+    /// cannot race duplicate reattach/retry work.
+    private var foregroundStaticRangeRecoveryInFlight = false
+
     /// Estimated seconds remaining for the FILE-DOWNLOAD phase, per actively-downloading
     /// ratingKey. Derived from the smoothed `downloadSpeed` and the remaining bytes
     /// (`expectedTotal − bytesWritten`, where `expectedTotal` is recovered from the record's
@@ -625,6 +636,35 @@ public final class DownloadManager {
             // synchronously during scene activation.
             scheduleRefreshRecords(reason: "scene_active")
             revalidateUnverifiedDownloads(reason: "scene_active")
+            recoverStaticRangeTransfersAfterForeground()
+        }
+    }
+
+    /// Re-run the same authoritative task reconciliation used at launch when a headset returns
+    /// from sleep. A missing background task is converted to a resumable paused row and restarted
+    /// automatically, which is the recovery users previously got only by Pause All → Resume All.
+    private func recoverStaticRangeTransfersAfterForeground() {
+        guard !foregroundStaticRangeRecoveryInFlight else { return }
+        foregroundStaticRangeRecoveryInFlight = true
+
+        let now = Date()
+        let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
+        for record in store.records where record.status == .downloading {
+            rateEstimatorForegroundGraceUntil[record.ratingKey] = now.addingTimeInterval(4)
+            downloadSpeed.removeValue(forKey: record.ratingKey)
+            downloadETA.removeValue(forKey: record.ratingKey)
+        }
+
+        session.reattach { [weak self, store] liveKeys in
+            store.reconcile(liveRatingKeys: liveKeys)
+            Task { @MainActor in
+                guard let self else { return }
+                self.foregroundStaticRangeRecoveryInFlight = false
+                self.refreshRecords()
+                guard !self.isQueuePaused else { return }
+                self.resumeInterruptedStaticByteRangeDownloads(candidateKeys: interruptedStaticKeys,
+                                                                liveKeys: liveKeys)
+            }
         }
     }
 
@@ -2108,9 +2148,21 @@ public final class DownloadManager {
         // durable partial checkpoint during promotion/pause/retry. Hide rate/ETA for one averaging
         // window after that backwards rebaseline instead of flashing a bogus high-speed provisional.
         for record in fresh where record.status == .downloading {
+            let sampleBytes = displayBytes(for: record, now: now) ?? record.bytes
+            if let graceUntil = rateEstimatorForegroundGraceUntil[record.ratingKey], now < graceUntil {
+                // Keep replacing the estimator during the grace, so the first sample after the
+                // grace starts from the latest post-wake byte watermark rather than a large
+                // background-delivered jump.
+                var estimator = DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
+                _ = estimator.sample(bytes: sampleBytes, at: now)
+                rateEstimators[record.ratingKey] = estimator
+                downloadSpeed.removeValue(forKey: record.ratingKey)
+                downloadETA.removeValue(forKey: record.ratingKey)
+                continue
+            }
+            rateEstimatorForegroundGraceUntil.removeValue(forKey: record.ratingKey)
             var estimator = rateEstimators[record.ratingKey]
                 ?? DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
-            let sampleBytes = displayBytes(for: record, now: now) ?? record.bytes
             let rate = estimator.sample(bytes: sampleBytes, at: now)
             // Recover the expected final size for the ETA: the exact Content-Length path
             // (`bytes / progress`) when the server reported a size, the persisted static Part size
@@ -2126,6 +2178,7 @@ public final class DownloadManager {
         let forwardOnlyRestarts = detectForwardOnlyStreamStalls(in: fresh, now: now)
         // Drop estimators/derived values for rows no longer downloading (complete / failed / removed).
         rateEstimators = rateEstimators.filter { activeKeys.contains($0.key) }
+        rateEstimatorForegroundGraceUntil = rateEstimatorForegroundGraceUntil.filter { activeKeys.contains($0.key) }
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         updateDownloadWatchdog(for: fresh)
