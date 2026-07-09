@@ -265,6 +265,38 @@ Closeout invariant: only the main worktree owns the golden sim; linked-worktree 
 must remove the relevant `vpwt-*`, `iphonewt-*`, and/or `ipadwt-*` simulator and must not remove the
 golden sim.
 
+## Native macOS host deploy/run and cleanup
+
+There is no macOS simulator lane. Use the host helper, which builds `LabstreamMac` for
+`platform=macOS,arch=arm64`, never uses `simctl`/`devicectl`, and defaults to a
+per-worktree dev bundle id so parallel worktrees do not collide with the production
+sandbox/keychain identity:
+
+```sh
+scripts/deploy-macos-to-host.sh
+scripts/deploy-macos-to-host.sh --launch
+scripts/deploy-macos-to-host.sh --no-build --launch
+```
+
+Use `--use-production-bundle-id` only intentionally. The helper stages dev apps under
+`build/macos-host/<identity>/Labstream.app` and never deletes `/Applications/Labstream.app`.
+
+**macOS host cleanup rule:** because there is no simulator to tear down, clean up the host
+app/state when you are done with a macOS check, especially before closing out a worktree or
+a one-off UI/smoke identity:
+
+```sh
+scripts/deploy-macos-to-host.sh --delete           # remove this identity's staged app only
+scripts/deploy-macos-to-host.sh --reset-container  # remove this identity's sandbox container only
+```
+
+Production container reset is intentionally guarded and requires both
+`--use-production-bundle-id` and `--allow-production-container-reset`; do not touch the
+production container unless explicitly testing/resetting the App Store identity. For old
+manual identities, inspect `~/Library/Containers/com.jlipworth.Labstream.dev.*` and remove
+only stale dev containers after confirming they do not correspond to an active worktree.
+Details: `docs/MACOS-HOST-DEPLOYMENT.md`.
+
 ## Live-testing workflow (semi-automated)
 
 The USER performs all simulator interaction (synthetic clicking was tried and shelved —
