@@ -4,7 +4,6 @@ import Testing
 
 @Suite("Background range completion policy")
 struct BackgroundRangeCompletionPolicyTests {
-
     @Test("Successful range completions are handled by didFinishDownloading")
     func successAlreadyHandled() {
         #expect(BackgroundRangeCompletionPolicy.disposition(
@@ -23,16 +22,16 @@ struct BackgroundRangeCompletionPolicyTests {
         ) == .cancelled)
     }
 
-    @Test("Adopted failed chunks need backend request rebuild")
+    @Test("Adopted failed remainders need backend request rebuild")
     func adoptedFailureNeedsRequest() {
         #expect(BackgroundRangeCompletionPolicy.disposition(
             hasError: true,
             errorCode: NSURLErrorNetworkConnectionLost,
             hasRequest: false
-        ) == .requestNeeded(.adoptedChunkFailed))
+        ) == .requestNeeded(.requestRebuildNeeded))
     }
 
-    @Test("In-memory failed chunks become resumable pauses")
+    @Test("In-memory failed remainders become resumable pauses")
     func inMemoryFailurePauses() {
         #expect(BackgroundRangeCompletionPolicy.disposition(
             hasError: true,

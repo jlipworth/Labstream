@@ -4,7 +4,7 @@
 /// and URLSession resume data. Labstream still sends an explicit open-ended `Range` header from the
 /// app-owned durable partial offset so a missing/invalid resume blob can fall back to the partial
 /// file size, but it no longer chains foreground-sized checkpoint tasks. This avoids the lifecycle
-/// edge cases created by repeatedly cancelling, demoting, and re-enqueuing bounded chunks.
+/// edge cases created by repeatedly cancelling, demoting, and re-enqueuing bounded transfers.
 public enum StaticRangeSegmentStrategyPolicy {
     public struct SceneStrategy: Sendable, Equatable {
         public let normalizedPhase: String

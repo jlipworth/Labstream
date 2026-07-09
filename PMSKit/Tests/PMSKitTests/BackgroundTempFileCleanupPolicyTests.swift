@@ -4,7 +4,6 @@ import Testing
 
 @Suite("Background temp file cleanup policy")
 struct BackgroundTempFileCleanupPolicyTests {
-
     @Test("Network temp directories include tmp and nsurlsessiond app cache")
     func networkTempDirectories() {
         let tmp = URL(fileURLWithPath: "/container/tmp", isDirectory: true)
@@ -53,23 +52,26 @@ struct BackgroundTempFileCleanupPolicyTests {
         ))
     }
 
-    @Test("Range chunk stashes are deleted only when their task is no longer live")
-    func rangeChunkStashOwnership() {
-        #expect(BackgroundTempFileCleanupPolicy.rangeChunkStashTaskIdentifier(
+    @Test("Range body stashes are deleted only when their task is no longer live")
+    func rangeBodyStashOwnership() {
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashTaskIdentifier(
+            fileName: "vp-range-body-42"
+        ) == 42)
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashTaskIdentifier(
             fileName: "vp-range-chunk-42"
         ) == 42)
-        #expect(BackgroundTempFileCleanupPolicy.rangeChunkStashTaskIdentifier(
-            fileName: "vp-range-chunk-not-a-number"
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashTaskIdentifier(
+            fileName: "vp-range-body-not-a-number"
         ) == nil)
-        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeChunkStash(
-            fileName: "vp-range-chunk-42",
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
+            fileName: "vp-range-body-42",
             liveTaskIdentifiers: [42]
         ))
-        #expect(BackgroundTempFileCleanupPolicy.shouldDeleteRangeChunkStash(
-            fileName: "vp-range-chunk-42",
+        #expect(BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
+            fileName: "vp-range-body-42",
             liveTaskIdentifiers: [7]
         ))
-        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeChunkStash(
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
             fileName: "unrelated",
             liveTaskIdentifiers: []
         ))
@@ -94,10 +96,6 @@ struct BackgroundTempFileCleanupPolicyTests {
         ) == .deleteCandidates)
     }
 
-    // #220: a finished-but-undelivered background download task is ABSENT from `getAllTasks`
-    // while its completed payload still lives in a CFNetworkDownload_*.tmp. Sweeping those
-    // temps at reattach time deleted the chunk before `didFinishDownloadingTo` could stash it
-    // (Cocoa error 4), so reattach must never delete CFNetwork temps.
     @Test("Reattach cleanup never deletes CFNetwork temps, even with zero live tasks")
     func reattachNeverDeletes() {
         #expect(BackgroundTempFileCleanupPolicy.cleanupDisposition(
@@ -129,7 +127,6 @@ struct BackgroundTempFileCleanupPolicyTests {
             modificationAge: gate))
         #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
             modificationAge: nil))
-        // A negative age (clock skew / future mtime) must also be protected.
         #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
             modificationAge: -60))
     }

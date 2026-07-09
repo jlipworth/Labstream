@@ -26,18 +26,17 @@ public enum BackgroundDownloadProgressPolicy {
     }
 
     /// Decide whether to emit a durable range-progress breadcrumb. The first callback and first
-    /// observation always log; otherwise the diagnostic is throttled by either time or chunk-sized
-    /// byte movement.
+    /// observation always log; otherwise the diagnostic is throttled by either time or byte movement.
     public static func shouldRecordRangeProgress(last: BackgroundRangeProgressDiagnosticSnapshot?,
                                                  now: Date,
                                                  totalBytes: Int,
-                                                 rangeChunkSize: Int,
+                                                 byteInterval: Int,
                                                  isFirstCallback: Bool) -> Bool {
         guard !isFirstCallback else { return true }
         guard let last else { return true }
         let elapsed = now.timeIntervalSince(last.time)
         let byteDelta = totalBytes - last.bytes
-        return elapsed >= 10 || byteDelta >= rangeChunkSize
+        return elapsed >= 10 || byteDelta >= byteInterval
     }
 
     /// Decide whether to publish a UI refresh for transfer progress. Completion always publishes

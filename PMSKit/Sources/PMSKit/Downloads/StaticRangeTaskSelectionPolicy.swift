@@ -5,13 +5,13 @@ public struct StaticRangeTaskSnapshot: Sendable, Equatable {
     public let taskIdentifier: Int
     public let downloadID: String
     public let baseOffset: Int
-    public let chunkBytesWritten: Int
+    public let bodyBytesWritten: Int
 
-    public init(taskIdentifier: Int, downloadID: String, baseOffset: Int, chunkBytesWritten: Int) {
+    public init(taskIdentifier: Int, downloadID: String, baseOffset: Int, bodyBytesWritten: Int) {
         self.taskIdentifier = taskIdentifier
         self.downloadID = downloadID
         self.baseOffset = baseOffset
-        self.chunkBytesWritten = chunkBytesWritten
+        self.bodyBytesWritten = bodyBytesWritten
     }
 }
 
@@ -27,11 +27,11 @@ public struct StaticRangeDuplicateTaskDecision: Sendable, Equatable {
     }
 }
 
-/// Pure ownership rules for static byte-range tasks.
+/// Pure ownership rules for static byte-range remainder tasks.
 ///
-/// A row can have only one authoritative Range chunk. The task at the furthest durable checkpoint
-/// wins; when checkpoints tie, the task with the most in-flight chunk bytes wins. Older tasks must
-/// be suppressed so their progress or finished temp file cannot overwrite a newer checkpoint.
+/// A row can have only one authoritative open-ended remainder. The task at the furthest durable
+/// offset wins; when offsets tie, the task with the most in-flight body bytes wins. Older tasks must
+/// be suppressed so their progress or finished temp file cannot overwrite a newer remainder.
 public enum StaticRangeTaskSelectionPolicy {
     public static func duplicateDecision(candidate: StaticRangeTaskSnapshot,
                                          existingTasks: [StaticRangeTaskSnapshot])
@@ -61,7 +61,7 @@ public enum StaticRangeTaskSelectionPolicy {
                 if lhs.baseOffset != rhs.baseOffset {
                     return lhs.baseOffset < rhs.baseOffset
                 }
-                return lhs.chunkBytesWritten < rhs.chunkBytesWritten
+                return lhs.bodyBytesWritten < rhs.bodyBytesWritten
             }
     }
 
@@ -69,6 +69,6 @@ public enum StaticRangeTaskSelectionPolicy {
                                than rhs: StaticRangeTaskSnapshot) -> Bool {
         lhs.baseOffset > rhs.baseOffset
             || (lhs.baseOffset == rhs.baseOffset
-                && lhs.chunkBytesWritten > rhs.chunkBytesWritten)
+                && lhs.bodyBytesWritten > rhs.bodyBytesWritten)
     }
 }

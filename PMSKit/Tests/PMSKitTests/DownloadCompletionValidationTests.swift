@@ -86,7 +86,7 @@ struct DownloadCompletionValidationTests {
                 == .truncated(actualDurationMs: 1_000, expectedDurationMs: 10_000))
     }
 
-    // MARK: Byte-completeness (headset 416 evidence: one 64 MB chunk of a 5.9 GB part was
+    // MARK: Byte-completeness (headset 416 evidence: a truncated legacy bounded body was
     // finalized `.complete` because the moov-led MP4 passed the probe with its full metadata
     // duration; a trailing-moov sibling probe-missed into a stuck `.unverified` loop instead)
 

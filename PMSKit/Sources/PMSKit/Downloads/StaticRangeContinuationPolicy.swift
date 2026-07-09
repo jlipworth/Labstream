@@ -1,27 +1,27 @@
-/// Pure continuation decisions for the static byte-range transfer engine after a chunk has either
-/// advanced a durable checkpoint, hit a recoverable offset mismatch, or detected a changed source.
+/// Pure continuation decisions for the static byte-range transfer engine after a response body has
+/// advanced the durable partial, hit a recoverable offset mismatch, or detected a changed source.
 ///
 /// The app layer still owns URLSession, file, store, and diagnostics side effects. This policy keeps
-/// the retry/resume routing table explicit: halted rows do nothing, adopted relaunch chunks ask the
-/// backend layer to rebuild authenticated requests, exhausted recovery attempts fail, and live
-/// in-memory chunks can immediately schedule the next request.
+/// the retry/resume routing table explicit: halted rows do nothing, relaunch-adopted remainders ask
+/// the backend layer to rebuild authenticated requests, exhausted recovery attempts fail, and live
+/// in-memory remainders can immediately schedule a fresh open-ended request.
 public enum StaticRangeContinuationDisposition: Sendable, Equatable {
     /// Pause/delete already owns the row; do not schedule, fail, or request backend work.
     case halted
-    /// A relaunch-adopted chunk has no authenticated base request; persist queued intent and ask the
+    /// The transfer engine has no authenticated base request; persist queued intent and ask the
     /// backend coordinator to rebuild the request for the durable checkpoint/restart.
     case requestNeeded(BackgroundRangeRequestReason)
-    /// The transfer engine still has the base request and can schedule a new Range chunk directly.
+    /// The transfer engine still has the base request and can schedule a new Range request directly.
     case startInSession
     /// The bounded retry/restart budget was exhausted; surface a terminal failure.
     case failExhausted
 }
 
 public enum StaticRangeContinuationPolicy {
-    public static func afterFinishedChunk(isHalted: Bool,
-                                          hasRequest: Bool) -> StaticRangeContinuationDisposition {
+    public static func afterFinishedBody(isHalted: Bool,
+                                         hasRequest: Bool) -> StaticRangeContinuationDisposition {
         if isHalted { return .halted }
-        return hasRequest ? .startInSession : .requestNeeded(.adoptedChunkFinished)
+        return hasRequest ? .startInSession : .requestNeeded(.requestRebuildNeeded)
     }
 
     public static func afterOffsetMismatch(isHalted: Bool,
@@ -29,7 +29,7 @@ public enum StaticRangeContinuationPolicy {
                                            hasRequest: Bool) -> StaticRangeContinuationDisposition {
         if isHalted { return .halted }
         if retryAttempt.isExhausted { return .failExhausted }
-        return hasRequest ? .startInSession : .requestNeeded(.adoptedChunkFailed)
+        return hasRequest ? .startInSession : .requestNeeded(.requestRebuildNeeded)
     }
 
     public static func afterValidatorChange(isHalted: Bool,

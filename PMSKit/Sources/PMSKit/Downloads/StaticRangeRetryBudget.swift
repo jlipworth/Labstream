@@ -14,7 +14,7 @@ public struct StaticRangeRetryAttempt: Sendable, Equatable {
 ///
 /// These counters deliberately live outside generic URLSession retry state: progress callbacks can
 /// reset transient network retry counts, but they must not erase consecutive validator-change or
-/// Content-Range mismatch attempts until a chunk is actually appended to the durable partial.
+/// Content-Range mismatch attempts until a response body is actually appended to the durable partial.
 public struct StaticRangeRetryBudget: Sendable, Equatable {
     public let maxValidatorChangeRestarts: Int
     public let maxOffsetMismatchRetries: Int

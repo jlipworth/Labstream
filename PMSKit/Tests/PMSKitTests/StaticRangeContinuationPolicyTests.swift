@@ -3,26 +3,25 @@ import Testing
 
 @Suite("Static range continuation policy")
 struct StaticRangeContinuationPolicyTests {
-
-    @Test("Finished chunks stop when pause or delete already owns the row")
-    func finishedChunkHalted() {
-        #expect(StaticRangeContinuationPolicy.afterFinishedChunk(
+    @Test("Finished bodies stop when pause or delete already owns the row")
+    func finishedBodyHalted() {
+        #expect(StaticRangeContinuationPolicy.afterFinishedBody(
             isHalted: true,
             hasRequest: true
         ) == .halted)
     }
 
-    @Test("Finished adopted chunks request backend auth rebuild")
-    func finishedAdoptedChunkRequestsBackend() {
-        #expect(StaticRangeContinuationPolicy.afterFinishedChunk(
+    @Test("Finished adopted remainders request backend auth rebuild")
+    func finishedAdoptedRemainderRequestsBackend() {
+        #expect(StaticRangeContinuationPolicy.afterFinishedBody(
             isHalted: false,
             hasRequest: false
-        ) == .requestNeeded(.adoptedChunkFinished))
+        ) == .requestNeeded(.requestRebuildNeeded))
     }
 
-    @Test("Finished in-memory chunks continue directly")
-    func finishedInMemoryChunkContinues() {
-        #expect(StaticRangeContinuationPolicy.afterFinishedChunk(
+    @Test("Finished in-memory remainders continue directly")
+    func finishedInMemoryRemainderContinues() {
+        #expect(StaticRangeContinuationPolicy.afterFinishedBody(
             isHalted: false,
             hasRequest: true
         ) == .startInSession)
@@ -46,13 +45,13 @@ struct StaticRangeContinuationPolicyTests {
         ) == .failExhausted)
     }
 
-    @Test("Offset mismatches route adopted chunks through backend rebuild")
+    @Test("Offset mismatches route adopted remainders through backend rebuild")
     func offsetMismatchAdoptedRequestsBackend() {
         #expect(StaticRangeContinuationPolicy.afterOffsetMismatch(
             isHalted: false,
             retryAttempt: StaticRangeRetryAttempt(attempt: 1, isExhausted: false),
             hasRequest: false
-        ) == .requestNeeded(.adoptedChunkFailed))
+        ) == .requestNeeded(.requestRebuildNeeded))
     }
 
     @Test("Offset mismatches retry in-session when request is available")
@@ -82,7 +81,7 @@ struct StaticRangeContinuationPolicyTests {
         ) == .failExhausted)
     }
 
-    @Test("Validator changes route adopted chunks through backend restart")
+    @Test("Validator changes route adopted remainders through backend restart")
     func validatorChangeAdoptedRequestsBackend() {
         #expect(StaticRangeContinuationPolicy.afterValidatorChange(
             isHalted: false,

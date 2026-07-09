@@ -33,7 +33,7 @@ public enum BackgroundDownloadTransientRetryPolicy {
         403,
     ]
 
-    /// Server-side / edge-proxy HTTP responses that are usually transient for a static file chunk.
+    /// Server-side / edge-proxy HTTP responses that are usually transient for a static Range body.
     ///
     /// Keep this intentionally narrower than "all 5xx": permanent origin application failures
     /// should still surface quickly, while proxy overload/network-transition cases get the same
@@ -122,10 +122,10 @@ public enum BackgroundDownloadTransientRetryPolicy {
         return retryBudgetDecision(currentRetryCount: currentRetryCount, maxRetries: maxRetries)
     }
 
-    /// A finished app-managed Range chunk can occasionally report delegate completion but then fail
+    /// A finished app-managed Range body can occasionally report delegate completion but then fail
     /// to move/stash/append because the temporary file or durable partial disappeared during a
     /// headset-off/background reattach race. Treat file-missing Cocoa errors like a transient Range
-    /// chunk failure: keep the last app-owned checkpoint and rebuild/retry from there.
+    /// body failure: keep the last app-owned checkpoint and rebuild/retry from there.
     ///
     /// Unlike the 416/HTTP paths this takes no segment-kind gate (#220): a move failure commits no
     /// bytes, so re-requesting from the durable partial's size is valid for every segment kind,

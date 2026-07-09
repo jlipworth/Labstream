@@ -1,9 +1,10 @@
 /// Pure relaunch-adoption decision for static byte-range URLSession tasks.
 ///
-/// A reappearing task is only authoritative if the requested Range starts at the durable partial
-/// size. Anything else is stale or gapped. Once offset-safe, the same duplicate-task ownership rule
-/// decides whether the adopted task replaces an older task or is suppressed by a newer one.
+/// Only open-ended `bytes=<durableOffset>-` remainder tasks from the #227+ architecture are
+/// adoptable. Legacy closed ranges are deliberately dropped in #231 so late delegate callbacks
+/// cannot append old bounded-checkpoint temps.
 public enum StaticRangeReattachDisposition: Sendable, Equatable {
+    case dropLegacyRange(requestedOffset: Int?, durableBytes: Int, rangeRequestShape: StaticRangeRequestShape)
     case rejectOffsetMismatch(requestedOffset: Int, durableBytes: Int)
     case adopt
     case replaceExisting(existingTaskIdentifier: Int, existingBaseOffset: Int)
@@ -25,8 +26,20 @@ public enum StaticRangeReattachPolicy {
                             downloadID: String,
                             durableBytes: Int,
                             requestedOffset: Int?,
-                            chunkBytesWritten: Int,
+                            rangeRequestShape: StaticRangeRequestShape,
+                            bodyBytesWritten: Int,
                             existingTasks: [StaticRangeTaskSnapshot]) -> StaticRangeReattachPlan {
+        guard rangeRequestShape == .openEnded else {
+            return StaticRangeReattachPlan(
+                candidateBaseOffset: requestedOffset ?? durableBytes,
+                disposition: .dropLegacyRange(
+                    requestedOffset: requestedOffset,
+                    durableBytes: durableBytes,
+                    rangeRequestShape: rangeRequestShape
+                )
+            )
+        }
+
         if let requestedOffset, requestedOffset != durableBytes {
             return StaticRangeReattachPlan(
                 candidateBaseOffset: requestedOffset,
@@ -42,7 +55,7 @@ public enum StaticRangeReattachPolicy {
             taskIdentifier: taskIdentifier,
             downloadID: downloadID,
             baseOffset: baseOffset,
-            chunkBytesWritten: max(0, chunkBytesWritten)
+            bodyBytesWritten: max(0, bodyBytesWritten)
         )
         guard let duplicate = StaticRangeTaskSelectionPolicy.duplicateDecision(
             candidate: candidate,
