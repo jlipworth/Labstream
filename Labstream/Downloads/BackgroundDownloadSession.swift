@@ -1363,8 +1363,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // checkpoint — the same safe recovery users previously triggered with Pause All →
             // Resume All.
             let counterResetThreshold = 1_024 * 1_024
+            // Judge a reset by the task's LIVE counter, not just this callback's snapshot: after a
+            // background relaunch the reattach seeds the watermark from `countOfBytesReceived`
+            // (ahead) while URLSession replays buffered didWriteData events (behind), and treating
+            // that replay as a reset cancelled healthy off-head transfers — rolling gigabytes of
+            // temp body back to the durable checkpoint. A real counter reset drops BOTH values.
+            let liveBodyBytes = max(bodyBytesWritten, Int(max(0, downloadTask.countOfBytesReceived)))
             let didResetCounter = rangeEntry.bodyBytesWritten >= counterResetThreshold
-                && bodyBytesWritten + 64 * 1_024 < rangeEntry.bodyBytesWritten
+                && liveBodyBytes + 64 * 1_024 < rangeEntry.bodyBytesWritten
             if didResetCounter {
                 lock.lock()
                 rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
