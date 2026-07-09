@@ -67,6 +67,28 @@ struct DownloadOptionsSheet: View {
     }
 
     var body: some View {
+        Group {
+            #if os(macOS)
+            macDialog
+            #else
+            formDialog
+            #endif
+        }
+        .task { await runProbe() }
+        .confirmationDialog(existingDownloadRemovalTitle,
+                            isPresented: $confirmingExistingDownloadRemoval,
+                            titleVisibility: .visible) {
+            Button(existingDownloadRemovalActionTitle, role: .destructive) {
+                deleteExistingDownload()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(existingDownloadRemovalMessage)
+        }
+    }
+
+    private var formDialog: some View {
         NavigationStack {
             Form {
                 if let record = existingRecord {
@@ -114,19 +136,289 @@ struct DownloadOptionsSheet: View {
                 }
             }
         }
-        .task { await runProbe() }
-        .confirmationDialog(existingDownloadRemovalTitle,
-                            isPresented: $confirmingExistingDownloadRemoval,
-                            titleVisibility: .visible) {
-            Button(existingDownloadRemovalActionTitle, role: .destructive) {
-                deleteExistingDownload()
-                dismiss()
+    }
+
+    #if os(macOS)
+    private var macDialog: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Download")
+                    .font(.title2.weight(.semibold))
+                Spacer()
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(existingDownloadRemovalMessage)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    macDialogContent
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 360, maxHeight: 520)
+
+            Divider()
+
+            HStack(spacing: 12) {
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                if existingRecord == nil, probeState != .checking {
+                    Button("Download") { startDownload() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(isStartingDownload || selectedChoice == nil || selectedStorageLimitMessage != nil)
+                }
+            }
+            .padding(24)
+        }
+        .frame(width: 680)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var macDialogContent: some View {
+        if let record = existingRecord {
+            macExistingContent(record)
+        } else {
+            switch probeState {
+            case .checking:
+                macInfoSection(systemImage: "wifi",
+                               title: nil,
+                               message: "Checking compatibility…")
+            case let .ready(original, compatibleRemux, presets, probeFailed, unsupportedOriginal, existingVersions):
+                if let original {
+                    macSelectionSection(
+                        title: "Original",
+                        footer: "Downloads the raw source file without server conversion. This is the most resumable route when the server supports byte ranges."
+                    ) {
+                        macSelectionRow(title: "Download original",
+                                        subtitle: directDetail(sizeBytes: original.sizeBytes, resolution: original.resolution),
+                                        systemImage: "checkmark.seal",
+                                        selected: selectedChoice == .original) {
+                            selectedChoice = .original
+                        }
+                    }
+                }
+                if let compatibleRemux {
+                    macSelectionSection(
+                        title: "Original quality",
+                        footer: "Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This uses a live server remux, not a prebuilt offline copy; it can be slower and may restart from the beginning if interrupted."
+                    ) {
+                        macSelectionRow(title: "Original quality (compatible)",
+                                        subtitle: compatibleRemux.codecSummary ?? "Keeps original video, converts to a compatible MP4",
+                                        systemImage: "wand.and.stars",
+                                        selected: selectedChoice == .optimizeCompatible) {
+                            selectedChoice = .optimizeCompatible
+                        }
+                    }
+                }
+                if unsupportedOriginal, compatibleRemux == nil {
+                    macInfoSection(systemImage: "info.circle",
+                                   title: nil,
+                                   message: "The original can stream, but its file container may not play as a raw offline local file here. Original quality is not available for this item/server response, so pick a bitrate preset to create a compatible offline copy.")
+                }
+                if let plexOriginalPreset = plexOriginalOptimizePreset(in: presets) {
+                    macSelectionSection(
+                        title: "Original quality",
+                        footer: "Creates a compatible offline copy at Plex's original video quality. Plex may prepare the file on the server before downloading."
+                    ) {
+                        macSelectionRow(title: "Original video quality",
+                                        subtitle: "Keeps the source quality in a compatible Plex-prepared copy",
+                                        systemImage: "wand.and.stars",
+                                        selected: selectedChoice == .plexOriginalQuality(plexOriginalPreset)) {
+                            selectedChoice = .plexOriginalQuality(plexOriginalPreset)
+                        }
+                    }
+                }
+                macOptimizeSection(presets: optimizePresetsExcludingPlexOriginal(presets),
+                                   allPresets: presets,
+                                   probeFailed: probeFailed,
+                                   originalAvailable: original != nil)
+                if !existingVersions.isEmpty {
+                    macExistingVersionsSection(existingVersions)
+                }
+                if let message = selectedStorageLimitMessage {
+                    macInfoSection(systemImage: "internaldrive.fill.badge.exclamationmark",
+                                   title: nil,
+                                   message: message)
+                }
+                macInfoSection(systemImage: "wifi",
+                               title: nil,
+                               message: "Transfers can continue in the background, but the system may pause them while the app is backgrounded or the device sleeps.")
+            }
         }
     }
+
+    @ViewBuilder
+    private func macExistingContent(_ record: DownloadRecord) -> some View {
+        macSelectionSection(title: "Current download", footer: nil) {
+            let statusText: String = {
+                if record.isComplete { return record.isUnverified ? "Downloaded; playback not verified" : "Downloaded for offline viewing" }
+                if record.status == .failed { return "Download failed" }
+                if record.status == .paused { return "Download paused" }
+                if record.status == .preparing { return "Preparing on server…" }
+                return "Download already exists"
+            }()
+            Label(statusText, systemImage: record.isComplete ? "checkmark.circle.fill" : "arrow.down.circle")
+                .font(.body.weight(.medium))
+            if record.bytes > 0 {
+                Text(DownloadStorageLimitPolicy.byteString(record.bytes))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if record.status == .failed || record.status == .paused {
+                Button(record.status == .failed ? "Retry Download" : "Resume Download") {
+                    guard !retryingExistingDownload else { return }
+                    retryingExistingDownload = true
+                    retryDownload()
+                    dismiss()
+                }
+                .disabled(retryingExistingDownload)
+            }
+            Button("Remove Download", role: .destructive) {
+                confirmingExistingDownloadRemoval = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func macOptimizeSection(presets: [String], allPresets: [String], probeFailed: Bool,
+                                    originalAvailable: Bool) -> some View {
+        macSelectionSection(
+            title: optimizeSectionTitle,
+            footer: probeFailed
+                ? "Couldn't check compatibility, so Labstream will ask the server for a compatible offline version. Server work can take a while and may require retry if interrupted."
+                : originalAvailable
+                    ? "The server prepares a bitrate-capped compatible copy. This can take a while and can continue from checkpoints when the server provides a static file; live streams may require retry if interrupted."
+                    : "The server prepares a compatible offline version. This can take a while and can continue from checkpoints when the server provides a static file; live streams may require retry if interrupted."
+        ) {
+            ForEach(presets, id: \.self) { preset in
+                macSelectionRow(title: preset,
+                                subtitle: nil,
+                                systemImage: "gauge.with.dots.needle.bottom.50percent",
+                                selected: selectedChoice == .optimize(preset)) {
+                    selectedChoice = .optimize(preset)
+                }
+            }
+        }
+        .onAppear {
+            if selectedChoice == .original, originalAvailable { return }
+            if selectedChoice == .optimizeCompatible { return }
+            if case .plexOriginalQuality = selectedChoice { return }
+            if case .existingVersion = selectedChoice { return }
+            if case .embyExistingVersion = selectedChoice { return }
+            if case .optimize(let selected)? = selectedChoice, allPresets.contains(selected) { return }
+            selectedChoice = preferredSelection(originalAvailable: originalAvailable,
+                                                compatibleRemuxAvailable: false,
+                                                presets: allPresets)
+        }
+    }
+
+    @ViewBuilder
+    private func macExistingVersionsSection(_ versions: [DownloadExistingVersionOption]) -> some View {
+        macSelectionSection(
+            title: "Existing server versions",
+            footer: "Downloads a version your server already has, exactly as-is — no new conversion is started and the server's existing copy is left in place."
+        ) {
+            ForEach(versions) { version in
+                let selection = selection(forExistingVersion: version)
+                macSelectionRow(title: version.label,
+                                subtitle: version.playableOffline ? version.detail : "Won't play offline on this device",
+                                systemImage: "rectangle.stack.badge.play",
+                                selected: version.playableOffline && selectedChoice == selection,
+                                disabled: !version.playableOffline) {
+                    selectedChoice = selection
+                }
+            }
+        }
+    }
+
+    private func macSelectionSection<Content: View>(title: String,
+                                                    footer: String?,
+                                                    @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            VStack(spacing: 8) {
+                content()
+            }
+            if let footer {
+                Text(footer)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func macSelectionRow(title: String,
+                                 subtitle: String?,
+                                 systemImage: String,
+                                 selected: Bool,
+                                 disabled: Bool = false,
+                                 action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .frame(width: 28)
+                    .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(selected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    private func macInfoSection(systemImage: String, title: String?, message: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title3)
+                .frame(width: 28)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                if let title {
+                    Text(title)
+                        .font(.headline)
+                }
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+    #endif
 
     // MARK: - Probe
 
