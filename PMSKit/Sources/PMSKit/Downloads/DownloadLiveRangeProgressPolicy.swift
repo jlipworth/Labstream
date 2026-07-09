@@ -48,9 +48,8 @@ public enum DownloadLiveRangeProgressPolicy {
     public static func liveDisplayBytes(for record: DownloadRecord,
                                         sample: DownloadLiveRangeProgressSample?,
                                         now: Date,
-                                        isCheckpointPausing: Bool,
                                         staleInterval: TimeInterval = staleIntervalSeconds) -> Int? {
-        guard record.status == .downloading || isCheckpointPausing,
+        guard record.status == .downloading,
               let sample,
               isFresh(sample, now: now, staleInterval: staleInterval),
               sample.bytes > record.bytes else { return nil }

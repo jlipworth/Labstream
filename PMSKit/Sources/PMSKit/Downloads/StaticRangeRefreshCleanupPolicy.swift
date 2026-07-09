@@ -37,14 +37,8 @@ public enum StaticRangeRefreshCleanupPolicy {
         return record.status == .failed
     }
 
-    public static func shouldKeepCheckpointPause(record: DownloadRecord?, isTrackingTransfer: Bool) -> Bool {
-        guard let record else { return false }
-        return record.status == .downloading && isTrackingTransfer
-    }
-
     public static func shouldKeepLiveRangeProgress(key: String,
-                                                   activeDownloadingKeys: Set<String>,
-                                                   checkpointPauseKeys: Set<String>) -> Bool {
-        activeDownloadingKeys.contains(key) || checkpointPauseKeys.contains(key)
+                                                   activeDownloadingKeys: Set<String>) -> Bool {
+        activeDownloadingKeys.contains(key)
     }
 }

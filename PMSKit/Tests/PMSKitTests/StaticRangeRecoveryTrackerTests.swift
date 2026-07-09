@@ -38,28 +38,6 @@ struct StaticRangeRecoveryTrackerTests {
         #expect(!tracker.wasManuallyResumedWhileQueuePaused("c"))
     }
 
-    @Test("Checkpoint pause keys can be filtered by current task truth")
-    func checkpointPauseFiltering() {
-        var tracker = StaticRangeRecoveryTracker()
-        tracker.markCheckpointPause("keep")
-        tracker.markCheckpointPause("drop")
-
-        tracker.keepCheckpointPauses { $0 == "keep" }
-
-        #expect(tracker.isCheckpointPausing("keep"))
-        #expect(!tracker.isCheckpointPausing("drop"))
-    }
-
-    @Test("Checkpoint pause keys can be removed when a quick resume cancels the drain")
-    func checkpointPauseRemoval() {
-        var tracker = StaticRangeRecoveryTracker()
-        tracker.markCheckpointPause("row")
-
-        tracker.removeCheckpointPause("row")
-
-        #expect(!tracker.isCheckpointPausing("row"))
-    }
-
     @Test("Restart counter preservation is one-shot")
     func restartCounterPreservationIsOneShot() {
         var tracker = StaticRangeRecoveryTracker()

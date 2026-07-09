@@ -14,8 +14,7 @@ public enum OfflineLibrarySnapshotBuilder {
                             errorMessage: (DownloadRecord) -> String?,
                             displayProgress: (DownloadRecord) -> Double?,
                             statusCaption: (DownloadRecord, DownloadBackendKind) -> String,
-                            isRetrying: (String) -> Bool,
-                            isCheckpointPausing: (String) -> Bool) -> OfflineLibrarySnapshot {
+                            isRetrying: (String) -> Bool) -> OfflineLibrarySnapshot {
         let backendsByKey = Dictionary(uniqueKeysWithValues: records.map { record in
             (record.ratingKey, DownloadJobSnapshot(record: record).backend)
         })
@@ -30,8 +29,7 @@ public enum OfflineLibrarySnapshotBuilder {
                 errorMessage: errorMessage(record),
                 displayProgress: displayProgress(record),
                 statusCaption: statusCaption(record, backend),
-                isRetrying: isRetrying(record.ratingKey),
-                isCheckpointPausing: isCheckpointPausing(record.ratingKey)
+                isRetrying: isRetrying(record.ratingKey)
             )
         }
 

@@ -13,8 +13,6 @@ public struct DownloadHealthSessionSnapshot: Equatable, Sendable {
     public var deferredBackgroundCompletionIdentifierCount: Int
     public var backgroundCompletionHandlerCount: Int
     public var finalizingRatingKeyCount: Int
-    public var rangeBackgroundHandoffGraceTaskCount: Int
-    public var gracefulRangePauseKeyCount: Int
     public var pendingTempCleanupBytes: Int
 
     public init(opaqueInflightCount: Int = 0,
@@ -24,8 +22,6 @@ public struct DownloadHealthSessionSnapshot: Equatable, Sendable {
                 deferredBackgroundCompletionIdentifierCount: Int = 0,
                 backgroundCompletionHandlerCount: Int = 0,
                 finalizingRatingKeyCount: Int = 0,
-                rangeBackgroundHandoffGraceTaskCount: Int = 0,
-                gracefulRangePauseKeyCount: Int = 0,
                 pendingTempCleanupBytes: Int = 0) {
         self.opaqueInflightCount = opaqueInflightCount
         self.rangeInflightCount = rangeInflightCount
@@ -34,8 +30,6 @@ public struct DownloadHealthSessionSnapshot: Equatable, Sendable {
         self.deferredBackgroundCompletionIdentifierCount = deferredBackgroundCompletionIdentifierCount
         self.backgroundCompletionHandlerCount = backgroundCompletionHandlerCount
         self.finalizingRatingKeyCount = finalizingRatingKeyCount
-        self.rangeBackgroundHandoffGraceTaskCount = rangeBackgroundHandoffGraceTaskCount
-        self.gracefulRangePauseKeyCount = gracefulRangePauseKeyCount
         self.pendingTempCleanupBytes = pendingTempCleanupBytes
     }
 
@@ -131,8 +125,6 @@ public enum DownloadHealthSnapshotPolicy {
             "session_pending_background_ops": .int(snapshot.session.pendingBackgroundCompletionOperationCount),
             "session_deferred_background_handlers": .int(snapshot.session.deferredBackgroundCompletionIdentifierCount),
             "session_background_handlers": .int(snapshot.session.backgroundCompletionHandlerCount),
-            "session_handoff_grace_count": .int(snapshot.session.rangeBackgroundHandoffGraceTaskCount),
-            "session_graceful_pause_count": .int(snapshot.session.gracefulRangePauseKeyCount),
             "session_pending_temp_cleanup_bytes": .int(snapshot.session.pendingTempCleanupBytes),
         ]
     }

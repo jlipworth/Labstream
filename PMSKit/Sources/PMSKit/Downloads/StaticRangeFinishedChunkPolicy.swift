@@ -1,8 +1,8 @@
-/// Pure pause/cancel decision for a completed static byte-range chunk.
+/// Pure pause/cancel decision for a completed static byte-range transfer body.
 ///
-/// The transfer engine may receive a finished chunk after the row was paused or cancelled. Pauses
-/// should preserve a fully completed checkpoint chunk and stop before the next chunk; hard cancels
-/// should discard the temp so deleted rows do not resurrect bytes.
+/// The transfer engine may receive a finished body after the row was paused or cancelled. User
+/// pauses should preserve a body that had already finished; hard cancels should discard the temp so
+/// deleted rows do not resurrect bytes.
 public enum StaticRangeFinishedChunkDisposition: Sendable, Equatable {
     /// Drop the temp without writing it into the durable partial.
     case discardTemp
@@ -19,16 +19,11 @@ public enum StaticRangeFinishedChunkPolicy {
     }
 
     public static func disposition(isHalted: Bool,
-                                   persistedStatusPaused: Bool,
-                                   segmentKind: RangeTransferSegmentKind,
-                                   gracefulPauseRequested: Bool) -> StaticRangeFinishedChunkDisposition {
+                                   persistedStatusPaused: Bool) -> StaticRangeFinishedChunkDisposition {
         if shouldDiscardBeforeStash(isHalted: isHalted, persistedStatusPaused: persistedStatusPaused) {
             return .discardTemp
         }
         if isHalted && persistedStatusPaused {
-            return .writeThenPause
-        }
-        if gracefulPauseRequested && RangeTransferHTTPPolicy.isDurableCheckpointSegment(segmentKind) {
             return .writeThenPause
         }
         return .writeThenContinue

@@ -25,18 +25,19 @@ public enum RangeChunkNext: Equatable, Sendable {
     case stalled
 }
 
-/// Shape of the next background-owned static-byte-range transfer.
+/// Shape of a background-owned static-byte-range transfer.
 public enum RangeTransferSegmentKind: String, Equatable, Sendable {
-    /// Foreground/active app path: bounded slices give frequent durable checkpoints.
+    /// Legacy foreground/active-app path: bounded slices gave frequent durable checkpoints.
+    /// Retained to classify and safely finish older in-flight closed-Range tasks.
     case boundedCheckpoint
     /// Legacy off-head path: bounded slices let `nsurlsessiond` own a background task while
     /// capping non-durable temp progress between app wakeups. No longer produced for new
     /// segments (each wakeup feeds the OS resume rate limiter — #212); retained to classify
     /// reattached tasks from older sessions.
     case backgroundCheckpoint
-    /// Off-head/background path (#212): one open-ended remainder task so `nsurlsessiond`
-    /// finishes the file without waking the app per chunk. Temp progress is non-durable until
-    /// completion; pause/failure hold it in URLSession resume data.
+    /// Current #227 path for all scene phases: one open-ended remainder task so `nsurlsessiond`
+    /// owns the remaining transfer. In-flight temp progress is non-durable until completion;
+    /// pause/failure hold it in URLSession resume data, with the durable partial as fallback.
     case continuousRemainder
 }
 
@@ -57,15 +58,14 @@ public struct RangeTransferSegmentPlan: Equatable, Sendable {
     }
 }
 
-/// Pure, IO-free decisions for the chunked Range download lane (#169).
+/// Pure, IO-free decisions for the static Range download lane (#169/#227).
 ///
 /// The static byte-range lane survives the headset coming off only as a true background
 /// `URLSessionDownloadTask`, but a background task hands back its temp file only on completion —
-/// it cannot byte-append into our durable partial mid-flight. While active, we download bounded
-/// `Range` chunks and append each finished chunk into the durable partial. When the app is likely
-/// going off-head, the next plan is one open-ended continuous remainder (#212) so `nsurlsessiond`
-/// finishes the file without waking the app per chunk; pause/failure hold the remainder's
-/// non-durable temp in URLSession resume data.
+/// it cannot byte-append into our durable partial mid-flight. New work therefore uses one
+/// open-ended continuous remainder so `nsurlsessiond` finishes the file without waking the app per
+/// chunk; pause/failure hold the remainder's non-durable temp in URLSession resume data. Bounded
+/// planning remains only for legacy closed-Range tasks that may be reattached after an update.
 /// The partial remains the real checkpoint (`DownloadStore.reconcile`'s `hasAppRangeCheckpoint`)
 /// across force-quit/relaunch: if an in-flight segment is lost, only bytes already appended to that
 /// partial are durable.

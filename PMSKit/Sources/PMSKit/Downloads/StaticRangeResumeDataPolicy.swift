@@ -7,9 +7,8 @@ import Foundation
 /// cancel or a task failure would discard arbitrarily many non-durable bytes (up to the whole
 /// remainder of a multi-GB file). Resume data is the only handle the OS gives us on that temp:
 /// pauses cancel by producing it, failures re-resume from it (budget-bounded), and parking a row
-/// persists it for a later manual Resume. Bounded checkpoint chunks keep their existing
-/// fresh-request retry lane — their worst-case loss is one chunk, and blob-resuming a closed
-/// Range request is exactly the combination the documented background resume bug mangles.
+/// persists it for a later manual Resume. Legacy bounded checkpoint chunks keep their existing
+/// fresh-request retry lane only so older closed-Range tasks can finish safely.
 ///
 /// Correctness backstop: adoption verifies the blob's original Range offset against the durable
 /// partial, and every completed body still passes the append-time Content-Range / validator
@@ -39,6 +38,14 @@ public enum StaticRangeResumeDataPolicy {
     public enum AdoptionDecision: Sendable, Equatable {
         case adopt(baseOffset: Int)
         case rejectStale(blobOffset: Int?, durableBytes: Int)
+    }
+
+    public enum DurableFallbackReason: String, Sendable, Equatable {
+        /// URLSession explicitly rejected the resume blob, or its backing temp disappeared.
+        case resumeDataCannotResume
+        /// The app rejected the blob before starting it because its original Range no longer
+        /// matched the durable partial, or because blob-resume retries were exhausted.
+        case resumeDataRejected
     }
 
     public static func pauseDisposition(segmentKind: RangeTransferSegmentKind) -> PauseDisposition {
@@ -80,10 +87,38 @@ public enum StaticRangeResumeDataPolicy {
         return .adopt(baseOffset: blobRangeOffset)
     }
 
+    /// URLSession resume data is the first recovery path for continuous remainders, but if the OS
+    /// says the blob cannot be resumed (commonly because its temp file vanished) the safe fallback is
+    /// to discard the blob and restart from the durable partial with a fresh open-ended Range.
+    public static func durableFallbackReason(errorDomain: String,
+                                             errorCode: Int,
+                                             hasResumeData: Bool,
+                                             segmentKind: RangeTransferSegmentKind) -> DurableFallbackReason? {
+        guard segmentKind == .continuousRemainder else { return nil }
+        // If URLSession handed back another blob, try/adopt that before discarding temp progress.
+        guard !hasResumeData else { return nil }
+        if errorDomain == NSURLErrorDomain,
+           [
+               // URLSession may surface an invalid/corrupt resume blob as raw-data decode failure.
+               NSURLErrorCannotDecodeRawData,
+               // A blob whose backing temp disappeared commonly reports a missing/unopenable file.
+               NSURLErrorFileDoesNotExist,
+               NSURLErrorCannotOpenFile,
+           ].contains(errorCode) {
+            return .resumeDataCannotResume
+        }
+        if errorDomain == NSCocoaErrorDomain,
+           errorCode == CocoaError.fileNoSuchFile.rawValue {
+            return .resumeDataCannotResume
+        }
+        return nil
+    }
+
     /// Persist the blob when parking a row (`.paused`/`.queued`) so a manual Resume — even after
     /// a relaunch — continues the OS-temp progress instead of re-fetching it.
     public static func shouldPersistBlobOnPark(hasResumeData: Bool,
-                                               segmentKind: RangeTransferSegmentKind) -> Bool {
-        hasResumeData && segmentKind == .continuousRemainder
+                                               segmentKind: RangeTransferSegmentKind,
+                                               resumeDataWasRejected: Bool = false) -> Bool {
+        hasResumeData && !resumeDataWasRejected && segmentKind == .continuousRemainder
     }
 }

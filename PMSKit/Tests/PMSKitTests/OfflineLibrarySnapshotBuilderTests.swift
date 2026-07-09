@@ -32,11 +32,10 @@ struct OfflineLibrarySnapshotBuilderTests {
             errorMessage: { record in record.status == .failed ? "boom" : nil },
             displayProgress: { record in record.ratingKey == "plex-1" ? 0.42 : nil },
             statusCaption: { record, backend in "\(backend.displayName):\(record.status.rawValue)" },
-            isRetrying: { $0 == "emby:2" },
-            isCheckpointPausing: { $0 == "plex-1" }
+            isRetrying: { $0 == "emby:2" }
         )
 
-        #expect(snapshot.queueToolbarAction == .pauseQueue)
+        #expect(snapshot.queueToolbarAction == .resumeQueue)
         #expect(snapshot.isQueuePaused == false)
         #expect(snapshot.aggregateStats.downloadedBytes == 455)
         #expect(snapshot.aggregateStats.activeSpeedBytesPerSecond == 10.5)
@@ -50,7 +49,6 @@ struct OfflineLibrarySnapshotBuilderTests {
         #expect(plexRow.statusCaption == "Plex:downloading")
         #expect(plexRow.errorMessage == nil)
         #expect(plexRow.isRetrying == false)
-        #expect(plexRow.isCheckpointPausing)
 
         let embyRow = try #require(snapshot.rows.last)
         #expect(embyRow.showBackendBadge)
@@ -58,7 +56,6 @@ struct OfflineLibrarySnapshotBuilderTests {
         #expect(embyRow.errorMessage == "boom")
         #expect(embyRow.statusCaption == "Emby:failed")
         #expect(embyRow.isRetrying)
-        #expect(embyRow.isCheckpointPausing == false)
     }
 
     @Test("snapshot aggregate uses paused resumable display bytes")
@@ -72,8 +69,7 @@ struct OfflineLibrarySnapshotBuilderTests {
             errorMessage: { _ in nil },
             displayProgress: { _ in 0.35 },
             statusCaption: { _, _ in "Paused • 35% • 5.5 KB" },
-            isRetrying: { _ in false },
-            isCheckpointPausing: { _ in false })
+            isRetrying: { _ in false })
 
         #expect(snapshot.aggregateStats.downloadedBytes == 5_520)
     }
@@ -87,8 +83,7 @@ struct OfflineLibrarySnapshotBuilderTests {
             errorMessage: { _ in nil },
             displayProgress: { _ in nil },
             statusCaption: { _, _ in "Paused" },
-            isRetrying: { _ in false },
-            isCheckpointPausing: { _ in false }
+            isRetrying: { _ in false }
         )
 
         #expect(snapshot.queueToolbarAction == .resumeQueue)

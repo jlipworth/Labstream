@@ -118,6 +118,52 @@ struct StaticRangeResumeDataPolicyTests {
         ) == .rejectStale(blobOffset: nil, durableBytes: 1_000))
     }
 
+    // MARK: Durable partial fallback
+
+    @Test("Cannot-resume resume data falls back to the durable partial")
+    func cannotResumeFallsBackToDurablePartial() {
+        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
+            errorDomain: NSURLErrorDomain,
+            errorCode: NSURLErrorCannotDecodeRawData,
+            hasResumeData: false,
+            segmentKind: .continuousRemainder
+        ) == .resumeDataCannotResume)
+        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
+            errorDomain: NSURLErrorDomain,
+            errorCode: NSURLErrorFileDoesNotExist,
+            hasResumeData: false,
+            segmentKind: .continuousRemainder
+        ) == .resumeDataCannotResume)
+        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
+            errorDomain: NSCocoaErrorDomain,
+            errorCode: CocoaError.fileNoSuchFile.rawValue,
+            hasResumeData: false,
+            segmentKind: .continuousRemainder
+        ) == .resumeDataCannotResume)
+    }
+
+    @Test("Fallback does not discard a new blob or apply to legacy bounded tasks")
+    func durableFallbackDoesNotPreemptNewBlobOrLegacyTasks() {
+        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
+            errorDomain: NSURLErrorDomain,
+            errorCode: NSURLErrorCannotDecodeRawData,
+            hasResumeData: true,
+            segmentKind: .continuousRemainder
+        ) == nil)
+        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
+            errorDomain: NSURLErrorDomain,
+            errorCode: NSURLErrorCannotDecodeRawData,
+            hasResumeData: false,
+            segmentKind: .boundedCheckpoint
+        ) == nil)
+        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
+            errorDomain: NSURLErrorDomain,
+            errorCode: NSURLErrorNetworkConnectionLost,
+            hasResumeData: false,
+            segmentKind: .continuousRemainder
+        ) == nil)
+    }
+
     // MARK: Persist on park
 
     @Test("Parking a remainder with a blob persists it")
@@ -137,6 +183,11 @@ struct StaticRangeResumeDataPolicyTests {
         ))
         #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
             hasResumeData: true, segmentKind: .backgroundCheckpoint
+        ))
+        #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
+            hasResumeData: true,
+            segmentKind: .continuousRemainder,
+            resumeDataWasRejected: true
         ))
     }
 }

@@ -40,7 +40,7 @@ struct DownloadLiveRangeProgressPolicyTests {
         #expect(rebaselined.expectedBytes == 1_000)
     }
 
-    @Test("Live display bytes require fresh forward progress on an active or pausing row")
+    @Test("Live display bytes require fresh forward progress on an active downloading row")
     func liveDisplayBytes() {
         let now = Date(timeIntervalSince1970: 2_000)
         let fresh = DownloadLiveRangeProgressSample(bytes: 150, expectedBytes: nil, updatedAt: now.addingTimeInterval(-15))
@@ -48,23 +48,15 @@ struct DownloadLiveRangeProgressPolicyTests {
 
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(),
                                                                  sample: fresh,
-                                                                 now: now,
-                                                                 isCheckpointPausing: false) == 150)
-        #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(status: .paused),
-                                                                 sample: fresh,
-                                                                 now: now,
-                                                                 isCheckpointPausing: true) == 150)
+                                                                 now: now) == 150)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(),
                                                                  sample: stale,
-                                                                 now: now,
-                                                                 isCheckpointPausing: false) == nil)
+                                                                 now: now) == nil)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(bytes: 150),
                                                                  sample: fresh,
-                                                                 now: now,
-                                                                 isCheckpointPausing: false) == nil)
+                                                                 now: now) == nil)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(status: .paused),
                                                                  sample: fresh,
-                                                                 now: now,
-                                                                 isCheckpointPausing: false) == nil)
+                                                                 now: now) == nil)
     }
 }
