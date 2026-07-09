@@ -93,6 +93,19 @@ public enum JellyfinAuth {
         return req
     }
 
+    /// Current-user identity is a credential probe; unlike `userViews`, it does not conflate
+    /// token validity with whether this user may browse a particular library.
+    public static func currentUserRequest(server: URL,
+                                          token: String,
+                                          identity: JellyfinClientIdentity) -> URLRequest {
+        var req = URLRequest(url: server.appendingPathComponent("Users/Me"))
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(authorizationHeader(identity: identity, token: token),
+                     forHTTPHeaderField: "Authorization")
+        return req
+    }
+
     public static func quickConnectEnabledRequest(server: URL,
                                                   identity: JellyfinClientIdentity) -> URLRequest {
         var req = URLRequest(url: server.appendingPathComponent("QuickConnect/Enabled"))

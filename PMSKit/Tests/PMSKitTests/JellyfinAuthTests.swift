@@ -13,6 +13,15 @@ struct JellyfinAuthTests {
         #expect(request.url?.absoluteString == "https://example.com/jellyfin/Sessions/Logout")
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
+
+    @Test func currentUserRequestUsesIdentityProbeRatherThanLibraryViews() {
+        let identity = JellyfinClientIdentity(client: "Labstream", device: "Vision Pro",
+                                              deviceId: "device-1", version: "1.0")
+        let request = JellyfinAuth.currentUserRequest(server: URL(string: "https://example.com/jellyfin")!,
+                                                      token: "token-abc", identity: identity)
+        #expect(request.url?.absoluteString == "https://example.com/jellyfin/Users/Me")
+        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+    }
     @Test func authorizationHeaderUsesMediaBrowserScheme() throws {
         let identity = JellyfinClientIdentity(
             client: "Labstream",

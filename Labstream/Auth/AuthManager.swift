@@ -267,9 +267,9 @@ final class AuthManager {
             return true
         }
         do {
-            try await probeJellyfinReachability(server: snapshot.server,
-                                                token: snapshot.token,
-                                                userID: snapshot.userID)
+            try await validateJellyfinSession(server: snapshot.server,
+                                              token: snapshot.token,
+                                              expectedUserID: snapshot.userID)
             guard isCurrentAuthAttempt(attemptID) else { return false }
             applyJellyfinSessionSnapshot(snapshot)
             if updateState { state = .authenticated }
@@ -293,32 +293,24 @@ final class AuthManager {
         }
     }
 
-    /// Validate the saved Jellyfin session with a live `userViews` probe.
+    /// Validate the saved Jellyfin session with a live current-user identity probe.
     ///
     /// Only a 401 proves that the token is invalid. A 403 is an authorization/policy failure,
     /// not evidence of revocation, so it must preserve the credential just like availability
     /// and server errors. This keeps a restricted library or reverse proxy from signing users out.
-    private func probeJellyfinReachability(server: URL, token: String, userID: String) async throws {
-        let status = try await jellyfinUserViewsStatus(server: server, token: token, userID: userID)
+    private func validateJellyfinSession(server: URL, token: String, expectedUserID: String) async throws {
+        let request = JellyfinAuth.currentUserRequest(server: server, token: token, identity: jellyfinIdentity)
+        let (data, response) = try await authDataLoader(request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 200
         switch CredentialValidationPolicy.decision(httpStatus: status) {
         case .valid:
-            return
+            let user = try JSONDecoder().decode(JellyfinAuthenticatedUser.self, from: data)
+            guard user.id == expectedUserID else { throw JellyfinAuthError.unauthorized }
         case .invalidCredential:
             throw JellyfinAuthError.unauthorized
         case .preserveCredential, .refreshExpiredCredential:
             throw JellyfinAuthError.http(status)
         }
-    }
-
-    /// One `userViews` probe; returns the HTTP status code (or rethrows a transport error).
-    private func jellyfinUserViewsStatus(server: URL, token: String, userID: String) async throws -> Int {
-        let req = try JellyfinLibrary.userViewsRequest(server: server,
-                                                       token: token,
-                                                       identity: jellyfinIdentity,
-                                                       userId: userID)
-        let (_, response) = try await authDataLoader(req)
-        guard let http = response as? HTTPURLResponse else { return 200 }
-        return http.statusCode
     }
 
     private func readJellyfinSessionSnapshot() -> JellyfinSessionSnapshot? {
@@ -357,11 +349,11 @@ final class AuthManager {
         }
         recordAuthDiagnostic("auth.emby.restore.start", fields: restoreFields)
         do {
-            let req = try EmbyLibrary.userViewsRequest(server: snapshot.server,
-                                                       token: snapshot.token,
-                                                       identity: embyIdentity,
-                                                       userId: snapshot.userID)
-            let (_, response) = try await authDataLoader(req)
+            let req = try EmbyAuth.currentUserRequest(server: snapshot.server,
+                                                      token: snapshot.token,
+                                                      identity: embyIdentity,
+                                                      userId: snapshot.userID)
+            let (data, response) = try await authDataLoader(req)
             if let http = response as? HTTPURLResponse {
                 switch CredentialValidationPolicy.decision(httpStatus: http.statusCode) {
                 case .valid: break
@@ -371,6 +363,8 @@ final class AuthManager {
                 }
             }
             guard isCurrentAuthAttempt(attemptID) else { return false }
+            let user = try JSONDecoder().decode(EmbyAuthenticatedUser.self, from: data)
+            guard user.id == snapshot.userID else { throw EmbyAuthError.unauthorized }
             applyEmbySessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             recordAuthDiagnostic("auth.emby.restore.success", fields: restoreFields)
