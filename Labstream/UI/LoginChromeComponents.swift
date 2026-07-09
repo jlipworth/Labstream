@@ -66,9 +66,7 @@ struct CompactLoginHeader: View {
         HStack(spacing: DS.Space.md) {
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.white.opacity(0.16))
-                    .background(.thinMaterial,
-                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .fill(DS.Brand.iconPlateGradient)
                     .overlay {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .strokeBorder(.white.opacity(0.24), lineWidth: 0.5)
@@ -84,11 +82,11 @@ struct CompactLoginHeader: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Labstream")
                     .font(.title2.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
 
                 Text("Connect your media library.")
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.78))
+                    .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 0)
@@ -103,16 +101,33 @@ struct CompactLoginHeader: View {
 struct LoginBrandBackdrop: View {
     #if os(iOS)
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
     var body: some View {
         #if os(iOS)
-        DS.Brand.iconPlateGradient
-            .ignoresSafeArea()
-            .overlay {
-                if colorScheme == .light {
-                    Color.white.opacity(0.10)
-                        .ignoresSafeArea()
+        if horizontalSizeClass == .compact {
+            // A full teal slab made the phone login read as a splash screen and
+            // swallowed the segmented backend picker. Keep the native grouped
+            // surface, with only a quiet brand wash behind the onboarding content.
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+                .overlay(alignment: .top) {
+                    LinearGradient(colors: [
+                        DS.Brand.deepTeal.opacity(colorScheme == .light ? 0.14 : 0.28),
+                        Color.clear
+                    ], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 430)
+                    .ignoresSafeArea(edges: .top)
+                }
+        } else {
+            DS.Brand.iconPlateGradient
+                .ignoresSafeArea()
+                .overlay {
+                    if colorScheme == .light {
+                        Color.white.opacity(0.10)
+                            .ignoresSafeArea()
+                    }
                 }
             }
         #else

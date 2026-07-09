@@ -46,6 +46,7 @@ private struct BackendPrimaryCTALabel: ViewModifier {
 private extension View {
     func backendPrimaryCTALabel() -> some View { modifier(BackendPrimaryCTALabel()) }
     func backendAuthSupportingTextStyle() -> some View { modifier(BackendAuthSupportingTextStyle()) }
+    func compactBackendPickerChrome() -> some View { modifier(CompactBackendPickerChrome()) }
 
     /// Compact iPhone flows use the screen's native gutters rather than retaining
     /// the narrow, centered control column that belongs inside the iPad card.
@@ -59,7 +60,7 @@ private extension View {
     }
 }
 
-private struct BackendAuthSupportingTextStyle: ViewModifier {
+private struct CompactBackendPickerChrome: ViewModifier {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -68,13 +69,25 @@ private struct BackendAuthSupportingTextStyle: ViewModifier {
     func body(content: Content) -> some View {
         #if os(iOS)
         if horizontalSizeClass == .compact {
-            content.foregroundStyle(.white.opacity(0.76))
+            content
+                .padding(3)
+                .background(.thinMaterial, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(.primary.opacity(0.12), lineWidth: 0.5)
+                }
         } else {
-            content.foregroundStyle(.secondary)
+            content
         }
         #else
-        content.foregroundStyle(.secondary)
+        content
         #endif
+    }
+}
+
+private struct BackendAuthSupportingTextStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content.foregroundStyle(.secondary)
     }
 }
 
@@ -116,6 +129,7 @@ struct BackendSelectionPicker: View {
             .controlSize(.regular)
             #endif
             .backendAuthControlWidth(BackendAuthMetrics.pickerWidth)
+            .compactBackendPickerChrome()
     }
 }
 
