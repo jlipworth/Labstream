@@ -89,6 +89,21 @@ public enum EmbyAuth {
         return req
     }
 
+    /// Authenticated user identity probe used to validate a saved `(server,user,token)` tuple
+    /// without depending on that user's current library-view permissions.
+    public static func currentUserRequest(server: URL,
+                                          token: String,
+                                          identity: EmbyClientIdentity,
+                                          userId: String) throws -> URLRequest {
+        let encodedUserID = userId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? userId
+        let url = try EmbyPlayback.embyURL(server: server, path: "/Users/\(encodedUserID)")
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyAuth(to: &req, identity: identity, userId: userId, token: token)
+        return req
+    }
+
     static func quote(_ value: String) -> String {
         MediaBrowserAuth.quote(value)
     }
