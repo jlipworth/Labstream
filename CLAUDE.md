@@ -227,19 +227,24 @@ is **shut down**, so it briefly bounces your booted main sim — expect a ~10s b
 main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPad
 setup creates a fresh simulator from the newest available iOS runtime instead.
 
-**Booted sims are NOT free — shut them down.** When parallelizing work across several
-worktrees (fanning out agents, many at a time), each linked worktree may boot its own
-visionOS simulator, iPhone simulator, or iPad simulator, and several booted
-`vpwt-*`/`iphonewt-*`/`ipadwt-*` sims at once bog down the MacBook. So:
-cap how many run concurrently, and **shut each worktree's sim down the moment its work is
-done** — `xcrun simctl shutdown $(scripts/worktree-sim.sh id)` from inside the worktree
-(or `xcrun simctl shutdown <UDID>`). Every fan-out coding agent should shut down its own
-sim as its final step (after build/smoke-test + commit); the lead should also proactively
-shut down the sims of already-finished batches. Shutting down ≠ teardown — it just frees
-RAM/CPU and the clone (and its login) survive for later. The **golden** sim only needs to
-be booted while the *main* worktree is actively building/testing — when it isn't (e.g. the
-lead is just orchestrating fan-out agents on their own clones), shut golden down too; it's
-re-booted on demand and `setup` needs it shut down to clone anyway.
+**Booted sims are NOT free — use a strict one-at-a-time queue.** Never run multiple
+simulators simultaneously. This is especially important when parallel agents are working
+in separate worktrees: source work and unit tests may proceed in parallel, but simulator
+build/install/launch/visual-verification turns must be serialized by the lead agent. An
+agent must obtain the current simulator lease before booting any visionOS, iPhone, or iPad
+simulator; all other agents wait with their simulators shut down. A leased agent may use
+only one simulator at a time, must shut it down before switching platforms, and must release
+the lease before another agent boots a simulator. Do not leave the golden simulator booted
+while a linked-worktree simulator is running.
+
+**Shut the leased sim down immediately when its verification turn ends** —
+`xcrun simctl shutdown $(scripts/worktree-sim.sh id)` from inside the worktree (or
+`xcrun simctl shutdown <UDID>`). The lead should check `xcrun simctl list devices` between
+queued turns and proactively shut down any simulator left booted by a finished/interrupted
+agent. Shutting down ≠ teardown — it just frees RAM/CPU and the clone (and its login)
+survive for later. The **golden** sim should be booted only during its own leased main-
+worktree verification turn; it is re-booted on demand, and `setup` needs it shut down to
+clone anyway.
 
 ### Worktree closeout checklist
 
@@ -306,7 +311,7 @@ or log dumps:
 
 ```sh
 # SIMID is this worktree's visionOS sim (see Build block / "Worktree simulators"); always target it
-# explicitly because more than one simulator may be booted.
+# explicitly even though simulator turns are serialized; never target `booted`.
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 
 # Claude takes its own screenshots after the user interacts
