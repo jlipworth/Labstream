@@ -486,9 +486,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         ])
     }
 
-    private func rangeSegmentPreference() -> (kind: RangeTransferSegmentKind, reason: String?) {
-        StaticRangeSegmentStrategyPolicy.segmentPreference(sceneReason: nil)
-    }
 
     /// Rebind delegate to any tasks the background session resumed after relaunch.
     ///
@@ -874,7 +871,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func startRangeChunk(ratingKey: String, with request: URLRequest, to destination: URL,
                                  expectedBytes: Int?,
                                  resetsRetryCount: Bool,
-                                 segmentKindOverride: RangeTransferSegmentKind? = nil,
                                  segmentReasonOverride: String? = nil) throws -> Int {
         guard !isRangeHalted(ratingKey: ratingKey) else {
             AppDiagnostics.record(.downloads, "downloads.range_start_suppressed", fields: [
@@ -918,12 +914,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // whole-file 200 (`replaceWhole`). Plex IGNORES `If-Range` (probed), so the load-bearing defense
         // is the per-chunk validator-equality check in `applyFinishedChunk`, which restarts from 0 on a
         // mismatch; `If-Range` is the cheap belt-and-suspenders that short-circuits the cooperating ones.
-        let preference = rangeSegmentPreference()
         // #227: do not re-enter the old bounded foreground checkpoint chain, even when a legacy
-        // retry path passes the previous segment kind as an override. The durable partial remains
-        // the fallback checkpoint; URLSession resume data owns in-flight progress.
+        // retry path reattaches a bounded entry. The durable partial remains the fallback
+        // checkpoint; URLSession resume data owns in-flight progress.
         let segmentKind: RangeTransferSegmentKind = .continuousRemainder
-        let segmentReason = segmentReasonOverride ?? preference.reason
+        let segmentReason = segmentReasonOverride ?? StaticRangeSegmentStrategyPolicy.segmentReason
         let candidate = RangeTransfer(
             ratingKey: ratingKey,
             request: request,
@@ -1049,7 +1044,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(ratingKey),
             "task_id": .int(task.taskIdentifier),
             "segment_kind": .label(segmentKind.rawValue),
-            "segment_reason": .label(segmentReason ?? "single_remainder"),
+            "segment_reason": .label(segmentReason),
             "offset_bytes": .bytes(offset),
             "offset_exact": .int(offset),
             "has_offset": .bool(offset > 0),
@@ -1064,7 +1059,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         AppDiagnostics.record(.downloads, "downloads.range_remainder_start", fields: [
             "download_id": .identifier(ratingKey),
             "task_id": .int(task.taskIdentifier),
-            "segment_reason": .label(segmentReason ?? "single_remainder"),
+            "segment_reason": .label(segmentReason),
             "offset_bytes": .bytes(offset),
             "offset_exact": .int(offset),
             "expected_exact": .int(expectedBytes ?? -1),
@@ -2584,7 +2579,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                     to: entry.destination,
                                     expectedBytes: entry.expectedBytes,
                                     resetsRetryCount: false,
-                                    segmentKindOverride: entry.segmentKind,
                                     segmentReasonOverride: "move_retry")
                 onChange?()
             } catch {
@@ -3622,7 +3616,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                     to: entry.destination,
                                     expectedBytes: entry.expectedBytes,
                                     resetsRetryCount: false,
-                                    segmentKindOverride: entry.segmentKind,
                                     segmentReasonOverride: "http_retry_\(statusCode)")
                 onChange?()
             } catch {
