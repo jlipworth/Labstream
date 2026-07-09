@@ -1330,6 +1330,11 @@ final class PlaybackController {
             if playerItem.status == .unknown {
                 throw SubtitleTrackLoadError.playerNotReady
             }
+            if let metadataTracks = loadPlexMetadataSubtitleTracks() {
+                NSLog("LabstreamSubtitles: Plex HLS has no renditions; using metadata optionCount=%d",
+                      metadataTracks.tracks.count - 1)
+                return metadataTracks
+            }
             NSLog("LabstreamSubtitles: group ready optionCount=0 itemStatus=%d", playerItem.status.rawValue)
             return nil
         }
@@ -1477,6 +1482,44 @@ final class PlaybackController {
         return (tracks, selectedID)
     }
 
+    /// Plex commonly emits no legible HLS renditions after the app explicitly clears its
+    /// account-sticky part selection. The source metadata still carries the real subtitle
+    /// streams, so expose those choices and rebuild after a pick instead of presenting an
+    /// empty menu backed by an empty AVFoundation group.
+    private func loadPlexMetadataSubtitleTracks() -> (tracks: [SubtitleTrack], selectedID: Int)? {
+        guard remoteStreamReopener == nil, localFile == nil, let part = streamingPart else { return nil }
+        let streams = part.subtitleStreams
+        guard !streams.isEmpty else { return nil }
+
+        var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1,
+                                                     displayName: "Off",
+                                                     option: nil,
+                                                     streamIndex: 0)]
+        var seenCounts: [String: Int] = [:]
+        for (index, stream) in streams.enumerated() {
+            var label = stream.displayTitle
+                ?? stream.extendedDisplayTitle
+                ?? stream.language
+                ?? "Subtitle \(index + 1)"
+            if stream.forced == true, !label.lowercased().contains("forced") { label += " (Forced)" }
+            let priorCount = seenCounts[label, default: 0]
+            seenCounts[label] = priorCount + 1
+            if priorCount > 0 { label += " \(priorCount + 1)" }
+            tracks.append(SubtitleTrack(id: stream.id,
+                                        displayName: label,
+                                        option: nil,
+                                        streamIndex: stream.id))
+        }
+
+        let selectedID: Int
+        if let override = subtitleStreamIndexOverride {
+            selectedID = override == 0 ? -1 : override
+        } else {
+            selectedID = streams.first(where: { $0.selected == true })?.id ?? -1
+        }
+        return (tracks, selectedID)
+    }
+
     /// Derive a human-readable label for a legible `AVMediaSelectionOption`.
     ///
     /// Name resolution (first non-empty wins):
@@ -1601,6 +1644,29 @@ final class PlaybackController {
         }
         guard let playerItem = player.currentItem else {
             throw SubtitleTrackLoadError.playerNotReady
+        }
+
+        // Plex metadata fallback: selecting a part stream is account-sticky and shapes
+        // what `subtitles=auto` places into (or burns into) the next HLS session. Rebuild
+        // at the live playhead after recording the requested stream; startStreaming sends
+        // the PUT before asking Plex for the replacement manifest.
+        if remoteStreamReopener == nil, localFile == nil,
+           track.option == nil, let streamIndex = track.streamIndex {
+            subtitleStreamIndexOverride = streamIndex
+            persistMetadataSubtitlePreference(for: track)
+            didApplySavedSubtitle = true
+            NSLog("LabstreamSubtitles: Plex metadata selection requested streamID=%d", streamIndex)
+
+            let resumeMs = playheadSnapshotForRestart(reason: "plex_subtitle_reload").positionMs
+            restartAtCurrentPosition(offsetMs: resumeMs,
+                                     bitrateKbps: maxVideoBitrateKbps,
+                                     resetFinalTarget: true,
+                                     resetAdaptive: false,
+                                     clearError: false,
+                                     removeObservers: true,
+                                     swapRecoveryClient: false,
+                                     preferShortRemoteHLSBuffer: false)
+            return
         }
 
         // Metadata burn-in/reopen path (Jellyfin/Emby): these backend-resolved streams need the
@@ -2410,7 +2476,22 @@ final class PlaybackController {
         // by another client (or our own burn path) keeps burning subtitles into every session.
         // When subtitles ARE wanted (auto-select modes) we leave the part selection alone so
         // `subtitles=auto` can serve/burn the chosen stream.
-        if let burnSubtitleStreamID, let part = sourcePartForCurrentMedia() {
+        if let subtitleStreamIndexOverride, let part = sourcePartForCurrentMedia() {
+            let plexStreamID = subtitleStreamIndexOverride == MediaBrowserPlaybackPreferencePolicy.subtitleOffStreamIndex
+                ? 0 : subtitleStreamIndexOverride
+            do {
+                try await client.send(StreamSelectionRequest.selectSubtitleStream(server: server,
+                                                                                  token: token,
+                                                                                  identity: identity,
+                                                                                  partID: part.id,
+                                                                                  subtitleStreamID: plexStreamID))
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                NSLog("LabstreamSubtitles: applied Plex metadata streamID=%d before transcode build",
+                      plexStreamID)
+            } catch {
+                NSLog("LabstreamSubtitles: Plex metadata selection PUT failed: %@", Self.safeErrorSummary(error))
+            }
+        } else if let burnSubtitleStreamID, let part = sourcePartForCurrentMedia() {
             do {
                 try await client.send(StreamSelectionRequest.selectSubtitleStream(server: server,
                                                                                   token: token,
