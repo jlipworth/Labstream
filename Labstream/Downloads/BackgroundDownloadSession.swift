@@ -1229,7 +1229,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // bounded tasks are simply cancelled back to the durable partial checkpoint.
         let segmentKind = entry?.segmentKind ?? .boundedCheckpoint
         let rangeResumeDisplayBytes = entry.map { rangeEntry in
-            rangeEntry.baseOffset + max(rangeEntry.chunkBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+            let taskBytes = rangeEntry.baseOffset
+                + max(rangeEntry.chunkBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+            return DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: taskBytes,
+                resumeDisplayBytes: store.resumeDisplayBytes(ratingKey: ratingKey)
+            )
         }
         if StaticRangeResumeDataPolicy.pauseDisposition(segmentKind: segmentKind)
             == .cancelProducingResumeData,
@@ -2829,14 +2834,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             player.replaceCurrentItem(with: nil)
         }
 
-        // Avoid unbounded async asset-key loads here. This method already runs under the serialized
-        // finalization limiter, so a hung `asset.load(.isPlayable/.duration)` can block every later
-        // completed download in "Verifying download…" and was one of the remaining #187 overnight
-        // gray-freeze suspects. Let AVPlayerItem readiness/failure drive the same bounded loop instead.
         var durationMs: Int?
         let timeoutSeconds = timeoutSecondsOverride ?? OfflinePlaybackValidationPolicy.make(durationMs: nil).timeoutSeconds
         let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(timeoutSeconds * 1000)))
         var sawReady = false
+        var stalledReadyItem: AVPlayerItem?
         while ContinuousClock.now < deadline {
             switch item.status {
             case .failed:
@@ -2844,6 +2846,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         item.error.map { DiagnosticRedactor.safeErrorSummary($0) })
             case .readyToPlay:
                 sawReady = true
+                stalledReadyItem = item
                 if durationMs == nil {
                     durationMs = Self.durationMilliseconds(from: item.duration)
                 }
@@ -2859,7 +2862,76 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
         }
+
+        // A hidden muted AVPlayer can occasionally reach `.readyToPlay` but never advance wall-clock
+        // time while the app is inactive/background-throttled (observed during #227 Mac lid-sleep
+        // testing). Do not make the user manually start playback just to promote an otherwise-good
+        // download. If AVPlayer says the local item is ready but realtime playback did not tick,
+        // fall back to bounded AVFoundation asset/decode checks before preserving as `.unverified`.
+        if sawReady {
+            let fallback = await validateReadyLocalAsset(asset, readyItem: stalledReadyItem,
+                                                         knownDurationMs: durationMs)
+            if fallback.played {
+                return fallback
+            }
+            if durationMs == nil {
+                durationMs = fallback.durationMs
+            }
+        }
+
         return (false, sawReady ? "no_playback_progress" : "timeout_not_ready", durationMs, nil)
+    }
+
+    private static func validateReadyLocalAsset(_ asset: AVURLAsset,
+                                                readyItem: AVPlayerItem?,
+                                                knownDurationMs: Int?) async
+        -> (played: Bool, reason: String, durationMs: Int?, detail: String?) {
+        let fallbackTimeoutSeconds = 4.0
+        do {
+            return try await withThrowingTaskGroup(
+                of: (played: Bool, reason: String, durationMs: Int?, detail: String?).self
+            ) { group in
+                group.addTask {
+                    try await Task.sleep(for: .milliseconds(Int(fallbackTimeoutSeconds * 1000)))
+                    return (false, "decode_fallback_timeout", knownDurationMs, nil)
+                }
+                group.addTask {
+                    let isPlayable = (try? await asset.load(.isPlayable)) ?? false
+                    guard isPlayable else {
+                        return (false, "asset_not_playable", knownDurationMs, nil)
+                    }
+
+                    let duration = (try? await asset.load(.duration)) ?? readyItem?.duration ?? .invalid
+                    let durationMs = Self.durationMilliseconds(from: duration) ?? knownDurationMs
+                    let hasVideo = ((try? await asset.loadTracks(withMediaType: .video)) ?? []).isEmpty == false
+                    guard hasVideo else {
+                        // Audio-only downloads cannot produce a frame, but a ready playable asset with a
+                        // finite duration is the best bounded local proof we can get without relying on
+                        // realtime player advancement.
+                        if durationMs != nil {
+                            return (true, "asset_playable", durationMs, nil)
+                        }
+                        return (false, "asset_duration_unknown", durationMs, nil)
+                    }
+
+                    let generator = AVAssetImageGenerator(asset: asset)
+                    generator.appliesPreferredTrackTransform = true
+                    generator.requestedTimeToleranceBefore = .zero
+                    generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+                    let requestedSeconds = min(0.5, max(0.0, (duration.seconds.isFinite ? duration.seconds : 1.0) * 0.05))
+                    _ = try generator.copyCGImage(at: CMTime(seconds: requestedSeconds,
+                                                             preferredTimescale: 600),
+                                                  actualTime: nil)
+                    return (true, "decoded_frame", durationMs, nil)
+                }
+                let result = try await group.next() ?? (false, "decode_fallback_timeout", knownDurationMs, nil)
+                group.cancelAll()
+                return result
+            }
+        } catch {
+            return (false, "decode_fallback_failed", knownDurationMs,
+                    DiagnosticRedactor.safeErrorSummary(error))
+        }
     }
 
     private static func durationMilliseconds(from time: CMTime) -> Int? {

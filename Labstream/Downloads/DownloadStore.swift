@@ -623,7 +623,13 @@ final class DownloadStore: @unchecked Sendable {
 
     /// #95: drop a row's persisted resume blob + its recorded path once it's consumed (a resume
     /// task was created) or invalidated (a clean restart). No-op if the row/metadata is gone.
-    func clearResumeData(ratingKey: String) {
+    func resumeDisplayBytes(ratingKey: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return rows[ratingKey]?.metadata?.resumeDisplayBytes
+    }
+
+    func clearResumeData(ratingKey: String, clearDisplayBytes: Bool = true) {
         lock.lock()
         let relative = rows[ratingKey]?.metadata?.resumeDataRelativePath
         lock.unlock()
@@ -632,7 +638,9 @@ final class DownloadStore: @unchecked Sendable {
         }
         updateMetadata(ratingKey: ratingKey) {
             $0.resumeDataRelativePath = nil
-            $0.resumeDisplayBytes = nil
+            if clearDisplayBytes {
+                $0.resumeDisplayBytes = nil
+            }
         }
     }
 

@@ -1128,8 +1128,9 @@ struct DownloadOptionsSheet: View {
             } else if isPaused {
                 Label("Download paused", systemImage: "pause.circle")
                     .foregroundStyle(.secondary)
-                if record.bytes > 0 {
-                    Text(DownloadStorageLimitPolicy.byteString(record.bytes))
+                let displayBytes = existingDownloadDisplayBytes(for: record)
+                if displayBytes > 0 {
+                    Text(DownloadStorageLimitPolicy.byteString(displayBytes))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 existingDownloadActionButton(title: "Resume Download",
@@ -1154,9 +1155,20 @@ struct DownloadOptionsSheet: View {
                 }
             } else {
                 Label(existingDownloadPhaseLabel(for: record), systemImage: "arrow.down.circle")
-                ProgressView(value: record.progress)
-                Text("\(Int(record.progress * 100))%")
-                    .font(.caption).foregroundStyle(.secondary)
+                if let fraction = downloadManager.displayFraction(for: record) {
+                    ProgressView(value: fraction.value)
+                    Text(existingDownloadProgressText(fraction: fraction,
+                                                      bytes: existingDownloadDisplayBytes(for: record),
+                                                      resolution: record.metadata?.resolutionLabel))
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                    let displayBytes = existingDownloadDisplayBytes(for: record)
+                    if displayBytes > 0 {
+                        Text(DownloadStorageLimitPolicy.byteString(displayBytes))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 existingDownloadActionButton(title: "Pause Download",
                                              systemImage: "pause.circle") {
                     downloadManager.pause(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
@@ -1175,6 +1187,31 @@ struct DownloadOptionsSheet: View {
                 Label(isComplete ? "Remove Download" : "Cancel Download", systemImage: "trash")
             }
         }
+    }
+
+    private func existingDownloadDisplayBytes(for record: DownloadRecord) -> Int {
+        let fraction = downloadManager.displayFraction(for: record)
+        let expected = record.metadata?.sourcePartSize
+        let fractionBytes = fraction.flatMap { fraction -> Int? in
+            guard let expected, expected > 0 else { return nil }
+            return Int((fraction.value * Double(expected)).rounded(.down))
+        }
+        return max(record.bytes,
+                   record.metadata?.resumeDisplayBytes ?? 0,
+                   fractionBytes ?? 0)
+    }
+
+    private func existingDownloadProgressText(fraction: DownloadProgressDisplay.Fraction,
+                                              bytes: Int,
+                                              resolution: String?) -> String {
+        var pieces = [DownloadRowDisplayPolicy.percentText(fraction)]
+        if bytes > 0 {
+            pieces.append(DownloadStorageLimitPolicy.byteString(bytes))
+        }
+        if let resolution, !resolution.isEmpty {
+            pieces.append(resolution)
+        }
+        return pieces.joined(separator: " • ")
     }
 
     // MARK: - Action

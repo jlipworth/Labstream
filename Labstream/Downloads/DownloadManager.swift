@@ -113,6 +113,7 @@ public final class DownloadManager {
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
+    @ObservationIgnored private var loggedRangeBlobResumeDisplayRebaseKeys: Set<String> = []
 
     /// Ephemeral live Range bytes. Persisted records stay pinned to durable checkpoints so storage
     /// and Pause/Pause All accounting never claim non-resumable OS temp bytes. This overlay drives
@@ -244,8 +245,28 @@ public final class DownloadManager {
         self.session.onRangeLiveProgress = { [weak self] ratingKey, liveBytes, expectedBytes in
             Task { @MainActor in
                 guard let self else { return }
+                let resumeDisplayBytes = self.store.records
+                    .first { $0.ratingKey == ratingKey }?
+                    .metadata?
+                    .resumeDisplayBytes
+                let displayLiveBytes = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                    taskBytes: liveBytes,
+                    resumeDisplayBytes: resumeDisplayBytes
+                )
+                if let resumeDisplayBytes,
+                   liveBytes > 0,
+                   liveBytes < resumeDisplayBytes,
+                   !self.loggedRangeBlobResumeDisplayRebaseKeys.contains(ratingKey) {
+                    self.loggedRangeBlobResumeDisplayRebaseKeys.insert(ratingKey)
+                    self.recordDownloadDiagnostic("downloads.range_blob_resume_display_rebased", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "task_bytes": .bytes(liveBytes),
+                        "resume_display_bytes": .bytes(resumeDisplayBytes),
+                        "display_bytes": .bytes(displayLiveBytes),
+                    ])
+                }
                 self.liveRangeProgress[ratingKey] = DownloadLiveRangeProgressPolicy.mergedSample(
-                    liveBytes: liveBytes,
+                    liveBytes: displayLiveBytes,
                     expectedBytes: expectedBytes,
                     previous: self.liveRangeProgress[ratingKey],
                     updatedAt: Date())
@@ -906,7 +927,11 @@ public final class DownloadManager {
             supportsPersistedResumeData: store.supportsPersistedResumeData(ratingKey: ratingKey),
             hasResumeData: persistedResumeData != nil
         ), let resumeData = persistedResumeData {
-            store.clearResumeData(ratingKey: ratingKey)
+            // Consume the blob path, but keep its display watermark until the resumed task proves
+            // equal/greater progress. URLSession can report a blob-resumed download task's
+            // `countOfBytesReceived` from near zero even while it still owns a large resumable temp
+            // body; clearing the watermark here made the Offline UI flash 0% / tiny bytes on Resume.
+            store.clearResumeData(ratingKey: ratingKey, clearDisplayBytes: false)
             store.setStatus(ratingKey: ratingKey, .downloading)
             // #227: range-checkpoint rows (paused/failed continuous remainders) MUST resume on the
             // range lane; the opaque lane would treat the blob task's partial-body temp as a
@@ -2453,12 +2478,20 @@ public final class DownloadManager {
     }
 
     private func displayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
-        if let live = liveDisplayBytes(for: record, now: now) { return live }
-        guard record.status == .paused,
-              store.hasResumeData(ratingKey: record.ratingKey),
-              let resumeBytes = record.metadata?.resumeDisplayBytes,
-              resumeBytes > record.bytes else { return nil }
-        return resumeBytes
+        let live = liveDisplayBytes(for: record, now: now)
+        let resumeBytes = record.metadata?.resumeDisplayBytes
+        let resumableStatus = record.status == .paused
+            || record.status == .downloading
+            || record.status == .queued
+        let resumableDisplay = resumableStatus
+            && (store.hasResumeData(ratingKey: record.ratingKey)
+                || record.status == .downloading)
+            ? resumeBytes
+            : nil
+        return [live, resumableDisplay]
+            .compactMap { $0 }
+            .filter { $0 > record.bytes }
+            .max()
     }
 
     private func staticRangeExpectedBytes(for record: DownloadRecord) -> Int? {
