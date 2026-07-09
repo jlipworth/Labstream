@@ -131,6 +131,7 @@ This document captures the agreed scope and sequence for finishing the first nat
 ### Navigation/UI
 
 - Home, Libraries, Search, Music, Offline load.
+- Music page transition/render does not momentarily resize or kick the whole app shell left.
 - Detail/content navigation works.
 - Escape goes back from content/detail submenu.
 - Settings is idiomatic enough for v1.
