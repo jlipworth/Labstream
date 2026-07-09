@@ -1268,6 +1268,23 @@ final class PlaybackController {
         var offlineTrack: OfflineTextSubtitleTrack? = nil
     }
 
+    enum SubtitleTrackLoadError: LocalizedError {
+        case playerNotReady
+        case groupLoadFailed(Error)
+        case selectionDidNotApply
+
+        var errorDescription: String? {
+            switch self {
+            case .playerNotReady:
+                "Subtitle tracks are still loading."
+            case .groupLoadFailed:
+                "Subtitle tracks could not be loaded."
+            case .selectionDidNotApply:
+                "The selected subtitle track could not be enabled."
+            }
+        }
+    }
+
     /// Whether the Subtitles tab should fall back to backend/container metadata + a stream reopen
     /// instead of AVFoundation's legible group. Mirrors `supportsMetadataAudioSelection`, but scoped
     /// to backend-reopen sessions (Jellyfin/Emby): Emby's HLS transcode exposes no legible subtitle
@@ -1285,7 +1302,7 @@ final class PlaybackController {
     /// Async because `AVAsset.loadMediaSelectionGroup(for:)` is the modern, non-blocking
     /// accessor (the synchronous `mediaSelectionGroup(forMediaCharacteristic:)` is
     /// deprecated on visionOS).
-    func loadSubtitleTracks() async -> (tracks: [SubtitleTrack], selectedID: Int)? {
+    func loadSubtitleTracks() async throws -> (tracks: [SubtitleTrack], selectedID: Int)? {
         if localFile != nil, !offlineTextSubtitles.isEmpty {
             return await loadOfflineSubtitleTracks()
         }
@@ -1297,12 +1314,28 @@ final class PlaybackController {
             return loadMetadataSubtitleTracks()
         }
 
-        guard let playerItem = player.currentItem else { return nil }
+        guard let playerItem = player.currentItem else {
+            throw SubtitleTrackLoadError.playerNotReady
+        }
         let asset = playerItem.asset
-        guard let group = try? await asset.loadMediaSelectionGroup(for: .legible),
-              !group.options.isEmpty else {
+        let group: AVMediaSelectionGroup?
+        do {
+            group = try await asset.loadMediaSelectionGroup(for: .legible)
+        } catch {
+            NSLog("LabstreamSubtitles: group load failed itemStatus=%d error=%@",
+                  playerItem.status.rawValue, String(describing: type(of: error)))
+            throw SubtitleTrackLoadError.groupLoadFailed(error)
+        }
+        guard let group, !group.options.isEmpty else {
+            if playerItem.status == .unknown {
+                throw SubtitleTrackLoadError.playerNotReady
+            }
+            NSLog("LabstreamSubtitles: group ready optionCount=0 itemStatus=%d", playerItem.status.rawValue)
             return nil
         }
+
+        NSLog("LabstreamSubtitles: group ready optionCount=%d itemStatus=%d",
+              group.options.count, playerItem.status.rawValue)
 
         // "Off" is always offered first. It maps to deselecting the group entirely.
         var tracks: [SubtitleTrack] = [SubtitleTrack(id: -1, displayName: "Off", option: nil)]
@@ -1559,14 +1592,16 @@ final class PlaybackController {
     /// Apply a subtitle selection chosen in the Subtitles tab. Passing a track whose
     /// `option` is `nil` (the "Off" row) deselects the legible group. This is a soft
     /// switch on the live `AVPlayerItem` — no reload, no playhead snapshot needed.
-    func selectSubtitle(_ track: SubtitleTrack) async {
+    func selectSubtitle(_ track: SubtitleTrack) async throws {
         if localFile != nil, !offlineTextSubtitles.isEmpty {
             selectedOfflineSubtitleTrackID = track.offlineTrack?.id
             persistOfflineSubtitlePreference(for: track.offlineTrack)
             updateOfflineSubtitleOverlay(at: player.currentTime().seconds)
             return
         }
-        guard let playerItem = player.currentItem else { return }
+        guard let playerItem = player.currentItem else {
+            throw SubtitleTrackLoadError.playerNotReady
+        }
 
         // Metadata burn-in/reopen path (Jellyfin/Emby): these backend-resolved streams need the
         // chosen SubtitleStreamIndex in PlaybackInfo/HLS. Do this before the AVFoundation soft path
@@ -1604,6 +1639,14 @@ final class PlaybackController {
         if let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
            !group.options.isEmpty {
             playerItem.select(track.option, in: group)
+            let applied = playerItem.currentMediaSelection.selectedMediaOption(in: group)
+            guard applied == track.option else {
+                NSLog("LabstreamSubtitles: selection did not apply requestedID=%d optionCount=%d",
+                      track.id, group.options.count)
+                throw SubtitleTrackLoadError.selectionDidNotApply
+            }
+            NSLog("LabstreamSubtitles: selection applied selectedID=%d optionCount=%d",
+                  track.id, group.options.count)
             // Remember this choice (language code, or the "Off" flag) so it's reapplied to the
             // next item. A manual pick is authoritative for this session too: mark the auto-select
             // gate spent so a later readyToPlay (e.g. mid-stream re-ready) won't override the user.
@@ -1611,6 +1654,7 @@ final class PlaybackController {
             didApplySavedSubtitle = true
             return
         }
+        throw SubtitleTrackLoadError.playerNotReady
     }
 
     /// Persist a metadata-driven subtitle choice (Emby burn-in path) so the language preference

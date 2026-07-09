@@ -367,12 +367,13 @@ struct SubtitlesTabView: View {
     /// `AVMediaSelectionOption`, so it must never cross actor boundaries. Keeping the
     /// picker entirely on the main actor (where the `AVPlayerItem` lives anyway) sidesteps
     /// the data race the compiler would otherwise flag.
-    let load: @MainActor () async -> (tracks: [PlaybackController.SubtitleTrack], selectedID: Int)??
-    let onSelect: @MainActor (PlaybackController.SubtitleTrack) async -> Void
+    let load: @MainActor () async throws -> (tracks: [PlaybackController.SubtitleTrack], selectedID: Int)??
+    let onSelect: @MainActor (PlaybackController.SubtitleTrack) async throws -> Void
 
     @State private var tracks: [PlaybackController.SubtitleTrack] = []
     @State private var selectedID: Int = -1
     @State private var didLoad = false
+    @State private var loadError: String?
 
     var body: some View {
         // ScrollView + VStack, NOT List — see QualityTabView for why: content with many
@@ -387,6 +388,16 @@ struct SubtitlesTabView: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, DS.Space.sm)
+                } else if let loadError {
+                    VStack(alignment: .leading, spacing: DS.Space.sm) {
+                        Text(loadError)
+                            .foregroundStyle(.secondary)
+                        Button("Try Again") {
+                            Task { await refreshWithRetry() }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.vertical, DS.Space.sm)
                 } else if tracks.isEmpty {
                     Text("No subtitle tracks")
                         .foregroundStyle(.secondary)
@@ -398,8 +409,13 @@ struct SubtitlesTabView: View {
                             // the player afterward in case the selection didn't take.
                             selectedID = track.id
                             Task {
-                                await onSelect(track)
-                                await refresh()
+                                do {
+                                    try await onSelect(track)
+                                    await refreshWithRetry()
+                                } catch {
+                                    loadError = error.localizedDescription
+                                    didLoad = true
+                                }
                             }
                         } label: {
                             HStack {
@@ -422,23 +438,41 @@ struct SubtitlesTabView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task {
-            // Load once on appear. `.task` is cancelled/re-run if the view identity
-            // changes, which is exactly when a reloaded item should be re-read.
-            await refresh()
-            didLoad = true
+            await refreshWithRetry()
         }
     }
 
-    /// Pull the current track list + active selection from the player.
-    private func refresh() async {
-        // `load` is doubly-optional: the outer `?` is the weak-self capture, the inner is
-        // "no legible group". Flatten both to a single optional result.
-        if let result = await load(), let (tracks, selectedID) = result {
-            self.tracks = tracks
-            self.selectedID = selectedID
-        } else {
-            self.tracks = []
-            self.selectedID = -1
+    /// Opening the menu while AVFoundation is still parsing the HLS master used to turn
+    /// a transient nil item/group into a permanent "No subtitle tracks" result. Keep the
+    /// menu in its loading state and retry readiness failures for the startup window.
+    private func refreshWithRetry() async {
+        didLoad = false
+        loadError = nil
+        let deadline = ContinuousClock.now + .seconds(20)
+
+        while !Task.isCancelled {
+            do {
+                if let result = try await load(), let (tracks, selectedID) = result {
+                    self.tracks = tracks
+                    self.selectedID = selectedID
+                } else {
+                    self.tracks = []
+                    self.selectedID = -1
+                }
+                didLoad = true
+                return
+            } catch PlaybackController.SubtitleTrackLoadError.playerNotReady {
+                guard ContinuousClock.now < deadline else {
+                    loadError = "Subtitle tracks are taking longer than expected to load."
+                    didLoad = true
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            } catch {
+                loadError = error.localizedDescription
+                didLoad = true
+                return
+            }
         }
     }
 }

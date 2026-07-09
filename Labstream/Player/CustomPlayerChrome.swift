@@ -470,7 +470,7 @@ struct CustomPlayerChrome: View {
 
     #if os(iOS)
     private var topUtilityButtonExtraTopPadding: CGFloat {
-        isPhoneLandscapeChrome ? 0 : 10
+        10
     }
 
     private var topUtilityButtonVisualSide: CGFloat {
@@ -667,6 +667,9 @@ struct CustomPlayerChrome: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .foregroundStyle(.white)
+                .colorScheme(.dark)
         } else if isCompactMobileChrome {
             compactControls
                 .padding(.horizontal, 14)
@@ -930,6 +933,8 @@ struct CustomPlayerChrome: View {
     private var regularIOSHeaderInline: some View {
         HStack(alignment: .center, spacing: 10) {
             regularTitleLabel
+                .frame(minWidth: 280, idealWidth: 380, maxWidth: 480, alignment: .leading)
+                .layoutPriority(3)
 
             Spacer(minLength: 6)
 
@@ -961,7 +966,7 @@ struct CustomPlayerChrome: View {
                 .frame(maxWidth: .infinity)
 
             HStack(spacing: 8) {
-                phoneLandscapeSkipButton(seconds: -10)
+                phoneLandscapeSkipButton(seconds: -30)
                 phoneLandscapeSkipButton(seconds: 30)
 
                 Spacer(minLength: 12)
@@ -1074,11 +1079,7 @@ struct CustomPlayerChrome: View {
                 .font(.system(size: isPhoneLandscapeChrome ? 28 : 32, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 68, height: 68)
-                .background(.black.opacity(0.38), in: Circle())
-                .overlay {
-                    Circle()
-                        .strokeBorder(.white.opacity(0.18), lineWidth: 0.75)
-                }
+                .glassEffect(.regular, in: Circle())
                 .shadow(color: .black.opacity(0.34), radius: 12, y: 5)
                 .contentShape(Circle())
         }
@@ -1105,6 +1106,7 @@ struct CustomPlayerChrome: View {
                 }
         }
         .buttonStyle(.plain)
+        .foregroundStyle(.white)
         .frame(width: 44, height: 44)
         .contentShape(Circle())
         .disabled(scrubState.durationMs <= 0)
@@ -1354,16 +1356,15 @@ struct CustomPlayerChrome: View {
     #if os(iOS)
 
     private var phoneLandscapePrimaryMenus: [CustomPlayerMenuKind] {
-        availableMenus.filter { [.quality, .subtitles, .audio].contains($0) }
+        availableMenus.filter { [.quality, .subtitles, .audio, .chapters, .speed, .stats].contains($0) }
     }
 
     private var phoneLandscapeOverflowMenus: [CustomPlayerMenuKind] {
         availableMenus.filter { !phoneLandscapePrimaryMenus.contains($0) }
     }
 
-    /// Compact landscape controls: most-used settings stay visible; lower-frequency
-    /// menus move behind an ellipsis so the player picture, scrubber, and safe areas
-    /// are not swallowed by a full-width row of giant pills.
+    /// Compact landscape controls keep the complete playback-option set visible now
+    /// that play/pause lives over the picture and no longer consumes this row.
     private var phoneLandscapeMenuStrip: some View {
         HStack(spacing: 6) {
             ForEach(phoneLandscapePrimaryMenus) { menu in
@@ -1780,11 +1781,9 @@ private struct IOSPlayerTopUtilityButtonStyle: ViewModifier {
             .frame(width: hitSide, height: hitSide)
             .background {
                 Circle()
-                    .fill(.black.opacity(isPhoneLandscape ? 0.34 : 0.28))
+                    .fill(.clear)
                     .frame(width: visibleSide, height: visibleSide)
-                Circle()
-                    .strokeBorder(.white.opacity(0.18), lineWidth: 0.7)
-                    .frame(width: visibleSide, height: visibleSide)
+                    .glassEffect(.regular, in: Circle())
             }
             .contentShape(Circle())
             .shadow(color: .black.opacity(0.32), radius: 9, y: 4)
@@ -2151,8 +2150,8 @@ private struct CustomPlayerMenuPopover: View {
             }
         case .subtitles:
             SubtitlesTabView(
-                load: { await controller.loadSubtitleTracks() },
-                onSelect: { track in await controller.selectSubtitle(track) }
+                load: { try await controller.loadSubtitleTracks() },
+                onSelect: { track in try await controller.selectSubtitle(track) }
             )
         case .audio:
             if controller.supportsMetadataAudioSelection {

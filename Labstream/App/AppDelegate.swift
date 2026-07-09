@@ -17,6 +17,18 @@ import SwiftUI
 /// (via `reattach()`) so its delegate fires `urlSessionDidFinishEvents`.
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
+    #if os(iOS)
+    /// SwiftUI's full-screen player temporarily narrows this mask on iPhone. Keeping
+    /// the policy in the app delegate lets UIKit honor rotation requests throughout
+    /// the full-screen-cover transition instead of only after the player has laid out.
+    @MainActor static var supportedInterfaceOrientations: UIInterfaceOrientationMask = .allButUpsideDown
+
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        Self.supportedInterfaceOrientations
+    }
+    #endif
+
     func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
