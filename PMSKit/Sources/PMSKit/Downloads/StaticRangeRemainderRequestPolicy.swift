@@ -24,37 +24,12 @@ public enum StaticRangeRemainderNext: Equatable, Sendable {
     case stalled
 }
 
-/// Shape of the only static-byte-range transfer Labstream now creates.
-public enum RangeTransferSegmentKind: String, Equatable, Sendable {
-    /// One open-ended remainder task so `nsurlsessiond` owns the remaining transfer. In-flight temp
-    /// progress is non-durable until completion; pause/failure hold it in URLSession resume data,
-    /// with the durable partial as fallback.
-    case continuousRemainder
-}
-
 /// String-level shape of a task's `Range` request header.
 public enum StaticRangeRequestShape: String, Equatable, Sendable {
     case missing
     case openEnded = "open_ended"
     case closed
     case invalid
-}
-
-/// Concrete request/validation plan for one static-byte-range background transfer.
-public struct RangeTransferSegmentPlan: Equatable, Sendable {
-    public let kind: RangeTransferSegmentKind
-    public let rangeHeaderValue: String
-    /// Expected bytes for THIS response body, when knowable. Used only for safety checks such as
-    /// accepting URLSession's internally resumed body; never used as durable bytes.
-    public let expectedBodyBytes: Int?
-
-    public init(kind: RangeTransferSegmentKind = .continuousRemainder,
-                rangeHeaderValue: String,
-                expectedBodyBytes: Int?) {
-        self.kind = kind
-        self.rangeHeaderValue = rangeHeaderValue
-        self.expectedBodyBytes = expectedBodyBytes
-    }
 }
 
 /// Pure, IO-free decisions for the static Range download lane (#227/#231).
@@ -66,13 +41,9 @@ public struct RangeTransferSegmentPlan: Equatable, Sendable {
 public struct StaticRangeRemainderRequestPolicy: Equatable, Sendable {
     public init() {}
 
-    /// Build the request plan for the next static-byte-range transfer.
-    public func segmentPlan(offset: Int, expectedBytes: Int?) -> RangeTransferSegmentPlan {
-        let safeOffset = max(0, offset)
-        return RangeTransferSegmentPlan(
-            rangeHeaderValue: "bytes=\(safeOffset)-",
-            expectedBodyBytes: expectedBodyBytes(offset: safeOffset, expectedBytes: expectedBytes)
-        )
+    /// Build the open-ended `Range` header for the next static-byte-range transfer.
+    public func rangeHeaderValue(offset: Int) -> String {
+        "bytes=\(max(0, offset))-"
     }
 
     /// Expected body bytes for this open-ended remainder, when the total object size is known.

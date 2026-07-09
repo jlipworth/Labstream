@@ -143,9 +143,8 @@ struct BackgroundDownloadTransientRetryPolicyTests {
     }
 
     // #220: a move/stash failure commits NO bytes, so re-requesting from the durable checkpoint
-    // is valid for EVERY segment kind — including continuousRemainder, the off-head suspension
-    // mode where the lost-temp evidence occurred. The policy takes no segment-kind input.
-    @Test("Range move retries file-missing Cocoa errors for every segment kind")
+    // is valid for the single open-ended remainder model where the lost-temp evidence occurred.
+    @Test("Range move retries file-missing Cocoa errors")
     func rangeMoveRetryGate() {
         #expect(BackgroundDownloadTransientRetryPolicy.rangeMoveDecision(
             errorDomain: NSCocoaErrorDomain,

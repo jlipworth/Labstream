@@ -31,19 +31,19 @@ public enum DownloadRetryPreparationPolicy {
         (status == .paused || status == .failed) && supportsPersistedResumeData && hasResumeData
     }
 
-    /// Which transfer lane a persisted URLSession resume blob must be resumed on. Range-checkpoint
-    /// rows (static byte-range, and the static half of server-prep) accumulate a Range segment's
-    /// body in the blob's task; registering that task in the opaque lane would move its
+    /// Which transfer lane a persisted URLSession resume blob must be resumed on. Static byte-range
+    /// rows (including the static half of server-prep) accumulate a Range response body in the
+    /// blob's task; registering that task in the opaque lane would move its
     /// partial-body temp as a whole file at completion and corrupt the download.
     public enum PersistedResumeLane: Sendable, Equatable {
-        case rangeCheckpoint
+        case staticRange
         case opaque
     }
 
     public static func persistedResumeDataLane(resumeMode: DownloadResumeMode?) -> PersistedResumeLane {
         switch resumeMode {
         case .staticByteRange, .serverPrepThenStatic:
-            return .rangeCheckpoint
+            return .staticRange
         case .liveForwardOnly, nil:
             return .opaque
         }

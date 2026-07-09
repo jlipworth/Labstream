@@ -60,14 +60,14 @@ struct DownloadRetryPreparationPolicyTests {
                                                                                    hasResumeData: false))
     }
 
-    @Test("Persisted blobs for range-checkpoint rows resume via the range lane")
+    @Test("Persisted blobs for static range rows resume via the range lane")
     func persistedResumeDataLaneRouting() {
         // Registering a blob-resumed Range task into the opaque inflight map would treat its
         // partial-body temp as a whole file at completion — the range lane must own these.
         #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: .staticByteRange)
-            == .rangeCheckpoint)
+            == .staticRange)
         #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: .serverPrepThenStatic)
-            == .rangeCheckpoint)
+            == .staticRange)
         #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: .liveForwardOnly)
             == .opaque)
         #expect(DownloadRetryPreparationPolicy.persistedResumeDataLane(resumeMode: nil)
