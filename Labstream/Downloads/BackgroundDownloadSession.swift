@@ -1356,6 +1356,38 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
                 return
             }
+            // A network-path switch can make URLSession restart the response body counter for
+            // the SAME task identifier. Keeping the old optimistic count in that case freezes
+            // the live watermark (and its rate) until the replacement counter catches up. The
+            // temp body is no longer trustworthy, so cancel it and rebuild from the durable
+            // checkpoint — the same safe recovery users previously triggered with Pause All →
+            // Resume All.
+            let counterResetThreshold = 1_024 * 1_024
+            let didResetCounter = rangeEntry.bodyBytesWritten >= counterResetThreshold
+                && bodyBytesWritten + 64 * 1_024 < rangeEntry.bodyBytesWritten
+            if didResetCounter {
+                lock.lock()
+                rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
+                supersededRangeTaskIdentifiers.insert(downloadTask.taskIdentifier)
+                loggedProgressMilestones.removeValue(forKey: downloadTask.taskIdentifier)
+                lastRangeProgressDiagnostic.removeValue(forKey: downloadTask.taskIdentifier)
+                lock.unlock()
+                downloadTask.cancel()
+                _ = store.resetStaticRangeProgressToDurableCheckpoint(
+                    ratingKey: rangeEntry.ratingKey,
+                    expectedBytes: rangeEntry.expectedBytes
+                )
+                store.setStatus(ratingKey: rangeEntry.ratingKey, .queued)
+                AppDiagnostics.record(.downloads, "downloads.range_counter_reset_rebuild", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "task_id": .int(downloadTask.taskIdentifier),
+                    "base_offset": .int(rangeEntry.baseOffset),
+                    "previous_body_bytes": .int(rangeEntry.bodyBytesWritten),
+                    "reset_body_bytes": .int(bodyBytesWritten),
+                ])
+                onRangeRequestNeeded?(rangeEntry.ratingKey, .requestRebuildNeeded)
+                return
+            }
             lock.lock()
             if let newerTaskIdentifier = newerRangeTaskIdentifier(for: rangeEntry,
                                                                    currentTaskIdentifier: downloadTask.taskIdentifier,
