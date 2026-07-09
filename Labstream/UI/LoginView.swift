@@ -109,10 +109,14 @@ struct LoginView: View {
         #else
         Group {
             if isCompactWidth {
-                // Full-screen phone layout: brand gradient owns the display, and the
-                // content flows in a scroll view so the keyboard can push it around.
-                ScrollView {
-                    compactLoginSurface
+                // Phone onboarding belongs around the lower visual center rather than
+                // being pinned beneath the status bar. The scroll view still lets a
+                // credential form move above the keyboard.
+                GeometryReader { proxy in
+                    ScrollView {
+                        compactLoginSurface
+                            .padding(.top, proxy.size.height * 0.16)
+                    }
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollIndicators(.hidden)
