@@ -15,13 +15,35 @@ enum BrowseAPI {
                              containerStart: Int? = nil,
                              containerSize: Int? = nil,
                              sort: String? = nil,
-                             firstCharacter: String? = nil) -> PlexRequest {
-        PlexBrowseRequest.sectionItems(server: server, token: token, identity: identity,
-                                       sectionKey: sectionKey,
-                                       containerStart: containerStart,
-                                       containerSize: containerSize,
-                                       sort: sort,
-                                       firstCharacter: firstCharacter)
+                             firstCharacter: String? = nil,
+                             browseQuery: LibraryBrowseQuery = .default) -> PlexRequest {
+        PlexLibraryBrowseRequest.sectionItems(server: server,
+                                              token: token,
+                                              identity: identity,
+                                              sectionKey: sectionKey,
+                                              containerStart: containerStart,
+                                              containerSize: containerSize,
+                                              sort: sort,
+                                              firstCharacter: firstCharacter,
+                                              browseQuery: browseQuery)
+    }
+
+    /// `GET /library/sections/<key>/filters` — section-advertised filter facets.
+    static func sectionFilters(server: URL, token: String, identity: ClientIdentity,
+                               sectionKey: String) -> PlexRequest {
+        PlexLibraryBrowseRequest.sectionFilters(server: server,
+                                                token: token,
+                                                identity: identity,
+                                                sectionKey: sectionKey)
+    }
+
+    /// `GET /library/sections/<key>/sorts` — section-advertised sort facets.
+    static func sectionSorts(server: URL, token: String, identity: ClientIdentity,
+                             sectionKey: String) -> PlexRequest {
+        PlexLibraryBrowseRequest.sectionSorts(server: server,
+                                              token: token,
+                                              identity: identity,
+                                              sectionKey: sectionKey)
     }
 
     /// `GET /library/sections/<key>/firstCharacter` — available initials + counts for fast jumps.

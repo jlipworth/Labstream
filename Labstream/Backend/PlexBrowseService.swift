@@ -100,7 +100,8 @@ struct PlexBrowseService {
                      startIndex: Int? = nil,
                      limit: Int? = nil,
                      sort: String? = nil,
-                     firstCharacter: String? = nil) async throws -> PlexBrowsePage {
+                     firstCharacter: String? = nil,
+                     browseQuery: LibraryBrowseQuery = .default) async throws -> PlexBrowsePage {
         let request = BrowseAPI.sectionItems(server: session.baseURL,
                                              token: session.token,
                                              identity: identity,
@@ -108,7 +109,8 @@ struct PlexBrowseService {
                                              containerStart: startIndex,
                                              containerSize: limit,
                                              sort: sort,
-                                             firstCharacter: firstCharacter)
+                                             firstCharacter: firstCharacter,
+                                             browseQuery: browseQuery)
         let response: MetadataResponse = try await execute(request)
         return PlexBrowsePage(items: response.mediaContainer.metadata,
                               total: response.mediaContainer.totalSize)

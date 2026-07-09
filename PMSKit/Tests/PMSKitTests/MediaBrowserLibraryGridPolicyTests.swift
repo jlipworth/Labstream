@@ -24,6 +24,17 @@ struct MediaBrowserLibraryGridPolicyTests {
         #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: nil) == false)
     }
 
+    @Test func seriesGridsDoNotOfferTheInProgressFilter() {
+        // Series containers never carry a resume position, so Filters=IsResumable on a TV
+        // grid always returns zero items — the facet must not be offered there.
+        let tv = MediaBrowserLibraryGridPolicy.browseCapabilities(collectionType: "tvshows")
+        #expect(!tv.filters.contains(.inProgress))
+        #expect(tv.sorts == LibraryBrowseSort.allCases)
+
+        let movies = MediaBrowserLibraryGridPolicy.browseCapabilities(collectionType: "movies")
+        #expect(movies == .videoMVP)
+    }
+
     @Test func collectionTypeMatchingIsCaseInsensitive() {
         #expect(MediaBrowserLibraryGridPolicy.itemTypes(collectionType: "Movies") == "Movie")
         #expect(MediaBrowserLibraryGridPolicy.recursive(collectionType: "Movies") == true)

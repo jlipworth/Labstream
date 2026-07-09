@@ -5,7 +5,6 @@ import PMSKit
 /// one pushes a `LibraryGridView` of its items.
 struct LibrariesView: View {
     @Environment(AppModel.self) private var appModel
-    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var rootItems: [LibraryRootItem] = []
     @State private var loadState: BrowseLoadState = .idle
@@ -92,18 +91,12 @@ struct LibrariesView: View {
                         .cardLink(cornerRadius: DS.Radius.card)
                     }
                 }
-                .padding(DS.pagePadding(compact: compactWidth))
+                .padding(DS.Space.xl)
             }
         }
     }
 
     private var librarySectionColumns: [GridItem] {
-        if compactWidth {
-            // Compact phones: one full-width flexible column — the card stretches to
-            // the screen (`LibrarySectionCard` drops its rigid width on compact), so
-            // the #124 sub-card-track hazard below cannot arise here.
-            return [GridItem(.flexible())]
-        }
         // The cards are a rigid 300pt (`LibrarySectionCard.frame(width: 300)`). With an
         // adaptive minimum below the card width, a transiently-narrow first-pass container
         // could compute a track narrower than the card, laying the 300pt cards edge-to-edge
@@ -111,7 +104,7 @@ struct LibrariesView: View {
         // never compute a sub-card track, so even a degenerate first pass yields one correctly
         // gapped column instead of bunched cards. The spacing-collapse invariant this preserves
         // is asserted by `LibraryGridLayout` / `LibraryGridLayoutTests` in PMSKit.
-        return [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
+        [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
     }
 
     private var librariesEmptyState: some View {
@@ -300,11 +293,66 @@ enum LibraryGridSource: Hashable {
         case .emby(let view): return view.title
         }
     }
+
+    var capabilityIdentity: String {
+        switch self {
+        case .plex(let section): return "plex:\(section.key)"
+        case .jellyfin(let view): return "jellyfin:\(view.id)"
+        case .emby(let view): return "emby:\(view.id)"
+        }
+    }
+
+    var backend: MediaBackendKind {
+        switch self {
+        case .plex: return .plex
+        case .jellyfin: return .jellyfin
+        case .emby: return .emby
+        }
+    }
 }
 
 extension PlexSection: @retroactive Hashable {
     public static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
     public func hash(into hasher: inout Hasher) { hasher.combine(key) }
+}
+
+
+private enum LibraryBrowseCapabilityLoadState: Equatable {
+    case loading
+    case loaded(LibraryBrowseCapabilities)
+    case unavailable(String)
+
+    var capabilities: LibraryBrowseCapabilities {
+        switch self {
+        case .loading, .unavailable:
+            return .defaultOnly
+        case .loaded(let capabilities):
+            return capabilities
+        }
+    }
+}
+
+private struct LibraryBrowsePreferenceStore {
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func query(for identity: String) -> LibraryBrowseQuery {
+        let prefix = "libraryBrowse.\(identity)"
+        let sort = defaults.string(forKey: "\(prefix).sort")
+            .flatMap(LibraryBrowseSort.init(rawValue:)) ?? .titleAscending
+        let filter = defaults.string(forKey: "\(prefix).filter")
+            .flatMap(LibraryBrowseFilter.init(rawValue:)) ?? .all
+        return LibraryBrowseQuery(sort: sort, filter: filter)
+    }
+
+    func save(_ query: LibraryBrowseQuery, for identity: String) {
+        let prefix = "libraryBrowse.\(identity)"
+        defaults.set(query.sort.rawValue, forKey: "\(prefix).sort")
+        defaults.set(query.filter.rawValue, forKey: "\(prefix).filter")
+    }
 }
 
 /// Poster grid for a single library section (`GET /library/sections/<key>/all`).
@@ -315,6 +363,11 @@ struct LibraryGridView: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var paging = LibraryPagingModel()
+    @State private var sort: LibraryBrowseSort = .titleAscending
+    @State private var filter: LibraryBrowseFilter = .all
+    @State private var capabilityState: LibraryBrowseCapabilityLoadState = .loading
+    @State private var loadedCapabilityIdentity: String?
+    @State private var loadedPreferenceIdentity: String?
 
     private var regularColumns: [GridItem] {
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
@@ -322,20 +375,54 @@ struct LibraryGridView: View {
                   spacing: DS.gridGutter(compact: compactWidth))]
     }
 
-    private var pagingSource: LibraryPagingSource {
-        LibraryPagingSource(gridSource: source, appModel: appModel)
+    private var browseQuery: LibraryBrowseQuery {
+        LibraryBrowseQuery(sort: sort, filter: filter)
     }
 
-    /// Mirrors the trailing A–Z rail's own visibility condition below so the grid can
-    /// reserve room for it. On compact width the 16 pt page padding leaves the last
-    /// poster column under the section-index strip, which then intercepts scrubs/taps (#209).
-    private var alphabetRailVisible: Bool {
-        guard case .loaded = paging.loadState else { return false }
-        return paging.alphabetBuckets.count > 1
+    private var availableCapabilities: LibraryBrowseCapabilities {
+        switch source {
+        case .plex:
+            return capabilityState.capabilities
+        case .jellyfin(let view):
+            return MediaBrowserLibraryGridPolicy.browseCapabilities(collectionType: view.collectionType)
+        case .emby(let view):
+            return MediaBrowserLibraryGridPolicy.browseCapabilities(collectionType: view.collectionType)
+        }
+    }
+
+    private var availableSorts: [LibraryBrowseSort] {
+        availableCapabilities.sorts
+    }
+
+    private var availableFilters: [LibraryBrowseFilter] {
+        availableCapabilities.filters
+    }
+
+    private var pagingSource: LibraryPagingSource {
+        LibraryPagingSource(gridSource: source, query: browseQuery, appModel: appModel)
+    }
+
+    private var pagingIdentity: String {
+        pagingSource.identity
     }
 
     private var loadIdentity: String {
-        pagingSource.identity
+        "\(loadedPreferenceIdentity ?? "pending"):\(pagingIdentity)"
+    }
+
+    private var capabilityIdentity: String {
+        "\(appModel.activeBrowseSessionKey):capabilities:\(source.capabilityIdentity)"
+    }
+
+    private var preferenceIdentity: String {
+        let serverUser = appModel.stableServerUserKey(for: source.backend)
+            ?? appModel.browseSessionKey(for: source.backend)
+        return "\(serverUser):\(source.capabilityIdentity)"
+    }
+
+    private var alphabetRailVisible: Bool {
+        guard case .loaded = paging.loadState else { return false }
+        return paging.alphabetBuckets.count > 1
     }
 
     init(section: PlexSection) {
@@ -354,48 +441,51 @@ struct LibraryGridView: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView {
-                    switch paging.loadState {
-                    case .idle, .loading:
-                        SkeletonGrid(availableWidth: geometry.size.width)
-                case .failed(let message):
-                    ContentUnavailableView("Couldn’t load \(source.title)",
-                                           systemImage: "exclamationmark.triangle",
-                                           description: Text(message))
-                        .frame(maxWidth: .infinity, minHeight: 360)
-                case .loaded:
-                    if paging.slots.isEmpty {
-                        ContentUnavailableView("Empty library",
-                                               systemImage: "rectangle.stack",
-                                               description: Text("No items in \(source.title)."))
-                            .frame(maxWidth: .infinity, minHeight: 360)
-                    } else {
-                        let metrics = compactGridMetrics(availableWidth: geometry.size.width)
-                        LazyVGrid(columns: gridColumns(metrics: metrics),
-                                  spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
-                            ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
-                                LibraryGridSlot(index: index,
-                                                item: slot,
-                                                width: metrics?.posterWidth ?? DS.Poster.gridMin(compact: compactWidth),
-                                                usesDenseLabels: metrics != nil) {
-                                    prefetchPage(containing: index)
+                    VStack(alignment: .leading, spacing: DS.Space.lg) {
+                        browseControls
+                            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+                            .padding(.top, DS.Space.lg)
+
+                        switch paging.loadState {
+                        case .idle, .loading:
+                            SkeletonGrid(availableWidth: geometry.size.width)
+                        case .failed(let message):
+                            ContentUnavailableView("Couldn’t load \(source.title)",
+                                                   systemImage: "exclamationmark.triangle",
+                                                   description: Text(message))
+                                .frame(maxWidth: .infinity, minHeight: 360)
+                        case .loaded:
+                            if paging.slots.isEmpty {
+                                emptyState
+                            } else {
+                                let metrics = compactGridMetrics(availableWidth: geometry.size.width)
+                                LazyVGrid(columns: gridColumns(metrics: metrics),
+                                          spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
+                                    ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
+                                        LibraryGridSlot(index: index,
+                                                        item: slot,
+                                                        width: metrics?.posterWidth ?? DS.Poster.gridMin(compact: compactWidth),
+                                                        usesDenseLabels: metrics != nil) {
+                                            prefetchPage(containing: index)
+                                        }
+                                        // Keep the stable sparse-grid offset as the scroll target for
+                                        // the A–Z rail while giving the loaded/placeholder subtrees
+                                        // different identities below. Without the inner identity split,
+                                        // SwiftUI can recycle a placeholder view after a fast alphabet
+                                        // jump and leave the slot blank/missing metadata once the page
+                                        // arrives.
+                                        .id(index)
+                                    }
                                 }
-                                // Keep the stable sparse-grid offset as the scroll target for
-                                // the A–Z rail while giving the loaded/placeholder subtrees
-                                // different identities below. Without the inner identity split,
-                                // SwiftUI can recycle a placeholder view after a fast alphabet
-                                // jump and leave the slot blank/missing metadata once the page
-                                // arrives.
-                                .id(index)
+                                .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                                .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                                .padding(.trailing, metrics?.trailingReservation ?? 0)
                             }
                         }
-                        .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
-                        .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
-                        .padding(.trailing, metrics?.trailingReservation ?? 0)
                     }
                 }
-                }
                 .overlay(alignment: .trailing) {
-                    if paging.alphabetBuckets.count > 1, case .loaded = paging.loadState {
+                    if alphabetRailVisible {
                         LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
                             jump(to: entry, proxy: proxy)
                         }
@@ -405,7 +495,10 @@ struct LibraryGridView: View {
             }
         }
         .navigationTitle(source.title)
+        .task(id: preferenceIdentity) { loadPreferences() }
+        .task(id: capabilityIdentity) { await loadBrowseCapabilities() }
         .task(id: loadIdentity) { await load() }
+        .onChange(of: browseQuery) { _, query in savePreferences(query) }
         .refreshable { await load(force: true) }
     }
 
@@ -422,13 +515,173 @@ struct LibraryGridView: View {
                      count: metrics.columnCount)
     }
 
+    private var browseControls: some View {
+        HStack(spacing: DS.Space.md) {
+            if availableSorts.count > 1 {
+                sortMenu
+            }
+            if availableFilters.count > 1 {
+                filterMenu
+            }
+            if filter != .all {
+                activeFilterChip
+            }
+            if let capabilityNotice {
+                capabilityNoticeView(capabilityNotice)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var capabilityNotice: String? {
+        guard case .plex = source else { return nil }
+        switch capabilityState {
+        case .loading:
+            return "Checking server filters…"
+        case .unavailable(let message):
+            return message
+        case .loaded(let capabilities):
+            if capabilities.sorts.count <= 1, capabilities.filters.count <= 1 {
+                return "No server-advertised filters for this section."
+            }
+            return nil
+        }
+    }
+
+    private func capabilityNoticeView(_ message: String) -> some View {
+        Label(message, systemImage: "line.3.horizontal.decrease.circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            Picker("Sort", selection: $sort) {
+                ForEach(availableSorts) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+        } label: {
+            Label(sort.label, systemImage: "arrow.up.arrow.down")
+                .font(.callout)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Picker("Filter", selection: $filter) {
+                ForEach(availableFilters) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+        } label: {
+            Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+                .font(.callout)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var activeFilterChip: some View {
+        Button {
+            filter = .all
+        } label: {
+            HStack(spacing: DS.Space.xs) {
+                Text(filter.label)
+                Image(systemName: "xmark.circle.fill")
+                    .imageScale(.small)
+            }
+            .font(.callout)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("Clear \(filter.label) filter")
+    }
+
+    private var emptyState: some View {
+        let title = filter == .all ? "Empty library" : "No matching items"
+        let description = filter == .all
+            ? "No items in \(source.title)."
+            : "No \(filter.label.lowercased()) items matched \(source.title)."
+        return ContentUnavailableView(title,
+                                      systemImage: filter == .all ? "rectangle.stack" : "line.3.horizontal.decrease.circle",
+                                      description: Text(description))
+            .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private func loadPreferences() {
+        let identity = preferenceIdentity
+        let query = LibraryBrowsePreferenceStore().query(for: identity)
+        sort = query.sort
+        filter = query.filter
+        loadedPreferenceIdentity = identity
+    }
+
+    private func savePreferences(_ query: LibraryBrowseQuery) {
+        guard loadedPreferenceIdentity == preferenceIdentity else { return }
+        LibraryBrowsePreferenceStore().save(query, for: preferenceIdentity)
+    }
+
+    private func loadBrowseCapabilities() async {
+        // Non-Plex capabilities are static (`availableCapabilities` is the source of truth);
+        // only Plex discovers them from the server.
+        guard case .plex(let section) = source else { return }
+        // `.task` re-fires on pop-back from an item (see load()); refetching then would
+        // flash the menus and — worse — enforcing defaults below would reset the user's
+        // chosen sort/filter and force a full grid reload. Load once per identity.
+        guard loadedCapabilityIdentity != capabilityIdentity else { return }
+        let activeIdentity = capabilityIdentity
+        capabilityState = .loading
+        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            guard capabilityIdentity == activeIdentity, !Task.isCancelled else { return }
+            loadedCapabilityIdentity = activeIdentity
+            capabilityState = .unavailable("Server filters unavailable.")
+            enforceCapabilities(.defaultOnly)
+            return
+        }
+        do {
+            async let filterResponse = appModel.client.send(
+                BrowseAPI.sectionFilters(server: server,
+                                         token: token,
+                                         identity: appModel.identity,
+                                         sectionKey: section.key),
+                as: PlexLibrarySectionFiltersResponse.self)
+            async let sortResponse = appModel.client.send(
+                BrowseAPI.sectionSorts(server: server,
+                                       token: token,
+                                       identity: appModel.identity,
+                                       sectionKey: section.key),
+                as: PlexLibrarySectionSortsResponse.self)
+            let capabilities = try await LibraryBrowseCapabilities.plex(filters: filterResponse,
+                                                                        sorts: sortResponse)
+            guard capabilityIdentity == activeIdentity, !Task.isCancelled else { return }
+            loadedCapabilityIdentity = activeIdentity
+            capabilityState = .loaded(capabilities)
+            enforceCapabilities(capabilities)
+        } catch {
+            guard capabilityIdentity == activeIdentity, !Task.isCancelled else { return }
+            loadedCapabilityIdentity = activeIdentity
+            capabilityState = .unavailable("Server filters unavailable.")
+            enforceCapabilities(.defaultOnly)
+        }
+    }
+
+    private func enforceCapabilities(_ capabilities: LibraryBrowseCapabilities) {
+        if !capabilities.sorts.contains(sort) {
+            sort = capabilities.sorts.first ?? .titleAscending
+        }
+        if !capabilities.filters.contains(filter) {
+            filter = .all
+        }
+    }
+
     private func load(force: Bool = false) async {
         // `.task` re-fires on pop-back from an item; reloading the whole grid then
         // would dump the scroll position the user is returning to. Load once per backend
-        // session identity; a re-auth to the same server must bust this cache (#93).
+        // session/query identity; a re-auth to the same server must bust this cache (#93).
+        guard loadedPreferenceIdentity == preferenceIdentity else { return }
         let source = pagingSource
         await paging.load(source: source, force: force) {
-            loadIdentity == source.identity
+            pagingIdentity == source.identity
         }
     }
 
@@ -436,22 +689,19 @@ struct LibraryGridView: View {
         let source = pagingSource
         Task {
             await paging.prefetch(containing: index, source: source) {
-                loadIdentity == source.identity
+                pagingIdentity == source.identity
             }
         }
     }
 
     private func jump(to entry: AlphabetBucket, proxy: ScrollViewProxy) {
         let source = pagingSource
-        // The sparse grid already has a placeholder at every server offset, so move
-        // immediately and let the page fill in as soon as it arrives. Waiting for the
-        // network page first made rail scrubbing feel delayed.
         withAnimation(.snappy(duration: 0.16)) {
             proxy.scrollTo(entry.offset, anchor: .top)
         }
         Task {
             await paging.loadPage(containing: entry.offset, source: source) {
-                loadIdentity == source.identity
+                pagingIdentity == source.identity
             }
             await MainActor.run {
                 withAnimation(.snappy(duration: 0.16)) {

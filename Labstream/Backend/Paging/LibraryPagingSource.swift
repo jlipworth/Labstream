@@ -30,6 +30,11 @@ struct LibraryPagingSource {
     /// Jellyfin/Emby recursive movie grids that surface one item per physical file/version;
     /// Plex (server-deduped flat listing) and non-movie libraries leave this false.
     let collapsesMovieVersions: Bool
+    /// False when the current sort/filter makes A-Z offsets meaningless (non-alphabetical
+    /// sort or narrowed result set). The paged path enforces this inside
+    /// `fetchAlphabetCounts`; the collapsing path builds buckets locally after the full
+    /// load, so it must consult this flag instead.
+    let supportsAlphabetRail: Bool
     let fetchPage: @MainActor @Sendable (_ start: Int, _ limit: Int) async throws -> LibraryPagingPage
     let fetchAlphabetCounts: @MainActor @Sendable () async -> [(display: String, count: Int)]
 
@@ -40,6 +45,7 @@ struct LibraryPagingSource {
          cacheEmptyFirstPage: Bool,
          awaitAlphabetBeforeInitialLoad: Bool,
          collapsesMovieVersions: Bool = false,
+         supportsAlphabetRail: Bool = true,
          fetchPage: @escaping @MainActor @Sendable (_ start: Int, _ limit: Int) async throws -> LibraryPagingPage,
          fetchAlphabetCounts: @escaping @MainActor @Sendable () async -> [(display: String, count: Int)]) {
         self.title = title
@@ -49,6 +55,7 @@ struct LibraryPagingSource {
         self.cacheEmptyFirstPage = cacheEmptyFirstPage
         self.awaitAlphabetBeforeInitialLoad = awaitAlphabetBeforeInitialLoad
         self.collapsesMovieVersions = collapsesMovieVersions
+        self.supportsAlphabetRail = supportsAlphabetRail
         self.fetchPage = fetchPage
         self.fetchAlphabetCounts = fetchAlphabetCounts
     }

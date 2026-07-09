@@ -161,7 +161,11 @@ final class LibraryPagingModel {
             // Full load complete → build the rail from the final collapsed list's positions
             // (F1 fix). Until now `alphabetBuckets` stayed empty (rail hidden during load).
             let collapsed = collapser?.collapsedItems() ?? []
-            alphabetBuckets = AlphabetBucket.buckets(fromTitles: collapsed.map(\.title))
+            // Bucket offsets index into the collapsed list, which is only meaningful when it
+            // is alphabetically ordered and unfiltered — hide the rail otherwise.
+            alphabetBuckets = source.supportsAlphabetRail
+                ? AlphabetBucket.buckets(fromTitles: collapsed.map(\.title))
+                : []
             span.end(fields: [
                 "item_count": collapsed.count,
                 "total_count": serverTotal,

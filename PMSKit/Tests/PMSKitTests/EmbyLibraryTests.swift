@@ -260,4 +260,25 @@ struct EmbyLibraryTests {
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
         #expect(request.value(forHTTPHeaderField: "Accept")?.contains("subrip") == true)
     }
+
+    @Test func itemsRequestAppliesBrowseQuerySortAndFilter() throws {
+        let request = try EmbyLibrary.itemsRequest(server: server,
+                                                   token: "token-abc",
+                                                   identity: identity,
+                                                   userId: "user-9",
+                                                   parentId: "view-1",
+                                                   recursive: true,
+                                                   startIndex: 0,
+                                                   limit: 50,
+                                                   includeItemTypes: "Movie",
+                                                   browseQuery: LibraryBrowseQuery(sort: .rating,
+                                                                                   filter: .watched))
+        let query = try query(request)
+
+        #expect(query["SortBy"] == "CommunityRating")
+        #expect(query["SortOrder"] == "Descending")
+        #expect(query["Filters"] == "IsPlayed")
+        #expect(query["IncludeItemTypes"] == "Movie")
+    }
+
 }

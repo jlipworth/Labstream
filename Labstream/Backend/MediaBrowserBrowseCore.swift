@@ -40,6 +40,7 @@ struct MediaBrowserItemsQuery: Sendable {
     let albumArtistIDs: String?
     let artistIDs: String?
     let filters: [String]
+    let browseQuery: LibraryBrowseQuery
 
     init(parentID: String?,
          recursive: Bool = false,
@@ -53,7 +54,8 @@ struct MediaBrowserItemsQuery: Sendable {
          fields: String,
          albumArtistIDs: String? = nil,
          artistIDs: String? = nil,
-         filters: [String] = []) {
+         filters: [String] = [],
+         browseQuery: LibraryBrowseQuery = .default) {
         self.parentID = parentID
         self.recursive = recursive
         self.startIndex = startIndex
@@ -67,6 +69,7 @@ struct MediaBrowserItemsQuery: Sendable {
         self.albumArtistIDs = albumArtistIDs
         self.artistIDs = artistIDs
         self.filters = filters
+        self.browseQuery = browseQuery
     }
 }
 
@@ -304,7 +307,8 @@ struct JellyfinBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
                                          nameStartsWith: q.nameStartsWith, sortBy: q.sortBy,
                                          sortOrder: q.sortOrder, includeItemTypes: q.includeItemTypes,
                                          fields: q.fields, albumArtistIds: q.albumArtistIDs,
-                                         artistIds: q.artistIDs, filters: q.filters)
+                                         artistIds: q.artistIDs, filters: q.filters,
+                                         browseQuery: q.browseQuery)
     }
 
     func albumArtistsRequest(_ c: MediaBrowserBrowseContext<Identity>, parentID: String?,
@@ -376,7 +380,8 @@ struct EmbyBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
                                     nameStartsWith: q.nameStartsWith, sortBy: q.sortBy,
                                     sortOrder: q.sortOrder, includeItemTypes: q.includeItemTypes,
                                     fields: q.fields, albumArtistIds: q.albumArtistIDs,
-                                    artistIds: q.artistIDs, filters: q.filters)
+                                    artistIds: q.artistIDs, filters: q.filters,
+                                    browseQuery: q.browseQuery)
     }
 
     func albumArtistsRequest(_ c: MediaBrowserBrowseContext<Identity>, parentID: String?,

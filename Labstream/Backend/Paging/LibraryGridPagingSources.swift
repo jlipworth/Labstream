@@ -3,25 +3,31 @@ import PMSKit
 
 @MainActor
 extension LibraryPagingSource {
-    init(gridSource source: LibraryGridSource, appModel: AppModel) {
+    init(gridSource source: LibraryGridSource,
+         query: LibraryBrowseQuery = .default,
+         appModel: AppModel) {
         switch source {
         case .plex(let section):
-            self = .plex(section: section, appModel: appModel)
+            self = .plex(section: section, query: query, appModel: appModel)
         case .jellyfin(let view):
-            self = .jellyfin(view: view, appModel: appModel)
+            self = .jellyfin(view: view, query: query, appModel: appModel)
         case .emby(let view):
-            self = .emby(view: view, appModel: appModel)
+            self = .emby(view: view, query: query, appModel: appModel)
         }
     }
 
-    static func plex(section: PlexSection, appModel: AppModel) -> LibraryPagingSource {
+    static func plex(section: PlexSection,
+                     query: LibraryBrowseQuery = .default,
+                     appModel: AppModel) -> LibraryPagingSource {
         LibraryPagingSource(
             title: section.title,
             identity: libraryPagingIdentity(libraryID: section.key,
-                                            sessionKey: appModel.browseSessionKey(for: .plex)),
+                                            sessionKey: appModel.browseSessionKey(for: .plex),
+                                            query: query),
             backendLabel: "Plex",
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: true,
+            awaitAlphabetBeforeInitialLoad: query.supportsAlphabetRail,
+            supportsAlphabetRail: query.supportsAlphabetRail,
             fetchPage: { start, limit in
                 guard let service = try? PlexBrowseService(appModel: appModel) else {
                     throw LibraryPagingError.missingPlexServer
@@ -29,44 +35,52 @@ extension LibraryPagingSource {
                 let page = try await service.sectionPage(sectionKey: section.key,
                                                          startIndex: start,
                                                          limit: limit,
-                                                         sort: "titleSort")
+                                                         browseQuery: query)
                 SpotlightIndexer.index(page.items, server: service.session.baseURL)
                 return LibraryPagingPage(items: page.items, reportedTotal: page.total)
             },
             fetchAlphabetCounts: {
+                guard query.supportsAlphabetRail else { return [] }
                 guard let service = try? PlexBrowseService(appModel: appModel) else { return [] }
                 return (try? await service.alphabetCounts(sectionKey: section.key)) ?? []
             }
         )
     }
 
-    static func jellyfin(view: JellyfinLibraryLink, appModel: AppModel) -> LibraryPagingSource {
-        mediaBrowser(view: view, backend: .jellyfin, appModel: appModel)
+    static func jellyfin(view: JellyfinLibraryLink,
+                         query: LibraryBrowseQuery = .default,
+                         appModel: AppModel) -> LibraryPagingSource {
+        mediaBrowser(view: view, backend: .jellyfin, query: query, appModel: appModel)
     }
 
-    static func emby(view: EmbyLibraryLink, appModel: AppModel) -> LibraryPagingSource {
-        mediaBrowser(view: view, backend: .emby, appModel: appModel)
+    static func emby(view: EmbyLibraryLink,
+                     query: LibraryBrowseQuery = .default,
+                     appModel: AppModel) -> LibraryPagingSource {
+        mediaBrowser(view: view, backend: .emby, query: query, appModel: appModel)
     }
 
     private static func mediaBrowser(view: MediaBrowserLibraryLink,
                                      backend: MediaBackendID,
+                                     query: LibraryBrowseQuery = .default,
                                      appModel: AppModel) -> LibraryPagingSource {
         precondition(backend == .jellyfin || backend == .emby)
         return LibraryPagingSource(
             title: view.title,
             identity: libraryPagingIdentity(libraryID: view.id,
-                                            sessionKey: appModel.browseSessionKey(for: backend)),
+                                            sessionKey: appModel.browseSessionKey(for: backend),
+                                            query: query),
             backendLabel: backend.displayName,
             cacheEmptyFirstPage: false,
             awaitAlphabetBeforeInitialLoad: false,
             collapsesMovieVersions: MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: view.collectionType),
+            supportsAlphabetRail: query.supportsAlphabetRail,
             fetchPage: { start, limit in
                 let recursive = MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
                 let itemTypes = MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
                 let page = try await mediaBrowserItemsPage(
                     backend: backend, view: view, appModel: appModel,
                     recursive: recursive, startIndex: start, limit: limit,
-                    includeItemTypes: itemTypes
+                    includeItemTypes: itemTypes, browseQuery: query
                 )
                 if let session = appModel.backendSession(for: backend) {
                     SpotlightIndexer.index(page.items, backend: backend, server: session.baseURL)
@@ -85,17 +99,20 @@ extension LibraryPagingSource {
                 return gridPage
             },
             fetchAlphabetCounts: {
-                await mediaBrowserAlphabetCounts(backend: backend, appModel: appModel, view: view)
+                guard query.supportsAlphabetRail else { return [] }
+                return await mediaBrowserAlphabetCounts(backend: backend, appModel: appModel, view: view)
             }
         )
     }
 }
 
 @MainActor
-private func libraryPagingIdentity(libraryID: String, sessionKey: String) -> String {
+private func libraryPagingIdentity(libraryID: String,
+                                   sessionKey: String,
+                                   query: LibraryBrowseQuery = .default) -> String {
     // UI cache/stale-result guard. The centralized browse key is token-free, host-free,
     // server/user scoped, and includes a non-secret auth revision for same-server re-auth (#136).
-    "\(sessionKey):library:\(libraryID)"
+    "\(sessionKey):library:\(libraryID):\(query.identityComponent)"
 }
 
 private func recordGridPageDiagnostics(_ items: [MediaItem],
@@ -132,19 +149,20 @@ private func mediaBrowserItemsPage(backend: MediaBackendID,
                                    startIndex: Int?,
                                    limit: Int?,
                                    nameStartsWith: String? = nil,
-                                   includeItemTypes: String) async throws -> (items: [MediaItem], total: Int?) {
+                                   includeItemTypes: String,
+                                   browseQuery: LibraryBrowseQuery = .default) async throws -> (items: [MediaItem], total: Int?) {
     switch backend {
     case .jellyfin:
         return try await JellyfinBrowseService(appModel: appModel).itemsPage(
             parentId: view.id, recursive: recursive, startIndex: startIndex, limit: limit,
             nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes,
-            fields: JellyfinLibrary.gridItemFields
+            fields: JellyfinLibrary.gridItemFields, browseQuery: browseQuery
         )
     case .emby:
         return try await EmbyBrowseService(appModel: appModel).itemsPage(
             parentId: view.id, recursive: recursive, startIndex: startIndex, limit: limit,
             nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes,
-            fields: EmbyLibrary.gridItemFields
+            fields: EmbyLibrary.gridItemFields, browseQuery: browseQuery
         )
     case .plex:
         preconditionFailure("Plex does not use MediaBrowser paging")

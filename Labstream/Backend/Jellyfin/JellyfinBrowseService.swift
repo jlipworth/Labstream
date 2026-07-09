@@ -42,7 +42,8 @@ struct JellyfinBrowseService {
                sortOrder: String = "Ascending",
                includeItemTypes: String = "Movie,Series,Season,Episode,Video",
                fields: String = JellyfinLibrary.fullItemFields,
-               filters: [String] = []) async throws -> [MediaItem] {
+               filters: [String] = [],
+               browseQuery: LibraryBrowseQuery = .default) async throws -> [MediaItem] {
         let page = try await itemsPage(parentId: parentId,
                                        recursive: recursive,
                                        startIndex: startIndex,
@@ -53,7 +54,8 @@ struct JellyfinBrowseService {
                                        sortOrder: sortOrder,
                                        includeItemTypes: includeItemTypes,
                                        fields: fields,
-                                       filters: filters)
+                                       filters: filters,
+                                       browseQuery: browseQuery)
         return page.items
     }
 
@@ -69,12 +71,14 @@ struct JellyfinBrowseService {
                    fields: String = JellyfinLibrary.fullItemFields,
                    albumArtistIds: String? = nil,
                    artistIds: String? = nil,
-                   filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
+                   filters: [String] = [],
+                   browseQuery: LibraryBrowseQuery = .default) async throws -> (items: [MediaItem], total: Int?) {
         let page = try await browseCore().itemsPage(MediaBrowserItemsQuery(
             parentID: parentId, recursive: recursive, startIndex: startIndex, limit: limit,
             searchTerm: searchTerm, nameStartsWith: nameStartsWith, sortBy: sortBy,
             sortOrder: sortOrder, includeItemTypes: includeItemTypes, fields: fields,
-            albumArtistIDs: albumArtistIds, artistIDs: artistIds, filters: filters
+            albumArtistIDs: albumArtistIds, artistIDs: artistIds, filters: filters,
+            browseQuery: browseQuery
         ))
         return (page.items, page.total)
     }
