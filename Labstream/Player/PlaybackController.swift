@@ -1314,6 +1314,16 @@ final class PlaybackController {
             return loadMetadataSubtitleTracks()
         }
 
+        // Plex HLS can expose a partial legible group (observed: only a nominal SDH
+        // option that accepts selection but renders no cues) while source metadata has
+        // the complete subtitle set. Prefer the authoritative Plex stream metadata
+        // whenever available so every choice follows the proven PUT + HLS rebuild path.
+        if let metadataTracks = loadPlexMetadataSubtitleTracks() {
+            NSLog("LabstreamSubtitles: using Plex metadata optionCount=%d",
+                  metadataTracks.tracks.count - 1)
+            return metadataTracks
+        }
+
         guard let playerItem = player.currentItem else {
             throw SubtitleTrackLoadError.playerNotReady
         }
