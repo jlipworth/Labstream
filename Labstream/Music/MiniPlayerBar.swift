@@ -7,6 +7,7 @@ import PMSKit
 /// `NowPlayingView` sheet.
 struct MiniPlayerBar: View {
     @Environment(MusicPlayerController.self) private var player
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var presentNowPlaying = false
     /// When true, the next NowPlaying presentation pre-scrolls to Up Next (the ☰
@@ -126,14 +127,25 @@ struct MiniPlayerBar: View {
                     Text(current.title)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
-                    // On a track, grandparentTitle is the artist.
-                    if let artist = current.grandparentTitle {
-                        Text(artist)
+                    // Regular-width music chrome has room for album context; the
+                    // compact iPhone accessory deliberately stays at two terse lines.
+                    if let subtitle = trackSubtitle(current) {
+                        Text(subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
+
+                #if !os(visionOS)
+                if showsExpandedContext, let queueContext {
+                    Text(queueContext)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .frame(maxWidth: 180, alignment: .leading)
+                }
+                #endif
 
                 Spacer(minLength: DS.Space.lg)
 
@@ -141,13 +153,9 @@ struct MiniPlayerBar: View {
                 // (Apple Music accessory density); previous and the queue shortcut
                 // live in the Now Playing sheet there.
                 #if os(visionOS)
-                Button {
-                    player.previous()
-                } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
+                previousButton
+                #else
+                if showsExpandedContext { previousButton }
                 #endif
 
                 Button {
@@ -172,15 +180,12 @@ struct MiniPlayerBar: View {
 
                 // Queue shortcut: same sheet as a bar tap, pre-scrolled to Up Next.
                 #if os(visionOS)
-                Button {
-                    scrollToQueue = true
-                    presentNowPlaying = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.title3)
+                queueButton
+                #else
+                if showsExpandedContext {
+                    queueButton
+                    moreMenu(for: current)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Queue")
                 #endif
 
                 // "Turn the music off": full teardown — clears the queue, so the bar
@@ -198,6 +203,141 @@ struct MiniPlayerBar: View {
                 .padding(.leading, DS.Space.sm)
                 .accessibilityLabel("Stop music")
             }
+    }
+
+    /// Mac and regular-width iPad get richer glanceable chrome. Compact iPhone
+    /// keeps the system accessory density, and visionOS remains unchanged.
+    private var showsExpandedContext: Bool {
+        #if os(visionOS)
+        false
+        #else
+        !compactWidth
+        #endif
+    }
+
+    private func trackSubtitle(_ current: MediaItem) -> String? {
+        let artist = current.grandparentTitle
+        guard showsExpandedContext, let album = current.parentTitle, !album.isEmpty else {
+            return artist
+        }
+        return [artist, album].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// Never claim a specific next track while shuffle is enabled: display order
+    /// intentionally differs from the controller's private shuffled traversal.
+    private var queueContext: String? {
+        guard player.queue.count > 1 else { return nil }
+        if player.shuffleEnabled { return "Shuffle · \(player.queue.count) tracks" }
+        guard let currentIndex = player.currentIndex,
+              player.queue.indices.contains(currentIndex + 1) else {
+            return "\(player.queue.count) tracks"
+        }
+        return "Up next: \(player.queue[currentIndex + 1].title)"
+    }
+
+    private var previousButton: some View {
+        Button { player.previous() } label: {
+            Image(systemName: "backward.fill")
+                .font(.title3)
+                .frame(minWidth: Self.transportHit, minHeight: Self.transportHit)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Previous track")
+    }
+
+    private var queueButton: some View {
+        Button {
+            scrollToQueue = true
+            presentNowPlaying = true
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.title3)
+                .overlay(alignment: .topTrailing) {
+                    if showsExpandedContext, player.queue.count > 1 {
+                        Text(String(player.queue.count))
+                            .font(.system(size: 8, weight: .bold))
+                            .padding(2)
+                            .background(.tint, in: Circle())
+                            .foregroundStyle(.white)
+                            .offset(x: 7, y: -7)
+                    }
+                }
+                .frame(minWidth: Self.transportHit, minHeight: Self.transportHit)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Queue, \(player.queue.count) tracks")
+    }
+
+    private func moreMenu(for current: MediaItem) -> some View {
+        Menu {
+            if let artist = artistItem(for: current) {
+                Button { navigate(to: artist) } label: {
+                    Label("Go to Artist", systemImage: "music.mic")
+                }
+            }
+            if let album = albumItem(for: current) {
+                Button { navigate(to: album) } label: {
+                    Label("Go to Album", systemImage: "square.stack")
+                }
+            }
+            Divider()
+            Button { player.toggleShuffle() } label: {
+                Label(player.shuffleEnabled ? "Turn Shuffle Off" : "Turn Shuffle On",
+                      systemImage: "shuffle")
+            }
+            Button { player.cycleRepeatMode() } label: {
+                Label(repeatMenuTitle, systemImage: repeatMenuIcon)
+            }
+            if player.queue.count > 1 {
+                Button { player.clearUpcoming() } label: {
+                    Label("Clear Upcoming", systemImage: "text.badge.minus")
+                }
+            }
+            Divider()
+            Button(role: .destructive) { player.stop() } label: {
+                Label("Stop Music", systemImage: "stop.fill")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.title3)
+                .frame(minWidth: Self.transportHit, minHeight: Self.transportHit)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityLabel("More music controls")
+    }
+
+    private var repeatMenuTitle: String {
+        switch player.repeatMode {
+        case .off: "Repeat Off"
+        case .all: "Repeat All"
+        case .one: "Repeat One"
+        }
+    }
+
+    private var repeatMenuIcon: String {
+        player.repeatMode == .one ? "repeat.1" : "repeat"
+    }
+
+    private func artistItem(for track: MediaItem) -> MediaItem? {
+        guard let key = track.grandparentRatingKey,
+              let title = track.grandparentTitle else { return nil }
+        return MediaItem(ratingKey: key, title: title, type: "artist",
+                         thumb: track.grandparentThumb)
+    }
+
+    private func albumItem(for track: MediaItem) -> MediaItem? {
+        guard let key = track.parentRatingKey,
+              let title = track.parentTitle else { return nil }
+        return MediaItem(ratingKey: key, title: title, type: "album",
+                         thumb: track.parentThumb)
+    }
+
+    private func navigate(to item: MediaItem) {
+        player.navigationRequest = item
     }
 
     /// Minimum hit side for the bar's transport buttons. On touch platforms the bare
