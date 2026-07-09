@@ -97,6 +97,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var lastProgressNotify: Date?
     /// Progress milestones already mirrored to the diagnostics ring buffer per task.
     private var loggedProgressMilestones: [Int: Set<Int>] = [:]
+    /// Rows whose blob-resumed live progress was rebased against the resume display watermark;
+    /// the rebase diagnostic is recorded once per row per app run.
+    private var loggedRangeBlobResumeDisplayRebaseKeys: Set<String> = []
     /// Last range-progress diagnostic per task. This is intentionally separate from UI throttling:
     /// the off-head headset probe needs durable breadcrumbs showing whether delegate progress kept
     /// arriving, without logging every `didWriteData` callback.
@@ -1233,6 +1236,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 + max(rangeEntry.chunkBytesWritten, Int(max(task.countOfBytesReceived, 0)))
             return DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
                 taskBytes: taskBytes,
+                baseOffset: rangeEntry.baseOffset,
                 resumeDisplayBytes: store.resumeDisplayBytes(ratingKey: ratingKey)
             )
         }
@@ -1437,6 +1441,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.unlock()
 
             let total = rangeEntry.baseOffset + chunkBytesWritten
+            // Normalize against the resume display watermark HERE, where the durable base offset
+            // is known — a blob-resumed task can report bytes from a fresh per-task baseline, and
+            // rebasing without the base offset used to double-count it into the display total.
+            let resumeWatermark = store.resumeDisplayBytes(ratingKey: rangeEntry.ratingKey)
+            let displayTotal = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: total,
+                baseOffset: rangeEntry.baseOffset,
+                resumeDisplayBytes: resumeWatermark)
+            if let resumeWatermark, displayTotal != total {
+                lock.lock()
+                let firstRebase = loggedRangeBlobResumeDisplayRebaseKeys
+                    .insert(rangeEntry.ratingKey).inserted
+                lock.unlock()
+                if firstRebase {
+                    AppDiagnostics.record(.downloads, "downloads.range_blob_resume_display_rebased", fields: [
+                        "download_id": .identifier(rangeEntry.ratingKey),
+                        "task_bytes": .bytes(total),
+                        "resume_display_bytes": .bytes(resumeWatermark),
+                        "display_bytes": .bytes(displayTotal),
+                    ])
+                }
+            }
             let responseExpectedBytes = RangeTransferHTTPPolicy.contentRangeTotal(from: downloadTask.response as? HTTPURLResponse)
             let effectiveExpectedBytes = responseExpectedBytes ?? rangeEntry.expectedBytes
             if responseExpectedBytes != nil {
@@ -1461,7 +1487,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             retryCounts[rangeEntry.ratingKey] = 0
             lock.unlock()
             store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: checkpointBytes, progress: progress)
-            onRangeLiveProgress?(rangeEntry.ratingKey, total, effectiveExpectedBytes)
+            onRangeLiveProgress?(rangeEntry.ratingKey, displayTotal, effectiveExpectedBytes)
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,
                                         entry: rangeEntry,
                                         chunkBytes: Int(totalBytesWritten),

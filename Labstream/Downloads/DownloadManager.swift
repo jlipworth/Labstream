@@ -113,7 +113,6 @@ public final class DownloadManager {
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
-    @ObservationIgnored private var loggedRangeBlobResumeDisplayRebaseKeys: Set<String> = []
 
     /// Ephemeral live Range bytes. Persisted records stay pinned to durable checkpoints so storage
     /// and Pause/Pause All accounting never claim non-resumable OS temp bytes. This overlay drives
@@ -242,31 +241,14 @@ public final class DownloadManager {
                 self?.resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: reason.rawValue)
             }
         }
+        // `liveBytes` arrives already normalized against the resume display watermark — the
+        // session owns the durable base offset the rebase needs, so it publishes display-ready
+        // totals and records the rebase diagnostic itself.
         self.session.onRangeLiveProgress = { [weak self] ratingKey, liveBytes, expectedBytes in
             Task { @MainActor in
                 guard let self else { return }
-                let resumeDisplayBytes = self.store.records
-                    .first { $0.ratingKey == ratingKey }?
-                    .metadata?
-                    .resumeDisplayBytes
-                let displayLiveBytes = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
-                    taskBytes: liveBytes,
-                    resumeDisplayBytes: resumeDisplayBytes
-                )
-                if let resumeDisplayBytes,
-                   liveBytes > 0,
-                   liveBytes < resumeDisplayBytes,
-                   !self.loggedRangeBlobResumeDisplayRebaseKeys.contains(ratingKey) {
-                    self.loggedRangeBlobResumeDisplayRebaseKeys.insert(ratingKey)
-                    self.recordDownloadDiagnostic("downloads.range_blob_resume_display_rebased", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "task_bytes": .bytes(liveBytes),
-                        "resume_display_bytes": .bytes(resumeDisplayBytes),
-                        "display_bytes": .bytes(displayLiveBytes),
-                    ])
-                }
                 self.liveRangeProgress[ratingKey] = DownloadLiveRangeProgressPolicy.mergedSample(
-                    liveBytes: displayLiveBytes,
+                    liveBytes: liveBytes,
                     expectedBytes: expectedBytes,
                     previous: self.liveRangeProgress[ratingKey],
                     updatedAt: Date())
@@ -2484,8 +2466,8 @@ public final class DownloadManager {
             || record.status == .downloading
             || record.status == .queued
         let resumableDisplay = resumableStatus
-            && (store.hasResumeData(ratingKey: record.ratingKey)
-                || record.status == .downloading)
+            && (record.status == .downloading
+                || store.hasResumeData(ratingKey: record.ratingKey))
             ? resumeBytes
             : nil
         return [live, resumableDisplay]

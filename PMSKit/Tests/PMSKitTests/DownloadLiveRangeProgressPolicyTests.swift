@@ -60,16 +60,31 @@ struct DownloadLiveRangeProgressPolicyTests {
                                                                  now: now) == nil)
     }
 
-    @Test("Resume display watermark treats lower task counts as incremental")
+    @Test("Resume display watermark rebases fresh-baseline counts without double-counting the base offset")
     func resumedTaskDisplayBytes() {
+        // Fresh-baseline report: taskBytes = baseOffset + bytes THIS task instance received.
+        // The watermark already covers baseOffset + the blob temp, so only the fresh delta is added.
         #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
-            taskBytes: 2_000,
-            resumeDisplayBytes: 200_000_000) == 200_002_000)
+            taskBytes: 100_002_000,
+            baseOffset: 100_000_000,
+            resumeDisplayBytes: 150_000_000) == 150_002_000)
+        // A report with no fresh bytes yet holds at the watermark instead of inflating past it.
+        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+            taskBytes: 100_000_000,
+            baseOffset: 100_000_000,
+            resumeDisplayBytes: 150_000_000) == 150_000_000)
+        // Cumulative reports at/above the watermark are already authoritative.
         #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
             taskBytes: 250_000_000,
+            baseOffset: 100_000_000,
             resumeDisplayBytes: 200_000_000) == 250_000_000)
         #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
             taskBytes: 0,
+            baseOffset: 100_000_000,
             resumeDisplayBytes: 200_000_000) == 200_000_000)
+        #expect(DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+            taskBytes: 2_000,
+            baseOffset: 0,
+            resumeDisplayBytes: nil) == 2_000)
     }
 }
