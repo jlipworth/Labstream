@@ -28,12 +28,12 @@ struct DownloadPausePolicyTests {
                               metadata: metadata)
     }
 
-    @Test("Static range queued/downloading rows choose checkpoint or immediate park by live task")
+    @Test("Static range queued/downloading rows cancel live tasks or immediate park by live task")
     func staticRangePauseActions() {
         #expect(DownloadPausePolicy.rowAction(status: .downloading,
                                              isStaticRangeRecord: true,
                                              isTrackingTransfer: true)
-                == .checkpointPauseAndCancelTask)
+                == .cancelTaskOnly)
         #expect(DownloadPausePolicy.rowAction(status: .queued,
                                              isStaticRangeRecord: true,
                                              isTrackingTransfer: false)

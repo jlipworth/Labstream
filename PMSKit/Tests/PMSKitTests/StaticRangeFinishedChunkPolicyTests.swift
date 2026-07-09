@@ -12,9 +12,7 @@ struct StaticRangeFinishedChunkPolicyTests {
         ))
         #expect(StaticRangeFinishedChunkPolicy.disposition(
             isHalted: true,
-            persistedStatusPaused: false,
-            segmentKind: .boundedCheckpoint,
-            gracefulPauseRequested: true
+            persistedStatusPaused: false
         ) == .discardTemp)
     }
 
@@ -26,45 +24,16 @@ struct StaticRangeFinishedChunkPolicyTests {
         ))
         #expect(StaticRangeFinishedChunkPolicy.disposition(
             isHalted: true,
-            persistedStatusPaused: true,
-            segmentKind: .continuousRemainder,
-            gracefulPauseRequested: false
+            persistedStatusPaused: true
         ) == .writeThenPause)
     }
 
-    @Test("Graceful pause after a durable checkpoint writes then pauses")
-    func gracefulDurablePause() {
-        #expect(StaticRangeFinishedChunkPolicy.disposition(
-            isHalted: false,
-            persistedStatusPaused: false,
-            segmentKind: .boundedCheckpoint,
-            gracefulPauseRequested: true
-        ) == .writeThenPause)
-        #expect(StaticRangeFinishedChunkPolicy.disposition(
-            isHalted: false,
-            persistedStatusPaused: false,
-            segmentKind: .backgroundCheckpoint,
-            gracefulPauseRequested: true
-        ) == .writeThenPause)
-    }
-
-    @Test("Graceful pause is ignored for continuous remainders")
-    func gracefulContinuousRemainderContinues() {
-        #expect(StaticRangeFinishedChunkPolicy.disposition(
-            isHalted: false,
-            persistedStatusPaused: false,
-            segmentKind: .continuousRemainder,
-            gracefulPauseRequested: true
-        ) == .writeThenContinue)
-    }
 
     @Test("Normal chunks continue")
     func normalContinues() {
         #expect(StaticRangeFinishedChunkPolicy.disposition(
             isHalted: false,
-            persistedStatusPaused: false,
-            segmentKind: .boundedCheckpoint,
-            gracefulPauseRequested: false
+            persistedStatusPaused: false
         ) == .writeThenContinue)
     }
 }

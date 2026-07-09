@@ -4,7 +4,7 @@ import Foundation
 ///
 /// `DownloadStatus` is the durable row lifecycle stored in the offline index. `DownloadJobPhase`
 /// is the pure app/runtime-facing classification that composes durable status with live facts such
-/// as active URLSession work, backend availability, checkpoint pauses, retry presentation, and
+/// as active URLSession work, backend availability, retry presentation, and
 /// server-prep progress. Keeping this enum top-level lets UI captions, diagnostics, and future
 /// coordinator services share the same phase vocabulary instead of each inventing status buckets.
 public enum DownloadJobPhase: Sendable, Equatable {

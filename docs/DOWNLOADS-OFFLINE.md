@@ -71,24 +71,35 @@ fundamentally constrained by the platform, not by the server or the app:
 - **Transfers started while backgrounded are treated as discretionary** — the system schedules
   them at its own pace regardless of configuration.
 
-Labstream's static byte-range lane is shaped around these limits:
+Labstream's static byte-range lane is shaped around these limits and follows the simplest
+Apple-standard architecture we can make stable:
 
-- **Active app**: bounded 64 MB `Range` chunks, each appended to the durable partial — frequent
-  real checkpoints, safe against force-quit.
-- **Leaving the foreground** (scene inactive/background): the next segment is **one open-ended
-  remainder request** (`bytes=offset-`) so the daemon can finish the whole file without waking
-  the app per chunk. Its in-flight bytes are non-durable until completion, so:
-  - **Pause** cancels by producing URLSession *resume data*, preserving the transferred bytes;
-    Resume continues from them.
-  - **Transient failures** (a brief network blip) re-resume from the resume data the system
-    hands back, budget-bounded — a five-second blip does not restart a multi-GB transfer. The
-    system daemon also rides out short connectivity losses on its own.
-  - Every completed body is still validated against the durable partial's offset and the pinned
-    HTTP validator before it is appended, so a strangely-resumed transfer degrades to a wasted
-    fetch, never a corrupt file.
-- **Returning to the foreground**: a remainder that has only just started demotes back to
-  bounded checkpoint chunks; one with substantial progress keeps running rather than discard
-  its bytes.
+- **One system-owned task for the remaining bytes.** Static Plex/Jellyfin/Emby file transfers use
+  one background `URLSessionDownloadTask` with an open-ended `Range: bytes=<durableOffset>-`
+  request from the durable partial file size. This is used in the foreground and background; there
+  is no foreground-to-background task migration, bounded foreground checkpoint chain, foreground
+  demotion, or background-event handoff grace loop for new static downloads.
+- **URLSession resume data is first-class.** Pause, sleep/off-head interruption, and recoverable
+  task failures preserve in-flight bytes by producing or adopting URLSession resume data when the
+  system can provide it. Persisted blobs are registered back into the static range lane, not the
+  opaque whole-file lane, so completed partial-body temps are appended/replaced safely.
+- **The durable partial is the fallback checkpoint.** If resume data is missing, invalid, stale, or
+  refers to a temp file the system has deleted, Labstream clears/discards the blob and starts a new
+  open-ended Range request from the durable partial's current file size. This may lose in-flight
+  bytes, but it avoids the pause/resume/sleep edge cases caused by the older bounded-checkpoint
+  state machine.
+- **HTTP safety checks still guard the append.** Completed bodies are validated for
+  `Content-Range` start alignment, pinned validator mismatches, HTTP `200` full-body
+  replacement/restart behavior, `416` total validation, temp disappearance fallback, and safe
+  resume-blob adoption/clearing. A strangely-resumed transfer should waste bandwidth or fall back
+  to the durable checkpoint, never corrupt the file.
+
+Tradeoff: the previous 64 MB foreground checkpoint chain was very durable and minimized lost work
+when the process died without usable resume data. It also created a large custom lifecycle surface
+around bounded chunks, checkpoint pauses, demotion, background-event handoff grace, reattach,
+and sleep recovery. The current design
+favors platform-standard URLSession task lifecycle stability; if URLSession cannot resume the
+in-flight temp, progress falls back to the last durable partial checkpoint.
 
 Simulator caveat: Labstream intentionally uses a foreground/default `URLSession`
 in simulator builds because the background transfer daemon is unreliable there.
@@ -98,8 +109,8 @@ real background continuation, lock/off-head scheduling, or cellular policy.
 User-facing expectations worth setting (the "downloads disclaimer"):
 
 - Very large background downloads are best-effort. Keeping the device on power helps; briefly
-  foregrounding the app resets the system's background rate limiter and lets the app fold
-  finished work into durable checkpoints.
+  foregrounding the app resets the system's background rate limiter and gives Labstream a chance
+  to process completed tasks or recover from a failed resume blob.
 - Plex optimize and Emby convert have a server-preparation phase that needs the
   app awake; after they hand off to a static file, the byte transfer can use the
   static recovery path.

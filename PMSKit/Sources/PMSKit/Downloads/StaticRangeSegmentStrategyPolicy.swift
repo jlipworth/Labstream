@@ -1,12 +1,10 @@
-/// Pure policy for selecting the next static byte-range segment shape.
+/// Pure policy for selecting the static byte-range segment shape.
 ///
-/// Scene changes and pending background URLSession completion handlers both mean the app may be
-/// suspended soon. In those windows the next segment is ONE open-ended continuous remainder so
-/// `nsurlsessiond` finishes the whole file without waking the app once per chunk: every
-/// background relaunch for a session event doubles the OS resume rate limiter's launch delay, so
-/// a chunk-per-wakeup design stops making progress after ~10 wakeups (the observed off-head
-/// multi-GB stall). Durability off-head rides on the OS temp plus URLSession resume data; the
-/// app-owned durable partial advances when the remainder completes or on foreground demotion.
+/// The Apple-standard path for large downloadable files is one background `URLSessionDownloadTask`
+/// and URLSession resume data. Labstream still sends an explicit open-ended `Range` header from the
+/// app-owned durable partial offset so a missing/invalid resume blob can fall back to the partial
+/// file size, but it no longer chains foreground-sized checkpoint tasks. This avoids the lifecycle
+/// edge cases created by repeatedly cancelling, demoting, and re-enqueuing bounded chunks.
 public enum StaticRangeSegmentStrategyPolicy {
     public struct SceneStrategy: Sendable, Equatable {
         public let normalizedPhase: String
@@ -25,45 +23,24 @@ public enum StaticRangeSegmentStrategyPolicy {
         }
     }
 
-    /// What to do with an in-flight continuous-remainder task when the app returns to the
-    /// foreground and bounded checkpoint chunks become preferable again.
-    public enum ForegroundDemotionDecision: Sendable, Equatable {
-        /// Cancel the remainder and restart bounded chunks from the durable checkpoint. Only
-        /// chosen when the discarded OS-temp bytes are bounded by one foreground chunk.
-        case demoteToBounded
-        /// Let the remainder finish: it has accumulated more temp progress than a demotion may
-        /// discard, or it was relaunch-adopted and has no rebuildable request.
-        case keepRunning
-    }
-
     public static func sceneStrategy(phase: String) -> SceneStrategy {
         let normalized = phase.lowercased()
-        let prefersRemainder = normalized == "inactive" || normalized == "background"
+        let reason = (normalized == "inactive" || normalized == "background")
+            ? "scene_\(normalized)"
+            : "single_remainder"
         return SceneStrategy(
             normalizedPhase: normalized,
-            preferenceReason: prefersRemainder ? "scene_\(normalized)" : nil,
-            diagnosticStrategy: prefersRemainder ? "continuous_remainder" : "bounded_checkpoint",
-            shouldCountDurableCandidates: prefersRemainder
+            preferenceReason: reason,
+            diagnosticStrategy: "continuous_remainder",
+            shouldCountDurableCandidates: false
         )
     }
 
-    public static func segmentPreference(sceneReason: String?,
-                                         holdBackgroundCompletionForFirstProgress: Bool)
+    public static func segmentPreference(sceneReason: String?)
         -> (kind: RangeTransferSegmentKind, reason: String?) {
         if let sceneReason {
             return (.continuousRemainder, sceneReason)
         }
-        if holdBackgroundCompletionForFirstProgress {
-            return (.continuousRemainder, "background_events")
-        }
-        return (.boundedCheckpoint, nil)
-    }
-
-    public static func foregroundDemotionDecision(segmentKind: RangeTransferSegmentKind,
-                                                  chunkBytesWritten: Int,
-                                                  hasRequest: Bool,
-                                                  maxDiscardBytes: Int) -> ForegroundDemotionDecision {
-        guard segmentKind == .continuousRemainder, hasRequest else { return .keepRunning }
-        return chunkBytesWritten <= maxDiscardBytes ? .demoteToBounded : .keepRunning
+        return (.continuousRemainder, "single_remainder")
     }
 }

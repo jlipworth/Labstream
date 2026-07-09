@@ -103,7 +103,7 @@ public final class DownloadManager {
     private var lastServerPrepQueuePausedLogAt: Date?
     /// Static byte-range recovery bookkeeping that belongs to app queue/retry policy rather than
     /// URLSession mechanics: pending backend-auth rebuilds, finalization re-entry guards,
-    /// checkpoint-draining pauses, queue-paused manual resumes, and one-shot restart-counter
+    /// queue-paused manual resumes, and one-shot restart-counter
     /// preservation.
     private var staticRangeRecovery = StaticRangeRecoveryTracker()
     /// Reentrancy depth of `resumeStaticRangeWhenReady`, which deliberately dispatches
@@ -543,13 +543,6 @@ public final class DownloadManager {
         switch pauseAction {
         case .ignore:
             break
-        case .checkpointPauseAndCancelTask:
-            // Static Range rows pause at a real durable checkpoint. Keep the persisted lifecycle
-            // as active while the current bounded chunk drains so progress/rate remain honest and
-            // the row does not bounce Paused→Downloading from delegate progress. The session writes
-            // `.paused` once the checkpoint is appended (or immediately for non-drainable cases).
-            staticRangeRecovery.markCheckpointPause(ratingKey)
-            session.pause(ratingKey: ratingKey)
         case .parkStaticWithoutLiveTask:
             // A freshly seeded URLSession task can still be `.queued` until first progress. Route
             // queued rows through the session too, but park no-live static gaps immediately.
@@ -587,9 +580,6 @@ public final class DownloadManager {
         isQueuePaused = false
         staticRangeRecovery.removeAllManualQueueResumes()
         UserDefaults.standard.set(false, forKey: Self.queuePausedDefaultsKey)
-        for record in records where staticRangeRecovery.isCheckpointPausing(record.ratingKey) {
-            cancelPendingCheckpointPause(ratingKey: record.ratingKey)
-        }
         let retryKeys = records
             .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
             .map(\.ratingKey)
@@ -599,20 +589,6 @@ public final class DownloadManager {
         refreshRecords()
     }
 
-    @discardableResult
-    private func cancelPendingCheckpointPause(ratingKey: String) -> Bool {
-        guard staticRangeRecovery.isCheckpointPausing(ratingKey),
-              session.cancelPendingCheckpointPause(ratingKey: ratingKey) else {
-            return false
-        }
-        staticRangeRecovery.removeCheckpointPause(ratingKey)
-        activeJobs.insert(ratingKey)
-        lastError[ratingKey] = nil
-        recordDownloadDiagnostic("downloads.range_checkpoint_pause_resumed", fields: [
-            "download_id": .identifier(ratingKey),
-        ])
-        return true
-    }
 
     /// Auth restore and background URLSession reattachment can complete in different turns.
     /// Server-prep rows have no URLSession task yet, and relaunch-adopted Range chunks may need the
@@ -874,10 +850,6 @@ public final class DownloadManager {
         guard !retryState.isRetrying(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         guard record.status != .complete, record.status != .unverified else { return }
-        if cancelPendingCheckpointPause(ratingKey: ratingKey) {
-            refreshRecords()
-            return
-        }
         let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
         let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
             || StaticRangeRecoveryPolicy.shouldMarkSystemResumeInactiveBeforeRetry(record)
@@ -936,7 +908,7 @@ public final class DownloadManager {
         ), let resumeData = persistedResumeData {
             store.clearResumeData(ratingKey: ratingKey)
             store.setStatus(ratingKey: ratingKey, .downloading)
-            // #212: range-checkpoint rows (paused/failed continuous remainders) MUST resume on the
+            // #227: range-checkpoint rows (paused/failed continuous remainders) MUST resume on the
             // range lane; the opaque lane would treat the blob task's partial-body temp as a
             // whole-file move at completion and corrupt the durable partial.
             let lane = DownloadRetryPreparationPolicy.persistedResumeDataLane(
@@ -2113,19 +2085,11 @@ public final class DownloadManager {
         )
         staticRangeRecovery.subtractManualQueueResumes(manualResumeTerminalKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
-        let pendingPauseKeys = Set(fresh.filter { staticRangeRecovery.isCheckpointPausing($0.ratingKey) }.map(\.ratingKey))
-        staticRangeRecovery.keepCheckpointPauses { key in
-            StaticRangeRefreshCleanupPolicy.shouldKeepCheckpointPause(
-                record: fresh.first(where: { $0.ratingKey == key }),
-                isTrackingTransfer: session.isTrackingTransfer(ratingKey: key)
-            )
-        }
         liveRangeProgress = liveRangeProgress.filter { key, sample in
             guard DownloadLiveRangeProgressPolicy.isFresh(sample, now: now) else { return false }
             return StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(
                 key: key,
-                activeDownloadingKeys: activeKeys,
-                checkpointPauseKeys: pendingPauseKeys
+                activeDownloadingKeys: activeKeys
             )
         }
         // #123: drive one pure `DownloadRateEstimator` per actively-downloading row from its
@@ -2270,8 +2234,6 @@ public final class DownloadManager {
             deferredBackgroundCompletionIdentifierCount: snapshot.deferredBackgroundCompletionIdentifierCount,
             backgroundCompletionHandlerCount: snapshot.backgroundCompletionHandlerCount,
             finalizingRatingKeyCount: snapshot.finalizingRatingKeyCount,
-            rangeBackgroundHandoffGraceTaskCount: snapshot.rangeBackgroundHandoffGraceTaskCount,
-            gracefulRangePauseKeyCount: snapshot.gracefulRangePauseKeyCount,
             pendingTempCleanupBytes: snapshot.pendingTempCleanupBytes)
     }
 
@@ -2487,8 +2449,7 @@ public final class DownloadManager {
         DownloadLiveRangeProgressPolicy.liveDisplayBytes(
             for: record,
             sample: liveRangeProgress[record.ratingKey],
-            now: now,
-            isCheckpointPausing: staticRangeRecovery.isCheckpointPausing(record.ratingKey))
+            now: now)
     }
 
     private func displayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
@@ -2516,8 +2477,7 @@ public final class DownloadManager {
             },
             displayProgress: { record in rowDisplayProgress(for: record) },
             statusCaption: { record, backend in statusCaption(for: record, backend: backend) },
-            isRetrying: { ratingKey in retryState.isPresentingRetry(ratingKey) },
-            isCheckpointPausing: { ratingKey in staticRangeRecovery.isCheckpointPausing(ratingKey) }
+            isRetrying: { ratingKey in retryState.isPresentingRetry(ratingKey) }
         )
     }
 
@@ -2529,8 +2489,7 @@ public final class DownloadManager {
     }
 
     private func statusCaption(for record: DownloadRecord, backend: DownloadBackendKind) -> String {
-        let isCheckpointPausing = staticRangeRecovery.isCheckpointPausing(record.ratingKey)
-        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading || isCheckpointPausing
+        let isActive = activeJobs.contains(record.ratingKey) || record.status == .downloading
         let failureCaption = record.status == .failed ? lastError[record.ratingKey].map(message(for:)) : nil
         return DownloadRowStatusCaptionPolicy.caption(.init(
             record: record,
@@ -2538,7 +2497,6 @@ public final class DownloadManager {
             displayFraction: displayFraction(for: record),
             displayBytes: displayBytes(for: record),
             isActive: isActive,
-            isCheckpointPausing: isCheckpointPausing,
             isBackendConfigured: isBackendConfigured(for: record),
             isTranscodeLimited: record.status == .downloading
                 && DownloadDisplayClassifier.isLiveTranscoderSourced(record),

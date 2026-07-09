@@ -8,28 +8,19 @@ struct DownloadRowDisplayPolicyTests {
     func activeHeads() {
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
                                                     backend: .plex,
-                                                    isServerPreparedVersion: false,
-                                                    isCheckpointPausing: false) == "Downloading original")
+                                                    isServerPreparedVersion: false) == "Downloading original")
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
                                                     backend: .emby,
-                                                    isServerPreparedVersion: true,
-                                                    isCheckpointPausing: false) == "Downloading transcode")
+                                                    isServerPreparedVersion: true) == "Downloading transcode")
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .compatibleRemux,
                                                     backend: .jellyfin,
-                                                    isServerPreparedVersion: false,
-                                                    isCheckpointPausing: false) == "Remuxing + downloading")
+                                                    isServerPreparedVersion: false) == "Remuxing + downloading")
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .optimize,
                                                     backend: .plex,
-                                                    isServerPreparedVersion: false,
-                                                    isCheckpointPausing: false) == "Downloading transcode")
+                                                    isServerPreparedVersion: false) == "Downloading transcode")
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .optimize,
                                                     backend: .emby,
-                                                    isServerPreparedVersion: false,
-                                                    isCheckpointPausing: false) == "Transcoding + downloading")
-        #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
-                                                    backend: .plex,
-                                                    isServerPreparedVersion: false,
-                                                    isCheckpointPausing: true) == "Pausing at checkpoint")
+                                                    isServerPreparedVersion: false) == "Transcoding + downloading")
     }
 
     @Test("Percent text marks estimated fractions")

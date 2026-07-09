@@ -44,9 +44,7 @@ public enum DownloadRowDisplayPolicy {
 
     public static func activeHead(lane: DownloadLane,
                                   backend: DownloadBackendKind,
-                                  isServerPreparedVersion: Bool,
-                                  isCheckpointPausing: Bool) -> String {
-        if isCheckpointPausing { return "Pausing at checkpoint" }
+                                  isServerPreparedVersion: Bool) -> String {
         switch lane {
         case .original where isServerPreparedVersion:
             return "Downloading transcode"

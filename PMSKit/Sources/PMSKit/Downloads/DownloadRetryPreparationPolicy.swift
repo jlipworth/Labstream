@@ -28,7 +28,7 @@ public enum DownloadRetryPreparationPolicy {
     public static func shouldResumePersistedURLSessionData(status: DownloadStatus,
                                                            supportsPersistedResumeData: Bool,
                                                            hasResumeData: Bool) -> Bool {
-        status == .paused && supportsPersistedResumeData && hasResumeData
+        (status == .paused || status == .failed) && supportsPersistedResumeData && hasResumeData
     }
 
     /// Which transfer lane a persisted URLSession resume blob must be resumed on. Range-checkpoint

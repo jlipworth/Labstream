@@ -9,18 +9,15 @@ public struct StaticRangeRecoveryTracker: Equatable, Sendable {
     public private(set) var pendingResumeKeys: Set<String>
     public private(set) var preserveRestartCounterKeys: Set<String>
     public private(set) var finalizingKeys: Set<String>
-    public private(set) var checkpointPauseKeys: Set<String>
     public private(set) var manualQueueResumeKeys: Set<String>
 
     public init(pendingResumeKeys: Set<String> = [],
                 preserveRestartCounterKeys: Set<String> = [],
                 finalizingKeys: Set<String> = [],
-                checkpointPauseKeys: Set<String> = [],
                 manualQueueResumeKeys: Set<String> = []) {
         self.pendingResumeKeys = pendingResumeKeys
         self.preserveRestartCounterKeys = preserveRestartCounterKeys
         self.finalizingKeys = finalizingKeys
-        self.checkpointPauseKeys = checkpointPauseKeys
         self.manualQueueResumeKeys = manualQueueResumeKeys
     }
 
@@ -77,22 +74,6 @@ public struct StaticRangeRecoveryTracker: Equatable, Sendable {
 
     public mutating func subtractManualQueueResumes(_ keys: Set<String>) {
         manualQueueResumeKeys.subtract(keys)
-    }
-
-    public mutating func markCheckpointPause(_ key: String) {
-        checkpointPauseKeys.insert(key)
-    }
-
-    public mutating func removeCheckpointPause(_ key: String) {
-        checkpointPauseKeys.remove(key)
-    }
-
-    public func isCheckpointPausing(_ key: String) -> Bool {
-        checkpointPauseKeys.contains(key)
-    }
-
-    public mutating func keepCheckpointPauses(where shouldKeep: (String) -> Bool) {
-        checkpointPauseKeys = checkpointPauseKeys.filter(shouldKeep)
     }
 
     public mutating func preserveRestartCountersForNextStart(_ key: String) {

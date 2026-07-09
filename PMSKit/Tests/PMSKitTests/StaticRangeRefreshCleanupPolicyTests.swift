@@ -46,28 +46,11 @@ struct StaticRangeRefreshCleanupPolicyTests {
         #expect(keys == ["failed-final", "complete"])
     }
 
-    @Test("Checkpoint pause overlay requires a live downloading transfer")
-    func checkpointPauseKeepPredicate() {
-        #expect(StaticRangeRefreshCleanupPolicy.shouldKeepCheckpointPause(record: record("a", status: .downloading),
-                                                                         isTrackingTransfer: true))
-        #expect(!StaticRangeRefreshCleanupPolicy.shouldKeepCheckpointPause(record: record("b", status: .downloading),
-                                                                          isTrackingTransfer: false))
-        #expect(!StaticRangeRefreshCleanupPolicy.shouldKeepCheckpointPause(record: record("c", status: .paused),
-                                                                          isTrackingTransfer: true))
-        #expect(!StaticRangeRefreshCleanupPolicy.shouldKeepCheckpointPause(record: nil,
-                                                                          isTrackingTransfer: true))
-    }
-
-    @Test("Live range overlays stay only for active or checkpoint-pausing keys")
+    @Test("Live range overlays stay only for active downloading keys")
     func liveRangeProgressKeepPredicate() {
         #expect(StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(key: "active",
-                                                                           activeDownloadingKeys: ["active"],
-                                                                           checkpointPauseKeys: []))
-        #expect(StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(key: "pausing",
-                                                                           activeDownloadingKeys: [],
-                                                                           checkpointPauseKeys: ["pausing"]))
+                                                                           activeDownloadingKeys: ["active"]))
         #expect(!StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(key: "stale",
-                                                                            activeDownloadingKeys: ["active"],
-                                                                            checkpointPauseKeys: ["pausing"]))
+                                                                            activeDownloadingKeys: ["active"]))
     }
 }

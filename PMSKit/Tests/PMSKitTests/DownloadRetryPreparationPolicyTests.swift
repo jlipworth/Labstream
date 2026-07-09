@@ -41,12 +41,15 @@ struct DownloadRetryPreparationPolicyTests {
                                                                              hasEmbyConvertJobID: false))
     }
 
-    @Test("Persisted resume data requires a paused row and a usable blob")
+    @Test("Persisted resume data requires a resumable row and a usable blob")
     func persistedResumeDataGate() {
         #expect(DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(status: .paused,
                                                                                   supportsPersistedResumeData: true,
                                                                                   hasResumeData: true))
-        #expect(!DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(status: .failed,
+        #expect(DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(status: .failed,
+                                                                                  supportsPersistedResumeData: true,
+                                                                                  hasResumeData: true))
+        #expect(!DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(status: .queued,
                                                                                    supportsPersistedResumeData: true,
                                                                                    hasResumeData: true))
         #expect(!DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(status: .paused,

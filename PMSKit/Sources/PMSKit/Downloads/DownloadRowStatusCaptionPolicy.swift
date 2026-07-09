@@ -19,7 +19,6 @@ public enum DownloadRowStatusCaptionPolicy {
         public let resolutionLabel: String?
         public let displayFraction: DownloadProgressDisplay.Fraction?
         public let isActive: Bool
-        public let isCheckpointPausing: Bool
         public let isBackendConfigured: Bool
         public let isTranscodeLimited: Bool
         public let serverPrepState: String?
@@ -42,7 +41,6 @@ public enum DownloadRowStatusCaptionPolicy {
                     resolutionLabel: String?,
                     displayFraction: DownloadProgressDisplay.Fraction?,
                     isActive: Bool,
-                    isCheckpointPausing: Bool,
                     isBackendConfigured: Bool,
                     isTranscodeLimited: Bool,
                     serverPrepState: String?,
@@ -64,7 +62,6 @@ public enum DownloadRowStatusCaptionPolicy {
             self.resolutionLabel = resolutionLabel
             self.displayFraction = displayFraction
             self.isActive = isActive
-            self.isCheckpointPausing = isCheckpointPausing
             self.isBackendConfigured = isBackendConfigured
             self.isTranscodeLimited = isTranscodeLimited
             self.serverPrepState = serverPrepState
@@ -82,7 +79,6 @@ public enum DownloadRowStatusCaptionPolicy {
                     displayFraction: DownloadProgressDisplay.Fraction?,
                     displayBytes: Int? = nil,
                     isActive: Bool,
-                    isCheckpointPausing: Bool,
                     isBackendConfigured: Bool,
                     isTranscodeLimited: Bool,
                     serverPrepState: String?,
@@ -105,7 +101,6 @@ public enum DownloadRowStatusCaptionPolicy {
                       resolutionLabel: record.metadata?.resolutionLabel,
                       displayFraction: displayFraction,
                       isActive: isActive,
-                      isCheckpointPausing: isCheckpointPausing,
                       isBackendConfigured: isBackendConfigured,
                       isTranscodeLimited: isTranscodeLimited,
                       serverPrepState: serverPrepState,
@@ -216,8 +211,7 @@ public enum DownloadRowStatusCaptionPolicy {
         var pieces: [String] = []
         var head = DownloadRowDisplayPolicy.activeHead(lane: context.lane,
                                                        backend: context.backend,
-                                                       isServerPreparedVersion: context.isServerPreparedVersion,
-                                                       isCheckpointPausing: false)
+                                                       isServerPreparedVersion: context.isServerPreparedVersion)
         if let fraction = context.displayFraction {
             head += " • \(DownloadRowDisplayPolicy.percentText(fraction))"
         } else {
@@ -256,8 +250,7 @@ public enum DownloadRowStatusCaptionPolicy {
         if context.isActive {
             var head = DownloadRowDisplayPolicy.activeHead(lane: context.lane,
                                                            backend: context.backend,
-                                                           isServerPreparedVersion: context.isServerPreparedVersion,
-                                                           isCheckpointPausing: context.isCheckpointPausing)
+                                                           isServerPreparedVersion: context.isServerPreparedVersion)
             if let percentPiece { head += " • \(percentPiece)" }
             if let eta = context.downloadETA, eta > 0,
                let left = DownloadRowDisplayPolicy.timeLeftString(eta) {

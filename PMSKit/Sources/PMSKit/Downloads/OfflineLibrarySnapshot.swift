@@ -42,7 +42,6 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
     public let displayProgress: Double?
     public let statusCaption: String
     public let isRetrying: Bool
-    public let isCheckpointPausing: Bool
 
     public init(record: DownloadRecord,
                 showBackendBadge: Bool,
@@ -50,8 +49,7 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
                 errorMessage: String?,
                 displayProgress: Double?,
                 statusCaption: String,
-                isRetrying: Bool,
-                isCheckpointPausing: Bool) {
+                isRetrying: Bool) {
         self.record = record
         self.showBackendBadge = showBackendBadge
         self.backendName = backendName
@@ -59,7 +57,6 @@ public struct OfflineDownloadRowSnapshot: Identifiable, Sendable, Equatable {
         self.displayProgress = displayProgress
         self.statusCaption = statusCaption
         self.isRetrying = isRetrying
-        self.isCheckpointPausing = isCheckpointPausing
     }
 
     public var id: String { record.ratingKey }

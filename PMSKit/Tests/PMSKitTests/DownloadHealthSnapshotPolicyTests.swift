@@ -25,9 +25,7 @@ struct DownloadHealthSnapshotPolicyTests {
                                                     deferredBackgroundCompletionIdentifierCount: 5,
                                                     backgroundCompletionHandlerCount: 6,
                                                     finalizingRatingKeyCount: 7,
-                                                    rangeBackgroundHandoffGraceTaskCount: 8,
-                                                    gracefulRangePauseKeyCount: 9,
-                                                    pendingTempCleanupBytes: 10)
+                                                    pendingTempCleanupBytes: 8)
         let snapshot = DownloadHealthSnapshotPolicy.makeSnapshot(
             records: [record(.queued, key: "queued"),
                       record(.preparing, key: "preparing"),
@@ -119,9 +117,7 @@ struct DownloadHealthSnapshotPolicyTests {
                                                    deferredBackgroundCompletionIdentifierCount: 14,
                                                    backgroundCompletionHandlerCount: 15,
                                                    finalizingRatingKeyCount: 16,
-                                                   rangeBackgroundHandoffGraceTaskCount: 17,
-                                                   gracefulRangePauseKeyCount: 18,
-                                                   pendingTempCleanupBytes: 19))
+                                                   pendingTempCleanupBytes: 17))
         let fields = DownloadHealthSnapshotPolicy.diagnosticFields(for: snapshot)
 
         #expect(fields["record_count"] == .int(1))
@@ -131,7 +127,7 @@ struct DownloadHealthSnapshotPolicyTests {
         #expect(fields["session_inflight_count"] == .int(10))
         #expect(fields["session_range_inflight_count"] == .int(11))
         #expect(fields["session_pending_background_ops"] == .int(13))
-        #expect(fields["session_pending_temp_cleanup_bytes"] == .int(19))
-        #expect(fields.count == 23)
+        #expect(fields["session_pending_temp_cleanup_bytes"] == .int(17))
+        #expect(fields.count == 21)
     }
 }

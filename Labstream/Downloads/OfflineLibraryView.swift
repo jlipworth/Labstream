@@ -353,7 +353,6 @@ public struct OfflineLibraryView: View {
         // failed-but-100% body are now distinct, observable states.
         let isComplete = record.isComplete
         let isRetrying = rowSnapshot.isRetrying
-        let isCheckpointPausing = rowSnapshot.isCheckpointPausing
         let isFailed = record.status == .failed && !isRetrying
         let isUnverified = record.isUnverified
         // #95: a recoverable interruption is resumable, not failed — show a non-red "will resume"
@@ -469,10 +468,6 @@ public struct OfflineLibraryView: View {
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("Retrying download")
-                } else if isCheckpointPausing {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Pausing at checkpoint")
                 } else if isPaused {
                     // #95: Resume continues from the saved byte offset (manager.retry resumes a
                     // `.paused` row from persisted resume data).
