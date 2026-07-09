@@ -80,17 +80,27 @@ struct LoginView: View {
             .background(LoginPanelBackground())
     }
 
-    /// Compact phone layout keeps the full-bleed brand backdrop, but still gives the
-    /// form an adaptive readable surface so iOS can stay in the user's light/dark
-    /// appearance instead of forcing the whole login environment to dark.
+    /// A phone sign-in is an onboarding screen, not an iPad card squeezed into a
+    /// narrow window. Keep the brand surface continuous from edge to edge and let
+    /// its controls float directly on that surface.
     private var compactLoginSurface: some View {
-        formStack
-            .padding(.horizontal, DS.Space.lg)
-            .padding(.vertical, DS.Space.xl)
+        VStack(alignment: .leading, spacing: DS.Space.xxxl) {
+            CompactLoginHeader()
+
+            VStack(alignment: .leading, spacing: DS.Space.xl) {
+                backendPicker
+
+                content
+
+                if let errorMessage {
+                    BackendAuthErrorBanner(message: errorMessage)
+                }
+            }
+        }
+            .padding(.horizontal, DS.Space.xl)
+            .padding(.top, DS.Space.xxl)
+            .padding(.bottom, DS.Space.xxxl)
             .frame(maxWidth: .infinity)
-            .background(LoginPanelBackground())
-            .padding(.horizontal, DS.Space.lg)
-            .padding(.vertical, DS.Space.xl)
     }
 
     var body: some View {
@@ -105,6 +115,7 @@ struct LoginView: View {
                     compactLoginSurface
                 }
                 .scrollBounceBehavior(.basedOnSize)
+                .scrollIndicators(.hidden)
             } else {
                 #if os(iOS)
                 // iPad regular width: the fixed 560-pt card overflows once the
