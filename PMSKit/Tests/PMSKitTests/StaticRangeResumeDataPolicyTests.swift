@@ -4,50 +4,30 @@ import Testing
 
 @Suite("Static range resume data policy")
 struct StaticRangeResumeDataPolicyTests {
-
-    // MARK: Pause disposition
-
-    @Test("Pausing a continuous remainder produces resume data")
-    func remainderPauseProducesResumeData() {
-        #expect(StaticRangeResumeDataPolicy.pauseDisposition(segmentKind: .continuousRemainder)
-            == .cancelProducingResumeData)
+    @Test("Pausing a remainder produces resume data")
+    func pauseProducesResumeData() {
+        #expect(StaticRangeResumeDataPolicy.pauseDisposition() == .cancelProducingResumeData)
     }
-
-    @Test("Pausing bounded checkpoint segments cancels at the durable checkpoint")
-    func boundedPauseUsesCheckpointCancel() {
-        #expect(StaticRangeResumeDataPolicy.pauseDisposition(segmentKind: .boundedCheckpoint)
-            == .checkpointCancel)
-        #expect(StaticRangeResumeDataPolicy.pauseDisposition(segmentKind: .backgroundCheckpoint)
-            == .checkpointCancel)
-    }
-
-    // MARK: Failure resume decision
 
     @Test("Remainder failure with a blob resumes, budget-bounded")
     func remainderFailureWithBlobResumes() {
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: NSURLErrorNetworkConnectionLost,
             hasResumeData: true,
-            segmentKind: .continuousRemainder,
             currentBlobResumeCount: 0
         ) == .resume(nextAttempt: 1))
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: NSURLErrorTimedOut,
             hasResumeData: true,
-            segmentKind: .continuousRemainder,
             currentBlobResumeCount: 2
         ) == .resume(nextAttempt: 3))
     }
 
     @Test("Non-transient-looking errors still blob-resume when the OS handed back a blob")
     func nonTransientErrorWithBlobStillResumes() {
-        // The blob's presence IS the OS's statement that the transfer is resumable; the code
-        // matters less than the blob. (A long headset-off produces errors outside the narrow
-        // transient set with valid resume data.)
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: NSURLErrorUnknown,
             hasResumeData: true,
-            segmentKind: .continuousRemainder,
             currentBlobResumeCount: 0
         ) == .resume(nextAttempt: 1))
     }
@@ -57,7 +37,6 @@ struct StaticRangeResumeDataPolicyTests {
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: NSURLErrorCancelled,
             hasResumeData: true,
-            segmentKind: .continuousRemainder,
             currentBlobResumeCount: 0
         ) == .reject(.cancelled))
     }
@@ -67,19 +46,8 @@ struct StaticRangeResumeDataPolicyTests {
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: NSURLErrorNetworkConnectionLost,
             hasResumeData: false,
-            segmentKind: .continuousRemainder,
             currentBlobResumeCount: 0
         ) == .reject(.missingResumeData))
-    }
-
-    @Test("Bounded checkpoint segments use the fresh-request retry lane, not blobs")
-    func boundedSegmentsRejectBlobResume() {
-        #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
-            errorCode: NSURLErrorNetworkConnectionLost,
-            hasResumeData: true,
-            segmentKind: .boundedCheckpoint,
-            currentBlobResumeCount: 0
-        ) == .reject(.unsupportedSegment))
     }
 
     @Test("Blob resume budget exhausts")
@@ -87,12 +55,9 @@ struct StaticRangeResumeDataPolicyTests {
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: NSURLErrorNetworkConnectionLost,
             hasResumeData: true,
-            segmentKind: .continuousRemainder,
             currentBlobResumeCount: 3
         ) == .reject(.budgetExhausted(nextAttempt: 4, maxResumes: 3)))
     }
-
-    // MARK: Adoption of a blob-resumed task
 
     @Test("Blob whose Range offset matches the durable partial is adopted")
     func matchingOffsetAdopts() {
@@ -118,75 +83,45 @@ struct StaticRangeResumeDataPolicyTests {
         ) == .rejectStale(blobOffset: nil, durableBytes: 1_000))
     }
 
-    // MARK: Durable partial fallback
-
     @Test("Cannot-resume resume data falls back to the durable partial")
     func cannotResumeFallsBackToDurablePartial() {
         #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
             errorDomain: NSURLErrorDomain,
             errorCode: NSURLErrorCannotDecodeRawData,
-            hasResumeData: false,
-            segmentKind: .continuousRemainder
+            hasResumeData: false
         ) == .resumeDataCannotResume)
         #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
             errorDomain: NSURLErrorDomain,
             errorCode: NSURLErrorFileDoesNotExist,
-            hasResumeData: false,
-            segmentKind: .continuousRemainder
+            hasResumeData: false
         ) == .resumeDataCannotResume)
         #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
             errorDomain: NSCocoaErrorDomain,
             errorCode: CocoaError.fileNoSuchFile.rawValue,
-            hasResumeData: false,
-            segmentKind: .continuousRemainder
+            hasResumeData: false
         ) == .resumeDataCannotResume)
     }
 
-    @Test("Fallback does not discard a new blob or apply to legacy bounded tasks")
-    func durableFallbackDoesNotPreemptNewBlobOrLegacyTasks() {
+    @Test("Fallback does not discard a new blob or apply to unrelated errors")
+    func durableFallbackDoesNotPreemptNewBlobOrUnrelatedErrors() {
         #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
             errorDomain: NSURLErrorDomain,
             errorCode: NSURLErrorCannotDecodeRawData,
-            hasResumeData: true,
-            segmentKind: .continuousRemainder
-        ) == nil)
-        #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
-            errorDomain: NSURLErrorDomain,
-            errorCode: NSURLErrorCannotDecodeRawData,
-            hasResumeData: false,
-            segmentKind: .boundedCheckpoint
+            hasResumeData: true
         ) == nil)
         #expect(StaticRangeResumeDataPolicy.durableFallbackReason(
             errorDomain: NSURLErrorDomain,
             errorCode: NSURLErrorNetworkConnectionLost,
-            hasResumeData: false,
-            segmentKind: .continuousRemainder
+            hasResumeData: false
         ) == nil)
     }
 
-    // MARK: Persist on park
-
-    @Test("Parking a remainder with a blob persists it")
-    func parkingRemainderPersistsBlob() {
-        #expect(StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
-            hasResumeData: true, segmentKind: .continuousRemainder
-        ))
-    }
-
-    @Test("Parking without a blob or on bounded segments persists nothing")
-    func parkingWithoutBlobPersistsNothing() {
-        #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
-            hasResumeData: false, segmentKind: .continuousRemainder
-        ))
-        #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
-            hasResumeData: true, segmentKind: .boundedCheckpoint
-        ))
-        #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
-            hasResumeData: true, segmentKind: .backgroundCheckpoint
-        ))
+    @Test("Parking with a blob persists it unless the blob was rejected")
+    func parkingPersistsBlob() {
+        #expect(StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(hasResumeData: true))
+        #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(hasResumeData: false))
         #expect(!StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
             hasResumeData: true,
-            segmentKind: .continuousRemainder,
             resumeDataWasRejected: true
         ))
     }

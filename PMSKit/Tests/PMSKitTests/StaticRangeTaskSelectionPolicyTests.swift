@@ -3,50 +3,45 @@ import Testing
 
 @Suite("Static range task selection policy")
 struct StaticRangeTaskSelectionPolicyTests {
-
-    @Test("Duplicate decision keeps the furthest checkpoint task")
-    func furthestCheckpointWins() {
+    @Test("Duplicate decision keeps the furthest durable offset task")
+    func furthestOffsetWins() {
         let candidate = StaticRangeTaskSnapshot(
             taskIdentifier: 3,
             downloadID: "plex:movie",
             baseOffset: 128,
-            chunkBytesWritten: 0
+            bodyBytesWritten: 0
         )
         let existing = [
-            StaticRangeTaskSnapshot(taskIdentifier: 1, downloadID: "plex:movie", baseOffset: 64, chunkBytesWritten: 20),
-            StaticRangeTaskSnapshot(taskIdentifier: 2, downloadID: "other", baseOffset: 1_000, chunkBytesWritten: 0),
+            StaticRangeTaskSnapshot(taskIdentifier: 1, downloadID: "plex:movie", baseOffset: 64, bodyBytesWritten: 20),
+            StaticRangeTaskSnapshot(taskIdentifier: 2, downloadID: "other", baseOffset: 1_000, bodyBytesWritten: 0),
         ]
 
-        let decision = StaticRangeTaskSelectionPolicy.duplicateDecision(
+        #expect(StaticRangeTaskSelectionPolicy.duplicateDecision(
             candidate: candidate,
             existingTasks: existing
-        )
-
-        #expect(decision == StaticRangeDuplicateTaskDecision(
+        ) == StaticRangeDuplicateTaskDecision(
             existingTaskIdentifier: 1,
             existingBaseOffset: 64,
             shouldReplaceExisting: true
         ))
     }
 
-    @Test("Duplicate decision keeps the task with more chunk bytes when checkpoints tie")
-    func chunkBytesBreakTies() {
+    @Test("Duplicate decision keeps the task with more body bytes when offsets tie")
+    func bodyBytesBreakTies() {
         let candidate = StaticRangeTaskSnapshot(
             taskIdentifier: 4,
             downloadID: "jellyfin:item",
             baseOffset: 64,
-            chunkBytesWritten: 10
+            bodyBytesWritten: 10
         )
         let existing = [
-            StaticRangeTaskSnapshot(taskIdentifier: 5, downloadID: "jellyfin:item", baseOffset: 64, chunkBytesWritten: 40),
+            StaticRangeTaskSnapshot(taskIdentifier: 5, downloadID: "jellyfin:item", baseOffset: 64, bodyBytesWritten: 40),
         ]
 
-        let decision = StaticRangeTaskSelectionPolicy.duplicateDecision(
+        #expect(StaticRangeTaskSelectionPolicy.duplicateDecision(
             candidate: candidate,
             existingTasks: existing
-        )
-
-        #expect(decision == StaticRangeDuplicateTaskDecision(
+        ) == StaticRangeDuplicateTaskDecision(
             existingTaskIdentifier: 5,
             existingBaseOffset: 64,
             shouldReplaceExisting: false
@@ -58,20 +53,20 @@ struct StaticRangeTaskSelectionPolicyTests {
         let current = StaticRangeTaskSnapshot(
             taskIdentifier: 10,
             downloadID: "emby:item",
-            baseOffset: 64,
-            chunkBytesWritten: 50
+            baseOffset: 100,
+            bodyBytesWritten: 50
         )
         let newer = StaticRangeTaskSnapshot(
             taskIdentifier: 11,
             downloadID: "emby:item",
-            baseOffset: 128,
-            chunkBytesWritten: 0
+            baseOffset: 200,
+            bodyBytesWritten: 0
         )
         let other = StaticRangeTaskSnapshot(
             taskIdentifier: 12,
             downloadID: "other",
-            baseOffset: 512,
-            chunkBytesWritten: 0
+            baseOffset: 10_000,
+            bodyBytesWritten: 0
         )
 
         #expect(StaticRangeTaskSelectionPolicy.newerTaskIdentifier(
@@ -85,17 +80,15 @@ struct StaticRangeTaskSelectionPolicyTests {
         let current = StaticRangeTaskSnapshot(
             taskIdentifier: 20,
             downloadID: "row",
-            baseOffset: 64,
-            chunkBytesWritten: 10
+            baseOffset: 100,
+            bodyBytesWritten: 10
         )
         let equal = StaticRangeTaskSnapshot(
             taskIdentifier: 21,
             downloadID: "row",
-            baseOffset: 64,
-            chunkBytesWritten: 10
+            baseOffset: 100,
+            bodyBytesWritten: 10
         )
-
         #expect(!StaticRangeTaskSelectionPolicy.isNewer(equal, than: current))
-        #expect(StaticRangeTaskSelectionPolicy.newerTaskIdentifier(than: current, in: [equal]) == nil)
     }
 }

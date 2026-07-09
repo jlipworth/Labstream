@@ -645,7 +645,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// #169: the HTTP validator (`ETag`/`Last-Modified`) for a static byte-range download, captured
-    /// from the first chunk and sent as `If-Range` on the rest so a server-side resource change is
+    /// from the first successful range body and sent as `If-Range` on later requests so a server-side resource change is
     /// detected (200 full-replace) instead of silently corrupting the partial.
     func rangeValidator(ratingKey: String) -> String? {
         lock.lock(); defer { lock.unlock() }
@@ -661,7 +661,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
-    /// the partial file. The current in-flight `URLSessionDownloadTask` chunk lives in an OS temp
+    /// the partial file. The current in-flight static Range task body lives in an OS temp
     /// until `didFinishDownloadingTo`; progress callbacks may have published those optimistic bytes
     /// for UI smoothness, but pause/error/reconcile paths must checkpoint from this file size only.
     @discardableResult
@@ -722,7 +722,7 @@ final class DownloadStore: @unchecked Sendable {
 
     /// #169: ratingKeys for static byte-range rows that were ACTIVELY transferring (`.downloading`/
     /// `.queued`) — NOT user-paused — when the app died. A row may have zero durable bytes if the
-    /// first background chunk was still in the OS temp file; it is still a system-interrupted active
+    /// first background range body was still in the OS temp file; it is still a system-interrupted active
     /// download and should restart from byte 0 rather than waiting for a manual tap.
     /// Must be read BEFORE `reconcile`, which parks them `.paused` (conflating them with a deliberate
     /// user pause). The launch auto-resume uses this to continue interrupted downloads after a process

@@ -7,8 +7,7 @@ import Foundation
 /// cancel or a task failure would discard arbitrarily many non-durable bytes (up to the whole
 /// remainder of a multi-GB file). Resume data is the only handle the OS gives us on that temp:
 /// pauses cancel by producing it, failures re-resume from it (budget-bounded), and parking a row
-/// persists it for a later manual Resume. Legacy bounded checkpoint chunks keep their existing
-/// fresh-request retry lane only so older closed-Range tasks can finish safely.
+/// persists it for a later manual Resume.
 ///
 /// Correctness backstop: adoption verifies the blob's original Range offset against the durable
 /// partial, and every completed body still passes the append-time Content-Range / validator
@@ -19,14 +18,11 @@ public enum StaticRangeResumeDataPolicy {
     public enum PauseDisposition: Sendable, Equatable {
         /// Cancel via `cancel(byProducingResumeData:)` so the OS-temp progress survives the pause.
         case cancelProducingResumeData
-        /// Plain cancel; the app-owned durable checkpoint bounds the loss to one chunk.
-        case checkpointCancel
     }
 
     public enum FailureResumeRejection: Sendable, Equatable {
         case cancelled
         case missingResumeData
-        case unsupportedSegment
         case budgetExhausted(nextAttempt: Int, maxResumes: Int)
     }
 
@@ -48,8 +44,8 @@ public enum StaticRangeResumeDataPolicy {
         case resumeDataRejected
     }
 
-    public static func pauseDisposition(segmentKind: RangeTransferSegmentKind) -> PauseDisposition {
-        segmentKind == .continuousRemainder ? .cancelProducingResumeData : .checkpointCancel
+    public static func pauseDisposition() -> PauseDisposition {
+        .cancelProducingResumeData
     }
 
     /// Whether a failed remainder task should be re-resumed from the blob the OS handed back.
@@ -57,14 +53,10 @@ public enum StaticRangeResumeDataPolicy {
     /// non-cancel error qualifies; the budget bounds pathological resume loops.
     public static func failureResumeDecision(errorCode: Int?,
                                              hasResumeData: Bool,
-                                             segmentKind: RangeTransferSegmentKind,
                                              currentBlobResumeCount: Int,
                                              maxBlobResumes: Int = defaultMaxBlobResumes) -> FailureResumeDecision {
         if errorCode == NSURLErrorCancelled {
             return .reject(.cancelled)
-        }
-        guard segmentKind == .continuousRemainder else {
-            return .reject(.unsupportedSegment)
         }
         guard hasResumeData else {
             return .reject(.missingResumeData)
@@ -92,9 +84,7 @@ public enum StaticRangeResumeDataPolicy {
     /// to discard the blob and restart from the durable partial with a fresh open-ended Range.
     public static func durableFallbackReason(errorDomain: String,
                                              errorCode: Int,
-                                             hasResumeData: Bool,
-                                             segmentKind: RangeTransferSegmentKind) -> DurableFallbackReason? {
-        guard segmentKind == .continuousRemainder else { return nil }
+                                             hasResumeData: Bool) -> DurableFallbackReason? {
         // If URLSession handed back another blob, try/adopt that before discarding temp progress.
         guard !hasResumeData else { return nil }
         if errorDomain == NSURLErrorDomain,
@@ -117,8 +107,7 @@ public enum StaticRangeResumeDataPolicy {
     /// Persist the blob when parking a row (`.paused`/`.queued`) so a manual Resume — even after
     /// a relaunch — continues the OS-temp progress instead of re-fetching it.
     public static func shouldPersistBlobOnPark(hasResumeData: Bool,
-                                               segmentKind: RangeTransferSegmentKind,
                                                resumeDataWasRejected: Bool = false) -> Bool {
-        hasResumeData && !resumeDataWasRejected && segmentKind == .continuousRemainder
+        hasResumeData && !resumeDataWasRejected
     }
 }

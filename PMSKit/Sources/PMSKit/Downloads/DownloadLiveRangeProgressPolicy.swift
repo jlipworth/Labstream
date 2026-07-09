@@ -1,9 +1,9 @@
 import Foundation
 
-/// Ephemeral progress overlay for active static byte-range chunks.
+/// Ephemeral progress overlay for an active static byte-range remainder.
 ///
 /// Persisted `DownloadRecord.bytes` stays checkpoint-only. This sample carries optimistic in-memory
-/// bytes from the live URLSession chunk so the UI can show smooth progress/speed between durable
+/// bytes from the live URLSession body so the UI can show smooth progress/speed between durable
 /// checkpoints without making pause/retry accounting depend on non-resumable temp files.
 public struct DownloadLiveRangeProgressSample: Equatable, Sendable {
     public var bytes: Int
@@ -21,10 +21,10 @@ public struct DownloadLiveRangeProgressSample: Equatable, Sendable {
 public enum DownloadLiveRangeProgressPolicy {
     public static let staleIntervalSeconds: TimeInterval = 15
 
-    /// Keep the largest live count within a transfer. Older bounded-checkpoint code allowed lower
-    /// re-baselines between chunks, but #227 continuous-remainder tasks must not make the UI jump
-    /// backwards when URLSession reports blob-resumed task bytes from a fresh per-task baseline.
-    /// Preserve an earlier expected-byte total when the current callback omits it.
+    /// Keep the largest live count within the active continuous-remainder transfer. #227/#231
+    /// should not make the UI jump backwards when URLSession reports blob-resumed task bytes from a
+    /// fresh per-task baseline. Preserve an earlier expected-byte total when the current callback
+    /// omits it.
     public static func mergedSample(liveBytes: Int,
                                     expectedBytes: Int?,
                                     previous: DownloadLiveRangeProgressSample?,

@@ -460,10 +460,11 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// `nil`/false for a genuine original (and every pre-existing row).
     public var serverPreparedVersion: Bool?
     /// #169: HTTP validator (`ETag`, else `Last-Modified`) captured from the first static byte-range
-    /// chunk. Sent as `If-Range` on every subsequent chunk so that if the server-side resource
-    /// changes mid-download the server returns the whole NEW resource (200) — which the chunk lane
-    /// replaces honestly — instead of a 206 that would append new bytes after a stale prefix and
-    /// silently corrupt the file. `nil` until the first chunk completes / for non-byte-range rows.
+    /// range body. Sent as `If-Range` on later static Range requests so that if the server-side
+    /// resource changes mid-download the server returns the whole NEW resource (200) — which the
+    /// range lane replaces honestly — instead of a 206 that would append new bytes after a stale
+    /// prefix and silently corrupt the file. `nil` until the first body completes / for
+    /// non-byte-range rows.
     public var rangeValidator: String?
 
     public init(ratingKey: String,

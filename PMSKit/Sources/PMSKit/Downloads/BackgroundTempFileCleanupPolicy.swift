@@ -21,7 +21,8 @@ public enum BackgroundNetworkTempCleanupContext: String, Sendable {
 /// The app layer still owns filesystem reads/deletes and diagnostics. This policy only pins which
 /// temp paths are in scope and when a cleanup pass is allowed to remove them.
 public enum BackgroundTempFileCleanupPolicy {
-    public static let rangeChunkStashPrefix = "vp-range-chunk-"
+    public static let rangeBodyStashPrefix = "vp-range-body-"
+    public static let legacyRangeChunkStashPrefix = "vp-range-chunk-"
     public static let cfNetworkTempPrefix = "CFNetworkDownload_"
     public static let cfNetworkTempSuffix = ".tmp"
 
@@ -50,22 +51,27 @@ public enum BackgroundTempFileCleanupPolicy {
             && fileName.hasSuffix(cfNetworkTempSuffix)
     }
 
-    public static func rangeChunkStashTaskIdentifier(fileName: String) -> Int? {
-        guard fileName.hasPrefix(rangeChunkStashPrefix) else { return nil }
-        return Int(fileName.dropFirst(rangeChunkStashPrefix.count))
+    public static func rangeBodyStashTaskIdentifier(fileName: String) -> Int? {
+        if fileName.hasPrefix(rangeBodyStashPrefix) {
+            return Int(fileName.dropFirst(rangeBodyStashPrefix.count))
+        }
+        if fileName.hasPrefix(legacyRangeChunkStashPrefix) {
+            return Int(fileName.dropFirst(legacyRangeChunkStashPrefix.count))
+        }
+        return nil
     }
 
-    public static func shouldDeleteRangeChunkStash(fileName: String,
-                                                   liveTaskIdentifiers: Set<Int>) -> Bool {
-        guard let taskIdentifier = rangeChunkStashTaskIdentifier(fileName: fileName) else {
+    public static func shouldDeleteRangeBodyStash(fileName: String,
+                                                  liveTaskIdentifiers: Set<Int>) -> Bool {
+        guard let taskIdentifier = rangeBodyStashTaskIdentifier(fileName: fileName) else {
             return false
         }
         return !liveTaskIdentifiers.contains(taskIdentifier)
     }
 
     /// CFNetwork temps younger than this are never deletable, even by a manual scan: the file
-    /// may back a completed transfer whose delegate delivery is still pending (#220 saw a chunk
-    /// suspended ~3h before delivery). 72h comfortably clears any suspension-delivery latency
+    /// may back a completed transfer whose delegate delivery is still pending (#220 saw a response
+    /// body suspended ~3h before delivery). 72h comfortably clears any suspension-delivery latency
     /// while still reclaiming genuinely leaked multi-GB temps.
     public static let minimumCFNetworkTempAge: TimeInterval = 72 * 60 * 60
 

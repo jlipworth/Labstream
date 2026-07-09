@@ -66,8 +66,8 @@ fundamentally constrained by the platform, not by the server or the app:
   than the same download with the app active.
 - **Background app wake-ups are rate-limited.** Each time the system relaunches the app for a
   background-session event, it may delay the next opportunity to do app work. Any design that
-  needs an app wake-up per chunk therefore stalls after a handful of chunks regardless of chunk
-  size.
+  needs an app wake-up per bounded transfer therefore stalls after a handful of handoffs
+  regardless of transfer size.
 - **Transfers started while backgrounded are treated as discretionary** — the system schedules
   them at its own pace regardless of configuration.
 
@@ -76,30 +76,19 @@ Apple-standard architecture we can make stable:
 
 - **One system-owned task for the remaining bytes.** Static Plex/Jellyfin/Emby file transfers use
   one background `URLSessionDownloadTask` with an open-ended `Range: bytes=<durableOffset>-`
-  request from the durable partial file size. This is used in the foreground and background; there
-  is no foreground-to-background task migration, bounded foreground checkpoint chain, foreground
-  demotion, or background-event handoff grace loop for new static downloads.
+  request from the durable partial file size. This same shape is used in foreground and background.
 - **URLSession resume data is first-class.** Pause, sleep/off-head interruption, and recoverable
   task failures preserve in-flight bytes by producing or adopting URLSession resume data when the
   system can provide it. Persisted blobs are registered back into the static range lane, not the
   opaque whole-file lane, so completed partial-body temps are appended/replaced safely.
-- **The durable partial is the fallback checkpoint.** If resume data is missing, invalid, stale, or
-  refers to a temp file the system has deleted, Labstream clears/discards the blob and starts a new
-  open-ended Range request from the durable partial's current file size. This may lose in-flight
-  bytes, but it avoids the pause/resume/sleep edge cases caused by the older bounded-checkpoint
-  state machine.
+- **The durable partial is the fallback.** If resume data is missing, invalid, stale, or refers to a
+  temp file the system has deleted, Labstream clears/discards the blob and starts a new open-ended
+  Range request from the durable partial's current file size.
 - **HTTP safety checks still guard the append.** Completed bodies are validated for
   `Content-Range` start alignment, pinned validator mismatches, HTTP `200` full-body
   replacement/restart behavior, `416` total validation, temp disappearance fallback, and safe
   resume-blob adoption/clearing. A strangely-resumed transfer should waste bandwidth or fall back
-  to the durable checkpoint, never corrupt the file.
-
-Tradeoff: the previous 64 MB foreground checkpoint chain was very durable and minimized lost work
-when the process died without usable resume data. It also created a large custom lifecycle surface
-around bounded chunks, checkpoint pauses, demotion, background-event handoff grace, reattach,
-and sleep recovery. The current design
-favors platform-standard URLSession task lifecycle stability; if URLSession cannot resume the
-in-flight temp, progress falls back to the last durable partial checkpoint.
+  to the durable partial, never corrupt the file.
 
 Simulator caveat: Labstream intentionally uses a foreground/default `URLSession`
 in simulator builds because the background transfer daemon is unreliable there.
@@ -129,7 +118,7 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | --- | --- |
 | `DownloadManager` | Main-actor queue coordination and user-visible state. |
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
-| `BackgroundDownloadSession` | URLSession tasks, byte-range checkpointing, transfer callbacks, finalization. |
+| `BackgroundDownloadSession` | URLSession tasks, open-ended byte-range remainders, transfer callbacks, finalization. |
 | `DownloadStore` | Offline index persistence and file-side effects. |
 | PMSKit download policies | Pure route, retry, row-display, and recovery decisions. |
 

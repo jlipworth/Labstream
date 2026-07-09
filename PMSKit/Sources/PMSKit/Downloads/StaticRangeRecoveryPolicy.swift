@@ -88,11 +88,11 @@ public enum StaticRangeRecoveryPolicy {
         (record.status == .queued || record.status == .downloading) && isStaticRangeRecord(record)
     }
 
-    /// Restart counters should survive adopted relaunch restarts that did not append forward
-    /// progress, otherwise validator/offset livelock bounds can be reset by each rebuilt request.
+    /// Restart counters should survive request rebuilds that did not append forward progress,
+    /// otherwise validator/offset livelock bounds can be reset by each rebuilt request.
     public static func shouldPreserveRangeRestartCounters(reason: String) -> Bool {
         reason == "validatorChanged"
-            || reason == "adoptedChunkFailed"
+            || reason == "requestRebuildNeeded"
             || reason == "serverAuthorizationRejected"
     }
 }

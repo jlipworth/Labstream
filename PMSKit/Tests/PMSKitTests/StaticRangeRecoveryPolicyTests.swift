@@ -117,12 +117,12 @@ struct StaticRangeRecoveryPolicyTests {
         ))
     }
 
-    @Test("Only adopted no-progress restart reasons preserve bounded retry counters")
+    @Test("Only no-progress request rebuild reasons preserve retry counters")
     func preserveRestartCounterReasons() {
         #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "validatorChanged"))
-        #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "adoptedChunkFailed"))
+        #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "requestRebuildNeeded"))
         #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "serverAuthorizationRejected"))
-        #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "adoptedChunkFinished"))
+        #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "legacyClosedRangeDropped"))
         #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "backend_ready"))
     }
 }

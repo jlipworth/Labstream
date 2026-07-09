@@ -30,35 +30,35 @@ struct BackgroundDownloadProgressPolicyTests {
             last: last,
             now: t0,
             totalBytes: 1_000,
-            rangeChunkSize: 64,
+            byteInterval: 64,
             isFirstCallback: true
         ))
         #expect(BackgroundDownloadProgressPolicy.shouldRecordRangeProgress(
             last: nil,
             now: t0,
             totalBytes: 1_000,
-            rangeChunkSize: 64,
+            byteInterval: 64,
             isFirstCallback: false
         ))
         #expect(!BackgroundDownloadProgressPolicy.shouldRecordRangeProgress(
             last: last,
             now: t0.addingTimeInterval(9.9),
             totalBytes: 1_063,
-            rangeChunkSize: 64,
+            byteInterval: 64,
             isFirstCallback: false
         ))
         #expect(BackgroundDownloadProgressPolicy.shouldRecordRangeProgress(
             last: last,
             now: t0.addingTimeInterval(10),
             totalBytes: 1_000,
-            rangeChunkSize: 64,
+            byteInterval: 64,
             isFirstCallback: false
         ))
         #expect(BackgroundDownloadProgressPolicy.shouldRecordRangeProgress(
             last: last,
             now: t0,
             totalBytes: 1_064,
-            rangeChunkSize: 64,
+            byteInterval: 64,
             isFirstCallback: false
         ))
     }

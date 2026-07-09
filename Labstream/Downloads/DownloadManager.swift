@@ -594,8 +594,8 @@ public final class DownloadManager {
 
 
     /// Auth restore and background URLSession reattachment can complete in different turns.
-    /// Server-prep rows have no URLSession task yet, and relaunch-adopted Range chunks may need the
-    /// backend lane to rehydrate an authenticated request before the next chunk can start. Retry a
+    /// Server-prep rows have no URLSession task yet, and relaunch-adopted Range tasks may need the
+    /// backend lane to rehydrate an authenticated request before the next remainder can start. Retry a
     /// few times after launch/ready edges; both resume helpers are idempotent.
     public func scheduleServerPrepResumeRetries() {
         serverPrepResumeRetryTask?.cancel()
@@ -682,7 +682,7 @@ public final class DownloadManager {
             store.setStatus(ratingKey: ratingKey, .paused)
             lastError[ratingKey] = .interruptedResumable
         case .failedNoCheckpoint:
-            // No durable checkpoint remains (for example, an adopted chunk discovered a validator
+            // No durable checkpoint remains (for example, an adopted range task discovered a validator
             // mismatch and discarded the stale prefix). Keep this restartable as a failed row rather
             // than a paused row with no partial and no retry path.
             store.setStatus(ratingKey: ratingKey, .failed)
@@ -807,7 +807,7 @@ public final class DownloadManager {
         if retryState.isRetrying(ratingKey) {
             return
         }
-        // A relaunch-adopted chunk can leave app-level retry/active bookkeeping behind even though
+        // A relaunch-adopted range task can leave app-level retry/active bookkeeping behind even though
         // URLSession has no live task and the row is merely a queued continuation intent. Clear that
         // presentation/handoff state before driving the backend retry, or `retry` can no-op and the
         // user has to manually Pause→Resume to kick the exact same request.
@@ -955,7 +955,7 @@ public final class DownloadManager {
         }
         // #131/#146/#168/#169 live checks: paused static-byte-range rows may have only the durable
         // partial file as their checkpoint (no URLSession resume blob), or may have no durable bytes
-        // yet (user paused before the first chunk committed / validator restart from zero). Promote
+        // yet (user paused before the first range body committed / validator restart from zero). Promote
         // them out of `.paused` before backend-specific retry dispatch, because Jellyfin/Emby retry
         // bodies also pass through `retryAttemptCanContinue`; if the row is still `.paused`, that
         // async guard treats the user's Resume tap as cancelled and silently no-ops.
@@ -1360,10 +1360,11 @@ public final class DownloadManager {
 
     /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
     ///
-    /// `nsurlsessiond` keeps a background chunk running while the app is merely suspended, but once
-    /// the OS terminates the app under memory pressure (likely on a multi-hour 4K download) the next
-    /// chunk can't auto-start — `reconcile` parks rows with a durable partial `.paused` and rows whose
-    /// first chunk never committed `.failed`. `candidateKeys` (captured BEFORE reconcile) are the rows
+    /// `nsurlsessiond` keeps a background range task running while the app is merely suspended, but
+    /// once the OS terminates the app under memory pressure (likely on a multi-hour 4K download),
+    /// the next remainder can't auto-start — `reconcile` parks rows with a durable partial `.paused`
+    /// and rows whose first body never committed `.failed`. `candidateKeys` (captured BEFORE
+    /// reconcile) are the rows
     /// that were ACTIVELY transferring, so resuming them honors a system interruption while leaving a
     /// user's deliberate pause alone. `retry` rebuilds the request and continues from the durable
     /// partial (or byte 0). Rows whose background task DID survive are in `liveKeys` (already
@@ -1862,8 +1863,8 @@ public final class DownloadManager {
 
     /// Heal rows that historical bugs finalized past the byte-completeness guard: a static
     /// byte-for-byte row whose durable file is smaller than the source's EXACT size can never be a
-    /// playable whole (headset evidence: an HTTP 416 finalized one 64 MB chunk of a 5.9 GB part to
-    /// `.complete`, and starting playback promoted another truncated row from `.unverified`).
+    /// playable whole (headset evidence: an HTTP 416 finalized a truncated legacy bounded body
+    /// from a 5.9 GB part to `.complete`, and starting playback promoted another truncated row from `.unverified`).
     /// Demote them to `.failed` KEEPING the file — it is the resume checkpoint — so Retry
     /// continues from the durable offset. `sourceExactBytes` is nil for transcode lanes, whose
     /// outputs are legitimately smaller than their source, so they are never touched.

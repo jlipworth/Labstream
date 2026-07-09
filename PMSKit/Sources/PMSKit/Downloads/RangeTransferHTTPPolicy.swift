@@ -6,29 +6,9 @@ import FoundationNetworking
 /// Pure HTTP-header policy for the static byte-range transfer engine.
 ///
 /// `BackgroundDownloadSession` owns URLSession tasks, temp files, and durable append/finalize side
-/// effects. This helper owns only the string-level HTTP semantics that decide how an adopted or
-/// newly-started Range task should be classified and validated. Keeping it in PMSKit pins the
-/// subtle recovery behavior without needing app-target tests.
+/// effects. This helper owns only the string-level HTTP semantics needed for the single open-ended
+/// remainder model and for safely dropping legacy closed-Range tasks on reattach.
 public enum RangeTransferHTTPPolicy {
-    public static func isDurableCheckpointSegment(_ kind: RangeTransferSegmentKind) -> Bool {
-        kind == .boundedCheckpoint || kind == .backgroundCheckpoint
-    }
-
-    /// A durable checkpoint segment is a closed Range request. If URLSession reports substantially
-    /// more bytes than that closed segment could contain, the task is no longer useful as a
-    /// checkpoint: letting it continue can park gigabytes in a temp file while the durable partial
-    /// stays pinned at the old 64MB boundary.
-    public static func isDurableSegmentOverrun(segmentKind: RangeTransferSegmentKind,
-                                               chunkBytesWritten: Int,
-                                               expectedSegmentBytes: Int?,
-                                               graceBytes: Int) -> Bool {
-        guard isDurableCheckpointSegment(segmentKind),
-              let expectedSegmentBytes,
-              expectedSegmentBytes > 0,
-              graceBytes >= 0 else { return false }
-        return chunkBytesWritten > expectedSegmentBytes + graceBytes
-    }
-
     /// #220: whether an HTTP 200 body may replace the whole durable partial.
     ///
     /// A 200 to a ranged request means the server ignored/refused the range — the body is either
@@ -52,39 +32,23 @@ public enum RangeTransferHTTPPolicy {
         return false
     }
 
-    /// Classify a task's `Range` header back into the segment strategy that created it.
-    ///
-    /// Only a single open-ended byte range (`bytes=<offset>-`) is a continuous remainder. Closed
-    /// ranges are durable checkpoints; closed ranges larger than the active foreground chunk size are
-    /// treated as older/larger background checkpoint segments when reattached after relaunch.
-    public static func segmentKind(rangeHeader: String?, foregroundChunkSize: Int) -> RangeTransferSegmentKind {
-        guard let rangeHeader else { return .boundedCheckpoint }
+    /// Classify the `Range` header shape without treating closed ranges as adoptable work.
+    public static func rangeRequestShape(_ rangeHeader: String?) -> StaticRangeRequestShape {
+        guard let rangeHeader else { return .missing }
         let normalized = rangeHeader
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        guard normalized.hasPrefix("bytes=") else { return .boundedCheckpoint }
+        guard normalized.hasPrefix("bytes=") else { return .invalid }
         let byteSpec = normalized
             .dropFirst("bytes=".count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if byteSpec.range(of: #"^\d+-$"#, options: .regularExpression) != nil {
-            return .continuousRemainder
+            return .openEnded
         }
-        if let length = closedRangeLength(byteSpec), length > foregroundChunkSize {
-            return .backgroundCheckpoint
+        if byteSpec.range(of: #"^\d+-\d+$"#, options: .regularExpression) != nil {
+            return .closed
         }
-        return .boundedCheckpoint
-    }
-
-    public static func closedRangeLength(_ byteSpec: String) -> Int? {
-        guard byteSpec.range(of: #"^\d+-\d+$"#, options: .regularExpression) != nil else {
-            return nil
-        }
-        let bounds = byteSpec.split(separator: "-", maxSplits: 1)
-        guard bounds.count == 2,
-              let lower = Int(bounds[0]),
-              let upper = Int(bounds[1]),
-              upper >= lower else { return nil }
-        return upper - lower + 1
+        return .invalid
     }
 
     /// HTTP validator for `If-Range`: prefer a strong `ETag`, fall back to `Last-Modified`.
@@ -128,21 +92,21 @@ public enum RangeTransferHTTPPolicy {
         contentRangeTotal(response?.value(forHTTPHeaderField: "Content-Range"))
     }
 
-    /// Whether a completed temp file can be accepted when URLSession internally resumed a closed
-    /// Range request while the app was suspended. The response may report a later server offset even
-    /// though URLSession assembled the full originally requested chunk in the temp file. Accept only
-    /// when that resumed offset sits inside the planned segment and the temp byte count exactly
-    /// matches the requested segment size; otherwise appending would risk a gap or overlap.
-    public static func isCompleteInternallyResumedRangeChunk(baseOffset: Int,
-                                                            contentRangeStart: Int?,
-                                                            stashBytes: Int?,
-                                                            expectedSegmentBytes: Int?) -> Bool {
+    /// Whether a completed temp file can be accepted when URLSession internally resumed an
+    /// open-ended Range request while the app was suspended. The response may report a later server
+    /// offset even though URLSession assembled the full originally requested remainder in the temp
+    /// file. Accept only when that resumed offset sits inside the planned body and the temp byte
+    /// count exactly matches the expected body size; otherwise appending would risk a gap or overlap.
+    public static func isCompleteInternallyResumedRangeBody(baseOffset: Int,
+                                                           contentRangeStart: Int?,
+                                                           stashBytes: Int?,
+                                                           expectedBodyBytes: Int?) -> Bool {
         guard let contentRangeStart,
               let stashBytes,
-              let expectedSegmentBytes,
+              let expectedBodyBytes,
               contentRangeStart > baseOffset,
-              contentRangeStart < baseOffset + expectedSegmentBytes,
-              stashBytes == expectedSegmentBytes else { return false }
+              contentRangeStart < baseOffset + expectedBodyBytes,
+              stashBytes == expectedBodyBytes else { return false }
         return true
     }
 

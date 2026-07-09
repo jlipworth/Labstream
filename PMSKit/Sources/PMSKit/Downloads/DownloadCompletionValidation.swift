@@ -78,8 +78,8 @@ public enum DownloadCompletionValidation {
         /// byte-for-byte download can only be complete at exactly the source size. The playability
         /// probe cannot be trusted here in either direction: an MP4 with a leading moov opens,
         /// plays, and reports its FULL metadata duration from a fraction of its bytes (headset
-        /// evidence: rows finalized `.complete` at one 64 MB chunk of a 5.9 GB file after an HTTP
-        /// 416), and one with a trailing moov just probe-misses into a stuck `.unverified` loop.
+        /// evidence: rows finalized `.complete` from a truncated legacy bounded body after an
+        /// HTTP 416), and one with a trailing moov just probe-misses into a stuck `.unverified` loop.
         case incompleteBytes(actualBytes: Int, expectedBytes: Int)
         case truncated(actualDurationMs: Int, expectedDurationMs: Int)
         case unverified(reason: String)

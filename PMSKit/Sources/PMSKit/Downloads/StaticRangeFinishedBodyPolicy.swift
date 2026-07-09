@@ -3,7 +3,7 @@
 /// The transfer engine may receive a finished body after the row was paused or cancelled. User
 /// pauses should preserve a body that had already finished; hard cancels should discard the temp so
 /// deleted rows do not resurrect bytes.
-public enum StaticRangeFinishedChunkDisposition: Sendable, Equatable {
+public enum StaticRangeFinishedBodyDisposition: Sendable, Equatable {
     /// Drop the temp without writing it into the durable partial.
     case discardTemp
     /// Fold the temp into the durable partial, then leave the row paused.
@@ -12,14 +12,14 @@ public enum StaticRangeFinishedChunkDisposition: Sendable, Equatable {
     case writeThenContinue
 }
 
-public enum StaticRangeFinishedChunkPolicy {
+public enum StaticRangeFinishedBodyPolicy {
     public static func shouldDiscardBeforeStash(isHalted: Bool,
                                                 persistedStatusPaused: Bool) -> Bool {
         isHalted && !persistedStatusPaused
     }
 
     public static func disposition(isHalted: Bool,
-                                   persistedStatusPaused: Bool) -> StaticRangeFinishedChunkDisposition {
+                                   persistedStatusPaused: Bool) -> StaticRangeFinishedBodyDisposition {
         if shouldDiscardBeforeStash(isHalted: isHalted, persistedStatusPaused: persistedStatusPaused) {
             return .discardTemp
         }
