@@ -58,6 +58,46 @@ struct LoginBrandHeader: View {
     }
 }
 
+/// Compact iPhone's setup-style header. It deliberately avoids repeating the large,
+/// centered welcome lockup used by the regular-width card: on a phone that treatment
+/// consumed the top half of the screen and made the rest of the flow feel bolted on.
+struct CompactLoginHeader: View {
+    var body: some View {
+        HStack(spacing: DS.Space.md) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.white.opacity(0.16))
+                    .background(.thinMaterial,
+                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(.white.opacity(0.24), lineWidth: 0.5)
+                    }
+
+                Image("LabstreamGlyph")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 36, height: 36)
+            }
+            .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Labstream")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+
+                Text("Connect your media library.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.78))
+            }
+
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Labstream. Connect your media library.")
+    }
+}
+
 /// Full-bleed branded login backdrop for iOS. In light appearance, a subtle veil keeps
 /// the gradient from fighting adaptive light panels while preserving the Labstream color.
 struct LoginBrandBackdrop: View {

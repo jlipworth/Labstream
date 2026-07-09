@@ -26,6 +26,10 @@ private enum BackendAuthMetrics {
 /// used by the cross-platform chooser. Native macOS keeps the same width rhythm but
 /// uses a standard-height button so the login card does not read as a scaled-up iPad form.
 private struct BackendPrimaryCTALabel: ViewModifier {
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
     func body(content: Content) -> some View {
         #if os(macOS)
         content
@@ -33,15 +37,57 @@ private struct BackendPrimaryCTALabel: ViewModifier {
             .frame(maxWidth: .infinity, minHeight: 28)
         #else
         content
-            .font(.title3.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: 52)
+            .font(horizontalSizeClass == .compact ? .body.weight(.semibold) : .title3.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: horizontalSizeClass == .compact ? 48 : 52)
         #endif
     }
 }
 
 private extension View {
     func backendPrimaryCTALabel() -> some View { modifier(BackendPrimaryCTALabel()) }
+    func backendAuthSupportingTextStyle() -> some View { modifier(BackendAuthSupportingTextStyle()) }
+
+    /// Compact iPhone flows use the screen's native gutters rather than retaining
+    /// the narrow, centered control column that belongs inside the iPad card.
+    @ViewBuilder
+    func backendAuthControlWidth(_ regularWidth: CGFloat) -> some View {
+        #if os(iOS)
+        modifier(BackendAuthControlWidth(regularWidth: regularWidth))
+        #else
+        frame(maxWidth: regularWidth)
+        #endif
+    }
 }
+
+private struct BackendAuthSupportingTextStyle: ViewModifier {
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if horizontalSizeClass == .compact {
+            content.foregroundStyle(.white.opacity(0.76))
+        } else {
+            content.foregroundStyle(.secondary)
+        }
+        #else
+        content.foregroundStyle(.secondary)
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct BackendAuthControlWidth: ViewModifier {
+    let regularWidth: CGFloat
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    func body(content: Content) -> some View {
+        content.frame(maxWidth: horizontalSizeClass == .compact ? .infinity : regularWidth)
+    }
+}
+#endif
 
 enum JellyfinSignInMethod: Equatable {
     case quickConnect
@@ -69,7 +115,7 @@ struct BackendSelectionPicker: View {
             #if os(macOS)
             .controlSize(.regular)
             #endif
-            .frame(maxWidth: BackendAuthMetrics.pickerWidth)
+            .backendAuthControlWidth(BackendAuthMetrics.pickerWidth)
     }
 }
 
@@ -106,7 +152,7 @@ struct PlexLinkCodeView: View {
                     .multilineTextAlignment(.center)
                 Text("on your phone, tablet, or computer")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .backendAuthSupportingTextStyle()
             }
 
             PairingCodeCells(code: code, width: 76, height: 96, fontSize: 54)
@@ -115,7 +161,7 @@ struct PlexLinkCodeView: View {
                 ProgressView()
                 Text("Waiting for authorization…")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .backendAuthSupportingTextStyle()
             }
 
             Button("Open Plex sign-in on this device instead", action: onOpenOnDevice)
@@ -142,11 +188,11 @@ struct PlexSignInStartView: View {
             .controlSize(.regular)
             #endif
             .disabled(isWorking)
-            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
+            .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
 
             Text("Uses a code at plex.tv/link.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .backendAuthSupportingTextStyle()
                 .multilineTextAlignment(.center)
         }
     }
@@ -165,7 +211,7 @@ struct PlexRestoreFailureView: View {
 
             Text("Labstream still has your Plex token, but server discovery did not finish. Try reconnecting before signing in again.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .backendAuthSupportingTextStyle()
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: BackendAuthMetrics.fieldWidth)
 
@@ -178,7 +224,7 @@ struct PlexRestoreFailureView: View {
             .controlSize(.regular)
             #endif
             .disabled(isWorking)
-            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
+            .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
 
             Button("Sign in again", action: onSignInAgain)
                 .labstreamGlassButtonStyle()
@@ -205,7 +251,7 @@ struct JellyfinQuickConnectCodeView: View {
                         .font(.title3.weight(.semibold))
                     Text("In an already signed-in Jellyfin app or web UI, open Quick Connect and enter the code.")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .backendAuthSupportingTextStyle()
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: BackendAuthMetrics.fieldWidth)
                 }
@@ -228,7 +274,7 @@ struct EmbyConnectPinCodeView: View {
                         .multilineTextAlignment(.center)
                     Text("on your phone, tablet, or computer — sign in to Emby Connect there")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .backendAuthSupportingTextStyle()
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: BackendAuthMetrics.fieldWidth)
                 }
@@ -454,6 +500,10 @@ struct BackendSignInMethodChooser: View {
     let onPrimary: () -> Void
     let onSecondary: () -> Void
 
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
     init(prompt: String = "Choose how to sign in.",
          primaryTitle: String,
          primarySystemImage: String,
@@ -482,7 +532,11 @@ struct BackendSignInMethodChooser: View {
         VStack(spacing: DS.Space.sm) {
             Text(prompt)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .backendAuthSupportingTextStyle()
+                #if os(iOS)
+                .frame(maxWidth: .infinity,
+                       alignment: horizontalSizeClass == .compact ? .leading : .center)
+                #endif
 
             VStack(spacing: DS.Space.sm) {
                 Button(action: onPrimary) {
@@ -505,20 +559,20 @@ struct BackendSignInMethodChooser: View {
                 #endif
                 .disabled(secondaryDisabled)
             }
-            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
+            .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
 
             if let disabledHint, !disabledHint.isEmpty {
                 Text(disabledHint)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .backendAuthSupportingTextStyle()
             }
 
             if let footer, !footer.isEmpty {
                 Text(footer)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .backendAuthSupportingTextStyle()
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: BackendAuthMetrics.helperWidth)
+                    .backendAuthControlWidth(BackendAuthMetrics.helperWidth)
             }
         }
     }
@@ -541,7 +595,7 @@ struct BackendAuthStartView: View {
                     ProgressView()
                     Text(workingTitle)
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .backendAuthSupportingTextStyle()
                 }
             } else {
                 Button(action: onStart) {
@@ -553,7 +607,7 @@ struct BackendAuthStartView: View {
                 .controlSize(.regular)
                 #endif
                 .disabled(isStartDisabled)
-                .frame(maxWidth: BackendAuthMetrics.buttonWidth)
+                .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
             }
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
@@ -625,13 +679,13 @@ struct BackendCredentialsSignInForm: View {
                 .textContentType(.username)
                 .submitLabel(.next)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+                .backendAuthControlWidth(BackendAuthMetrics.fieldWidth)
 
             SecureField("Password", text: password)
                 .textContentType(.password)
                 .submitLabel(.go)
                 .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+                .backendAuthControlWidth(BackendAuthMetrics.fieldWidth)
             #endif
 
             Button(action: submitIfAllowed) {
@@ -653,7 +707,7 @@ struct BackendCredentialsSignInForm: View {
             .controlSize(.regular)
             #endif
             .disabled(!canSubmit)
-            .frame(maxWidth: BackendAuthMetrics.buttonWidth)
+            .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
                 .labstreamGlassButtonStyle()
@@ -701,7 +755,7 @@ struct EmbyConnectServerPicker: View {
                     .font(.title3.weight(.semibold))
                 Text("Your Emby Connect account is linked to more than one server.")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .backendAuthSupportingTextStyle()
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: BackendAuthMetrics.fieldWidth)
             }
@@ -718,7 +772,7 @@ struct EmbyConnectServerPicker: View {
                                 if !server.addressLabel.isEmpty {
                                     Text(server.addressLabel)
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .backendAuthSupportingTextStyle()
                                 }
                             }
                             Spacer(minLength: DS.Space.sm)
@@ -726,7 +780,7 @@ struct EmbyConnectServerPicker: View {
                                 ProgressView()
                             } else {
                                 Image(systemName: "chevron.right")
-                                    .foregroundStyle(.secondary)
+                                    .backendAuthSupportingTextStyle()
                             }
                         }
                         .frame(maxWidth: .infinity)
