@@ -127,9 +127,9 @@ public enum BackgroundDownloadTransientRetryPolicy {
     /// headset-off/background reattach race. Treat file-missing Cocoa errors like a transient Range
     /// body failure: keep the last app-owned checkpoint and rebuild/retry from there.
     ///
-    /// Unlike the 416/HTTP paths this takes no segment-kind gate (#220): a move failure commits no
-    /// bytes, so re-requesting from the durable partial's size is valid for every segment kind,
-    /// including a continuous remainder. `.missingRangeRequest` routes the caller to rehydration.
+    /// Unlike the 416/HTTP paths this needs no transfer-shape gate (#220): a move failure commits
+    /// no bytes, so re-requesting from the durable partial's size is valid for the next open-ended
+    /// remainder. `.missingRangeRequest` routes the caller to rehydration.
     public static func rangeMoveDecision(errorDomain: String,
                                          errorCode: Int,
                                          hasRequest: Bool,

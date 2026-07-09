@@ -43,7 +43,7 @@ public struct DownloadRateEstimator: Sendable, Equatable {
 
     /// After a backwards byte-count rebaseline, optionally suppress speed/ETA for a short grace
     /// window. Static byte-range downloads can deliberately reset visible bytes from optimistic
-    /// URLSession temp progress back to the durable checkpoint when promoting/cancelling a segment;
+    /// URLSession temp progress back to the durable checkpoint when promoting/cancelling a task;
     /// publishing the next tiny post-reset window reads as a bogus high-speed flash.
     private var rebaselineSuppressUntil: Date? = nil
 

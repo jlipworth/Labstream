@@ -878,10 +878,10 @@ final class DownloadStore: @unchecked Sendable {
             let hasAppRangeCheckpoint = resumeMode == .staticByteRange
                 && (row.status == .paused || row.status == .queued || row.status == .downloading)
                 && partialBytes > 0
-            let rangeCheckpointExpectedBytes = Self.expectedBytesEstimate(row: row)
-            let rangeCheckpointProgress = Self.progressForDurableBytes(
+            let staticRangeExpectedBytes = Self.expectedBytesEstimate(row: row)
+            let staticRangeProgress = Self.progressForDurableBytes(
                 partialBytes,
-                expectedBytes: rangeCheckpointExpectedBytes
+                expectedBytes: staticRangeExpectedBytes
             )
             // Only Plex has a server-side "prepare then static download" optimize queue that can
             // resume after relaunch. Jellyfin AND Emby transcoded rows are LIVE streams from a
@@ -916,7 +916,7 @@ final class DownloadStore: @unchecked Sendable {
             let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
                 && (row.bytes != 0 || row.progress != 0)
             let shouldResetRangeProgress = hasAppRangeCheckpoint
-                && (row.bytes != partialBytes || abs(row.progress - rangeCheckpointProgress) > 0.000_001)
+                && (row.bytes != partialBytes || abs(row.progress - staticRangeProgress) > 0.000_001)
             let shouldResetMissingRangeProgress = resumeMode == .staticByteRange
                 && !hasLiveTask
                 && !hasAppRangeCheckpoint
@@ -948,7 +948,7 @@ final class DownloadStore: @unchecked Sendable {
                 row.progress = 0
             } else if hasAppRangeCheckpoint {
                 row.bytes = partialBytes
-                row.progress = rangeCheckpointProgress
+                row.progress = staticRangeProgress
             } else if shouldResetMissingRangeProgress {
                 row.bytes = 0
                 row.progress = 0

@@ -615,10 +615,9 @@ public final class DownloadManager {
         }
     }
 
-    /// App lifecycle hint for #169 transfer scheduling. DownloadManager does not decide byte-range
-    /// mechanics; it just bridges the app-level scene signal to the URLSession owner.
+    /// App lifecycle hint for UI refresh/finalization work. Static range transfer shape is no
+    /// longer scene-dependent.
     func noteAppScenePhase(_ phase: String) {
-        session.noteAppScenePhase(phase)
         if phase == "active" {
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
@@ -915,7 +914,7 @@ public final class DownloadManager {
             // body; clearing the watermark here made the Offline UI flash 0% / tiny bytes on Resume.
             store.clearResumeData(ratingKey: ratingKey, clearDisplayBytes: false)
             store.setStatus(ratingKey: ratingKey, .downloading)
-            // #227: range-checkpoint rows (paused/failed continuous remainders) MUST resume on the
+            // #227: static range rows with persisted resume data MUST resume on the
             // range lane; the opaque lane would treat the blob task's partial-body temp as a
             // whole-file move at completion and corrupt the durable partial.
             let lane = DownloadRetryPreparationPolicy.persistedResumeDataLane(
@@ -923,7 +922,7 @@ public final class DownloadManager {
             )
             let resumed: Bool
             switch lane {
-            case .rangeCheckpoint:
+            case .staticRange:
                 resumed = session.resumeRange(
                     ratingKey: ratingKey,
                     resumeData: resumeData,
@@ -2105,7 +2104,7 @@ public final class DownloadManager {
         // stall decay→nil, backwards-bytes re-baseline, and the Σdb/Σdt window average that
         // reconciles the displayed rate with Σbytes/elapsed. The actor just feeds `(bytes, now)`
         // and reads back the smoothed rate + ETA; the math is pinned by `DownloadRateEstimatorTests`.
-        // #169: a background Range segment can reset optimistic temp-byte progress back to the
+        // #169: a background Range task can reset optimistic temp-byte progress back to the
         // durable partial checkpoint during promotion/pause/retry. Hide rate/ETA for one averaging
         // window after that backwards rebaseline instead of flashing a bogus high-speed provisional.
         for record in fresh where record.status == .downloading {

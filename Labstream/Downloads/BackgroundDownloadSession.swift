@@ -118,7 +118,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private static let playbackValidationLimiter = DownloadPlaybackValidationLimiter()
     private static let rangeProgressDiagnosticByteInterval = 32 * 1_024 * 1_024
     private let rangeRemainderPolicy = StaticRangeRemainderRequestPolicy()
-    /// #169: a finished Range segment append must not run on the (serial) URLSession delegate
+    /// #169: a finished Range response-body append must not run on the (serial) URLSession delegate
     /// queue, or it stalls every other download's progress/completion callbacks for the copy's
     /// duration. The delegate hop only does an O(1) rename of the OS temp into a stash; the heavy
     /// append + continuation decision run here.
@@ -133,7 +133,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var backgroundCompletionGate = BackgroundDownloadCompletionGate()
     /// Last scene phase recorded only for diagnostics; scene changes no longer alter the transfer
     /// shape because foreground and background both use one open-ended remainder task.
-    private var lastAppScenePhase: String?
     /// Task identifiers intentionally abandoned while replacing a range task (duplicate supersede,
     /// blob adoption). If their delegate completions race in after
     /// cancellation, ignore their temp bytes.
@@ -162,8 +161,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var baseOffset: Int
         var responseStatus: Int?
         var bodyBytesWritten: Int
-        let segmentKind: RangeTransferSegmentKind
-        let segmentReason: String?
+        let remainderReason: String?
 
         var totalBytes: Int { baseOffset + bodyBytesWritten }
 
@@ -175,8 +173,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                           baseOffset: baseOffset,
                           responseStatus: responseStatus,
                           bodyBytesWritten: bodyBytesWritten,
-                          segmentKind: segmentKind,
-                          segmentReason: segmentReason)
+                          remainderReason: remainderReason)
         }
     }
 
@@ -453,28 +450,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         endPendingBackgroundCompletionOperation()
     }
 
-    /// Called by the app-lifetime `DownloadManager` when SwiftUI scene phase changes. Scene changes
-    /// no longer alter the static range transfer shape: foreground, inactive, and background all use
-    /// one open-ended remainder task so pause/sleep recovery is URLSession-native.
-    func noteAppScenePhase(_ phase: String) {
-        let strategy = StaticRangeSegmentStrategyPolicy.sceneStrategy(phase: phase)
-        lock.lock()
-        guard lastAppScenePhase != strategy.normalizedPhase else {
-            lock.unlock()
-            return
-        }
-        lastAppScenePhase = strategy.normalizedPhase
-        let liveRangeTaskCount = rangeInflight.count
-        lock.unlock()
-
-        AppDiagnostics.record(.downloads, "downloads.range_strategy", fields: [
-            "phase": .label(strategy.normalizedPhase),
-            "strategy": .label(strategy.diagnosticStrategy),
-            "candidate_count": .int(liveRangeTaskCount),
-        ])
-    }
-
-
     /// Rebind delegate to any tasks the background session resumed after relaunch.
     ///
     /// Touching `urlSession` lazily recreates the background session object bound to
@@ -514,7 +489,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let record = recordsByKey[ratingKey]
                 if let record, StaticRangeRecoveryPolicy.isStaticRangeRecord(record) {
                     // #231: only open-ended remainder tasks from the new architecture are adopted.
-                    // Legacy closed-range/bounded checkpoint tasks are cancelled, marked superseded,
+                    // Legacy closed-range tasks are cancelled, marked superseded,
                     // and rebuilt from the durable partial through DownloadManager so their temp body
                     // cannot append after an update/relaunch.
                     let partialSize = self.fileSize(at: destination) ?? 0
@@ -578,8 +553,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         baseOffset: reattachPlan.candidateBaseOffset,
                         responseStatus: nil,
                         bodyBytesWritten: max(0, Int(task.countOfBytesReceived)),
-                        segmentKind: .continuousRemainder,
-                        segmentReason: "reattached")
+                        remainderReason: "reattached")
                     switch reattachPlan.disposition {
                     case .dropLegacyRange, .rejectOffsetMismatch:
                         // Handled above.
@@ -884,12 +858,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// The destination IS the durable partial file. Its current size is the only app-owned
     /// checkpoint, used when URLSession resume data is unavailable or rejected. New starts always
     /// issue one open-ended `Range` request from that durable offset; retry/diagnostic reasons are
-    /// metadata only and never re-enter the old checkpoint-chaining lifecycle.
+    /// metadata only and never alter the single-remainder lifecycle.
     @discardableResult
     private func startRangeRemainder(ratingKey: String, with request: URLRequest, to destination: URL,
                                  expectedBytes: Int?,
                                  resetsRetryCount: Bool,
-                                 segmentReasonOverride: String? = nil) throws -> Int {
+                                 remainderReasonOverride: String? = nil) throws -> Int {
         guard !isRangeHalted(ratingKey: ratingKey) else {
             AppDiagnostics.record(.downloads, "downloads.range_start_suppressed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -921,8 +895,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 baseOffset: offset,
                 responseStatus: nil,
                 bodyBytesWritten: 0,
-                segmentKind: .continuousRemainder,
-                segmentReason: segmentReasonOverride))
+                remainderReason: remainderReasonOverride))
             return -1
         }
 
@@ -933,8 +906,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // (probed), so the load-bearing defense is the per-body validator-equality check in
         // `applyFinishedRangeBody`, which restarts from 0 on a mismatch; `If-Range` is the cheap
         // belt-and-suspenders that short-circuits the cooperating ones.
-        let segmentKind: RangeTransferSegmentKind = .continuousRemainder
-        let segmentReason = segmentReasonOverride ?? "single_remainder"
+        let remainderReason = remainderReasonOverride ?? "single_remainder"
         let candidate = RangeTransfer(
             ratingKey: ratingKey,
             request: request,
@@ -943,8 +915,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             baseOffset: offset,
             responseStatus: nil,
             bodyBytesWritten: 0,
-            segmentKind: segmentKind,
-            segmentReason: segmentReason)
+            remainderReason: remainderReason)
         lock.lock()
         if let duplicate = duplicateRangeTaskDecision(for: candidate), !duplicate.shouldReplaceExisting {
             let superseded = supersedeRangeTasksLocked(
@@ -964,7 +935,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "base_offset": .int(candidate.baseOffset),
                 "existing_base_offset": .int(duplicate.existingEntry.baseOffset),
                 "phase": .label("preflight"),
-                "segment_kind": .label(segmentKind.rawValue),
             ])
             return duplicate.existingTaskIdentifier
         }
@@ -972,10 +942,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if offset == 0 {
             store.clearRangeValidator(ratingKey: ratingKey)
         }
-        let segmentPlan = rangeRemainderPolicy.segmentPlan(offset: offset,
-                                                           expectedBytes: expectedBytes)
+        let rangeHeaderValue = rangeRemainderPolicy.rangeHeaderValue(offset: offset)
+        let expectedBodyBytes = rangeRemainderPolicy.expectedBodyBytes(offset: offset,
+                                                                       expectedBytes: expectedBytes)
         var ranged = request
-        ranged.setValue(segmentPlan.rangeHeaderValue, forHTTPHeaderField: "Range")
+        ranged.setValue(rangeHeaderValue, forHTTPHeaderField: "Range")
         if let validator = store.rangeValidator(ratingKey: ratingKey) {
             ranged.setValue(validator, forHTTPHeaderField: "If-Range")
         }
@@ -990,7 +961,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(ratingKey),
                 "phase": .label("register_halted"),
                 "task_id": .int(task.taskIdentifier),
-                "segment_kind": .label(segmentKind.rawValue),
             ])
             throw CancellationError()
         }
@@ -1017,7 +987,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "base_offset": .int(candidate.baseOffset),
                     "existing_base_offset": .int(duplicate.existingEntry.baseOffset),
                     "phase": .label("register"),
-                    "segment_kind": .label(segmentKind.rawValue),
                 ])
                 return duplicate.existingTaskIdentifier
             }
@@ -1043,7 +1012,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "existing_task_id": .int(existingRangeTasksToCancel.first ?? -1),
                 "superseded_task_count": .int(existingRangeTasksToCancel.count),
                 "base_offset": .int(candidate.baseOffset),
-                "segment_kind": .label(segmentKind.rawValue),
             ])
         }
         if offset > 0, let expectedBytes, expectedBytes > 0 {
@@ -1056,26 +1024,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         AppDiagnostics.record(.downloads, "downloads.range_start", fields: [
             "download_id": .identifier(ratingKey),
             "task_id": .int(task.taskIdentifier),
-            "segment_kind": .label(segmentKind.rawValue),
-            "segment_reason": .label(segmentReason),
+            "remainder_reason": .label(remainderReason),
             "offset_bytes": .bytes(offset),
             "offset_exact": .int(offset),
             "has_offset": .bool(offset > 0),
             "expected_bytes": .bytes(expectedBytes),
             "expected_exact": .int(expectedBytes ?? -1),
             "range_request_shape": .label("open_ended"),
-            "planned_body_bytes": .bytes(segmentPlan.expectedBodyBytes),
+            "planned_body_bytes": .bytes(expectedBodyBytes),
             "url_shape": .urlShape(ranged.url),
             "allows_cellular": .bool(ranged.allowsCellularAccess),
         ])
         AppDiagnostics.record(.downloads, "downloads.range_remainder_start", fields: [
             "download_id": .identifier(ratingKey),
             "task_id": .int(task.taskIdentifier),
-            "segment_reason": .label(segmentReason),
+            "remainder_reason": .label(remainderReason),
             "offset_bytes": .bytes(offset),
             "offset_exact": .int(offset),
             "expected_exact": .int(expectedBytes ?? -1),
-            "planned_body_bytes": .bytes(segmentPlan.expectedBodyBytes),
+            "planned_body_bytes": .bytes(expectedBodyBytes),
         ])
         task.resume()
         return task.taskIdentifier
@@ -1281,7 +1248,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "expected_bytes": .bytes(entry?.expectedBytes),
             "partial_file_present": .bool(partialFilePresent),
             "task_type": .label("rangeDownloadTask"),
-            "segment_kind": .label(entry?.segmentKind.rawValue ?? "unknown"),
         ])
         markPausedAfterUserPause(ratingKey: ratingKey)
     }
@@ -1683,7 +1649,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             AppDiagnostics.record(.downloads, "downloads.range_remainder_halted", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "offset_bytes": .bytes(entry.baseOffset),
-                "segment_kind": .label(entry.segmentKind.rawValue),
             ])
             return
         }
@@ -1701,7 +1666,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(entry.ratingKey),
                 "task_id": .int(taskIdentifier),
                 "http_status": .int(statusForDiagnostics),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "base_offset": .int(entry.baseOffset),
                 "temp_exists": .bool(fileManager.fileExists(atPath: location.path)),
                 "temp_bytes": .int(fileSize(at: location) ?? -1),
@@ -1718,8 +1682,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(entry.ratingKey),
             "http_status": .int(status),
             "offset_bytes": .bytes(entry.baseOffset),
-            "segment_kind": .label(entry.segmentKind.rawValue),
-            "segment_reason": .label(entry.segmentReason ?? "unknown"),
+            "remainder_reason": .label(entry.remainderReason ?? "unknown"),
         ])
 
         let write = rangeRemainderPolicy.writeDecision(httpStatus: status)
@@ -1744,7 +1707,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "status_code": .int(code),
                 "bytes": .bytes(durableBytes),
             ])
@@ -1773,7 +1735,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if let knownTotal, durableBytes != knownTotal {
                 AppDiagnostics.record(.downloads, "downloads.range_416_mismatch", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "durable_bytes": .bytes(durableBytes),
                     "server_total_bytes": .bytes(knownTotal),
                     "total_source": .label(contentRangeTotal != nil ? "content_range" : "expected_bytes"),
@@ -1842,7 +1803,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? fileManager.removeItem(at: stash)
             AppDiagnostics.record(.downloads, "downloads.range_halted_remainder_discarded", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "base_offset": .int(entry.baseOffset),
                 "body_bytes": .int(stashBytes ?? -1),
             ])
@@ -1854,7 +1814,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             try? fileManager.removeItem(at: stash)
             AppDiagnostics.record(.downloads, "downloads.range_stale_remainder_ignored", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "base_offset": .int(entry.baseOffset),
                 "durable_bytes": .int(durableBytesBeforeWrite),
                 "body_bytes": .int(stashBytes ?? -1),
@@ -1883,7 +1842,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 )
                 AppDiagnostics.record(.downloads, "downloads.range_200_size_mismatch", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "body_bytes": .int(stashBytes ?? -1),
                     "expected_bytes": .int(entry.expectedBytes ?? -1),
                     "durable_bytes": .int(durableBytes),
@@ -1920,7 +1878,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                         ? min(1, Double(bytes) / Double(entry.expectedBytes!)) : 0)
                 AppDiagnostics.record(.downloads, "downloads.range_halted_remainder_preserved", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "base_offset": .int(entry.baseOffset),
                     "partial_bytes": .int(bytes),
                     "write": .label("replaceWhole"),
@@ -1937,7 +1894,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 try? fileManager.removeItem(at: stash)
                 AppDiagnostics.record(.downloads, "downloads.range_durable_offset_gap", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "base_offset": .int(entry.baseOffset),
                     "durable_bytes": .int(durableBytesBeforeAppend),
                     "server_offset": .int(contentRangeStart ?? -1),
@@ -1991,7 +1947,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "server_offset_exact": .int(contentRangeStart ?? -1),
                     "stash_bytes": .bytes(stashBytesBeforeAppend),
                     "stash_bytes_exact": .int(stashBytesBeforeAppend ?? -1),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "expected_body_bytes": .int(expectedRangeBodyBytes(entry: entry) ?? -1),
                 ])
             } else if misaligned {
@@ -2002,7 +1957,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 )
                 AppDiagnostics.record(.downloads, "downloads.range_offset_mismatch", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "expected_offset": .bytes(entry.baseOffset),
                     "expected_offset_exact": .int(entry.baseOffset),
                     "server_offset": .bytes(contentRangeStart),
@@ -2053,7 +2007,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                     ? min(1, Double(partialSize) / Double(entry.expectedBytes!)) : 0)
             AppDiagnostics.record(.downloads, "downloads.range_remainder_appended", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "base_offset": .int(entry.baseOffset),
                 "body_bytes": .int(bodyBytes),
                 "partial_bytes": .int(partialSize),
@@ -2063,7 +2016,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if finishedBodyDisposition == .writeThenPause {
                 AppDiagnostics.record(.downloads, "downloads.range_halted_remainder_preserved", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "base_offset": .int(entry.baseOffset),
                     "body_bytes": .int(bodyBytes),
                     "partial_bytes": .int(partialSize),
@@ -2085,7 +2037,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             case .stalled:
                 AppDiagnostics.record(.downloads, "downloads.range_incomplete", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "bytes": .bytes(partialSize),
                     "expected_bytes": .bytes(entry.expectedBytes),
                 ])
@@ -2135,7 +2086,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .requestNeeded(let reason):
             AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_needed", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "bytes": .bytes(partialSize),
             ])
             // Persist active system-resume intent before the in-memory callback. If the app is killed
@@ -2194,7 +2144,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.lock(); staticRangeRetryBudget.resetOffsetMismatch(downloadID: entry.ratingKey); lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry_exhausted", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "attempt": .int(retryAttempt.attempt - 1),
                 "expected_offset": .bytes(entry.baseOffset),
                 "expected_offset_exact": .int(entry.baseOffset),
@@ -2207,7 +2156,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .requestNeeded(let reason):
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "attempt": .int(retryAttempt.attempt),
                 "expected_offset": .bytes(entry.baseOffset),
                 "expected_offset_exact": .int(entry.baseOffset),
@@ -2226,7 +2174,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .startInSession:
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry", fields: [
                 "download_id": .identifier(entry.ratingKey),
-                "segment_kind": .label(entry.segmentKind.rawValue),
                 "attempt": .int(retryAttempt.attempt),
                 "expected_offset": .bytes(entry.baseOffset),
                 "expected_offset_exact": .int(entry.baseOffset),
@@ -2272,7 +2219,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.range_validator_changed", fields: [
             "download_id": .identifier(entry.ratingKey),
-            "segment_kind": .label(entry.segmentKind.rawValue),
             "bytes": .bytes(entry.baseOffset),
             "restart_count": .int(retryAttempt.attempt),
         ])
@@ -2503,14 +2449,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         )
         guard case .retry(let nextAttempt) = decision else {
             lock.unlock()
-            // #220: any segment kind may rehydrate — a move failure committed no bytes, so the
-            // durable partial is a valid restart point even for a continuous remainder.
+            // #220: a move failure committed no bytes, so the durable partial is a valid restart
+            // point for the next open-ended remainder.
             if case .reject(.missingRangeRequest) = decision,
                nsError.domain == NSCocoaErrorDomain,
                nsError.code == CocoaError.fileNoSuchFile.rawValue {
                 AppDiagnostics.record(.downloads, "downloads.range_move_rehydrate", fields: [
                     "download_id": .identifier(entry.ratingKey),
-                    "segment_kind": .label(entry.segmentKind.rawValue),
                     "stage": .label(stage),
                     "error": .error(error),
                     "bytes": .bytes(durableBytes),
@@ -2530,7 +2475,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let delay = Self.rangeHTTPRetryDelay(nextAttempt: nextAttempt)
         AppDiagnostics.record(.downloads, "downloads.range_move_retry", fields: [
             "download_id": .identifier(entry.ratingKey),
-            "segment_kind": .label(entry.segmentKind.rawValue),
             "stage": .label(stage),
             "attempt": .int(nextAttempt),
             "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRangeMoveRetries),
@@ -2546,7 +2490,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                     to: entry.destination,
                                     expectedBytes: entry.expectedBytes,
                                     resetsRetryCount: false,
-                                    segmentReasonOverride: "move_retry")
+                                    remainderReasonOverride: "move_retry")
                 onChange?()
             } catch {
                 if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
@@ -2960,7 +2904,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 downloadLog.info("range-cancelled ratingKey=\(rangeEntry.ratingKey, privacy: .public) bytes=\(rangeEntry.totalBytes, privacy: .public)")
                 AppDiagnostics.record(.downloads, "downloads.range_cancelled", fields: [
                     "download_id": .identifier(rangeEntry.ratingKey),
-                    "segment_kind": .label(rangeEntry.segmentKind.rawValue),
                     "bytes": .bytes(rangeEntry.totalBytes),
                 ])
                 return
@@ -3026,7 +2969,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             downloadLog.error("range-paused ratingKey=\(rangeEntry.ratingKey, privacy: .public) error=\(summary, privacy: .public) bytes=\(durableBytes, privacy: .public)")
             AppDiagnostics.record(.downloads, "downloads.range_paused", fields: [
                 "download_id": .identifier(rangeEntry.ratingKey),
-                "segment_kind": .label(rangeEntry.segmentKind.rawValue),
                 "error": .error(error),
                 "base_offset": .int(rangeEntry.baseOffset),
                 "optimistic_temp_bytes": .bytes(rangeEntry.bodyBytesWritten),
@@ -3151,7 +3093,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         AppDiagnostics.record(.downloads, "downloads.range_progress", fields: [
             "download_id": .identifier(entry.ratingKey),
             "task_id": .int(taskIdentifier),
-            "segment_kind": .label(entry.segmentKind.rawValue),
             "base_offset": .int(entry.baseOffset),
             "body_bytes": .int(bodyBytes),
             "total_bytes": .int(totalBytes),
@@ -3274,7 +3215,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         downloadLog.error("range-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) code=\(error.code, privacy: .public) bytes=\(durableBytes, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.range_retry", fields: [
             "download_id": .identifier(entry.ratingKey),
-            "segment_kind": .label(entry.segmentKind.rawValue),
             "attempt": .int(nextAttempt),
             "error": .error(error),
             "bytes": .bytes(durableBytes),
@@ -3318,7 +3258,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard case .resume(let nextAttempt) = decision, let resumeData else {
             lock.unlock()
             if case .reject(.budgetExhausted(_, _)) = decision,
-               entry.segmentKind == .continuousRemainder,
                resumeData?.isEmpty == false {
                 return .rejectedResumeData
             }
@@ -3333,7 +3272,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                          request: entry.request,
                                          destination: entry.destination,
                                          expectedBytes: entry.expectedBytes,
-                                         segmentReason: "blob_resume",
+                                         remainderReason: "blob_resume",
                                          attempt: nextAttempt)
             ? .resumed
             : .rejectedResumeData
@@ -3348,7 +3287,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         error: NSError,
         reason: StaticRangeResumeDataPolicy.DurableFallbackReason
     ) -> Bool {
-        guard entry.segmentKind == .continuousRemainder else { return false }
         guard !isRangeHalted(ratingKey: entry.ratingKey) else { return false }
 
         lock.lock()
@@ -3382,7 +3320,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 to: entry.destination,
                 expectedBytes: entry.expectedBytes,
                 resetsRetryCount: false,
-                segmentReasonOverride: reason.rawValue
+                remainderReasonOverride: reason.rawValue
             )
             onChange?()
             return true
@@ -3413,7 +3351,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                            request: URLRequest?,
                                            destination: URL,
                                            expectedBytes: Int?,
-                                           segmentReason: String,
+                                           remainderReason: String,
                                            attempt: Int?) -> Bool {
         let task = urlSession.downloadTask(withResumeData: resumeData)
         task.taskDescription = ratingKey
@@ -3428,12 +3366,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(ratingKey),
                 "blob_offset": .int(blobOffset ?? -1),
                 "durable_bytes": .int(durableBytes),
-                "reason": .label(segmentReason),
+                "reason": .label(remainderReason),
             ])
             return false
         case .adopt(let baseOffset):
             // Keep the authenticated base request when the caller still holds it so a short
-            // resumed body can chain the next segment in-session; the blob's own original
+            // resumed body can start the next open-ended remainder in-session; the blob's own original
             // request is the fallback (it carries the auth headers URLSession persisted).
             let entry = RangeTransfer(
                 ratingKey: ratingKey,
@@ -3443,8 +3381,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 baseOffset: baseOffset,
                 responseStatus: nil,
                 bodyBytesWritten: 0,
-                segmentKind: .continuousRemainder,
-                segmentReason: segmentReason)
+                remainderReason: remainderReason)
             lock.lock()
             let superseded = supersedeRangeTasksLocked(ratingKey: ratingKey, keeping: task.taskIdentifier)
             loggedProgressMilestones[task.taskIdentifier] = []
@@ -3462,7 +3399,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "base_offset": .int(baseOffset),
                 "resume_blob_bytes": .bytes(resumeData.count),
                 "attempt": .int(attempt ?? 0),
-                "reason": .label(segmentReason),
+                "reason": .label(remainderReason),
             ])
             task.resume()
             onChange?()
@@ -3489,7 +3426,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                          request: nil,
                                          destination: destination,
                                          expectedBytes: expectedBytes,
-                                         segmentReason: "persisted_blob_resume",
+                                         remainderReason: "persisted_blob_resume",
                                          attempt: nil)
     }
 
@@ -3516,7 +3453,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let delay = Self.rangeHTTPRetryDelay(nextAttempt: nextAttempt)
         AppDiagnostics.record(.downloads, "downloads.range_http_rehydrate", fields: [
             "download_id": .identifier(entry.ratingKey),
-            "segment_kind": .label(entry.segmentKind.rawValue),
             "attempt": .int(nextAttempt),
             "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRangeRehydrations),
             "status_code": .int(statusCode),
@@ -3562,7 +3498,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         downloadLog.error("range-http-retry ratingKey=\(entry.ratingKey, privacy: .public) attempt=\(nextAttempt, privacy: .public) status=\(statusCode, privacy: .public) bytes=\(durableBytes, privacy: .public) delay=\(delay, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.range_http_retry", fields: [
             "download_id": .identifier(entry.ratingKey),
-            "segment_kind": .label(entry.segmentKind.rawValue),
             "attempt": .int(nextAttempt),
             "max_attempts": .int(BackgroundDownloadTransientRetryPolicy.defaultMaxRetries),
             "status_code": .int(statusCode),
@@ -3577,7 +3512,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                     to: entry.destination,
                                     expectedBytes: entry.expectedBytes,
                                     resetsRetryCount: false,
-                                    segmentReasonOverride: "http_retry_\(statusCode)")
+                                    remainderReasonOverride: "http_retry_\(statusCode)")
                 onChange?()
             } catch {
                 if shouldSuppressRangeStartFailure(ratingKey: entry.ratingKey,
@@ -3625,7 +3560,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(rangeEntry?.ratingKey ?? entry?.ratingKey),
             "task_id": .int(task.taskIdentifier),
             "task_type": .label(rangeEntry == nil ? "downloadTask" : "rangeDownloadTask"),
-            "segment_kind": .label(rangeEntry?.segmentKind.rawValue ?? "n/a"),
             "bytes_received": .int(Int(task.countOfBytesReceived)),
         ])
     }

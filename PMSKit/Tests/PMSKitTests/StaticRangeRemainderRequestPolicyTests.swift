@@ -8,18 +8,18 @@ struct StaticRangeRemainderRequestPolicyTests {
     func openEndedRange() {
         let policy = StaticRangeRemainderRequestPolicy()
 
-        #expect(policy.segmentPlan(offset: 0, expectedBytes: 1_000).rangeHeaderValue == "bytes=0-")
-        #expect(policy.segmentPlan(offset: 500, expectedBytes: 1_000).rangeHeaderValue == "bytes=500-")
-        #expect(policy.segmentPlan(offset: -10, expectedBytes: 1_000).rangeHeaderValue == "bytes=0-")
+        #expect(policy.rangeHeaderValue(offset: 0) == "bytes=0-")
+        #expect(policy.rangeHeaderValue(offset: 500) == "bytes=500-")
+        #expect(policy.rangeHeaderValue(offset: -10) == "bytes=0-")
     }
 
     @Test("Remainder expected body bytes are known only with a total size")
     func expectedBodyBytes() {
         let policy = StaticRangeRemainderRequestPolicy()
 
-        #expect(policy.segmentPlan(offset: 400, expectedBytes: 1_000).expectedBodyBytes == 600)
-        #expect(policy.segmentPlan(offset: 400, expectedBytes: nil).expectedBodyBytes == nil)
-        #expect(policy.segmentPlan(offset: 1_200, expectedBytes: 1_000).expectedBodyBytes == 0)
+        #expect(policy.expectedBodyBytes(offset: 400, expectedBytes: 1_000) == 600)
+        #expect(policy.expectedBodyBytes(offset: 400, expectedBytes: nil) == nil)
+        #expect(policy.expectedBodyBytes(offset: 1_200, expectedBytes: 1_000) == 0)
     }
 
     @Test("206 partial content appends the response body onto the durable partial")

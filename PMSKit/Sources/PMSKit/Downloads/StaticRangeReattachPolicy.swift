@@ -2,7 +2,7 @@
 ///
 /// Only open-ended `bytes=<durableOffset>-` remainder tasks from the #227+ architecture are
 /// adoptable. Legacy closed ranges are deliberately dropped in #231 so late delegate callbacks
-/// cannot append old bounded-checkpoint temps.
+/// cannot append stale closed-range temps.
 public enum StaticRangeReattachDisposition: Sendable, Equatable {
     case dropLegacyRange(requestedOffset: Int?, durableBytes: Int, rangeRequestShape: StaticRangeRequestShape)
     case rejectOffsetMismatch(requestedOffset: Int, durableBytes: Int)
