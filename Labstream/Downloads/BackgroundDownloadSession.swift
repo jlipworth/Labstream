@@ -2919,9 +2919,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     generator.requestedTimeToleranceBefore = .zero
                     generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
                     let requestedSeconds = min(0.5, max(0.0, (duration.seconds.isFinite ? duration.seconds : 1.0) * 0.05))
-                    _ = try generator.copyCGImage(at: CMTime(seconds: requestedSeconds,
-                                                             preferredTimescale: 600),
-                                                  actualTime: nil)
+                    _ = try await generator.image(at: CMTime(seconds: requestedSeconds,
+                                                             preferredTimescale: 600)).image
                     return (true, "decoded_frame", durationMs, nil)
                 }
                 let result = try await group.next() ?? (false, "decode_fallback_timeout", knownDurationMs, nil)
