@@ -43,17 +43,22 @@ public enum DownloadLiveRangeProgressPolicy {
 
     /// Normalize a task byte count against a persisted resume display watermark. A
     /// `downloadTask(withResumeData:)` can report `countOfBytesReceived` from the new task's own
-    /// baseline (near zero) even though URLSession still owns prior temp bytes. If the fresh count is
-    /// below the watermark, treat it as incremental-for-display; otherwise assume it is already
-    /// cumulative and use it as-is.
+    /// baseline (near zero) even though URLSession still owns prior temp bytes.
+    ///
+    /// `taskBytes` is always `baseOffset` + the task's reported bytes, and the watermark itself
+    /// already contains the base offset (it was persisted as `baseOffset + temp bytes` at pause).
+    /// So when a fresh-baseline report comes in below the watermark, only the fresh delta above
+    /// `baseOffset` is added — adding the whole `taskBytes` would count the durable base twice
+    /// and compound the watermark on every pause/resume cycle.
     public static func displayBytesForResumedTask(taskBytes: Int,
+                                                  baseOffset: Int,
                                                   resumeDisplayBytes: Int?) -> Int {
         guard let resumeDisplayBytes, resumeDisplayBytes > 0 else {
             return max(taskBytes, 0)
         }
         guard taskBytes > 0 else { return resumeDisplayBytes }
         if taskBytes < resumeDisplayBytes {
-            return resumeDisplayBytes + taskBytes
+            return resumeDisplayBytes + max(taskBytes - max(baseOffset, 0), 0)
         }
         return taskBytes
     }

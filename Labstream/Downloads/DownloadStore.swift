@@ -683,12 +683,26 @@ final class DownloadStore: @unchecked Sendable {
         let durableBytes = fileSize(relativePath: row.relativePath) ?? 0
         let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
         let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
-        guard row.bytes != durableBytes || abs(row.progress - progress) > 0.000_001 else {
+        var changed = false
+        // The resume display watermark represents temp bytes owned by a URLSession resume blob.
+        // Once no blob remains (durable fallback discarded it, adoption rejected it as stale, or a
+        // restart never produced one), those temp bytes are gone — keeping the watermark would
+        // over-report progress until live bytes caught back up. The pause path persists the blob
+        // BEFORE resetting, so legitimate watermarks survive this.
+        if row.metadata?.resumeDisplayBytes != nil,
+           (row.metadata?.resumeDataRelativePath ?? "").isEmpty {
+            row.metadata?.resumeDisplayBytes = nil
+            changed = true
+        }
+        if row.bytes != durableBytes || abs(row.progress - progress) > 0.000_001 {
+            row.bytes = durableBytes
+            row.progress = progress
+            changed = true
+        }
+        guard changed else {
             lock.unlock()
             return durableBytes
         }
-        row.bytes = durableBytes
-        row.progress = progress
         rows[ratingKey] = row
         lock.unlock()
         persist()
