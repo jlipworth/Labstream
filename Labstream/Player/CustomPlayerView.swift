@@ -118,6 +118,10 @@ struct CustomPlayerView: View {
                 PlayerLayerView(player: controller?.player,
                                 mobileSystemCoordinator: mobileSystemCoordinator)
                     .ignoresSafeArea()
+                    // The AVPlayerLayer itself has no tappable affordances. Keep it out of
+                    // hit-testing so the player-surface tap catcher and chrome controls have
+                    // deterministic priority on iPhone/iPad.
+                    .allowsHitTesting(false)
                 #else
                 PlayerLayerView(player: controller?.player)
                     .ignoresSafeArea()

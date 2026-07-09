@@ -288,7 +288,8 @@ public enum JellyfinLibrary {
                                                  playSessionId: String? = nil,
                                                  maxVideoBitrate: Int,
                                                  maxWidth: Int?,
-                                                 maxHeight: Int?) throws -> URLRequest {
+                                                 maxHeight: Int?,
+                                                 audioStreamIndex: Int? = nil) throws -> URLRequest {
         let url = try JellyfinPlayback.jellyfinURL(server: server, path: "/Videos/\(itemId)/stream.mp4")
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw JellyfinPlaybackError.invalidURL
@@ -312,6 +313,9 @@ public enum JellyfinLibrary {
         }
         if let mediaSourceId, !mediaSourceId.isEmpty {
             query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
+        }
+        if let audioStreamIndex, audioStreamIndex >= 0 {
+            query.append(URLQueryItem(name: "AudioStreamIndex", value: String(audioStreamIndex)))
         }
         if let maxWidth {
             query.append(URLQueryItem(name: "maxWidth", value: String(maxWidth)))
@@ -347,7 +351,8 @@ public enum JellyfinLibrary {
                                                       videoCodec: String,
                                                       audioCodec: String? = nil,
                                                       copyAudio: Bool,
-                                                      playSessionId: String? = nil) throws -> URLRequest {
+                                                      playSessionId: String? = nil,
+                                                      audioStreamIndex: Int? = nil) throws -> URLRequest {
         let url = try JellyfinPlayback.jellyfinURL(server: server, path: "/Videos/\(itemId)/stream.mp4")
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             throw JellyfinPlaybackError.invalidURL
@@ -379,6 +384,9 @@ public enum JellyfinLibrary {
         }
         if let mediaSourceId, !mediaSourceId.isEmpty {
             query.append(URLQueryItem(name: "mediaSourceId", value: mediaSourceId))
+        }
+        if let audioStreamIndex, audioStreamIndex >= 0 {
+            query.append(URLQueryItem(name: "AudioStreamIndex", value: String(audioStreamIndex)))
         }
         comps.queryItems = query
         guard let built = comps.url else { throw JellyfinPlaybackError.invalidURL }

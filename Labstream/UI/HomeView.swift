@@ -6,6 +6,7 @@ import PMSKit
 struct HomeView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
 
     @State private var hubs: [Hub] = []
     @State private var mediaBrowserLibraries: [MediaBrowserHomeLibraryLink] = []
@@ -39,7 +40,8 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, minHeight: 360)
                 } else {
                     LazyVStack(alignment: .leading,
-                               spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
+                               spacing: HomeLayoutMetrics.sectionSpacing(compact: compactWidth,
+                                                                        denseSections: denseSectionSpacing)) {
                         // Music un-hidden (#17 Phase 7): artists/albums stay in the
                         // hubs; only TRACK items drop (rail cells have no play
                         // affordance — v2, MUSIC-DESIGN §3.1).
@@ -47,7 +49,7 @@ struct HomeView: View {
                             HubRail(hub: hub)
                         }
                     }
-                    .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
+                    .padding(.vertical, HomeLayoutMetrics.pageVerticalPadding(compact: compactWidth))
                 }
             }
         }
@@ -93,7 +95,8 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, minHeight: 360)
         } else {
             LazyVStack(alignment: .leading,
-                       spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
+                       spacing: HomeLayoutMetrics.sectionSpacing(compact: compactWidth,
+                                                                denseSections: denseSectionSpacing)) {
                 if mediaBrowserRails.isEmpty {
                     ContentUnavailableView("Open a library to browse",
                                            systemImage: "rectangle.stack",
@@ -107,7 +110,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
+            .padding(.vertical, HomeLayoutMetrics.pageVerticalPadding(compact: compactWidth))
         }
     }
 
@@ -205,9 +208,12 @@ private struct HubRail: View {
     let hub: Hub
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
+        VStack(alignment: .leading,
+               spacing: HomeLayoutMetrics.titleToRailSpacing(compact: compactWidth,
+                                                             denseSections: denseSectionSpacing)) {
             Text(hub.title)
                 .font(compactWidth ? .title3.bold() : .title2.bold())
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
@@ -216,13 +222,14 @@ private struct HubRail: View {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
-                            RailMediaCell(item: item)
+                            RailMediaCell(item: item, context: .home)
                         }
                         .cardLink()
                         .videoCardContextMenu(for: item)
                     }
                 }
-                .padding(.vertical, DS.Space.sm)
+                .padding(.vertical,
+                         HomeLayoutMetrics.railVerticalPadding(denseSections: denseSectionSpacing))
             }
             // Inset the scroll content via contentMargins, not .padding on the stack —
             // keeps the inset out of the cards' own geometry (see the gaze-routing
@@ -232,20 +239,84 @@ private struct HubRail: View {
     }
 }
 
+private enum HomeLayoutMetrics {
+    static func sectionSpacing(compact: Bool, denseSections: Bool) -> CGFloat {
+        if compact { return DS.Space.xl }
+        return denseSections ? DS.Space.xxl : DS.Space.xxxl
+    }
+
+    static func titleToRailSpacing(compact: Bool, denseSections: Bool) -> CGFloat {
+        if compact { return DS.Space.sm }
+        return denseSections ? DS.Space.md : DS.Space.lg
+    }
+
+    static func railVerticalPadding(denseSections: Bool) -> CGFloat {
+        denseSections ? DS.Space.xs : DS.Space.sm
+    }
+
+    static func pageVerticalPadding(compact: Bool) -> CGFloat {
+        compact ? DS.Space.lg : DS.Space.xl
+    }
+
+    static func reservePosterHeightForEpisodeRails(denseSections: Bool) -> Bool {
+        !denseSections
+    }
+}
+
+private extension EnvironmentValues {
+    /// Full-size iPadOS reports regular width and regular height; macOS has the same
+    /// desktop-density problem as iPad Home. Keep this Home-only density pass off iPhone
+    /// landscape, where some devices can report regular width but should keep the compact
+    /// phone rhythm, and off visionOS so its authored window rhythm remains unchanged.
+    var labstreamHomeUsesDenseSectionSpacing: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular && verticalSizeClass == .regular
+        #elseif os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+}
+
 /// Rail cell that respects the media artwork shape.
 ///
-/// Movies/shows/seasons keep the canonical 2:3 poster card, but episode thumbs are
-/// screenshots. Rendering those screenshots through `PosterCell` asks the server for
-/// poster-sized artwork and then clips it into a poster frame, which makes TV rails look
-/// stretched/cropped. Episode rails use a 16:9 card like Apple/Plex episode shelves.
+/// Search/standard rails keep episode stills as 16:9 cards. Home has its own TV artwork
+/// policy: when an episode carries season/show poster context, render that poster art in
+/// the canonical rail poster frame instead of showing an episode screenshot by default.
 struct RailMediaCell: View {
-    let item: MediaItem
+    enum Context {
+        case standard
+        case home
+    }
 
+    let item: MediaItem
+    var context: Context = .standard
+
+    @ViewBuilder
     var body: some View {
         if item.kind == .episode {
-            EpisodeRailCell(item: item)
+            switch context {
+            case .home:
+                homeEpisodeCell
+            case .standard:
+                EpisodeRailCell(item: item)
+            }
         } else {
             PosterCell(item: item)
+        }
+    }
+
+    @ViewBuilder
+    private var homeEpisodeCell: some View {
+        let selection = HomeRailArtworkPolicy.selection(for: item)
+        switch selection.presentation {
+        case .poster:
+            PosterCell(item: item,
+                       artworkPath: selection.path,
+                       aspectOverride: MediaItem.defaultPosterAspect)
+        case .landscape:
+            EpisodeRailCell(item: item, artworkPath: selection.path)
         }
     }
 }
@@ -253,8 +324,9 @@ struct RailMediaCell: View {
 /// Shared sizing for Home/media-browser rails.
 ///
 /// Episode rails use 16:9 stills while movie/show rails use the canonical 2:3 poster.
-/// Without reserving the same overall cell height, a TV rail collapses vertically and
-/// makes the next Emby/Jellyfin "Recently Added" rail look incorrectly spaced.
+/// visionOS and compact phone-class layouts keep the old poster-height reservation for
+/// stable rail rhythm, but regular iPad/macOS Home lets episode rails use their natural
+/// height so 16:9 "On Deck" shelves do not leave a poster-sized blank tail (#234).
 private enum HomeRailCellMetrics {
     static func episodeWidth(compact: Bool) -> CGFloat { compact ? 196 : 252 }
     static func episodeImageHeight(compact: Bool) -> CGFloat {
@@ -264,19 +336,26 @@ private enum HomeRailCellMetrics {
     static func canonicalCellHeight(compact: Bool) -> CGFloat {
         DS.Poster.height(for: DS.Poster.railWidth(compact: compact)) + DS.Space.sm + titleBlockHeight
     }
+    static func episodeCellHeight(compact: Bool, denseSections: Bool) -> CGFloat? {
+        HomeLayoutMetrics.reservePosterHeightForEpisodeRails(denseSections: denseSections)
+            ? canonicalCellHeight(compact: compact)
+            : nil
+    }
 }
 
 private struct EpisodeRailCell: View {
     let item: MediaItem
+    var artworkPath: String?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
 
     private var width: CGFloat { HomeRailCellMetrics.episodeWidth(compact: compactWidth) }
     private var height: CGFloat { HomeRailCellMetrics.episodeImageHeight(compact: compactWidth) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
-            PosterImage(path: item.episodeRailArtworkPath,
+            PosterImage(path: artworkPath ?? item.episodeRailArtworkPath,
                         width: width,
                         height: height,
                         cornerRadius: DS.Radius.poster)
@@ -294,7 +373,8 @@ private struct EpisodeRailCell: View {
             }
         }
         .frame(width: width,
-               height: HomeRailCellMetrics.canonicalCellHeight(compact: compactWidth),
+               height: HomeRailCellMetrics.episodeCellHeight(compact: compactWidth,
+                                                             denseSections: denseSectionSpacing),
                alignment: .topLeading)
     }
 
@@ -328,6 +408,12 @@ struct PosterCell: View {
     let item: MediaItem
     /// Explicit width from grid callers; nil means "rail default for this size class".
     var width: CGFloat?
+    /// Optional artwork override for Home episode posters. Defaults to `item.thumb` so
+    /// movies, music, library grids, search, detail/offline-adjacent callers stay unchanged.
+    var artworkPath: String?
+    /// Optional width/height aspect override for artwork whose shape is known independently
+    /// of `item.primaryImageAspectRatio` (e.g. season poster art on an episode item).
+    var aspectOverride: Double?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -339,12 +425,14 @@ struct PosterCell: View {
     /// `PrimaryImageAspectRatio`: 16:9 YouTube, square Twitch, 16:9 episode stills), else the
     /// canonical 2:3 poster. Plex reports no ratio, so it stays 2:3 (GH #101).
     private var height: CGFloat {
-        CGFloat(Double(resolvedWidth) / item.resolvedPosterAspect(fallback: Double(DS.Poster.aspect)))
+        let aspect = aspectOverride
+            ?? item.resolvedPosterAspect(fallback: Double(DS.Poster.aspect))
+        return CGFloat(Double(resolvedWidth) / aspect)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
-            PosterImage(path: item.thumb, width: resolvedWidth, height: height)
+            PosterImage(path: artworkPath ?? item.thumb, width: resolvedWidth, height: height)
                 .overlay(alignment: .bottom) { progressSliver }
                 .posterHover()
 
@@ -398,11 +486,16 @@ struct PosterCell: View {
 /// poster blanks so the screen has structure (and no jarring spinner-to-grid jump).
 struct SkeletonRails: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
+    @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compactWidth ? DS.Space.xl : DS.Space.xxxl) {
+        VStack(alignment: .leading,
+               spacing: HomeLayoutMetrics.sectionSpacing(compact: compactWidth,
+                                                         denseSections: denseSectionSpacing)) {
             ForEach(0..<2, id: \.self) { _ in
-                VStack(alignment: .leading, spacing: DS.Space.lg) {
+                VStack(alignment: .leading,
+                       spacing: HomeLayoutMetrics.titleToRailSpacing(compact: compactWidth,
+                                                                     denseSections: denseSectionSpacing)) {
                     RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
                         .fill(.regularMaterial)
                         .frame(width: 200, height: 26)
@@ -428,7 +521,7 @@ struct SkeletonRails: View {
                 }
             }
         }
-        .padding(.vertical, compactWidth ? DS.Space.lg : DS.Space.xl)
+        .padding(.vertical, HomeLayoutMetrics.pageVerticalPadding(compact: compactWidth))
     }
 }
 

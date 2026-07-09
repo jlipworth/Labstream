@@ -485,8 +485,48 @@ struct JellyfinLibraryTests {
         #expect(query["maxHeight"] == "720")
         #expect(query["playSessionId"] == "download-session-1")
         #expect(query["allowVideoStreamCopy"] == "false")
+        #expect(query["AudioStreamIndex"] == nil)
         #expect(request.value(forHTTPHeaderField: "Accept") == "*/*")
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+    }
+
+    @Test func downloadStreamRequestsCarrySelectedAudioStreamIndexWhenSet() throws {
+        let transcode = try JellyfinLibrary.transcodedDownloadRequest(server: server,
+                                                                      token: "token-abc",
+                                                                      identity: identity,
+                                                                      itemId: "item-1",
+                                                                      mediaSourceId: "source-1",
+                                                                      playSessionId: "download-session-1",
+                                                                      maxVideoBitrate: 4_000_000,
+                                                                      maxWidth: nil,
+                                                                      maxHeight: nil,
+                                                                      audioStreamIndex: 4)
+        #expect(try queryMap(transcode)["AudioStreamIndex"] == "4")
+
+        let remux = try JellyfinLibrary.compatibleRemuxDownloadRequest(server: server,
+                                                                       token: "token-abc",
+                                                                       identity: identity,
+                                                                       itemId: "item-1",
+                                                                       mediaSourceId: "source-1",
+                                                                       videoCodec: "hevc",
+                                                                       audioCodec: "dts",
+                                                                       copyAudio: false,
+                                                                       playSessionId: "download-session-2",
+                                                                       audioStreamIndex: 5)
+        #expect(try queryMap(remux)["AudioStreamIndex"] == "5")
+    }
+
+    @Test func compatibleRemuxDownloadRequestOmitsAudioStreamIndexWhenNil() throws {
+        let request = try JellyfinLibrary.compatibleRemuxDownloadRequest(server: server,
+                                                                         token: "token-abc",
+                                                                         identity: identity,
+                                                                         itemId: "item-1",
+                                                                         mediaSourceId: "source-1",
+                                                                         videoCodec: "hevc",
+                                                                         audioCodec: "aac",
+                                                                         copyAudio: true,
+                                                                         playSessionId: "download-session-2")
+        #expect(try queryMap(request)["AudioStreamIndex"] == nil)
     }
 
     @Test func mapsMovieDtoToMediaItem() throws {

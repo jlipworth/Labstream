@@ -18,6 +18,7 @@ extension DownloadManager {
     public func downloadJellyfin(_ item: MediaItem, choice: DownloadChoice,
                                  mediaIndex: Int = 0,
                                  partIndex: Int = 0,
+                                 audioStreamIndex: Int? = nil,
                                  mediaSourceIDOverride: String? = nil,
                                  allowReplacingExistingActiveRow: Bool = false) async {
         let itemId = item.ratingKey
@@ -123,7 +124,8 @@ extension DownloadManager {
                     server: server, token: token, identity: identity,
                     itemId: itemId, userId: userId,
                     mediaSourceId: jellyfinMediaSourceID,
-                    maxStaticBitrate: max(profile.videoBitrateBps, 200_000_000))
+                    maxStaticBitrate: max(profile.videoBitrateBps, 200_000_000),
+                    audioStreamIndex: audioStreamIndex)
                 let (data, response) = try await URLSession.shared.data(for: infoReq)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
@@ -150,7 +152,8 @@ extension DownloadManager {
                     playSessionId: decision.playSessionId,
                     maxVideoBitrate: profile.videoBitrateBps,
                     maxWidth: profile.maxWidth,
-                    maxHeight: profile.maxHeight)
+                    maxHeight: profile.maxHeight,
+                    audioStreamIndex: audioStreamIndex)
                 request = transcodedRequest
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID
@@ -178,7 +181,8 @@ extension DownloadManager {
                     server: server, token: token, identity: identity,
                     itemId: itemId, userId: userId,
                     mediaSourceId: jellyfinMediaSourceID,
-                    maxStaticBitrate: 200_000_000)
+                    maxStaticBitrate: 200_000_000,
+                    audioStreamIndex: audioStreamIndex)
                 let (data, response) = try await URLSession.shared.data(for: infoReq)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     recordDownloadDiagnostic("downloads.playback_info_failed", fields: [
@@ -217,7 +221,8 @@ extension DownloadManager {
                         mediaSourceId: decision.mediaSourceId,
                         videoCodec: videoCodec, audioCodec: eligibility.audioCodec,
                         copyAudio: eligibility.copiesAudio,
-                        playSessionId: decision.playSessionId)
+                        playSessionId: decision.playSessionId,
+                        audioStreamIndex: audioStreamIndex)
                 } else {
                     // Stale UI/retry fallback: keep the download safe and playable when the
                     // source video cannot be copied into the compatible MP4 lane. Persist the
@@ -234,7 +239,8 @@ extension DownloadManager {
                         playSessionId: decision.playSessionId,
                         maxVideoBitrate: fallbackProfile.videoBitrateBps,
                         maxWidth: fallbackProfile.maxWidth,
-                        maxHeight: fallbackProfile.maxHeight)
+                        maxHeight: fallbackProfile.maxHeight,
+                        audioStreamIndex: audioStreamIndex)
                 }
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID

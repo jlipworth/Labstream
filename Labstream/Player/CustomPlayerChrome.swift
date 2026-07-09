@@ -54,6 +54,7 @@ struct CustomPlayerChrome: View {
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     #endif
     #if os(visionOS)
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
@@ -81,6 +82,9 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
+    #if os(iOS)
+    @State private var chromeViewportSize: CGSize = .zero
+    #endif
     #if os(macOS)
     @State private var macWindowBridge = MacPlayerWindowBridge()
     @State private var macKeyMonitor: Any?
@@ -136,17 +140,20 @@ struct CustomPlayerChrome: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if selectedMenu != nil {
-                        closeMenu()
-                    } else {
-                        revealChrome()
-                    }
+                    handlePlayerSurfaceTap()
                 }
 
             if shouldShowChrome {
                 topChrome
                     .transition(.opacity)
             }
+
+            #if os(iOS)
+            if shouldShowChrome, selectedMenu == nil {
+                iosCenterPlayPauseButton
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
+            #endif
 
             transientStatusOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -156,8 +163,9 @@ struct CustomPlayerChrome: View {
             offlineSubtitleOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .padding(.horizontal, isCompactMobileChrome ? 18 : 80)
-                .padding(.bottom, chromeVisible ? 168 : 64)
+                .padding(.bottom, subtitleBottomPadding)
                 .animation(.easeInOut(duration: 0.2), value: chromeVisible)
+                .allowsHitTesting(false)
 
             VStack {
                 Spacer()
@@ -217,6 +225,13 @@ struct CustomPlayerChrome: View {
             keyboardShortcuts
             #endif
         }
+        #if os(iOS)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { newSize in
+            chromeViewportSize = newSize
+        }
+        #endif
         #if os(macOS)
         .background(MacPlayerWindowReader(bridge: macWindowBridge))
         #endif
@@ -262,17 +277,40 @@ struct CustomPlayerChrome: View {
 
     private var isCompactMobileChrome: Bool {
         #if os(iOS)
-        horizontalSizeClass == .compact
+        mobileChromeLayout.usesCompactChrome
         #else
         false
         #endif
     }
 
+    private var isPhoneLandscapeChrome: Bool {
+        #if os(iOS)
+        mobileChromeLayout.isPhoneLandscape
+        #else
+        false
+        #endif
+    }
+
+    #if os(iOS)
+    private var mobileChromeLayout: MobilePlayerChromeLayoutPolicy {
+        MobilePlayerChromeLayoutPolicy(horizontalSizeClass: horizontalSizeClass,
+                                       verticalSizeClass: verticalSizeClass,
+                                       idiom: UIDevice.current.userInterfaceIdiom,
+                                       viewportSize: chromeViewportSize)
+    }
+    #endif
+
     private var bottomChromeHorizontalInset: CGFloat {
         #if os(macOS)
         22
         #else
-        isCompactMobileChrome ? 14 : 34
+        if isPhoneLandscapeChrome {
+            8
+        } else if isCompactMobileChrome {
+            12
+        } else {
+            34
+        }
         #endif
     }
 
@@ -280,8 +318,22 @@ struct CustomPlayerChrome: View {
         #if os(macOS)
         18
         #else
-        isCompactMobileChrome ? 18 : 28
+        if isPhoneLandscapeChrome {
+            8
+        } else if isCompactMobileChrome {
+            14
+        } else {
+            28
+        }
         #endif
+    }
+
+    private var subtitleBottomPadding: CGFloat {
+        if chromeVisible {
+            isPhoneLandscapeChrome ? 116 : 168
+        } else {
+            isPhoneLandscapeChrome ? 42 : 64
+        }
     }
 
     @ViewBuilder private var offlineSubtitleOverlay: some View {
@@ -344,14 +396,14 @@ struct CustomPlayerChrome: View {
                         Label("Close", systemImage: "xmark")
                             .labelStyle(.iconOnly)
                             .font(.body.weight(.semibold))
-                            .frame(width: 44, height: 44)
+                            .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
+                            .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .tint(.primary)
+                    .buttonStyle(.plain)
+                    .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
                     // Sit a touch lower than the visionOS chrome so the circle clears
                     // the status-bar corner radius comfortably.
-                    .padding(.top, 10)
+                    .padding(.top, topUtilityButtonExtraTopPadding)
                     #endif
                 }
 
@@ -363,12 +415,12 @@ struct CustomPlayerChrome: View {
                 // pauses ordinary video, but active AirPlay/PiP routes keep playing.
                 if mobileSystemCoordinator != nil {
                     airPlayButton
-                        .padding(.top, 10)
+                        .padding(.top, topUtilityButtonExtraTopPadding)
                 }
 
                 if mobileSystemCoordinator?.isPictureInPicturePossible == true {
                     pipButton
-                        .padding(.top, 10)
+                        .padding(.top, topUtilityButtonExtraTopPadding)
                 }
                 #endif
 
@@ -392,7 +444,13 @@ struct CustomPlayerChrome: View {
         #if os(macOS)
         16
         #else
-        28
+        if isPhoneLandscapeChrome {
+            12
+        } else if isCompactMobileChrome {
+            16
+        } else {
+            28
+        }
         #endif
     }
 
@@ -400,15 +458,34 @@ struct CustomPlayerChrome: View {
         #if os(macOS)
         14
         #else
-        28
+        if isPhoneLandscapeChrome {
+            6
+        } else if isCompactMobileChrome {
+            12
+        } else {
+            28
+        }
         #endif
     }
 
     #if os(iOS)
+    private var topUtilityButtonExtraTopPadding: CGFloat {
+        isPhoneLandscapeChrome ? 0 : 10
+    }
+
+    private var topUtilityButtonVisualSide: CGFloat {
+        isPhoneLandscapeChrome ? 38 : 44
+    }
+
+    private var topUtilityButtonHitSide: CGFloat {
+        max(44, topUtilityButtonVisualSide)
+    }
+
     private var airPlayButton: some View {
         AirPlayRoutePickerButton()
-            .frame(width: 44, height: 44)
-            .labstreamOverlayPlatter(in: Circle())
+            .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
+            .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
+            .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
             .accessibilityLabel("AirPlay")
     }
 
@@ -422,11 +499,11 @@ struct CustomPlayerChrome: View {
                   systemImage: isActive ? "pip.exit" : "pip.enter")
                 .labelStyle(.iconOnly)
                 .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
+                .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
+                .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .tint(.primary)
+        .buttonStyle(.plain)
+        .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
     }
     #endif
 
@@ -584,6 +661,23 @@ struct CustomPlayerChrome: View {
     private var controls: some View {
         #if os(macOS)
         macControls
+        #elseif os(iOS)
+        if isPhoneLandscapeChrome {
+            phoneLandscapeControls
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else if isCompactMobileChrome {
+            compactControls
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        } else {
+            regularControls
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
         #else
         if isCompactMobileChrome {
             compactControls
@@ -766,7 +860,9 @@ struct CustomPlayerChrome: View {
             }
 
             HStack(spacing: 16) {
+                #if !os(iOS)
                 playPauseButton
+                #endif
 
                 skipControls
 
@@ -854,6 +950,29 @@ struct CustomPlayerChrome: View {
     }
     #endif
 
+    #if os(iOS)
+    private var phoneLandscapeControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            // Match the hierarchy people expect from iPhone media players: seeking is
+            // the primary full-width row, while transport and playback options sit
+            // below it. Never make the timeline compete horizontally with our richer
+            // Quality/Subtitles/Audio controls.
+            compactScrubberColumn
+                .frame(maxWidth: .infinity)
+
+            HStack(spacing: 8) {
+                phoneLandscapeSkipButton(seconds: -10)
+                phoneLandscapeSkipButton(seconds: 30)
+
+                Spacer(minLength: 12)
+
+                phoneLandscapeMenuStrip
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+    #endif
+
     private var compactControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 10) {
@@ -874,22 +993,11 @@ struct CustomPlayerChrome: View {
             }
 
             HStack(spacing: 12) {
+                #if !os(iOS)
                 playPauseButton
+                #endif
 
-                VStack(spacing: 4) {
-                    Slider(value: scrubberBinding, in: 0...1) { editing in
-                        handleScrubEditingChanged(editing)
-                    }
-                    .disabled(scrubState.durationMs <= 0)
-
-                    HStack {
-                        Text(format(ms: scrubState.displayedPositionMs))
-                        Spacer()
-                        Text(format(ms: scrubState.durationMs))
-                    }
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                }
+                compactScrubberColumn
             }
 
             // Two skips (matching the hardware-keyboard mapping ←10/→30); the four-skip
@@ -916,15 +1024,30 @@ struct CustomPlayerChrome: View {
         }
     }
 
+    private var compactScrubberColumn: some View {
+        VStack(spacing: 4) {
+            Slider(value: scrubberBinding, in: 0...1) { editing in
+                handleScrubEditingChanged(editing)
+            }
+            .disabled(scrubState.durationMs <= 0)
+
+            HStack {
+                Text(format(ms: scrubState.displayedPositionMs))
+                Spacer()
+                Text(format(ms: scrubState.durationMs))
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+    }
+
     private var playPauseButton: some View {
         Button(action: {
             revealChrome()
             controller.togglePlayback()
             scheduleChromeHideIfNeeded()
         }) {
-            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-                .font(.title2.weight(.semibold))
-                .frame(width: 44, height: 44)
+            playPauseButtonLabel
         }
         #if os(visionOS)
         .buttonStyle(.borderedProminent)
@@ -933,6 +1056,86 @@ struct CustomPlayerChrome: View {
         // transport controls — the accent stays reserved for real CTAs.
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
+        #endif
+        .accessibilityLabel(controller.transport.showsPausedControl ? "Play" : "Pause")
+        .accessibilityHint("Toggles playback")
+    }
+
+    #if os(iOS)
+    /// iPhone and iPad follow the familiar full-screen player hierarchy: the primary
+    /// play/pause action belongs over the picture, not crowded into the timeline bar.
+    private var iosCenterPlayPauseButton: some View {
+        Button {
+            revealChrome()
+            controller.togglePlayback()
+            scheduleChromeHideIfNeeded()
+        } label: {
+            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+                .font(.system(size: isPhoneLandscapeChrome ? 28 : 32, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 68, height: 68)
+                .background(.black.opacity(0.38), in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(.white.opacity(0.18), lineWidth: 0.75)
+                }
+                .shadow(color: .black.opacity(0.34), radius: 12, y: 5)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .frame(width: 80, height: 80)
+        .contentShape(Circle())
+        .accessibilityLabel(controller.transport.showsPausedControl ? "Play" : "Pause")
+        .accessibilityHint("Toggles playback")
+    }
+
+    private func phoneLandscapeSkipButton(seconds: Int) -> some View {
+        let isForward = seconds > 0
+        let amount = abs(seconds)
+        return Button {
+            performRelativeSkip(seconds: seconds)
+        } label: {
+            Image(systemName: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 34, height: 34)
+                .background(.white.opacity(0.10), in: Circle())
+                .overlay {
+                    Circle()
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 0.5)
+                }
+        }
+        .buttonStyle(.plain)
+        .frame(width: 44, height: 44)
+        .contentShape(Circle())
+        .disabled(scrubState.durationMs <= 0)
+        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
+    }
+    #endif
+
+    @ViewBuilder
+    private var playPauseButtonLabel: some View {
+        #if os(iOS)
+        ZStack {
+            Circle()
+                .fill(.white.opacity(isCompactMobileChrome ? 0.16 : 0.12))
+            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+                .font((isCompactMobileChrome ? Font.title2 : Font.title3).weight(.semibold))
+        }
+        .frame(width: playPauseButtonSide, height: playPauseButtonSide)
+        .contentShape(Circle())
+        #else
+        Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+            .font(.title2.weight(.semibold))
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+        #endif
+    }
+
+    private var playPauseButtonSide: CGFloat {
+        #if os(iOS)
+        isPhoneLandscapeChrome ? 46 : (isCompactMobileChrome ? 56 : 44)
+        #else
+        44
         #endif
     }
 
@@ -1123,17 +1326,15 @@ struct CustomPlayerChrome: View {
             }
         }
         #elseif os(iOS)
-        // Flat menus, no "…" overflow (an ellipsis submenu was tried and reverted — it
-        // buried Quality/Chapters/Speed behind an extra hop, killing the tap-video →
-        // change-setting flow the visionOS pill strip was designed for). Every width
-        // keeps the LABELED pills (icon-only circles were tried and rejected): when the
-        // row can't seat the full ~660-pt strip (portrait iPad, iPhone), the same pills
-        // scroll horizontally instead of degrading to icons. The labeled variant has a
-        // fixed ideal width, so ViewThatFits is deterministic; the scroller is the
-        // always-fits last resort.
-        ViewThatFits(in: .horizontal) {
-            labeledMenuStrip
-            scrollableLabeledMenuStrip
+        if isPhoneLandscapeChrome {
+            phoneLandscapeMenuStrip
+        } else {
+            // Flat menus, no "…" overflow on portrait phone/iPad: every width keeps
+            // the LABELED pills and scrolls them rather than degrading to icons.
+            ViewThatFits(in: .horizontal) {
+                labeledMenuStrip
+                scrollableLabeledMenuStrip
+            }
         }
         #else
         HStack(spacing: 8) {
@@ -1151,6 +1352,75 @@ struct CustomPlayerChrome: View {
     }
 
     #if os(iOS)
+
+    private var phoneLandscapePrimaryMenus: [CustomPlayerMenuKind] {
+        availableMenus.filter { [.quality, .subtitles, .audio].contains($0) }
+    }
+
+    private var phoneLandscapeOverflowMenus: [CustomPlayerMenuKind] {
+        availableMenus.filter { !phoneLandscapePrimaryMenus.contains($0) }
+    }
+
+    /// Compact landscape controls: most-used settings stay visible; lower-frequency
+    /// menus move behind an ellipsis so the player picture, scrubber, and safe areas
+    /// are not swallowed by a full-width row of giant pills.
+    private var phoneLandscapeMenuStrip: some View {
+        HStack(spacing: 6) {
+            ForEach(phoneLandscapePrimaryMenus) { menu in
+                phoneLandscapeMenuButton(menu)
+            }
+
+            if !phoneLandscapeOverflowMenus.isEmpty {
+                Menu {
+                    ForEach(phoneLandscapeOverflowMenus) { menu in
+                        Button {
+                            openMenu(menu)
+                        } label: {
+                            Label(menu.title, systemImage: menu.systemImage)
+                        }
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
+                        .font(.body.weight(.semibold))
+                        .frame(width: 44, height: 40)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .phoneLandscapePlayerMenuButtonStyle(isSelected: selectedMenu.map { phoneLandscapeOverflowMenus.contains($0) } ?? false)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private func phoneLandscapeMenuButton(_ menu: CustomPlayerMenuKind) -> some View {
+        Button {
+            openMenu(menu)
+        } label: {
+            Label(menu.shortTitle, systemImage: menu.systemImage)
+                .labelStyle(.titleAndIcon)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .frame(minWidth: phoneLandscapeMenuMinWidth(menu), minHeight: 40)
+                .padding(.horizontal, 4)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .phoneLandscapePlayerMenuButtonStyle(isSelected: selectedMenu == menu)
+        .accessibilityLabel(menu.title)
+    }
+
+    private func phoneLandscapeMenuMinWidth(_ menu: CustomPlayerMenuKind) -> CGFloat {
+        switch menu {
+        case .quality: 78
+        case .subtitles: 70
+        case .audio: 68
+        case .chapters: 84
+        case .speed, .stats: 66
+        case .screen: 72
+        }
+    }
+
     /// visionOS-parity labeled pills in iOS glass styling — every menu one tap away.
     private var labeledMenuStrip: some View {
         HStack(spacing: 8) {
@@ -1161,8 +1431,9 @@ struct CustomPlayerChrome: View {
                     Label(menu.shortTitle, systemImage: menu.systemImage)
                         .labelStyle(.titleAndIcon)
                         .font(.callout.weight(.semibold))
-                        .frame(minWidth: menu.minChromeWidth, minHeight: 38)
+                        .frame(minWidth: menu.minChromeWidth, minHeight: 44)
                         .padding(.horizontal, 6)
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.glass)
                 .tint(.primary)
@@ -1382,17 +1653,35 @@ struct CustomPlayerChrome: View {
     /// 390-pt screen, so clamp every menu to the available width there. Returns nil for menus that
     /// keep their authored fixed size (regular width / visionOS).
     private var menuHorizontalInset: CGFloat {
-        isCompactMobileChrome ? 16 : 54
+        if isPhoneLandscapeChrome {
+            8
+        } else if isCompactMobileChrome {
+            12
+        } else {
+            54
+        }
     }
 
     /// Keep floating menus comfortably above the safe area. Bottom transport chrome is hidden while
     /// a menu is open, so this is a modest edge clearance rather than another full chrome height.
     private var menuBottomClearance: CGFloat {
-        isCompactMobileChrome ? 24 : 34
+        if isPhoneLandscapeChrome {
+            8
+        } else if isCompactMobileChrome {
+            16
+        } else {
+            34
+        }
     }
 
     private var menuTopClearance: CGFloat {
-        isCompactMobileChrome ? 36 : 48
+        if isPhoneLandscapeChrome {
+            12
+        } else if isCompactMobileChrome {
+            28
+        } else {
+            48
+        }
     }
 
     private func menuPopoverHeightLimit(availableHeight: CGFloat) -> CGFloat {
@@ -1408,7 +1697,7 @@ struct CustomPlayerChrome: View {
             return min(1680, max(isCompactMobileChrome ? 0 : 720, available - chrome))
         }
         guard isCompactMobileChrome else { return nil }
-        // Compress the fixed-width menus to fit, but never below their authored width.
+        // Compress the fixed-width menus to fit the phone-width bottom sheet.
         return min(menu.popoverSize.width, max(0, available - chrome))
     }
 
@@ -1420,6 +1709,26 @@ struct CustomPlayerChrome: View {
     private func closeMenu() {
         selectedMenu = nil
         revealChrome()
+    }
+
+    private func handlePlayerSurfaceTap() {
+        if selectedMenu != nil {
+            closeMenu()
+            return
+        }
+
+        guard !controller.transport.showsPausedControl,
+              !controller.transportStatus.keepsChromeVisible else {
+            revealChrome(keepVisible: true)
+            return
+        }
+
+        if chromeVisible {
+            hideTask?.cancel()
+            chromeVisible = false
+        } else {
+            revealChrome()
+        }
     }
 
     private func revealChrome(keepVisible: Bool = false) {
@@ -1456,6 +1765,96 @@ struct CustomPlayerChrome: View {
         return String(format: "%d:%02d", minutes, seconds)
     }
 }
+
+
+#if os(iOS)
+private struct IOSPlayerTopUtilityButtonStyle: ViewModifier {
+    let isPhoneLandscape: Bool
+
+    private var visibleSide: CGFloat { isPhoneLandscape ? 38 : 44 }
+    private var hitSide: CGFloat { max(44, visibleSide) }
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(.white)
+            .frame(width: hitSide, height: hitSide)
+            .background {
+                Circle()
+                    .fill(.black.opacity(isPhoneLandscape ? 0.34 : 0.28))
+                    .frame(width: visibleSide, height: visibleSide)
+                Circle()
+                    .strokeBorder(.white.opacity(0.18), lineWidth: 0.7)
+                    .frame(width: visibleSide, height: visibleSide)
+            }
+            .contentShape(Circle())
+            .shadow(color: .black.opacity(0.32), radius: 9, y: 4)
+    }
+}
+
+private struct PhoneLandscapePlayerMenuButtonStyle: ViewModifier {
+    let isSelected: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(.white.opacity(isSelected ? 1 : 0.92))
+            .background(.white.opacity(isSelected ? 0.20 : 0.11), in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(.white.opacity(isSelected ? 0.24 : 0.12), lineWidth: 0.7)
+            }
+            .contentShape(Capsule())
+    }
+}
+
+private extension View {
+    func iosPlayerTopUtilityButtonStyle(isPhoneLandscape: Bool) -> some View {
+        modifier(IOSPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscape))
+    }
+
+    func phoneLandscapePlayerMenuButtonStyle(isSelected: Bool) -> some View {
+        modifier(PhoneLandscapePlayerMenuButtonStyle(isSelected: isSelected))
+    }
+}
+#endif
+
+#if os(iOS)
+/// Pure sizing policy for the mobile player chrome.
+///
+/// iPhones in landscape are constrained by height even when their horizontal size class is
+/// regular, and iPad split views can be compact without being phone-like. Keep those cases
+/// explicit so we drop chrome rows based on the actual viewport instead of only one size class.
+private struct MobilePlayerChromeLayoutPolicy: Equatable {
+    let horizontalSizeClass: UserInterfaceSizeClass?
+    let verticalSizeClass: UserInterfaceSizeClass?
+    let idiom: UIUserInterfaceIdiom
+    let viewportSize: CGSize
+
+    private var hasMeasuredViewport: Bool {
+        viewportSize.width > 0 && viewportSize.height > 0
+    }
+
+    private var isGeometryLandscape: Bool {
+        hasMeasuredViewport && viewportSize.width > viewportSize.height
+    }
+
+    private var shortestMeasuredSide: CGFloat? {
+        hasMeasuredViewport ? min(viewportSize.width, viewportSize.height) : nil
+    }
+
+    var isPhoneLandscape: Bool {
+        idiom == .phone
+            && (verticalSizeClass == .compact
+                || (isGeometryLandscape && (shortestMeasuredSide ?? 0) <= 500))
+    }
+
+    var usesCompactChrome: Bool {
+        idiom == .phone
+            || horizontalSizeClass == .compact
+            || verticalSizeClass == .compact
+            || (shortestMeasuredSide.map { $0 < 500 } ?? false)
+    }
+}
+#endif
 
 #if os(iOS)
 private struct AirPlayRoutePickerButton: UIViewRepresentable {

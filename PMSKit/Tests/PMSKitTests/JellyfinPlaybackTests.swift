@@ -71,6 +71,7 @@ struct JellyfinPlaybackTests {
         #expect(object["UserId"] as? String == "user-1")
         #expect(object["MediaSourceId"] as? String == "source-1")
         #expect(object["MaxStaticBitrate"] as? Int == 200_000_000)
+        #expect(object["AudioStreamIndex"] == nil)
         #expect(object["AllowVideoStreamCopy"] as? Bool == true)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "Labstream-Compatible-Download")
@@ -80,6 +81,22 @@ struct JellyfinPlaybackTests {
         #expect(first["Protocol"] as? String == "http")
         #expect(first["Context"] as? String == "Static")
         #expect(first["VideoCodec"] as? String == "h264,hevc")
+    }
+
+    @Test func downloadPlaybackInfoRequestCarriesSelectedAudioStreamIndex() throws {
+        let request = try JellyfinPlayback.downloadPlaybackInfoRequest(
+            server: server,
+            token: "token-abc",
+            identity: identity,
+            itemId: "movie-1",
+            userId: "user-1",
+            mediaSourceId: "source-1",
+            maxStaticBitrate: 200_000_000,
+            audioStreamIndex: 4)
+
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object["AudioStreamIndex"] as? Int == 4)
     }
 
     @Test func downloadDecisionSurfacesDirectStreamAndCodecs() throws {

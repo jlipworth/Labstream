@@ -255,7 +255,8 @@ public enum JellyfinPlayback {
                                                    itemId: String,
                                                    userId: String,
                                                    mediaSourceId: String? = nil,
-                                                   maxStaticBitrate: Int) throws -> URLRequest {
+                                                   maxStaticBitrate: Int,
+                                                   audioStreamIndex: Int? = nil) throws -> URLRequest {
         let url = try jellyfinURL(server: server, path: "/Items/\(itemId)/PlaybackInfo")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -277,6 +278,7 @@ public enum JellyfinPlayback {
             "DeviceProfile": compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: maxStaticBitrate),
         ]
         if let mediaSourceId { body["MediaSourceId"] = mediaSourceId }
+        if let audioStreamIndex { body["AudioStreamIndex"] = audioStreamIndex }
 
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req

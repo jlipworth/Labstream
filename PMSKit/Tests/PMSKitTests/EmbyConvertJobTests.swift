@@ -146,6 +146,20 @@ struct EmbyConvertJobTests {
         #expect(body["category"] is NSNull)
         #expect(body["parentId"] is NSNull)
         #expect(body["itemLimit"] is NSNull)
+        #expect(body["audioStreamIndex"] == nil)
+    }
+
+    @Test("createJobRequest carries selected audio stream when provided")
+    func createJobBodyAudioStreamIndex() throws {
+        let req = try EmbyConvertRequest.createJobRequest(
+            server: server, token: token, identity: identity,
+            userId: userId, itemId: "item-placeholder",
+            quality: "custom", profile: "tv", bitrate: 8_000_000,
+            name: "Title [Labstream abcd1234]",
+            audioStreamIndex: 4)
+        let data = try #require(req.httpBody)
+        let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(body["audioStreamIndex"] as? Int == 4)
     }
 
     @Test("itemIds is an array containing the single itemId")

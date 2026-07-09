@@ -185,6 +185,8 @@ public enum EmbyConvertRequest {
     /// `container`/`videoCodec`/`audioCodec` are the `profile:"custom"` target criteria (#128) and
     /// MUST be supplied together for a custom job (Emby rejects a bare custom job HTTP 400); they are
     /// omitted entirely for the `tv`/`mobile` profiles, which carry their own built-in targets.
+    /// `audioStreamIndex` is best-effort download-track steering for single-audio converted outputs.
+    /// It follows Emby's lowercase-camel Sync job body convention used by the rest of this request.
     public static func createJobRequest(server: URL,
                                         token: String,
                                         identity: EmbyClientIdentity,
@@ -196,7 +198,8 @@ public enum EmbyConvertRequest {
                                         name: String,
                                         container: String? = nil,
                                         videoCodec: String? = nil,
-                                        audioCodec: String? = nil) throws -> URLRequest {
+                                        audioCodec: String? = nil,
+                                        audioStreamIndex: Int? = nil) throws -> URLRequest {
         let url = try EmbyPlayback.embyURL(server: server, path: "/Sync/Jobs")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -222,6 +225,7 @@ public enum EmbyConvertRequest {
         if let container { body["container"] = container }
         if let videoCodec { body["videoCodec"] = videoCodec }
         if let audioCodec { body["audioCodec"] = audioCodec }
+        if let audioStreamIndex, audioStreamIndex >= 0 { body["audioStreamIndex"] = audioStreamIndex }
         req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         return req
     }
