@@ -30,6 +30,14 @@ private struct BackendPrimaryCTALabel: ViewModifier {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
+    private var isCompact: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
     func body(content: Content) -> some View {
         #if os(macOS)
         content
@@ -37,8 +45,8 @@ private struct BackendPrimaryCTALabel: ViewModifier {
             .frame(maxWidth: .infinity, minHeight: 28)
         #else
         content
-            .font(horizontalSizeClass == .compact ? .body.weight(.semibold) : .title3.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: horizontalSizeClass == .compact ? 48 : 52)
+            .font(isCompact ? .body.weight(.semibold) : .title3.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: isCompact ? 48 : 52)
         #endif
     }
 }
