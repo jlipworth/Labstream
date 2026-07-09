@@ -442,7 +442,7 @@ struct LibraryGridView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: DS.Space.lg) {
-                        browseControls
+                        browseControls(proxy: proxy)
                             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                             .padding(.top, DS.Space.lg)
 
@@ -485,12 +485,14 @@ struct LibraryGridView: View {
                     }
                 }
                 .overlay(alignment: .trailing) {
+                    #if !os(visionOS)
                     if alphabetRailVisible {
                         LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
                             jump(to: entry, proxy: proxy)
                         }
                         .padding(.trailing, 10)
                     }
+                    #endif
                 }
             }
         }
@@ -504,7 +506,7 @@ struct LibraryGridView: View {
 
     private func compactGridMetrics(availableWidth: CGFloat) -> MobileLibraryGridLayout.Metrics? {
         guard compactWidth else { return nil }
-        let reservation = alphabetRailVisible ? LibraryAlphabetRail.compactGridTrailingReservation : 0
+        let reservation = nonVisionAlphabetRailVisible ? LibraryAlphabetRail.compactGridTrailingReservation : 0
         return MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth),
                                                trailingReservation: Double(reservation))
     }
@@ -515,7 +517,7 @@ struct LibraryGridView: View {
                      count: metrics.columnCount)
     }
 
-    private var browseControls: some View {
+    private func browseControls(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: DS.Space.md) {
             if availableSorts.count > 1 {
                 sortMenu
@@ -526,6 +528,13 @@ struct LibraryGridView: View {
             if filter != .all {
                 activeFilterChip
             }
+            #if os(visionOS)
+            if alphabetRailVisible {
+                LibraryAlphabetJumpButton(entries: paging.alphabetBuckets) { entry in
+                    jump(to: entry, proxy: proxy)
+                }
+            }
+            #endif
             if let capabilityNotice {
                 capabilityNoticeView(capabilityNotice)
             }
@@ -606,6 +615,14 @@ struct LibraryGridView: View {
                                       systemImage: filter == .all ? "rectangle.stack" : "line.3.horizontal.decrease.circle",
                                       description: Text(description))
             .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private var nonVisionAlphabetRailVisible: Bool {
+        #if os(visionOS)
+        false
+        #else
+        alphabetRailVisible
+        #endif
     }
 
     private func loadPreferences() {

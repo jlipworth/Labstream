@@ -64,27 +64,36 @@ struct MusicPagedGrid: View {
                                                description: Text("Nothing to show in \(libraryTitle)."))
                             .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
-                        loadedGrid
+                        loadedGrid(proxy: proxy)
                     }
                 }
             }
             .overlay(alignment: .trailing) {
+                #if !os(visionOS)
                 if paging.alphabetBuckets.count > 1, case .loaded = paging.loadState {
                     LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
                         jump(to: entry, proxy: proxy)
                     }
                     .padding(.trailing, 10)
                 }
+                #endif
             }
         }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
     }
 
-    private var loadedGrid: some View {
+    private func loadedGrid(proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
             HStack {
                 sortMenu
+                #if os(visionOS)
+                if alphabetRailVisible {
+                    LibraryAlphabetJumpButton(entries: paging.alphabetBuckets) { entry in
+                        jump(to: entry, proxy: proxy)
+                    }
+                }
+                #endif
                 Spacer()
             }
             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
@@ -114,11 +123,18 @@ struct MusicPagedGrid: View {
 
     private var alphabetRailGridReservation: CGFloat {
         guard paging.alphabetBuckets.count > 1 else { return 0 }
-        #if os(macOS)
+        #if os(visionOS)
+        return 0
+        #elseif os(macOS)
         return MusicArt.macAlphabetRailGridReservation
         #else
         return compactWidth ? LibraryAlphabetRail.compactGridTrailingReservation : 0
         #endif
+    }
+
+    private var alphabetRailVisible: Bool {
+        guard case .loaded = paging.loadState else { return false }
+        return paging.alphabetBuckets.count > 1
     }
 
     private var sortMenu: some View {
