@@ -209,6 +209,13 @@ extension DownloadManager {
             removeAbandonedServerPrepSeedIfAttemptDead(ratingKey: ratingKey,
                                                        queueTitle: queueTitle,
                                                        targetName: targetName)
+        } catch DownloadLifecycleCancellation.plexSessionUnavailable {
+            // A-1 (audit lens 8): park for deferred resume — keep the queued server-prep row, drop
+            // the in-memory slot so the prep scanner reattaches once the matching lane returns.
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            scheduleServerPrepResumeRetries()
         } catch let error as DownloadError {
             guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
                                                 phase: "start_error") else { return }

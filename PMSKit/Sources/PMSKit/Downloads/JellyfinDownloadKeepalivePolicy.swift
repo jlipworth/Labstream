@@ -98,3 +98,72 @@ public enum JellyfinDownloadKeepalivePolicy {
         return trimmed
     }
 }
+
+/// One keepalive tick's collapsed health outcome (audit lens 8, A-2).
+///
+/// The keepalive previously `try?`-swallowed every HTTP response, so a rotated token silently
+/// stopped reporting progress and the server idle-killed the encoder with zero diagnostic trail.
+public enum JellyfinKeepaliveTickOutcome: Equatable, Sendable {
+    case healthy
+    /// At least one request failed at the transport layer (no HTTP response at all).
+    case transportFailure
+    /// At least one request returned a non-2xx, non-auth status.
+    case httpFailure(statusCode: Int)
+    /// At least one request returned 401/403 — the credential is dead.
+    case authRejected(statusCode: Int)
+}
+
+extension JellyfinDownloadKeepalivePolicy {
+    /// Collapse the tick's status codes (nil = transport error) into a single outcome.
+    /// Auth-dead dominates, then the first non-2xx HTTP status, then transport failure.
+    public static func tickOutcome(statuses: [Int?]) -> JellyfinKeepaliveTickOutcome {
+        var firstHTTPFailure: Int?
+        var sawTransportFailure = false
+        for status in statuses {
+            guard let status else {
+                sawTransportFailure = true
+                continue
+            }
+            if status == 401 || status == 403 { return .authRejected(statusCode: status) }
+            if !(200..<300).contains(status), firstHTTPFailure == nil { firstHTTPFailure = status }
+        }
+        if let firstHTTPFailure { return .httpFailure(statusCode: firstHTTPFailure) }
+        if sawTransportFailure { return .transportFailure }
+        return .healthy
+    }
+
+    public enum HealthAction: Equatable, Sendable {
+        case none
+        /// First failure of this shape (or a changed failure status) — emit
+        /// `downloads.jellyfin_keepalive_degraded` once, not every tick.
+        case emitDegraded(reason: String)
+        /// A previously degraded keepalive is healthy again.
+        case emitRecovered
+        /// 401/403: stop pinging — an auth-dead loop only spams the server and hides the problem.
+        case stopAuthDead(statusCode: Int)
+    }
+
+    public static func healthAction(previous: JellyfinKeepaliveTickOutcome?,
+                                    outcome: JellyfinKeepaliveTickOutcome) -> HealthAction {
+        if case .authRejected(let statusCode) = outcome {
+            return .stopAuthDead(statusCode: statusCode)
+        }
+        switch outcome {
+        case .healthy:
+            if let previous, previous != .healthy { return .emitRecovered }
+            return .none
+        default:
+            guard previous != outcome else { return .none }
+            return .emitDegraded(reason: degradedReason(outcome))
+        }
+    }
+
+    public static func degradedReason(_ outcome: JellyfinKeepaliveTickOutcome) -> String {
+        switch outcome {
+        case .healthy: return "healthy"
+        case .transportFailure: return "transport"
+        case .httpFailure(let statusCode): return "http_\(statusCode)"
+        case .authRejected(let statusCode): return "auth_\(statusCode)"
+        }
+    }
+}
