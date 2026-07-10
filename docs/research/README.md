@@ -14,6 +14,10 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 
 ## Active notes
 
+- [`2026-07-10-codebase-remediation-plan.md`](2026-07-10-codebase-remediation-plan.md) —
+  staged implementation plan for the whole-repository correctness, concurrency,
+  performance, backend/platform sharing, and build-cost audit. It remains active until
+  every audit ID is closed or explicitly superseded.
 - [`offline-playback-compatibility.md`](offline-playback-compatibility.md) — unresolved
   cross-backend/device compatibility evidence for offline artifacts. Implemented routing
   and transfer behavior is canonical in
