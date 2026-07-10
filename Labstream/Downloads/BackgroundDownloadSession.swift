@@ -4085,7 +4085,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                             to: destination,
                                             expectedBytes: expectedBytes,
                                             resetsRetryCount: false,
-                                            remainderReasonOverride: "blob_resume_train_refill")
+                                            // Keep under 24 chars: the diagnostic redactor's
+                                            // generic secret rule blanks longer bare tokens.
+                                            remainderReasonOverride: "blob_resume_refill")
                 } catch {
                     // Non-fatal: the resumed head is running; the train refills on its finish.
                     AppDiagnostics.record(.downloads, "downloads.range_blob_resume_train_refill_failed", fields: [
