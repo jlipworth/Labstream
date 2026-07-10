@@ -346,7 +346,9 @@ extension DownloadManager {
                                                                                itemId: itemId,
                                                                                mediaSourceId: mediaSourceId,
                                                                                width: width)
-                let (playlistData, playlistResponse) = try await URLSession.shared.data(for: playlistReq)
+                // Lens 4 F2: trickplay playlist + tiles are data-plane side assets — honor Wi-Fi-only.
+                let (playlistData, playlistResponse) = try await URLSession.shared.data(
+                    for: Self.sideAssetRequest(applyingCellularPolicy: playlistReq))
                 guard let playlistHTTP = playlistResponse as? HTTPURLResponse,
                       (200..<300).contains(playlistHTTP.statusCode),
                       let playlistText = String(data: playlistData, encoding: .utf8) else { return }
@@ -386,7 +388,8 @@ extension DownloadManager {
                             let uri = entry.tile.uri
                             let index = entry.index
                             group.addTask {
-                                guard let (tileData, tileResponse) = try? await URLSession.shared.data(for: tileReq),
+                                guard let (tileData, tileResponse) = try? await URLSession.shared.data(
+                                        for: Self.sideAssetRequest(applyingCellularPolicy: tileReq)),
                                       let tileHTTP = tileResponse as? HTTPURLResponse,
                                       (200..<300).contains(tileHTTP.statusCode),
                                       !tileData.isEmpty else { return nil }
