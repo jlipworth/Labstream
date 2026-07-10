@@ -104,4 +104,28 @@ struct RangeTransferHTTPPolicyTests {
             stashBytes: nil, expectedBytes: 1_000,
             storedValidator: nil, responseValidator: nil))
     }
+
+    // Audit B.3 residual weakness: the validator-diff branch adopted a changed-resource 200 of
+    // ANY size. A body shorter than its own declared Content-Length is truncated by definition
+    // and must never be adopted, changed resource or not.
+    @Test("200 replaceWhole adoption rejects bodies truncated against their own Content-Length")
+    func replaceWholeContentLengthGuard() {
+        #expect(!RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: 1_000,
+            storedValidator: "\"etag-a\"", responseValidator: "\"etag-b\"",
+            responseContentLength: 900))
+        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 900, expectedBytes: 1_000,
+            storedValidator: "\"etag-a\"", responseValidator: "\"etag-b\"",
+            responseContentLength: 900))
+        #expect(!RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: nil,
+            storedValidator: nil, responseValidator: nil,
+            responseContentLength: 900))
+        // Unknown Content-Length keeps the pre-existing semantics.
+        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
+            stashBytes: 400, expectedBytes: 1_000,
+            storedValidator: "\"etag-a\"", responseValidator: "\"etag-b\"",
+            responseContentLength: nil))
+    }
 }
