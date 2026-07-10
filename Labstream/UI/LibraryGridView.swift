@@ -534,6 +534,12 @@ struct LibraryGridView: View {
         HStack(spacing: DS.Space.md) {
             if availableSorts.count > 1 {
                 sortMenu
+            } else if sort != .titleAscending {
+                // The sort menu is hidden (e.g. capability discovery failed/was unavailable),
+                // but a restored non-default sort still drives the query. Without this chip the
+                // user would have no visible way to clear it — the symmetric escape hatch to
+                // `activeFilterChip` below.
+                activeSortChip
             }
             if availableFilters.count > 1 {
                 filterMenu
@@ -602,6 +608,21 @@ struct LibraryGridView: View {
                 .font(.callout)
         }
         .buttonStyle(.bordered)
+    }
+
+    private var activeSortChip: some View {
+        Button {
+            sort = .titleAscending
+        } label: {
+            HStack(spacing: DS.Space.xs) {
+                Text(sort.label)
+                Image(systemName: "xmark.circle.fill")
+                    .imageScale(.small)
+            }
+            .font(.callout)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("Clear \(sort.label) sort")
     }
 
     private var activeFilterChip: some View {
@@ -699,10 +720,22 @@ struct LibraryGridView: View {
                                        identity: appModel.identity,
                                        sectionKey: section.key),
                 as: PlexLibrarySectionSortsResponse.self)
-            let capabilities = try await LibraryBrowseCapabilities.plex(filters: filterResponse,
-                                                                        sorts: sortResponse)
+            let filters = try await filterResponse
+            let sorts = try await sortResponse
             guard capabilityIdentity == activeIdentity, !Task.isCancelled else { return }
             loadedCapabilityIdentity = activeIdentity
+            // A parseable-but-empty discovery payload (HTTP 200 whose `Directory` is missing
+            // or empty) is indistinguishable from a defaults-only capability set. Trusting it
+            // would let enforceCapabilities() destructively reset — and, via onChange →
+            // savePreferences, PERSIST the reset of — the user's saved sort/filter. Treat an
+            // empty advertisement like the thrown-error path below (.unavailable), which
+            // preserves saved prefs. A genuinely non-empty (even partial) set still enforces.
+            guard !sorts.mediaContainer.directory.isEmpty,
+                  !filters.mediaContainer.directory.isEmpty else {
+                capabilityState = .unavailable("Server filters unavailable.")
+                return
+            }
+            let capabilities = LibraryBrowseCapabilities.plex(filters: filters, sorts: sorts)
             capabilityState = .loaded(capabilities)
             enforceCapabilities(capabilities)
         } catch {
