@@ -161,6 +161,32 @@ extension DownloadManager {
             return
         }
 
+        // EMBY-F6: `.existingVersion` and relaunch/retry handoffs carry an explicit persisted
+        // MediaSource id. Emby PlaybackInfo can silently fall back to another source when that
+        // version vanished; accepting it would download a different rendition under the old row's
+        // intent. Ordinary negotiation (no explicit override) may still use the server's choice.
+        guard EmbyDownloadSourceIdentityPolicy.accepts(
+            explicitOverride: mediaSourceIDOverride,
+            decidedMediaSourceID: decision.mediaSourceId
+        ) else {
+            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                              playSessionID: decision.playSessionId,
+                                              backendKind: .emby,
+                                              backendSession: backendSession)
+            recordDownloadDiagnostic("downloads.start_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Emby"),
+                "phase": .label("media_source_override_mismatch"),
+            ])
+            lastError[ratingKey] = .transferFailed(
+                "The requested server version is no longer available. Choose another version and retry.")
+            store.setStatus(ratingKey: ratingKey, .failed)
+            clearStaticRangePendingResume(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            return
+        }
+
         // The resolution label built above came from the item's PRIMARY media — wrong for a
         // server-prepared version, which downloads the CONVERTED source (e.g. a 720p copy of a 4K
         // original). Re-label from the negotiated source's real height so the caption shows the
